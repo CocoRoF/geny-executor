@@ -65,6 +65,8 @@ class ParseStage(Stage[Any, ParsedResponse]):
                 state.completion_detail = detail
 
         # Store tool calls in state for Stage 10 (Tool)
+        # Always clear first to prevent stale calls from prior iteration
+        state.pending_tool_calls = []
         if parsed.has_tool_calls:
             state.pending_tool_calls = [
                 {

@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
+
+if TYPE_CHECKING:
+    from geny_executor.core.state import PipelineState
 
 
 @dataclass
@@ -46,7 +49,7 @@ class PipelineConfig:
     # Metadata
     metadata: Dict[str, Any] = field(default_factory=dict)
 
-    def apply_to_state(self, state: Any) -> None:
+    def apply_to_state(self, state: PipelineState) -> None:
         """Apply config values to a PipelineState."""
         state.model = self.model.model
         state.max_tokens = self.model.max_tokens

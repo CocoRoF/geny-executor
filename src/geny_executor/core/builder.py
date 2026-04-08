@@ -139,9 +139,10 @@ class PipelineBuilder:
         # Tool
         if self._tool_registry:
             from geny_executor.stages.s10_tool import ToolStage
+            tool_cfg = dict(self._stage_configs.get("tool", {}))
             pipeline.register_stage(ToolStage(
                 registry=self._tool_registry,
-                **self._stage_configs.get("tool", {}),
+                **tool_cfg,
             ))
 
         # Agent

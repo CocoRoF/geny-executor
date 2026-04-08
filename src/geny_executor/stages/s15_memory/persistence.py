@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
 from abc import abstractmethod
 from typing import Any, Dict, List, Optional
 
@@ -74,8 +75,19 @@ class FilePersistence(ConversationPersistence):
 
     async def save(self, session_id: str, messages: List[Dict[str, Any]]) -> None:
         path = self._path(session_id)
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(messages, f, ensure_ascii=False, indent=2)
+        # Atomic write: write to temp file, then rename
+        fd, tmp_path = tempfile.mkstemp(dir=self._base_dir, suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(messages, f, ensure_ascii=False, indent=2)
+            os.replace(tmp_path, path)
+        except BaseException:
+            # Clean up temp file on failure
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
 
     async def load(self, session_id: str) -> List[Dict[str, Any]]:
         path = self._path(session_id)

@@ -52,15 +52,19 @@ class ContextStage(Stage[Any, Any]):
         # Build context via strategy
         await self._strategy.build_context(state)
 
-        # Retrieve memory
-        query = state.final_text or (
-            state.messages[-1].get("content", "") if state.messages else ""
-        )
+        # Retrieve memory — extract query from the last user message, not final_text
+        # (final_text is only populated after Stage 9 Parse, not available here)
+        query = ""
+        for msg in reversed(state.messages):
+            if msg.get("role") == "user":
+                query = msg.get("content", "")
+                break
         if isinstance(query, list):
-            # Extract text from content blocks
+            # Extract text from content blocks (could be multimodal)
             query = " ".join(
                 b.get("text", "") for b in query if isinstance(b, dict) and b.get("type") == "text"
             )
+        query = str(query)
 
         chunks = await self._retriever.retrieve(str(query), state)
         if chunks:

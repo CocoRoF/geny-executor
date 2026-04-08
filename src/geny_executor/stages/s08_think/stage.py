@@ -78,18 +78,21 @@ class ThinkStage(Stage[Any, Any]):
             else:
                 response_blocks.append(block)
 
+        # Sum tokens from ORIGINAL blocks before processing (filter may remove some)
+        total_thinking_tokens = sum(b.budget_tokens_used for b in thinking_blocks)
+
         # Process thinking blocks via strategy
         processed = await self._processor.process(thinking_blocks, state)
 
         state.add_event("think.processed", {
             "thinking_block_count": len(thinking_blocks),
-            "total_thinking_tokens": sum(b.budget_tokens_used for b in processed),
+            "total_thinking_tokens": total_thinking_tokens,
         })
 
         return ThinkingResult(
             thinking_blocks=processed,
             response_blocks=response_blocks,
-            total_thinking_tokens=sum(b.budget_tokens_used for b in processed),
+            total_thinking_tokens=total_thinking_tokens,
         )
 
     def _get_content_blocks(self, response: Any) -> List[Dict[str, Any]]:

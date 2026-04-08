@@ -42,10 +42,12 @@ class PipelineResult:
     @classmethod
     def from_state(cls, state: PipelineState) -> PipelineResult:
         """Create a result from final pipeline state."""
+        is_error = state.loop_decision == "error"
         return cls(
             text=state.final_text,
             output=state.final_output,
-            success=state.loop_decision != "error",
+            success=not is_error,
+            error=state.completion_detail if is_error else None,
             iterations=state.iteration,
             token_usage=state.token_usage,
             turn_token_usage=list(state.turn_token_usage),

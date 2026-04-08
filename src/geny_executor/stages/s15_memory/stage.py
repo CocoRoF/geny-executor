@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any, List, Optional
 
 from geny_executor.core.stage import Stage, StrategyInfo
 from geny_executor.core.state import PipelineState
+
+logger = logging.getLogger(__name__)
 from geny_executor.stages.s15_memory.strategies import (
     AppendOnlyStrategy,
     MemoryUpdateStrategy,
@@ -56,6 +59,8 @@ class MemoryStage(Stage[Any, Any]):
         await self._strategy.update(state)
 
         # Persist if configured
+        if self._persistence and not state.session_id:
+            logger.warning("Memory persistence configured but session_id is empty — skipping persist")
         if self._persistence and state.session_id:
             await self._persistence.save(state.session_id, state.messages)
             state.add_event("memory.persisted", {

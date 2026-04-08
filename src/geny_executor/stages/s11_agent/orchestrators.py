@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, TYPE_CHECKING
@@ -99,7 +100,7 @@ class DelegateOrchestrator(AgentOrchestrator):
             try:
                 sub_pipeline = self._factory.create(agent_type)
                 sub_state = PipelineState(
-                    session_id=f"{state.session_id}-sub-{agent_type}",
+                    session_id=f"{state.session_id}-sub-{agent_type}-{uuid.uuid4().hex[:8]}",
                 )
                 result = await sub_pipeline.run(task, sub_state)
                 sub_results.append({
@@ -154,7 +155,7 @@ class EvaluatorOrchestrator(AgentOrchestrator):
         try:
             evaluator = self._factory.create(self._evaluator_type)
             eval_state = PipelineState(
-                session_id=f"{state.session_id}-eval",
+                session_id=f"{state.session_id}-eval-{uuid.uuid4().hex[:8]}",
             )
 
             eval_prompt = (

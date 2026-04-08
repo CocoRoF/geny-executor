@@ -9,6 +9,8 @@ from geny_executor.stages.s09_parse.parsers import (
 from geny_executor.stages.s09_parse.signals import (
     CompletionSignalDetector,
     RegexDetector,
+    HybridDetector,
+    StructuredDetector,
     CompletionSignal,
 )
 from geny_executor.stages.s09_parse.types import ParsedResponse
@@ -20,6 +22,8 @@ __all__ = [
     "StructuredOutputParser",
     "CompletionSignalDetector",
     "RegexDetector",
+    "HybridDetector",
+    "StructuredDetector",
     "CompletionSignal",
     "ParsedResponse",
 ]

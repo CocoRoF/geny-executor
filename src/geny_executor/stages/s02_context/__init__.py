@@ -16,6 +16,7 @@ from geny_executor.stages.s02_context.compactors import (
 from geny_executor.stages.s02_context.retrievers import (
     MemoryRetriever,
     NullRetriever,
+    StaticRetriever,
 )
 
 __all__ = [
@@ -30,4 +31,5 @@ __all__ = [
     "SlidingWindowCompactor",
     "MemoryRetriever",
     "NullRetriever",
+    "StaticRetriever",
 ]

@@ -6,7 +6,7 @@ import uuid
 from typing import Any, AsyncIterator, Callable, Dict, List, Optional
 
 from geny_executor.core.config import PipelineConfig
-from geny_executor.core.errors import PipelineError, StageError
+from geny_executor.core.errors import StageError
 from geny_executor.core.result import PipelineResult
 from geny_executor.core.stage import Stage, StageDescription
 from geny_executor.core.state import PipelineState
@@ -28,6 +28,7 @@ class Pipeline:
     LOOP_END = 13  # inclusive
     FINALIZE_START = 14
     FINALIZE_END = 16  # inclusive
+    EVENT_DATA_TRUNCATE = 500  # max chars for event data preview
 
     def __init__(self, config: Optional[PipelineConfig] = None):
         self._config = config or PipelineConfig()
@@ -70,7 +71,7 @@ class Pipeline:
         Phase C: Stage 14~16 (Finalize) — runs once
         """
         state = self._init_state(state)
-        await self._emit("pipeline.start", data={"input": str(input)[:500]})
+        await self._emit("pipeline.start", data={"input": str(input)[:self.EVENT_DATA_TRUNCATE]})
 
         try:
             # Phase A: Input (stage 1)
@@ -125,10 +126,10 @@ class Pipeline:
         def collector(event: PipelineEvent) -> None:
             collected_events.append(event)
 
-        self._event_bus.on("*", collector)
+        unsubscribe = self._event_bus.on("*", collector)
 
         try:
-            yield PipelineEvent(type="pipeline.start", data={"input": str(input)[:500]})
+            yield PipelineEvent(type="pipeline.start", data={"input": str(input)[:self.EVENT_DATA_TRUNCATE]})
 
             # Phase A
             current = await self._run_stage(1, input, state)
@@ -169,14 +170,14 @@ class Pipeline:
 
             yield PipelineEvent(
                 type="pipeline.complete",
-                data={"result": state.final_text[:500], "iterations": state.iteration},
+                data={"result": state.final_text[:self.EVENT_DATA_TRUNCATE], "iterations": state.iteration},
             )
 
         except Exception as e:
             yield PipelineEvent(type="pipeline.error", data={"error": str(e)})
 
         finally:
-            self._event_bus.off("*", collector)
+            unsubscribe()
 
     # ── Events ──
 

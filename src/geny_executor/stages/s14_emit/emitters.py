@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
 from geny_executor.core.stage import Strategy
 from geny_executor.core.state import PipelineState
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -160,8 +163,13 @@ class EmitterChain:
     async def emit_all(self, state: PipelineState) -> List[EmitResult]:
         results = []
         for emitter in self._emitters:
-            result = await emitter.emit(state)
-            results.append(result)
+            try:
+                result = await emitter.emit(state)
+                results.append(result)
+            except Exception as e:
+                logger.warning("Emitter %s failed: %s", emitter.name, e)
+                results.append(EmitResult(emitted=False, channels=[emitter.name],
+                                          metadata={"error": str(e)}))
         return results
 
     @property

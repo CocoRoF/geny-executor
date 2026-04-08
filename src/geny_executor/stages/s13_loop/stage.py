@@ -54,9 +54,8 @@ class LoopStage(Stage[Any, Any]):
             "upstream_decision": upstream,
         })
 
-        # Clear tool_results after decision (they've been consumed)
-        if decision == LoopDecision.CONTINUE:
-            state.tool_results = []
+        # Always clear tool_results after decision (they've been consumed)
+        state.tool_results = []
 
         return input
 

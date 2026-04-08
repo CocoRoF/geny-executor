@@ -150,12 +150,15 @@ class AnthropicProvider(APIProvider):
                     )
                 )
 
-        usage = TokenUsage(
-            input_tokens=getattr(raw.usage, "input_tokens", 0),
-            output_tokens=getattr(raw.usage, "output_tokens", 0),
-            cache_creation_input_tokens=getattr(raw.usage, "cache_creation_input_tokens", 0),
-            cache_read_input_tokens=getattr(raw.usage, "cache_read_input_tokens", 0),
-        )
+        if raw.usage:
+            usage = TokenUsage(
+                input_tokens=getattr(raw.usage, "input_tokens", 0),
+                output_tokens=getattr(raw.usage, "output_tokens", 0),
+                cache_creation_input_tokens=getattr(raw.usage, "cache_creation_input_tokens", 0),
+                cache_read_input_tokens=getattr(raw.usage, "cache_read_input_tokens", 0),
+            )
+        else:
+            usage = TokenUsage()
 
         return APIResponse(
             content=content_blocks,

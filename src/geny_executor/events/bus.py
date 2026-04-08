@@ -3,13 +3,19 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections import defaultdict
-from typing import Callable, Dict, List
+from typing import Any, Callable, Coroutine, Dict, List, Union
 
 from geny_executor.events.types import PipelineEvent
 
+logger = logging.getLogger(__name__)
+
 # Handler can be sync or async
-EventHandler = Callable[[PipelineEvent], None]
+EventHandler = Union[
+    Callable[[PipelineEvent], None],
+    Callable[[PipelineEvent], Coroutine[Any, Any, None]],
+]
 
 
 class EventBus:
@@ -40,19 +46,27 @@ class EventBus:
             handlers.remove(handler)
 
     async def emit(self, event: PipelineEvent) -> None:
-        """Emit an event to all matching handlers."""
+        """Emit an event to all matching handlers (deduplicated)."""
+        seen_ids: set = set()
         matched_handlers: List[EventHandler] = []
 
+        def _collect(handler_list: List[EventHandler]) -> None:
+            for h in handler_list:
+                h_id = id(h)
+                if h_id not in seen_ids:
+                    seen_ids.add(h_id)
+                    matched_handlers.append(h)
+
         # Exact match
-        matched_handlers.extend(self._handlers.get(event.type, []))
+        _collect(self._handlers.get(event.type, []))
 
         # Wildcard match
-        matched_handlers.extend(self._handlers.get("*", []))
+        _collect(self._handlers.get("*", []))
 
         # Prefix match (e.g., "stage.*" matches "stage.enter")
         if "." in event.type:
             prefix = event.type.rsplit(".", 1)[0] + ".*"
-            matched_handlers.extend(self._handlers.get(prefix, []))
+            _collect(self._handlers.get(prefix, []))
 
         for handler in matched_handlers:
             try:
@@ -60,9 +74,9 @@ class EventBus:
                 # Support both sync and async handlers
                 if asyncio.iscoroutine(result):
                     await result
-            except Exception:
-                # Event handlers should not crash the pipeline
-                pass
+            except Exception as e:
+                # Event handlers should not crash the pipeline, but log the error
+                logger.warning("Event handler %r failed on %s: %s", handler, event.type, e)
 
     def clear(self) -> None:
         """Remove all handlers."""
