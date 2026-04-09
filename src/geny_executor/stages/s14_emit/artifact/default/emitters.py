@@ -68,9 +68,7 @@ class VTuberEmitter(Emitter):
                 await result
 
         state.metadata["last_emotion"] = emotion
-        return EmitResult(
-            emitted=True, channels=["vtuber"], metadata={"emotion": emotion}
-        )
+        return EmitResult(emitted=True, channels=["vtuber"], metadata={"emotion": emotion})
 
     def _extract_emotion(self, text: str, state: PipelineState) -> Dict[str, Any]:
         emotion_keywords = {
