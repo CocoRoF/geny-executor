@@ -5,8 +5,37 @@ build-backend = "hatchling.build"
 [project]
 name = "geny-executor"
 version = "0.1.0"
-description = "Harness-engineered agent pipeline library using Anthropic API"
+description = "Harness-engineered agent pipeline library with 16-stage dual-abstraction architecture, built on the Anthropic API"
+readme = "README.md"
+license = "MIT"
 requires-python = ">=3.11"
+authors = [
+    { name = "CocoRoF", email = "cocorof@users.noreply.github.com" },
+]
+keywords = [
+    "agent",
+    "pipeline",
+    "anthropic",
+    "claude",
+    "harness",
+    "ai",
+    "llm",
+    "mcp",
+    "orchestration",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Typing :: Typed",
+    "Framework :: AsyncIO",
+]
 dependencies = [
     "anthropic>=0.52.0",
     "mcp>=1.0.0",
@@ -27,8 +56,24 @@ all = [
     "geny-executor[memory]",
 ]
 
+[project.urls]
+Homepage = "https://github.com/CocoRoF/geny-executor"
+Repository = "https://github.com/CocoRoF/geny-executor"
+Issues = "https://github.com/CocoRoF/geny-executor/issues"
+Documentation = "https://github.com/CocoRoF/geny-executor#readme"
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/geny_executor"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "src/geny_executor/",
+    "tests/",
+    "README.md",
+    "README_ko.md",
+    "LICENSE",
+    "pyproject.toml",
+]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
