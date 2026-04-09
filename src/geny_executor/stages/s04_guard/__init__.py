@@ -1,9 +1,10 @@
 """Stage 4: Guard — pre-flight safety checks."""
 
-from geny_executor.stages.s04_guard.stage import GuardStage
-from geny_executor.stages.s04_guard.guards import (
-    Guard,
-    GuardChain,
+from geny_executor.stages.s04_guard.interface import Guard, GuardChain
+from geny_executor.stages.s04_guard.types import GuardResult
+from geny_executor.stages.s04_guard.artifact.default import (
+    Stage,
+    GuardStage,
     TokenBudgetGuard,
     CostBudgetGuard,
     IterationGuard,
@@ -11,9 +12,11 @@ from geny_executor.stages.s04_guard.guards import (
 )
 
 __all__ = [
+    "Stage",
     "GuardStage",
     "Guard",
     "GuardChain",
+    "GuardResult",
     "TokenBudgetGuard",
     "CostBudgetGuard",
     "IterationGuard",

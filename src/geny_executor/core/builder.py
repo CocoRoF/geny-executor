@@ -30,6 +30,17 @@ class PipelineBuilder:
         self._config_kwargs: Dict[str, Any] = {}
         self._stage_configs: Dict[str, Dict[str, Any]] = {}
         self._tool_registry: Optional[ToolRegistry] = None
+        self._artifact_overrides: Dict[str, str] = {}
+
+    def with_artifact(self, stage: str, artifact: str) -> PipelineBuilder:
+        """Select a specific artifact for a stage.
+
+        Args:
+            stage: Stage identifier (e.g., "s06_api", "api", "6").
+            artifact: Artifact name (folder under artifact/).
+        """
+        self._artifact_overrides[stage] = artifact
+        return self
 
     def with_model(self, model: str, **kwargs: Any) -> PipelineBuilder:
         self._model = model
@@ -87,6 +98,7 @@ class PipelineBuilder:
             name=self._name,
             api_key=self._api_key,
             model=ModelConfig(model=self._model),
+            artifacts=dict(self._artifact_overrides),
             **self._config_kwargs,
         )
 

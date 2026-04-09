@@ -1,19 +1,23 @@
 """Stage 1: Input — receive, validate, normalize user input."""
 
-from geny_executor.stages.s01_input.stage import InputStage
-from geny_executor.stages.s01_input.validators import (
+# Interfaces (ABCs)
+from geny_executor.stages.s01_input.interface import InputValidator, InputNormalizer
+
+# Types (shared)
+from geny_executor.stages.s01_input.types import NormalizedInput
+
+# Default artifact (backward-compatible)
+from geny_executor.stages.s01_input.artifact.default.stage import InputStage
+from geny_executor.stages.s01_input.artifact.default.validators import (
     DefaultValidator,
-    InputValidator,
     PassthroughValidator,
     StrictValidator,
     SchemaValidator,
 )
-from geny_executor.stages.s01_input.normalizers import (
+from geny_executor.stages.s01_input.artifact.default.normalizers import (
     DefaultNormalizer,
-    InputNormalizer,
     MultimodalNormalizer,
 )
-from geny_executor.stages.s01_input.types import NormalizedInput
 
 __all__ = [
     "InputStage",

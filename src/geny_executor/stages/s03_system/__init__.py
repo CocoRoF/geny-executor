@@ -1,27 +1,28 @@
 """Stage 3: System — assemble system prompt."""
 
-from geny_executor.stages.s03_system.stage import SystemStage
-from geny_executor.stages.s03_system.builders import (
-    PromptBuilder,
+from geny_executor.stages.s03_system.interface import PromptBuilder, PromptBlock
+from geny_executor.stages.s03_system.artifact.default import (
+    SystemStage,
     StaticPromptBuilder,
     ComposablePromptBuilder,
-    PromptBlock,
     PersonaBlock,
     RulesBlock,
     DateTimeBlock,
     MemoryContextBlock,
     ToolInstructionsBlock,
+    CustomBlock,
 )
 
 __all__ = [
     "SystemStage",
     "PromptBuilder",
+    "PromptBlock",
     "StaticPromptBuilder",
     "ComposablePromptBuilder",
-    "PromptBlock",
     "PersonaBlock",
     "RulesBlock",
     "DateTimeBlock",
     "MemoryContextBlock",
     "ToolInstructionsBlock",
+    "CustomBlock",
 ]

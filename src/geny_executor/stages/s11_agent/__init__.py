@@ -1,14 +1,13 @@
 """Stage 11: Agent — Multi-Agent orchestration."""
 
-from geny_executor.stages.s11_agent.stage import AgentStage
-from geny_executor.stages.s11_agent.orchestrators import (
-    AgentOrchestrator,
+from geny_executor.stages.s11_agent.interface import AgentOrchestrator, SubPipelineFactory
+from geny_executor.stages.s11_agent.types import AgentResult
+from geny_executor.stages.s11_agent.artifact.default.stage import AgentStage
+from geny_executor.stages.s11_agent.artifact.default.orchestrators import (
     SingleAgentOrchestrator,
     DelegateOrchestrator,
     EvaluatorOrchestrator,
-    SubPipelineFactory,
     DefaultSubPipelineFactory,
-    AgentResult,
 )
 
 __all__ = [

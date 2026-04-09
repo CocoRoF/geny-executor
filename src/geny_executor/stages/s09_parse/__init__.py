@@ -1,19 +1,21 @@
 """Stage 9: Parse — parse API response into structured form."""
 
-from geny_executor.stages.s09_parse.stage import ParseStage
-from geny_executor.stages.s09_parse.parsers import (
+from geny_executor.stages.s09_parse.interface import (
     ResponseParser,
+    CompletionSignalDetector,
+    CompletionSignal,
+)
+from geny_executor.stages.s09_parse.types import ParsedResponse, ToolCall
+from geny_executor.stages.s09_parse.artifact.default.stage import ParseStage
+from geny_executor.stages.s09_parse.artifact.default.parsers import (
     DefaultParser,
     StructuredOutputParser,
 )
-from geny_executor.stages.s09_parse.signals import (
-    CompletionSignalDetector,
+from geny_executor.stages.s09_parse.artifact.default.signals import (
     RegexDetector,
     HybridDetector,
     StructuredDetector,
-    CompletionSignal,
 )
-from geny_executor.stages.s09_parse.types import ParsedResponse
 
 __all__ = [
     "ParseStage",
@@ -26,4 +28,5 @@ __all__ = [
     "StructuredDetector",
     "CompletionSignal",
     "ParsedResponse",
+    "ToolCall",
 ]

@@ -1,20 +1,19 @@
 """Stage 2: Context — collect history, memory, references."""
 
-from geny_executor.stages.s02_context.stage import ContextStage
-from geny_executor.stages.s02_context.strategies import (
+from geny_executor.stages.s02_context.interface import (
     ContextStrategy,
+    HistoryCompactor,
+    MemoryRetriever,
+)
+from geny_executor.stages.s02_context.types import MemoryChunk
+from geny_executor.stages.s02_context.artifact.default import (
+    ContextStage,
     SimpleLoadStrategy,
     HybridStrategy,
     ProgressiveDisclosureStrategy,
-)
-from geny_executor.stages.s02_context.compactors import (
-    HistoryCompactor,
     TruncateCompactor,
     SummaryCompactor,
     SlidingWindowCompactor,
-)
-from geny_executor.stages.s02_context.retrievers import (
-    MemoryRetriever,
     NullRetriever,
     StaticRetriever,
 )
@@ -29,6 +28,7 @@ __all__ = [
     "TruncateCompactor",
     "SummaryCompactor",
     "SlidingWindowCompactor",
+    "MemoryChunk",
     "MemoryRetriever",
     "NullRetriever",
     "StaticRetriever",
