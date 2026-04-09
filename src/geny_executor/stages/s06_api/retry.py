@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import random
 from abc import abstractmethod
 from typing import Optional
@@ -113,7 +112,11 @@ class RateLimitAwareRetry(RetryStrategy):
     def should_retry(self, category: ErrorCategory, attempt: int) -> bool:
         if attempt >= self._max_retries:
             return False
-        return category in {ErrorCategory.RATE_LIMITED, ErrorCategory.TIMEOUT, ErrorCategory.SERVER_ERROR}
+        return category in {
+            ErrorCategory.RATE_LIMITED,
+            ErrorCategory.TIMEOUT,
+            ErrorCategory.SERVER_ERROR,
+        }
 
     def get_delay(self, attempt: int) -> float:
         if self._retry_after is not None:

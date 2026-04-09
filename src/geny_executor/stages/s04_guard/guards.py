@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from abc import abstractmethod
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Set
+from typing import List, Optional, Set
 
 from geny_executor.core.stage import Strategy
 from geny_executor.core.state import PipelineState
@@ -137,7 +137,9 @@ class IterationGuard(Guard):
 class PermissionGuard(Guard):
     """Check if pending tool calls are permitted."""
 
-    def __init__(self, allowed_tools: Optional[Set[str]] = None, blocked_tools: Optional[Set[str]] = None):
+    def __init__(
+        self, allowed_tools: Optional[Set[str]] = None, blocked_tools: Optional[Set[str]] = None
+    ):
         self._allowed = allowed_tools
         self._blocked = blocked_tools or set()
 

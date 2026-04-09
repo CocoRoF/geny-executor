@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Optional
 
 from geny_executor.core.builder import PipelineBuilder
 from geny_executor.core.pipeline import Pipeline
@@ -18,10 +18,7 @@ class PipelinePresets:
 
         Active stages: Input → API → Parse → Yield
         """
-        return (
-            PipelineBuilder("minimal", api_key=api_key, model=model)
-            .build()
-        )
+        return PipelineBuilder("minimal", api_key=api_key, model=model).build()
 
     @staticmethod
     def chat(

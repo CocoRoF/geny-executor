@@ -34,10 +34,16 @@ class MCPToolAdapter(Tool):
 
     @property
     def input_schema(self) -> Dict[str, Any]:
-        return self._definition.get("inputSchema", self._definition.get("input_schema", {
-            "type": "object",
-            "properties": {},
-        }))
+        return self._definition.get(
+            "inputSchema",
+            self._definition.get(
+                "input_schema",
+                {
+                    "type": "object",
+                    "properties": {},
+                },
+            ),
+        )
 
     async def execute(self, input: Dict[str, Any], context: ToolContext) -> ToolResult:
         """Execute the tool via MCP server."""

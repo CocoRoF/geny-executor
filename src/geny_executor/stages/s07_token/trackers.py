@@ -60,13 +60,15 @@ class DetailedTracker(TokenTracker):
         if "token_breakdown" not in state.metadata:
             state.metadata["token_breakdown"] = []
 
-        state.metadata["token_breakdown"].append({
-            "iteration": state.iteration,
-            "stage": state.current_stage,
-            "input_tokens": usage.input_tokens,
-            "output_tokens": usage.output_tokens,
-            "cache_creation": usage.cache_creation_input_tokens,
-            "cache_read": usage.cache_read_input_tokens,
-        })
+        state.metadata["token_breakdown"].append(
+            {
+                "iteration": state.iteration,
+                "stage": state.current_stage,
+                "input_tokens": usage.input_tokens,
+                "output_tokens": usage.output_tokens,
+                "cache_creation": usage.cache_creation_input_tokens,
+                "cache_read": usage.cache_read_input_tokens,
+            }
+        )
 
         return usage

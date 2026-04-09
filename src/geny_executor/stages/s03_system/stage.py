@@ -54,15 +54,18 @@ class SystemStage(Stage[Any, Any]):
         if self._tool_registry and not state.tools:
             state.tools = self._tool_registry.to_api_format()
 
-        state.add_event("system.built", {
-            "prompt_type": "content_blocks" if isinstance(system, list) else "string",
-            "prompt_length": (
-                sum(len(b.get("text", "")) for b in system)
-                if isinstance(system, list)
-                else len(str(system))
-            ),
-            "tools_count": len(state.tools),
-        })
+        state.add_event(
+            "system.built",
+            {
+                "prompt_type": "content_blocks" if isinstance(system, list) else "string",
+                "prompt_length": (
+                    sum(len(b.get("text", "")) for b in system)
+                    if isinstance(system, list)
+                    else len(str(system))
+                ),
+                "tools_count": len(state.tools),
+            },
+        )
 
         return input
 

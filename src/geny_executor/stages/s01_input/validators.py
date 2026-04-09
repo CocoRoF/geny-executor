@@ -91,7 +91,7 @@ class StrictValidator(InputValidator):
         text_lower = text.lower()
         for pattern in self._blocked_patterns:
             if pattern.lower() in text_lower:
-                return f"Input contains blocked pattern"
+                return "Input contains blocked pattern"
 
         return None
 

@@ -103,21 +103,25 @@ class DelegateOrchestrator(AgentOrchestrator):
                     session_id=f"{state.session_id}-sub-{agent_type}-{uuid.uuid4().hex[:8]}",
                 )
                 result = await sub_pipeline.run(task, sub_state)
-                sub_results.append({
-                    "agent_type": agent_type,
-                    "task": task,
-                    "success": result.success,
-                    "text": result.text,
-                    "error": result.error,
-                })
+                sub_results.append(
+                    {
+                        "agent_type": agent_type,
+                        "task": task,
+                        "success": result.success,
+                        "text": result.text,
+                        "error": result.error,
+                    }
+                )
             except Exception as e:
-                sub_results.append({
-                    "agent_type": agent_type,
-                    "task": task,
-                    "success": False,
-                    "text": "",
-                    "error": str(e),
-                })
+                sub_results.append(
+                    {
+                        "agent_type": agent_type,
+                        "task": task,
+                        "success": False,
+                        "text": "",
+                        "error": str(e),
+                    }
+                )
 
         # Clear processed requests
         state.delegate_requests = []

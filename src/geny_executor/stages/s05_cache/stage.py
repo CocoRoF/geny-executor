@@ -37,10 +37,13 @@ class CacheStage(Stage[Any, Any]):
     async def execute(self, input: Any, state: PipelineState) -> Any:
         self._strategy.apply_cache_markers(state)
 
-        state.add_event("cache.applied", {
-            "strategy": type(self._strategy).__name__,
-            "system_is_blocks": isinstance(state.system, list),
-        })
+        state.add_event(
+            "cache.applied",
+            {
+                "strategy": type(self._strategy).__name__,
+                "system_is_blocks": isinstance(state.system, list),
+            },
+        )
 
         return input
 

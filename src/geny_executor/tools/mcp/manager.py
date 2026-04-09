@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 from geny_executor.tools.base import Tool
 from geny_executor.tools.mcp.adapter import MCPToolAdapter
@@ -106,10 +106,12 @@ class MCPManager:
             if conn.is_connected:
                 definitions = await conn.discover_tools()
                 for defn in definitions:
-                    tools.append(MCPToolAdapter(
-                        server=conn,
-                        definition=defn,
-                    ))
+                    tools.append(
+                        MCPToolAdapter(
+                            server=conn,
+                            definition=defn,
+                        )
+                    )
         return tools
 
     def list_servers(self) -> List[str]:

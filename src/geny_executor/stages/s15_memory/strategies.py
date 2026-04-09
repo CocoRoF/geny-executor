@@ -66,7 +66,10 @@ class ReflectiveStrategy(MemoryUpdateStrategy):
     async def update(self, state: PipelineState) -> None:
         # Mark that reflection should happen
         state.metadata["needs_reflection"] = True
-        state.add_event("memory.reflection_queued", {
-            "message_count": len(state.messages),
-            "iteration": state.iteration,
-        })
+        state.add_event(
+            "memory.reflection_queued",
+            {
+                "message_count": len(state.messages),
+                "iteration": state.iteration,
+            },
+        )

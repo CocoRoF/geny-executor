@@ -8,25 +8,31 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "src"))
 import pytest
 
 from geny_executor import Pipeline, PipelineConfig, PipelineState
-from geny_executor.core.state import TokenUsage
 from geny_executor.stages.s01_input import InputStage
 from geny_executor.stages.s02_context import (
-    ContextStage, SimpleLoadStrategy, HybridStrategy, TruncateCompactor,
+    ContextStage,
+    SimpleLoadStrategy,
+    HybridStrategy,
+    TruncateCompactor,
 )
-from geny_executor.stages.s02_context.retrievers import StaticRetriever, MemoryChunk
+from geny_executor.stages.s02_context.retrievers import StaticRetriever
 from geny_executor.stages.s03_system import (
-    SystemStage, ComposablePromptBuilder, PersonaBlock, RulesBlock, DateTimeBlock,
+    SystemStage,
+    ComposablePromptBuilder,
+    PersonaBlock,
+    RulesBlock,
+    DateTimeBlock,
 )
 from geny_executor.stages.s05_cache import (
-    CacheStage, SystemCacheStrategy, AggressiveCacheStrategy,
+    SystemCacheStrategy,
+    AggressiveCacheStrategy,
 )
 from geny_executor.stages.s06_api import APIStage, MockProvider
 from geny_executor.stages.s06_api.retry import NoRetry
-from geny_executor.stages.s07_token import TokenStage
 from geny_executor.stages.s09_parse import ParseStage
-from geny_executor.stages.s13_loop import LoopStage, SingleTurnController
 from geny_executor.stages.s15_memory import (
-    MemoryStage, AppendOnlyStrategy, InMemoryPersistence,
+    MemoryStage,
+    InMemoryPersistence,
 )
 from geny_executor.stages.s16_yield import YieldStage
 from geny_executor.session import Session, SessionManager
@@ -119,11 +125,13 @@ async def test_system_static_prompt():
 @pytest.mark.asyncio
 async def test_composable_prompt_builder():
     """ComposablePromptBuilder assembles blocks."""
-    builder = ComposablePromptBuilder(blocks=[
-        PersonaBlock("You are Geny, a friendly VTuber."),
-        RulesBlock(["Be helpful", "Be concise"]),
-        DateTimeBlock(),
-    ])
+    builder = ComposablePromptBuilder(
+        blocks=[
+            PersonaBlock("You are Geny, a friendly VTuber."),
+            RulesBlock(["Be helpful", "Be concise"]),
+            DateTimeBlock(),
+        ]
+    )
 
     state = PipelineState()
     prompt = builder.build(state)
@@ -200,8 +208,8 @@ async def test_session_preserves_state():
     pipeline.register_stage(YieldStage())
 
     session = Session(pipeline=pipeline)
-    r1 = await session.run("First")
-    r2 = await session.run("Second")
+    await session.run("First")
+    await session.run("Second")
 
     # State should accumulate messages from both runs
     assert len(session.state.messages) == 4  # 2 per run
@@ -212,15 +220,13 @@ async def test_session_manager():
     """SessionManager creates and lists sessions."""
     pipeline = Pipeline(PipelineConfig(name="mgr"))
     pipeline.register_stage(InputStage())
-    pipeline.register_stage(
-        APIStage(provider=MockProvider(), retry=NoRetry())
-    )
+    pipeline.register_stage(APIStage(provider=MockProvider(), retry=NoRetry()))
     pipeline.register_stage(ParseStage())
     pipeline.register_stage(YieldStage())
 
     mgr = SessionManager()
     s1 = mgr.create(pipeline)
-    s2 = mgr.create(pipeline)
+    mgr.create(pipeline)
 
     assert len(mgr) == 2
     assert mgr.get(s1.id) is s1

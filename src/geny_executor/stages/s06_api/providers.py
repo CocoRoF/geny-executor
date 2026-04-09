@@ -21,9 +21,7 @@ class APIProvider(Strategy):
         """Create a message (non-streaming)."""
         ...
 
-    async def create_message_stream(
-        self, request: APIRequest
-    ) -> AsyncIterator[Dict[str, Any]]:
+    async def create_message_stream(self, request: APIRequest) -> AsyncIterator[Dict[str, Any]]:
         """Create a message with streaming. Default: falls back to non-streaming."""
         response = await self.create_message(request)
         yield {"type": "message_complete", "response": response}
@@ -74,9 +72,7 @@ class AnthropicProvider(APIProvider):
         except Exception as e:
             raise self._classify_error(e) from e
 
-    async def create_message_stream(
-        self, request: APIRequest
-    ) -> AsyncIterator[Dict[str, Any]]:
+    async def create_message_stream(self, request: APIRequest) -> AsyncIterator[Dict[str, Any]]:
         """Streaming call to Anthropic Messages API."""
         client = self._get_client()
         kwargs = self._build_kwargs(request)
@@ -129,7 +125,9 @@ class AnthropicProvider(APIProvider):
         for block in raw.content:
             if block.type == "text":
                 content_blocks.append(
-                    ContentBlock(type="text", text=block.text, raw={"type": "text", "text": block.text})
+                    ContentBlock(
+                        type="text", text=block.text, raw={"type": "text", "text": block.text}
+                    )
                 )
             elif block.type == "tool_use":
                 content_blocks.append(
@@ -138,7 +136,12 @@ class AnthropicProvider(APIProvider):
                         tool_use_id=block.id,
                         tool_name=block.name,
                         tool_input=block.input,
-                        raw={"type": "tool_use", "id": block.id, "name": block.name, "input": block.input},
+                        raw={
+                            "type": "tool_use",
+                            "id": block.id,
+                            "name": block.name,
+                            "input": block.input,
+                        },
                     )
                 )
             elif block.type == "thinking":
@@ -209,7 +212,9 @@ class AnthropicProvider(APIProvider):
         if isinstance(e, anthropic.BadRequestError):
             msg = str(e).lower()
             if "token" in msg or "context" in msg:
-                return APIError(str(e), category=ErrorCategory.TOKEN_LIMIT, status_code=400, cause=e)
+                return APIError(
+                    str(e), category=ErrorCategory.TOKEN_LIMIT, status_code=400, cause=e
+                )
             return APIError(str(e), category=ErrorCategory.BAD_REQUEST, status_code=400, cause=e)
         if isinstance(e, anthropic.InternalServerError):
             return APIError(str(e), category=ErrorCategory.SERVER_ERROR, status_code=500, cause=e)
@@ -221,7 +226,9 @@ class AnthropicProvider(APIProvider):
 class MockProvider(APIProvider):
     """Mock provider for testing — returns predefined responses."""
 
-    def __init__(self, responses: Optional[List[APIResponse]] = None, default_text: str = "Mock response"):
+    def __init__(
+        self, responses: Optional[List[APIResponse]] = None, default_text: str = "Mock response"
+    ):
         self._responses = list(responses or [])
         self._default_text = default_text
         self._call_count = 0
@@ -284,24 +291,26 @@ class RecordingProvider(APIProvider):
 
     async def create_message(self, request: APIRequest) -> APIResponse:
         response = await self._inner.create_message(request)
-        self._recordings.append({
-            "request": {
-                "model": request.model,
-                "messages": request.messages,
-                "max_tokens": request.max_tokens,
-                "system": request.system,
-            },
-            "response": {
-                "text": response.text,
-                "stop_reason": response.stop_reason,
-                "model": response.model,
-                "usage": {
-                    "input_tokens": response.usage.input_tokens,
-                    "output_tokens": response.usage.output_tokens,
+        self._recordings.append(
+            {
+                "request": {
+                    "model": request.model,
+                    "messages": request.messages,
+                    "max_tokens": request.max_tokens,
+                    "system": request.system,
                 },
-            },
-            "timestamp": time.time(),
-        })
+                "response": {
+                    "text": response.text,
+                    "stop_reason": response.stop_reason,
+                    "model": response.model,
+                    "usage": {
+                        "input_tokens": response.usage.input_tokens,
+                        "output_tokens": response.usage.output_tokens,
+                    },
+                },
+                "timestamp": time.time(),
+            }
+        )
         return response
 
     def save_recordings(self, path: str) -> None:

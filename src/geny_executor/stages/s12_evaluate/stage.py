@@ -11,7 +11,6 @@ from geny_executor.stages.s12_evaluate.strategies import (
     SignalBasedEvaluation,
     QualityScorer,
     NoScorer,
-    EvaluationResult,
 )
 
 
@@ -47,9 +46,12 @@ class EvaluateStage(Stage[Any, Any]):
         return "decision"
 
     async def execute(self, input: Any, state: PipelineState) -> Any:
-        state.add_event("evaluate.start", {
-            "strategy": self._strategy.name,
-        })
+        state.add_event(
+            "evaluate.start",
+            {
+                "strategy": self._strategy.name,
+            },
+        )
 
         # Run evaluation strategy
         result = await self._strategy.evaluate(state)
@@ -73,13 +75,16 @@ class EvaluateStage(Stage[Any, Any]):
         }
         state.loop_decision = decision_map.get(result.decision, "continue")
 
-        state.add_event("evaluate.complete", {
-            "passed": result.passed,
-            "score": result.score,
-            "decision": result.decision,
-            "loop_decision": state.loop_decision,
-            "feedback": result.feedback[:200] if result.feedback else "",
-        })
+        state.add_event(
+            "evaluate.complete",
+            {
+                "passed": result.passed,
+                "score": result.score,
+                "decision": result.decision,
+                "loop_decision": state.loop_decision,
+                "feedback": result.feedback[:200] if result.feedback else "",
+            },
+        )
 
         return input
 

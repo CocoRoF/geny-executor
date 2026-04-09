@@ -30,7 +30,6 @@ from geny_executor.stages.s11_agent import (
     SingleAgentOrchestrator,
     DelegateOrchestrator,
     DefaultSubPipelineFactory,
-    AgentResult,
 )
 
 # Evaluate imports
@@ -38,11 +37,9 @@ from geny_executor.stages.s12_evaluate import (
     EvaluateStage,
     SignalBasedEvaluation,
     CriteriaBasedEvaluation,
-    AgentEvaluation,
     QualityCriterion,
     NoScorer,
     WeightedScorer,
-    EvaluationResult,
 )
 
 
@@ -163,7 +160,9 @@ async def test_agent_delegate_orchestrator():
     def create_sub():
         p = Pipeline(PipelineConfig(name="sub"))
         p.register_stage(InputStage())
-        p.register_stage(APIStage(provider=MockProvider(default_text="Sub result"), retry=NoRetry()))
+        p.register_stage(
+            APIStage(provider=MockProvider(default_text="Sub result"), retry=NoRetry())
+        )
         p.register_stage(ParseStage())
         p.register_stage(YieldStage())
         return p
@@ -368,7 +367,6 @@ async def test_no_scorer_returns_one():
 async def test_loop_respects_evaluate_complete():
     """LoopStage respects Stage 12's 'complete' decision."""
     from geny_executor.stages.s13_loop import LoopStage, StandardLoopController
-    from geny_executor.stages.s13_loop.controllers import LoopDecision
 
     stage = LoopStage(StandardLoopController(max_turns=50))
     state = PipelineState()

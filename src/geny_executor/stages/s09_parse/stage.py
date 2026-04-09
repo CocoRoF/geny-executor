@@ -80,20 +80,25 @@ class ParseStage(Stage[Any, ParsedResponse]):
         # Store thinking in state for Stage 8 (Think) — or if Think is bypassed
         if parsed.thinking_texts:
             for txt in parsed.thinking_texts:
-                state.thinking_history.append({
-                    "iteration": state.iteration,
-                    "text": txt,
-                })
+                state.thinking_history.append(
+                    {
+                        "iteration": state.iteration,
+                        "text": txt,
+                    }
+                )
 
         # Update final text
         state.final_text = parsed.text
 
-        state.add_event("parse.complete", {
-            "text_length": len(parsed.text),
-            "tool_calls": len(parsed.tool_calls),
-            "signal": parsed.signal,
-            "stop_reason": parsed.stop_reason,
-        })
+        state.add_event(
+            "parse.complete",
+            {
+                "text_length": len(parsed.text),
+                "tool_calls": len(parsed.tool_calls),
+                "signal": parsed.signal,
+                "stop_reason": parsed.stop_reason,
+            },
+        )
 
         return parsed
 

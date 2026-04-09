@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import re
 from abc import abstractmethod
-from dataclasses import dataclass
 from enum import Enum
 from typing import Optional, Tuple
 
@@ -36,21 +35,13 @@ class RegexDetector(CompletionSignalDetector):
 
     # Patterns matching Geny's existing protocol
     PATTERNS = {
-        CompletionSignal.CONTINUE: re.compile(
-            r"\[CONTINUE(?::?\s*(.+?))?\]", re.IGNORECASE
-        ),
+        CompletionSignal.CONTINUE: re.compile(r"\[CONTINUE(?::?\s*(.+?))?\]", re.IGNORECASE),
         CompletionSignal.COMPLETE: re.compile(
             r"\[(?:TASK_)?COMPLETE(?::?\s*(.+?))?\]", re.IGNORECASE
         ),
-        CompletionSignal.BLOCKED: re.compile(
-            r"\[BLOCKED(?::?\s*(.+?))?\]", re.IGNORECASE
-        ),
-        CompletionSignal.ERROR: re.compile(
-            r"\[ERROR(?::?\s*(.+?))?\]", re.IGNORECASE
-        ),
-        CompletionSignal.DELEGATE: re.compile(
-            r"\[DELEGATE(?::?\s*(.+?))?\]", re.IGNORECASE
-        ),
+        CompletionSignal.BLOCKED: re.compile(r"\[BLOCKED(?::?\s*(.+?))?\]", re.IGNORECASE),
+        CompletionSignal.ERROR: re.compile(r"\[ERROR(?::?\s*(.+?))?\]", re.IGNORECASE),
+        CompletionSignal.DELEGATE: re.compile(r"\[DELEGATE(?::?\s*(.+?))?\]", re.IGNORECASE),
     }
 
     @property

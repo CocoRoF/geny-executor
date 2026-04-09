@@ -7,8 +7,6 @@ from typing import Any, List, Optional
 
 from geny_executor.core.stage import Stage, StrategyInfo
 from geny_executor.core.state import PipelineState
-
-logger = logging.getLogger(__name__)
 from geny_executor.stages.s15_memory.strategies import (
     AppendOnlyStrategy,
     MemoryUpdateStrategy,
@@ -16,8 +14,9 @@ from geny_executor.stages.s15_memory.strategies import (
 )
 from geny_executor.stages.s15_memory.persistence import (
     ConversationPersistence,
-    InMemoryPersistence,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class MemoryStage(Stage[Any, Any]):
@@ -60,18 +59,26 @@ class MemoryStage(Stage[Any, Any]):
 
         # Persist if configured
         if self._persistence and not state.session_id:
-            logger.warning("Memory persistence configured but session_id is empty — skipping persist")
+            logger.warning(
+                "Memory persistence configured but session_id is empty — skipping persist"
+            )
         if self._persistence and state.session_id:
             await self._persistence.save(state.session_id, state.messages)
-            state.add_event("memory.persisted", {
-                "session_id": state.session_id,
-                "message_count": len(state.messages),
-                "persistence": type(self._persistence).__name__,
-            })
+            state.add_event(
+                "memory.persisted",
+                {
+                    "session_id": state.session_id,
+                    "message_count": len(state.messages),
+                    "persistence": type(self._persistence).__name__,
+                },
+            )
 
-        state.add_event("memory.updated", {
-            "strategy": type(self._strategy).__name__,
-        })
+        state.add_event(
+            "memory.updated",
+            {
+                "strategy": type(self._strategy).__name__,
+            },
+        )
 
         return input
 
@@ -88,10 +95,7 @@ class MemoryStage(Stage[Any, Any]):
             ),
             StrategyInfo(
                 slot_name="persistence",
-                current_impl=(
-                    type(self._persistence).__name__
-                    if self._persistence else "None"
-                ),
+                current_impl=(type(self._persistence).__name__ if self._persistence else "None"),
                 available_impls=[
                     "InMemoryPersistence",
                     "FilePersistence",

@@ -20,7 +20,6 @@ from geny_executor.stages.s14_emit import (
     TextEmitter,
     CallbackEmitter,
     VTuberEmitter,
-    TTSEmitter,
     EmitterChain,
 )
 
@@ -76,9 +75,7 @@ async def test_emit_callback_emitter():
 async def test_emit_vtuber_emitter_emotion():
     """VTuberEmitter extracts emotion from text."""
     emotions = []
-    emitter = VTuberEmitter(
-        emotion_callback=lambda t, e: emotions.append(e)
-    )
+    emitter = VTuberEmitter(emotion_callback=lambda t, e: emotions.append(e))
 
     state = PipelineState()
     state.final_text = "하하 기뻐요! 정말 좋아요!"
@@ -106,10 +103,12 @@ async def test_emit_chain():
     text_received = []
     callback_received = []
 
-    chain = EmitterChain([
-        TextEmitter(callback=lambda t: text_received.append(t)),
-        CallbackEmitter(callback=lambda s: callback_received.append(s.final_text)),
-    ])
+    chain = EmitterChain(
+        [
+            TextEmitter(callback=lambda t: text_received.append(t)),
+            CallbackEmitter(callback=lambda s: callback_received.append(s.final_text)),
+        ]
+    )
 
     state = PipelineState()
     state.final_text = "Chain test"
@@ -129,9 +128,13 @@ async def test_emit_stage_full_pipeline():
     pipeline.register_stage(InputStage())
     pipeline.register_stage(APIStage(provider=provider, retry=NoRetry()))
     pipeline.register_stage(ParseStage())
-    pipeline.register_stage(EmitStage(emitters=[
-        TextEmitter(callback=lambda t: emitted.append(t)),
-    ]))
+    pipeline.register_stage(
+        EmitStage(
+            emitters=[
+                TextEmitter(callback=lambda t: emitted.append(t)),
+            ]
+        )
+    )
     pipeline.register_stage(YieldStage())
 
     result = await pipeline.run("Test emit")
@@ -212,9 +215,7 @@ def test_builder_fluent_api():
 def test_builder_with_emit():
     """Builder supports emit configuration."""
     pipeline = (
-        PipelineBuilder("emit-test", api_key="test-key")
-        .with_emit(emitters=[TextEmitter()])
-        .build()
+        PipelineBuilder("emit-test", api_key="test-key").with_emit(emitters=[TextEmitter()]).build()
     )
     desc = pipeline.describe()
     stage_names = [s.name for s in desc]

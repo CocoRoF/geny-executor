@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
-from geny_executor.stages.s06_api.types import APIResponse, ContentBlock
+from geny_executor.stages.s06_api.types import APIResponse
 
 
 @dataclass

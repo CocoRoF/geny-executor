@@ -6,7 +6,7 @@ import json
 import os
 import tempfile
 from abc import abstractmethod
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 from geny_executor.core.stage import Strategy
 

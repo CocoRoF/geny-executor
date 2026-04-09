@@ -45,8 +45,7 @@ class PromptBlock(ABC):
 
     @property
     @abstractmethod
-    def name(self) -> str:
-        ...
+    def name(self) -> str: ...
 
     @abstractmethod
     def render(self, state: PipelineState) -> str:
@@ -183,9 +182,7 @@ class ComposablePromptBuilder(PromptBuilder):
         self._blocks.append(block)
         return self
 
-    def build(
-        self, state: PipelineState
-    ) -> Union[str, List[Dict[str, Any]]]:
+    def build(self, state: PipelineState) -> Union[str, List[Dict[str, Any]]]:
         rendered = []
         for block in self._blocks:
             text = block.render(state)

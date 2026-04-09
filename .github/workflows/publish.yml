@@ -68,7 +68,9 @@ jobs:
   publish-testpypi:
     name: Publish to TestPyPI
     needs: [build, test]
-    if: github.event_name == 'release' || inputs.target == 'testpypi' || inputs.target == 'pypi'
+    if: >-
+      github.event_name == 'release' ||
+      (github.event_name == 'workflow_dispatch' && inputs.target == 'testpypi')
     runs-on: ubuntu-latest
     environment:
       name: testpypi
@@ -89,8 +91,10 @@ jobs:
 
   publish-pypi:
     name: Publish to PyPI
-    needs: [build, test, publish-testpypi]
-    if: github.event_name == 'release' || inputs.target == 'pypi'
+    needs: [build, test]
+    if: >-
+      github.event_name == 'release' ||
+      (github.event_name == 'workflow_dispatch' && inputs.target == 'pypi')
     runs-on: ubuntu-latest
     environment:
       name: pypi

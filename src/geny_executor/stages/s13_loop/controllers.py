@@ -109,7 +109,10 @@ class BudgetAwareLoopController(LoopController):
 
     def decide(self, state: PipelineState) -> str:
         # Check cost budget
-        if state.cost_budget_usd and state.total_cost_usd >= state.cost_budget_usd * self._cost_ratio:
+        if (
+            state.cost_budget_usd
+            and state.total_cost_usd >= state.cost_budget_usd * self._cost_ratio
+        ):
             return LoopDecision.COMPLETE
 
         # Check token budget

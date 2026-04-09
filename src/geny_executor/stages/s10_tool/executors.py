@@ -7,7 +7,7 @@ from abc import abstractmethod
 from typing import Any, Dict, List
 
 from geny_executor.core.stage import Strategy
-from geny_executor.tools.base import ToolContext, ToolResult
+from geny_executor.tools.base import ToolContext
 from geny_executor.stages.s10_tool.routers import ToolRouter
 
 

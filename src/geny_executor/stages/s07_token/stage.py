@@ -58,14 +58,17 @@ class TokenStage(Stage[Any, Any]):
         if usage.cache_read_input_tokens > 0:
             state.cache_metrics.total_cache_reads += 1
 
-        state.add_event("token.tracked", {
-            "input_tokens": usage.input_tokens,
-            "output_tokens": usage.output_tokens,
-            "cache_write": usage.cache_creation_input_tokens,
-            "cache_read": usage.cache_read_input_tokens,
-            "cost_usd": cost,
-            "total_cost_usd": state.total_cost_usd,
-        })
+        state.add_event(
+            "token.tracked",
+            {
+                "input_tokens": usage.input_tokens,
+                "output_tokens": usage.output_tokens,
+                "cache_write": usage.cache_creation_input_tokens,
+                "cache_read": usage.cache_read_input_tokens,
+                "cost_usd": cost,
+                "total_cost_usd": state.total_cost_usd,
+            },
+        )
 
         return input
 

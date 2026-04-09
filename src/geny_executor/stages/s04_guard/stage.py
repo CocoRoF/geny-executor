@@ -7,7 +7,7 @@ from typing import Any, List, Optional
 from geny_executor.core.errors import GuardRejectError
 from geny_executor.core.stage import Stage, StrategyInfo
 from geny_executor.core.state import PipelineState
-from geny_executor.stages.s04_guard.guards import Guard, GuardChain, GuardResult
+from geny_executor.stages.s04_guard.guards import Guard, GuardChain
 
 
 class GuardStage(Stage[Any, Any]):
@@ -40,11 +40,14 @@ class GuardStage(Stage[Any, Any]):
     async def execute(self, input: Any, state: PipelineState) -> Any:
         result = self._chain.check_all(state)
 
-        state.add_event("guard.check", {
-            "passed": result.passed,
-            "guard_name": result.guard_name,
-            "message": result.message,
-        })
+        state.add_event(
+            "guard.check",
+            {
+                "passed": result.passed,
+                "guard_name": result.guard_name,
+                "message": result.message,
+            },
+        )
 
         if not result.passed:
             if result.action == "warn":

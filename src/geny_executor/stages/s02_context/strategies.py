@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from abc import abstractmethod
-from typing import Any, Dict, List, Optional
 
 from geny_executor.core.stage import Strategy
 from geny_executor.core.state import PipelineState
@@ -82,7 +81,7 @@ class ProgressiveDisclosureStrategy(ContextStrategy):
 
         # Keep first message (original task) + recent messages
         first = state.messages[:1]
-        recent = state.messages[-(self._summary_threshold * 2):]
+        recent = state.messages[-(self._summary_threshold * 2) :]
 
         # Insert a summary marker between old and recent
         summary_msg = {

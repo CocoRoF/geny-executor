@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from abc import abstractmethod
-from typing import Any, Dict, List
 
 from geny_executor.core.stage import Strategy
 from geny_executor.core.state import PipelineState
@@ -34,7 +33,7 @@ class TruncateCompactor(HistoryCompactor):
 
     async def compact(self, state: PipelineState) -> None:
         if len(state.messages) > self._keep_last:
-            state.messages = state.messages[-self._keep_last:]
+            state.messages = state.messages[-self._keep_last :]
 
 
 class SummaryCompactor(HistoryCompactor):
@@ -62,7 +61,7 @@ class SummaryCompactor(HistoryCompactor):
             return
 
         old_count = len(state.messages) - self._keep_recent
-        recent = state.messages[-self._keep_recent:]
+        recent = state.messages[-self._keep_recent :]
 
         summary = self._summary_text or (
             f"[Summary of {old_count} previous messages. "
@@ -71,7 +70,10 @@ class SummaryCompactor(HistoryCompactor):
 
         state.messages = [
             {"role": "user", "content": summary},
-            {"role": "assistant", "content": "Understood, I have the context from our previous conversation."},
+            {
+                "role": "assistant",
+                "content": "Understood, I have the context from our previous conversation.",
+            },
         ] + recent
 
 
@@ -98,4 +100,4 @@ class SlidingWindowCompactor(HistoryCompactor):
             "role": "user",
             "content": f"[{overflow} earlier messages summarized and compacted.]",
         }
-        state.messages = [summary] + state.messages[-self._window_size:]
+        state.messages = [summary] + state.messages[-self._window_size :]

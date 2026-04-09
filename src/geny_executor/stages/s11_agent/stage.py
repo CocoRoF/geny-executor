@@ -9,7 +9,6 @@ from geny_executor.core.state import PipelineState
 from geny_executor.stages.s11_agent.orchestrators import (
     AgentOrchestrator,
     SingleAgentOrchestrator,
-    AgentResult,
 )
 
 
@@ -48,10 +47,13 @@ class AgentStage(Stage[Any, Any]):
         return False
 
     async def execute(self, input: Any, state: PipelineState) -> Any:
-        state.add_event("agent.orchestrate_start", {
-            "orchestrator": self._orchestrator.name,
-            "delegate_count": len(state.delegate_requests),
-        })
+        state.add_event(
+            "agent.orchestrate_start",
+            {
+                "orchestrator": self._orchestrator.name,
+                "delegate_count": len(state.delegate_requests),
+            },
+        )
 
         result = await self._orchestrator.orchestrate(state)
 
@@ -73,17 +75,25 @@ class AgentStage(Stage[Any, Any]):
                         f"[Agent:{sub['agent_type']}] ({status}) {sub.get('text', '')[:200]}"
                     )
                 if summary_parts:
-                    state.add_message("user", [{
-                        "type": "text",
-                        "text": "Sub-agent results:\n" + "\n".join(summary_parts),
-                    }])
+                    state.add_message(
+                        "user",
+                        [
+                            {
+                                "type": "text",
+                                "text": "Sub-agent results:\n" + "\n".join(summary_parts),
+                            }
+                        ],
+                    )
                     # Need another API call to process sub-agent results
                     state.loop_decision = "continue"
 
-        state.add_event("agent.orchestrate_complete", {
-            "delegated": result.delegated,
-            "sub_result_count": len(result.sub_results),
-        })
+        state.add_event(
+            "agent.orchestrate_complete",
+            {
+                "delegated": result.delegated,
+                "sub_result_count": len(result.sub_results),
+            },
+        )
 
         return input
 

@@ -72,37 +72,41 @@ class ContextStage(Stage[Any, Any]):
             seen = {ref.get("key") for ref in state.memory_refs}
             for chunk in chunks:
                 if chunk.key not in seen:
-                    state.memory_refs.append({
-                        "key": chunk.key,
-                        "source": chunk.source,
-                        "content_length": len(chunk.content),
-                        "relevance": chunk.relevance_score,
-                    })
+                    state.memory_refs.append(
+                        {
+                            "key": chunk.key,
+                            "source": chunk.source,
+                            "content_length": len(chunk.content),
+                            "relevance": chunk.relevance_score,
+                        }
+                    )
                     seen.add(chunk.key)
 
             # Inject memory into system prompt or as user message
-            memory_text = "\n".join(
-                f"- [{c.source}] {c.key}: {c.content}" for c in chunks
-            )
+            memory_text = "\n".join(f"- [{c.source}] {c.key}: {c.content}" for c in chunks)
             if state.messages and state.iteration == 0:
                 # First iteration: inject as context
                 state.metadata["memory_context"] = memory_text
 
         # Compact if needed (rough estimate: 4 chars per token)
-        estimated_tokens = sum(
-            len(str(m.get("content", ""))) // 4 for m in state.messages
-        )
+        estimated_tokens = sum(len(str(m.get("content", ""))) // 4 for m in state.messages)
         if estimated_tokens > state.context_window_budget * 0.8:
             await self._compactor.compact(state)
-            state.add_event("context.compacted", {
-                "strategy": type(self._compactor).__name__,
-            })
+            state.add_event(
+                "context.compacted",
+                {
+                    "strategy": type(self._compactor).__name__,
+                },
+            )
 
-        state.add_event("context.built", {
-            "message_count": len(state.messages),
-            "memory_refs": len(state.memory_refs),
-            "estimated_tokens": estimated_tokens,
-        })
+        state.add_event(
+            "context.built",
+            {
+                "message_count": len(state.messages),
+                "memory_refs": len(state.memory_refs),
+                "estimated_tokens": estimated_tokens,
+            },
+        )
 
         return input
 

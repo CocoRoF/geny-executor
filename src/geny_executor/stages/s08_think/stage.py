@@ -8,7 +8,6 @@ from geny_executor.core.stage import Stage, StrategyInfo
 from geny_executor.core.state import PipelineState
 from geny_executor.stages.s08_think.processors import (
     ThinkingProcessor,
-    PassthroughProcessor,
     ExtractAndStoreProcessor,
     ThinkingBlock,
     ThinkingResult,
@@ -71,10 +70,12 @@ class ThinkStage(Stage[Any, Any]):
 
         for block in content:
             if self._is_thinking_block(block):
-                thinking_blocks.append(ThinkingBlock(
-                    text=block.get("thinking", block.get("text", "")),
-                    budget_tokens_used=block.get("budget_tokens_used", 0),
-                ))
+                thinking_blocks.append(
+                    ThinkingBlock(
+                        text=block.get("thinking", block.get("text", "")),
+                        budget_tokens_used=block.get("budget_tokens_used", 0),
+                    )
+                )
             else:
                 response_blocks.append(block)
 
@@ -84,10 +85,13 @@ class ThinkStage(Stage[Any, Any]):
         # Process thinking blocks via strategy
         processed = await self._processor.process(thinking_blocks, state)
 
-        state.add_event("think.processed", {
-            "thinking_block_count": len(thinking_blocks),
-            "total_thinking_tokens": total_thinking_tokens,
-        })
+        state.add_event(
+            "think.processed",
+            {
+                "thinking_block_count": len(thinking_blocks),
+                "total_thinking_tokens": total_thinking_tokens,
+            },
+        )
 
         return ThinkingResult(
             thinking_blocks=processed,

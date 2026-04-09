@@ -108,24 +108,30 @@ class PipelineBuilder:
         # Context
         if "context" in self._stage_configs:
             from geny_executor.stages.s02_context import ContextStage
+
             pipeline.register_stage(ContextStage(**self._stage_configs["context"]))
 
         # System
         if "system" in self._stage_configs:
             from geny_executor.stages.s03_system import SystemStage
-            pipeline.register_stage(SystemStage(
-                tool_registry=self._tool_registry,
-                **self._stage_configs["system"],
-            ))
+
+            pipeline.register_stage(
+                SystemStage(
+                    tool_registry=self._tool_registry,
+                    **self._stage_configs["system"],
+                )
+            )
 
         # Guard
         if "guard" in self._stage_configs:
             from geny_executor.stages.s04_guard import GuardStage
+
             pipeline.register_stage(GuardStage(**self._stage_configs["guard"]))
 
         # Cache
         if "cache" in self._stage_configs:
             from geny_executor.stages.s05_cache import CacheStage
+
             cache_cfg = dict(self._stage_configs["cache"])  # Copy to avoid mutation
             strategy_name = cache_cfg.pop("strategy", "no_cache")
             strategy = self._resolve_cache_strategy(strategy_name)
@@ -134,44 +140,51 @@ class PipelineBuilder:
         # Think
         if "think" in self._stage_configs:
             from geny_executor.stages.s08_think import ThinkStage
+
             pipeline.register_stage(ThinkStage(**self._stage_configs["think"]))
 
         # Tool
         if self._tool_registry:
             from geny_executor.stages.s10_tool import ToolStage
+
             tool_cfg = dict(self._stage_configs.get("tool", {}))
-            pipeline.register_stage(ToolStage(
-                registry=self._tool_registry,
-                **tool_cfg,
-            ))
+            pipeline.register_stage(
+                ToolStage(
+                    registry=self._tool_registry,
+                    **tool_cfg,
+                )
+            )
 
         # Agent
         if "agent" in self._stage_configs:
             from geny_executor.stages.s11_agent import AgentStage
+
             pipeline.register_stage(AgentStage(**self._stage_configs["agent"]))
 
         # Evaluate
         if "evaluate" in self._stage_configs:
             from geny_executor.stages.s12_evaluate import EvaluateStage
+
             pipeline.register_stage(EvaluateStage(**self._stage_configs["evaluate"]))
 
         # Loop
         if "loop" in self._stage_configs:
             from geny_executor.stages.s13_loop import LoopStage, StandardLoopController
+
             loop_cfg = dict(self._stage_configs["loop"])  # Copy to avoid mutation
             max_turns = loop_cfg.pop("max_turns", 50)
-            pipeline.register_stage(LoopStage(
-                StandardLoopController(max_turns=max_turns)
-            ))
+            pipeline.register_stage(LoopStage(StandardLoopController(max_turns=max_turns)))
 
         # Emit
         if "emit" in self._stage_configs:
             from geny_executor.stages.s14_emit import EmitStage
+
             pipeline.register_stage(EmitStage(**self._stage_configs["emit"]))
 
         # Memory
         if "memory" in self._stage_configs:
             from geny_executor.stages.s15_memory import MemoryStage
+
             pipeline.register_stage(MemoryStage(**self._stage_configs["memory"]))
 
         return pipeline
@@ -182,6 +195,7 @@ class PipelineBuilder:
             SystemCacheStrategy,
             AggressiveCacheStrategy,
         )
+
         strategies = {
             "no_cache": NoCacheStrategy,
             "system": SystemCacheStrategy,

@@ -168,8 +168,9 @@ class EmitterChain:
                 results.append(result)
             except Exception as e:
                 logger.warning("Emitter %s failed: %s", emitter.name, e)
-                results.append(EmitResult(emitted=False, channels=[emitter.name],
-                                          metadata={"error": str(e)}))
+                results.append(
+                    EmitResult(emitted=False, channels=[emitter.name], metadata={"error": str(e)})
+                )
         return results
 
     @property

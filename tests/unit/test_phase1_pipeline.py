@@ -7,14 +7,13 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "src"))
 
 import pytest
 
-from geny_executor import Pipeline, PipelineConfig, PipelineResult, PipelineState
+from geny_executor import Pipeline, PipelineConfig, PipelineState
 from geny_executor.core.state import TokenUsage
-from geny_executor.stages.s01_input import InputStage, NormalizedInput
+from geny_executor.stages.s01_input import InputStage
 from geny_executor.stages.s06_api import APIStage, MockProvider, APIResponse
 from geny_executor.stages.s06_api.types import ContentBlock
 from geny_executor.stages.s09_parse import ParseStage
 from geny_executor.stages.s16_yield import YieldStage
-from geny_executor.events import PipelineEvent
 
 
 def _make_mock_pipeline(text: str = "Hello from mock!", **kwargs) -> Pipeline:
@@ -65,7 +64,7 @@ async def test_pipeline_state_tracks_messages():
     """State accumulates messages through the pipeline."""
     pipeline = _make_mock_pipeline("Response text")
     state = PipelineState(session_id="test-session")
-    result = await pipeline.run("User input", state)
+    await pipeline.run("User input", state)
 
     # Should have user message + assistant message
     assert len(state.messages) == 2
@@ -115,18 +114,22 @@ async def test_input_stage_normalizes():
 async def test_mock_provider_queued_responses():
     """MockProvider returns queued responses in order."""
     provider = MockProvider()
-    provider.add_response(APIResponse(
-        content=[ContentBlock(type="text", text="First")],
-        stop_reason="end_turn",
-        usage=TokenUsage(input_tokens=10, output_tokens=5),
-        model="test",
-    ))
-    provider.add_response(APIResponse(
-        content=[ContentBlock(type="text", text="Second")],
-        stop_reason="end_turn",
-        usage=TokenUsage(input_tokens=10, output_tokens=5),
-        model="test",
-    ))
+    provider.add_response(
+        APIResponse(
+            content=[ContentBlock(type="text", text="First")],
+            stop_reason="end_turn",
+            usage=TokenUsage(input_tokens=10, output_tokens=5),
+            model="test",
+        )
+    )
+    provider.add_response(
+        APIResponse(
+            content=[ContentBlock(type="text", text="Second")],
+            stop_reason="end_turn",
+            usage=TokenUsage(input_tokens=10, output_tokens=5),
+            model="test",
+        )
+    )
 
     pipeline = Pipeline(PipelineConfig(name="test"))
     pipeline.register_stage(InputStage())
@@ -218,13 +221,20 @@ async def test_pipeline_error_handling():
 
     class FailProvider(APIProvider):
         @property
-        def name(self): return "fail"
+        def name(self):
+            return "fail"
+
         async def create_message(self, request):
             raise RuntimeError("API exploded")
 
     pipeline = Pipeline(PipelineConfig(name="test"))
     pipeline.register_stage(InputStage())
-    pipeline.register_stage(APIStage(provider=FailProvider(), retry=__import__("geny_executor.stages.s06_api.retry", fromlist=["NoRetry"]).NoRetry()))
+    pipeline.register_stage(
+        APIStage(
+            provider=FailProvider(),
+            retry=__import__("geny_executor.stages.s06_api.retry", fromlist=["NoRetry"]).NoRetry(),
+        )
+    )
     pipeline.register_stage(ParseStage())
     pipeline.register_stage(YieldStage())
 

@@ -7,22 +7,26 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "src"))
 
 import pytest
 
-from geny_executor import Pipeline, PipelineConfig, PipelineState, PipelineResult
-from geny_executor.core.builder import PipelineBuilder
+from geny_executor import Pipeline, PipelineConfig, PipelineState
 from geny_executor.core.presets import PipelinePresets
 from geny_executor.stages.s01_input import InputStage
 from geny_executor.stages.s02_context import ContextStage, HybridStrategy
-from geny_executor.stages.s03_system import SystemStage, ComposablePromptBuilder, PersonaBlock, RulesBlock
+from geny_executor.stages.s03_system import (
+    SystemStage,
+    ComposablePromptBuilder,
+    PersonaBlock,
+    RulesBlock,
+)
 from geny_executor.stages.s04_guard import GuardStage
 from geny_executor.stages.s05_cache import CacheStage, SystemCacheStrategy
 from geny_executor.stages.s06_api import APIStage, MockProvider
 from geny_executor.stages.s06_api.retry import NoRetry
 from geny_executor.stages.s07_token import TokenStage
-from geny_executor.stages.s08_think import ThinkStage, ExtractAndStoreProcessor
+from geny_executor.stages.s08_think import ThinkStage
 from geny_executor.stages.s09_parse import ParseStage
 from geny_executor.stages.s10_tool import ToolStage
 from geny_executor.stages.s11_agent import AgentStage
-from geny_executor.stages.s12_evaluate import EvaluateStage, SignalBasedEvaluation
+from geny_executor.stages.s12_evaluate import EvaluateStage
 from geny_executor.stages.s13_loop import LoopStage, StandardLoopController
 from geny_executor.stages.s14_emit import EmitStage, TextEmitter, VTuberEmitter
 from geny_executor.stages.s15_memory import MemoryStage, InMemoryPersistence
@@ -30,11 +34,11 @@ from geny_executor.stages.s16_yield import YieldStage
 from geny_executor.tools.base import Tool, ToolResult, ToolContext
 from geny_executor.tools.registry import ToolRegistry
 from geny_executor.stages.s06_api.types import APIResponse, ContentBlock
-from geny_executor.session import Session, SessionManager
-from geny_executor.events import EventBus
+from geny_executor.session import Session
 
 
 # ── Helper tools ──
+
 
 class CalculatorTool(Tool):
     @property
@@ -101,24 +105,28 @@ async def test_full_pipeline_all_stages():
     pipeline = Pipeline(PipelineConfig(name="full-16"))
 
     # Register all 16 stages
-    pipeline.register_stage(InputStage())                             # 1
-    pipeline.register_stage(ContextStage())                           # 2
-    pipeline.register_stage(SystemStage(prompt="You are helpful."))   # 3
-    pipeline.register_stage(GuardStage())                             # 4
-    pipeline.register_stage(CacheStage(strategy=SystemCacheStrategy())) # 5
-    pipeline.register_stage(APIStage(provider=provider, retry=NoRetry())) # 6
-    pipeline.register_stage(TokenStage())                             # 7
-    pipeline.register_stage(ThinkStage())                             # 8
-    pipeline.register_stage(ParseStage())                             # 9
-    pipeline.register_stage(ToolStage(registry=registry))             # 10
-    pipeline.register_stage(AgentStage())                             # 11
-    pipeline.register_stage(EvaluateStage())                          # 12
+    pipeline.register_stage(InputStage())  # 1
+    pipeline.register_stage(ContextStage())  # 2
+    pipeline.register_stage(SystemStage(prompt="You are helpful."))  # 3
+    pipeline.register_stage(GuardStage())  # 4
+    pipeline.register_stage(CacheStage(strategy=SystemCacheStrategy()))  # 5
+    pipeline.register_stage(APIStage(provider=provider, retry=NoRetry()))  # 6
+    pipeline.register_stage(TokenStage())  # 7
+    pipeline.register_stage(ThinkStage())  # 8
+    pipeline.register_stage(ParseStage())  # 9
+    pipeline.register_stage(ToolStage(registry=registry))  # 10
+    pipeline.register_stage(AgentStage())  # 11
+    pipeline.register_stage(EvaluateStage())  # 12
     pipeline.register_stage(LoopStage(StandardLoopController(max_turns=5)))  # 13
-    pipeline.register_stage(EmitStage(emitters=[
-        TextEmitter(callback=lambda t: emitted.append(t)),
-    ]))                                                               # 14
-    pipeline.register_stage(MemoryStage(persistence=persistence))     # 15
-    pipeline.register_stage(YieldStage())                             # 16
+    pipeline.register_stage(
+        EmitStage(
+            emitters=[
+                TextEmitter(callback=lambda t: emitted.append(t)),
+            ]
+        )
+    )  # 14
+    pipeline.register_stage(MemoryStage(persistence=persistence))  # 15
+    pipeline.register_stage(YieldStage())  # 16
 
     state = PipelineState(session_id="full-test")
     result = await pipeline.run("Calculate 6 * 7", state)
@@ -126,7 +134,9 @@ async def test_full_pipeline_all_stages():
     assert result.success is True
     assert result.text == "Computation complete: 42"
     assert emitted == ["Computation complete: 42"]
-    assert state.system == [{"type": "text", "text": "You are helpful.", "cache_control": {"type": "ephemeral"}}]
+    assert state.system == [
+        {"type": "text", "text": "You are helpful.", "cache_control": {"type": "ephemeral"}}
+    ]
 
 
 @pytest.mark.asyncio
@@ -147,21 +157,25 @@ async def test_multi_turn_tool_loop():
     registry.register(SearchTool())
 
     # Turn 1: tool_use → Turn 2: final text
-    provider = MockProvider(responses=[
-        APIResponse(
-            content=[ContentBlock(
-                type="tool_use",
-                tool_use_id="calc_1",
-                tool_name="calculator",
-                tool_input={"expression": "2+2"},
-            )],
-            stop_reason="tool_use",
-        ),
-        APIResponse(
-            content=[ContentBlock(type="text", text="The answer is 4.")],
-            stop_reason="end_turn",
-        ),
-    ])
+    provider = MockProvider(
+        responses=[
+            APIResponse(
+                content=[
+                    ContentBlock(
+                        type="tool_use",
+                        tool_use_id="calc_1",
+                        tool_name="calculator",
+                        tool_input={"expression": "2+2"},
+                    )
+                ],
+                stop_reason="tool_use",
+            ),
+            APIResponse(
+                content=[ContentBlock(type="text", text="The answer is 4.")],
+                stop_reason="end_turn",
+            ),
+        ]
+    )
 
     pipeline = Pipeline(PipelineConfig(name="multi-tool"))
     pipeline.register_stage(InputStage())
@@ -180,20 +194,22 @@ async def test_multi_turn_tool_loop():
 async def test_session_multi_run_accumulation():
     """Session accumulates state across multiple runs."""
     persistence = InMemoryPersistence()
-    provider = MockProvider(responses=[
-        APIResponse(
-            content=[ContentBlock(type="text", text="Hello!")],
-            stop_reason="end_turn",
-        ),
-        APIResponse(
-            content=[ContentBlock(type="text", text="I remember!")],
-            stop_reason="end_turn",
-        ),
-        APIResponse(
-            content=[ContentBlock(type="text", text="Goodbye!")],
-            stop_reason="end_turn",
-        ),
-    ])
+    provider = MockProvider(
+        responses=[
+            APIResponse(
+                content=[ContentBlock(type="text", text="Hello!")],
+                stop_reason="end_turn",
+            ),
+            APIResponse(
+                content=[ContentBlock(type="text", text="I remember!")],
+                stop_reason="end_turn",
+            ),
+            APIResponse(
+                content=[ContentBlock(type="text", text="Goodbye!")],
+                stop_reason="end_turn",
+            ),
+        ]
+    )
 
     pipeline = Pipeline(PipelineConfig(name="session"))
     pipeline.register_stage(InputStage())
@@ -246,10 +262,12 @@ async def test_event_bus_stage_lifecycle():
 @pytest.mark.asyncio
 async def test_composable_system_prompt():
     """ComposablePromptBuilder assembles from blocks in a real pipeline."""
-    builder = ComposablePromptBuilder(blocks=[
-        PersonaBlock("You are Geny, a friendly VTuber AI."),
-        RulesBlock(["Always be cheerful", "Use informal Korean"]),
-    ])
+    builder = ComposablePromptBuilder(
+        blocks=[
+            PersonaBlock("You are Geny, a friendly VTuber AI."),
+            RulesBlock(["Always be cheerful", "Use informal Korean"]),
+        ]
+    )
 
     provider = MockProvider(default_text="안녕!")
     pipeline = Pipeline(PipelineConfig(name="composable"))
@@ -277,9 +295,13 @@ async def test_vtuber_emitter_in_pipeline():
     pipeline.register_stage(InputStage())
     pipeline.register_stage(APIStage(provider=provider, retry=NoRetry()))
     pipeline.register_stage(ParseStage())
-    pipeline.register_stage(EmitStage(emitters=[
-        VTuberEmitter(emotion_callback=lambda t, e: emotions.append(e)),
-    ]))
+    pipeline.register_stage(
+        EmitStage(
+            emitters=[
+                VTuberEmitter(emotion_callback=lambda t, e: emotions.append(e)),
+            ]
+        )
+    )
     pipeline.register_stage(YieldStage())
 
     result = await pipeline.run("How are you?")

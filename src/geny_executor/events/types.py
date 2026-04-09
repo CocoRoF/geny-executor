@@ -14,9 +14,7 @@ class PipelineEvent:
     type: str
     stage: str = ""
     iteration: int = 0
-    timestamp: str = field(
-        default_factory=lambda: datetime.now(timezone.utc).isoformat()
-    )
+    timestamp: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     data: Dict[str, Any] = field(default_factory=dict)
 
     def __repr__(self) -> str:

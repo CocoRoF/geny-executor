@@ -16,10 +16,10 @@ from geny_executor.stages.s06_api.types import ContentBlock
 from geny_executor.stages.s06_api.retry import NoRetry
 from geny_executor.stages.s07_token import TokenStage
 from geny_executor.stages.s09_parse import ParseStage
-from geny_executor.stages.s10_tool import ToolStage, SequentialExecutor
+from geny_executor.stages.s10_tool import ToolStage
 from geny_executor.stages.s13_loop import LoopStage, StandardLoopController, SingleTurnController
 from geny_executor.stages.s16_yield import YieldStage
-from geny_executor.tools import Tool, ToolResult, ToolContext, ToolRegistry
+from geny_executor.tools import Tool, ToolResult, ToolRegistry
 
 
 # ── Test Tools ──
@@ -27,9 +27,13 @@ from geny_executor.tools import Tool, ToolResult, ToolContext, ToolRegistry
 
 class EchoTool(Tool):
     @property
-    def name(self): return "echo"
+    def name(self):
+        return "echo"
+
     @property
-    def description(self): return "Echoes input"
+    def description(self):
+        return "Echoes input"
+
     @property
     def input_schema(self):
         return {"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]}
@@ -40,12 +44,20 @@ class EchoTool(Tool):
 
 class CalculatorTool(Tool):
     @property
-    def name(self): return "calculator"
+    def name(self):
+        return "calculator"
+
     @property
-    def description(self): return "Evaluates math"
+    def description(self):
+        return "Evaluates math"
+
     @property
     def input_schema(self):
-        return {"type": "object", "properties": {"expression": {"type": "string"}}, "required": ["expression"]}
+        return {
+            "type": "object",
+            "properties": {"expression": {"type": "string"}},
+            "required": ["expression"],
+        }
 
     async def execute(self, input, context):
         try:
@@ -126,15 +138,24 @@ async def test_multi_tool_calls():
     """Pipeline handles multiple tool calls in one response."""
     provider = MockProvider()
     # Turn 1: Two tool calls
-    provider.add_response(APIResponse(
-        content=[
-            ContentBlock(type="tool_use", tool_use_id="tu_1", tool_name="echo", tool_input={"text": "a"}),
-            ContentBlock(type="tool_use", tool_use_id="tu_2", tool_name="calculator", tool_input={"expression": "2+2"}),
-        ],
-        stop_reason="tool_use",
-        usage=TokenUsage(input_tokens=100, output_tokens=60),
-        model="test",
-    ))
+    provider.add_response(
+        APIResponse(
+            content=[
+                ContentBlock(
+                    type="tool_use", tool_use_id="tu_1", tool_name="echo", tool_input={"text": "a"}
+                ),
+                ContentBlock(
+                    type="tool_use",
+                    tool_use_id="tu_2",
+                    tool_name="calculator",
+                    tool_input={"expression": "2+2"},
+                ),
+            ],
+            stop_reason="tool_use",
+            usage=TokenUsage(input_tokens=100, output_tokens=60),
+            model="test",
+        )
+    )
     # Turn 2: Final
     provider.add_response(_text_response("Results: Echo a, Calc 4"))
 
@@ -248,12 +269,14 @@ async def test_cost_guard():
 async def test_token_tracking():
     """TokenStage tracks usage and calculates cost."""
     provider = MockProvider()
-    provider.add_response(APIResponse(
-        content=[ContentBlock(type="text", text="Response")],
-        stop_reason="end_turn",
-        usage=TokenUsage(input_tokens=1000, output_tokens=500),
-        model="claude-sonnet-4-20250514",
-    ))
+    provider.add_response(
+        APIResponse(
+            content=[ContentBlock(type="text", text="Response")],
+            stop_reason="end_turn",
+            usage=TokenUsage(input_tokens=1000, output_tokens=500),
+            model="claude-sonnet-4-20250514",
+        )
+    )
 
     pipeline = Pipeline(PipelineConfig(name="token-test"))
     pipeline.register_stage(InputStage())
@@ -264,7 +287,7 @@ async def test_token_tracking():
     pipeline.register_stage(YieldStage())
 
     state = PipelineState()
-    result = await pipeline.run("Hello", state)
+    await pipeline.run("Hello", state)
 
     assert state.token_usage.input_tokens == 1000
     assert state.token_usage.output_tokens == 500

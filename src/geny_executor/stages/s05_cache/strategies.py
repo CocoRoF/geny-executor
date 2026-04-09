@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from abc import abstractmethod
-from typing import Any, Dict, List, Optional, Union
 
 from geny_executor.core.stage import Strategy
 from geny_executor.core.state import PipelineState
@@ -104,9 +103,7 @@ class AggressiveCacheStrategy(CacheStrategy):
             return
 
         if isinstance(system, str):
-            state.system = [
-                {"type": "text", "text": system, "cache_control": EPHEMERAL_CACHE}
-            ]
+            state.system = [{"type": "text", "text": system, "cache_control": EPHEMERAL_CACHE}]
         elif isinstance(system, list) and system:
             last = system[-1]
             if isinstance(last, dict):
@@ -126,9 +123,7 @@ class AggressiveCacheStrategy(CacheStrategy):
         content = msg.get("content")
 
         if isinstance(content, str):
-            msg["content"] = [
-                {"type": "text", "text": content, "cache_control": EPHEMERAL_CACHE}
-            ]
+            msg["content"] = [{"type": "text", "text": content, "cache_control": EPHEMERAL_CACHE}]
         elif isinstance(content, list) and content:
             last_block = content[-1]
             if isinstance(last_block, dict) and "cache_control" not in last_block:

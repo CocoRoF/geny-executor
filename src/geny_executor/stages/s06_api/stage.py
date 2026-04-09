@@ -52,12 +52,15 @@ class APIStage(Stage[Any, APIResponse]):
 
     async def execute(self, input: Any, state: PipelineState) -> APIResponse:
         request = self._build_request(state)
-        state.add_event("api.request", {
-            "model": request.model,
-            "message_count": len(request.messages),
-            "has_tools": bool(request.tools),
-            "has_thinking": bool(request.thinking),
-        })
+        state.add_event(
+            "api.request",
+            {
+                "model": request.model,
+                "message_count": len(request.messages),
+                "has_tools": bool(request.tools),
+                "has_thinking": bool(request.thinking),
+            },
+        )
 
         response = await self._call_with_retry(request, state)
 
@@ -68,13 +71,16 @@ class APIStage(Stage[Any, APIResponse]):
         assistant_content = self._build_assistant_content(response)
         state.add_message("assistant", assistant_content)
 
-        state.add_event("api.response", {
-            "stop_reason": response.stop_reason,
-            "text_length": len(response.text),
-            "tool_calls": len(response.tool_calls),
-            "input_tokens": response.usage.input_tokens,
-            "output_tokens": response.usage.output_tokens,
-        })
+        state.add_event(
+            "api.response",
+            {
+                "stop_reason": response.stop_reason,
+                "text_length": len(response.text),
+                "tool_calls": len(response.tool_calls),
+                "input_tokens": response.usage.input_tokens,
+                "output_tokens": response.usage.output_tokens,
+            },
+        )
 
         return response
 
@@ -114,11 +120,14 @@ class APIStage(Stage[Any, APIResponse]):
                 if not self._retry.should_retry(e.category, attempt):
                     raise
                 delay = self._retry.get_delay(attempt)
-                state.add_event("api.retry", {
-                    "attempt": attempt + 1,
-                    "category": e.category.value,
-                    "delay": delay,
-                })
+                state.add_event(
+                    "api.retry",
+                    {
+                        "attempt": attempt + 1,
+                        "category": e.category.value,
+                        "delay": delay,
+                    },
+                )
                 await asyncio.sleep(delay)
             except Exception as e:
                 last_error = e
@@ -126,11 +135,14 @@ class APIStage(Stage[Any, APIResponse]):
                 if not self._retry.should_retry(category, attempt):
                     raise APIError(str(e), category=category, cause=e) from e
                 delay = self._retry.get_delay(attempt)
-                state.add_event("api.retry", {
-                    "attempt": attempt + 1,
-                    "category": category.value,
-                    "delay": delay,
-                })
+                state.add_event(
+                    "api.retry",
+                    {
+                        "attempt": attempt + 1,
+                        "category": category.value,
+                        "delay": delay,
+                    },
+                )
                 await asyncio.sleep(delay)
 
         raise last_error or APIError("Max retries exceeded", category=ErrorCategory.UNKNOWN)
@@ -144,13 +156,19 @@ class APIStage(Stage[Any, APIResponse]):
             elif block.type == "text":
                 blocks.append({"type": "text", "text": block.text or ""})
             elif block.type == "tool_use":
-                blocks.append({
-                    "type": "tool_use",
-                    "id": block.tool_use_id,
-                    "name": block.tool_name,
-                    "input": block.tool_input,
-                })
-        return blocks if len(blocks) != 1 or blocks[0].get("type") != "text" else blocks[0].get("text", "")
+                blocks.append(
+                    {
+                        "type": "tool_use",
+                        "id": block.tool_use_id,
+                        "name": block.tool_name,
+                        "input": block.tool_input,
+                    }
+                )
+        return (
+            blocks
+            if len(blocks) != 1 or blocks[0].get("type") != "text"
+            else blocks[0].get("text", "")
+        )
 
     def list_strategies(self) -> List[StrategyInfo]:
         return [

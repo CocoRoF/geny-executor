@@ -6,14 +6,29 @@ from abc import abstractmethod
 from typing import Dict, Optional
 
 from geny_executor.core.stage import Strategy
-from geny_executor.core.state import PipelineState, TokenUsage
+from geny_executor.core.state import TokenUsage
 
 
 # Anthropic pricing per million tokens (as of 2026)
 ANTHROPIC_PRICING: Dict[str, Dict[str, float]] = {
-    "claude-opus-4-20250514": {"input": 15.0, "output": 75.0, "cache_write": 18.75, "cache_read": 1.5},
-    "claude-sonnet-4-20250514": {"input": 3.0, "output": 15.0, "cache_write": 3.75, "cache_read": 0.3},
-    "claude-haiku-3-5-20241022": {"input": 0.80, "output": 4.0, "cache_write": 1.0, "cache_read": 0.08},
+    "claude-opus-4-20250514": {
+        "input": 15.0,
+        "output": 75.0,
+        "cache_write": 18.75,
+        "cache_read": 1.5,
+    },
+    "claude-sonnet-4-20250514": {
+        "input": 3.0,
+        "output": 15.0,
+        "cache_write": 3.75,
+        "cache_read": 0.3,
+    },
+    "claude-haiku-3-5-20241022": {
+        "input": 0.80,
+        "output": 4.0,
+        "cache_write": 1.0,
+        "cache_read": 0.08,
+    },
     # Aliases
     "claude-opus-4-6": {"input": 15.0, "output": 75.0, "cache_write": 18.75, "cache_read": 1.5},
     "claude-sonnet-4-6": {"input": 3.0, "output": 15.0, "cache_write": 3.75, "cache_read": 0.3},
@@ -59,10 +74,14 @@ class AnthropicPricingCalculator(CostCalculator):
         cost += (usage.output_tokens / 1_000_000) * prices["output"]
 
         # Cache write
-        cost += (usage.cache_creation_input_tokens / 1_000_000) * prices.get("cache_write", prices["input"] * 1.25)
+        cost += (usage.cache_creation_input_tokens / 1_000_000) * prices.get(
+            "cache_write", prices["input"] * 1.25
+        )
 
         # Cache read
-        cost += (usage.cache_read_input_tokens / 1_000_000) * prices.get("cache_read", prices["input"] * 0.1)
+        cost += (usage.cache_read_input_tokens / 1_000_000) * prices.get(
+            "cache_read", prices["input"] * 0.1
+        )
 
         return cost
 

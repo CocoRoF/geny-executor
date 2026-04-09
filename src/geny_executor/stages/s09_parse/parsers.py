@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from abc import abstractmethod
-from typing import Any, Dict, Optional, Type
+from typing import Any, Dict, Optional
 
 from geny_executor.core.stage import Strategy
 from geny_executor.stages.s06_api.types import APIResponse
@@ -42,9 +42,7 @@ class DefaultParser(ResponseParser):
             for block in response.tool_calls
         ]
         thinking_texts = [
-            block.thinking_text or ""
-            for block in response.thinking_blocks
-            if block.thinking_text
+            block.thinking_text or "" for block in response.thinking_blocks if block.thinking_text
         ]
 
         return ParsedResponse(
@@ -102,6 +100,7 @@ class StructuredOutputParser(ResponseParser):
 
         # Try extracting from ```json ... ``` blocks
         import re
+
         match = re.search(r"```(?:json)?\s*\n?(.*?)```", text, re.DOTALL)
         if match:
             try:

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from abc import abstractmethod
-from typing import Any, Dict, Optional
 
 from geny_executor.core.stage import Strategy
 from geny_executor.core.state import PipelineState
@@ -72,8 +71,11 @@ class StreamingFormatter(ResultFormatter):
         return "Emits streaming completion summary"
 
     def format(self, state: PipelineState) -> None:
-        state.add_event("yield.summary", {
-            "text_length": len(state.final_text),
-            "iterations": state.iteration,
-            "total_cost_usd": state.total_cost_usd,
-        })
+        state.add_event(
+            "yield.summary",
+            {
+                "text_length": len(state.final_text),
+                "iterations": state.iteration,
+                "total_cost_usd": state.total_cost_usd,
+            },
+        )

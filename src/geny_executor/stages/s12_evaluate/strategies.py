@@ -143,12 +143,14 @@ class CriteriaBasedEvaluation(EvaluationStrategy):
                     score = 0.0
 
             passed = score >= criterion.threshold
-            criteria_results.append({
-                "name": criterion.name,
-                "score": score,
-                "weight": criterion.weight,
-                "passed": passed,
-            })
+            criteria_results.append(
+                {
+                    "name": criterion.name,
+                    "score": score,
+                    "weight": criterion.weight,
+                    "passed": passed,
+                }
+            )
 
             weighted_sum += score * criterion.weight
             total_weight += criterion.weight
@@ -205,11 +207,12 @@ class AgentEvaluation(EvaluationStrategy):
     def _extract_score(self, text: str) -> Optional[float]:
         """Try to extract a numeric score from evaluator text."""
         import re
+
         # Look for patterns like "Score: 85/100" or "score: 0.85"
-        match = re.search(r'[Ss]core[:\s]+(\d+(?:\.\d+)?)\s*/\s*100', text)
+        match = re.search(r"[Ss]core[:\s]+(\d+(?:\.\d+)?)\s*/\s*100", text)
         if match:
             return float(match.group(1)) / 100.0
-        match = re.search(r'[Ss]core[:\s]+(\d+(?:\.\d+)?)', text)
+        match = re.search(r"[Ss]core[:\s]+(\d+(?:\.\d+)?)", text)
         if match:
             val = float(match.group(1))
             return val / 100.0 if val > 1.0 else val

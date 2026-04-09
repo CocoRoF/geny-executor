@@ -71,7 +71,7 @@ class Pipeline:
         Phase C: Stage 14~16 (Finalize) — runs once
         """
         state = self._init_state(state)
-        await self._emit("pipeline.start", data={"input": str(input)[:self.EVENT_DATA_TRUNCATE]})
+        await self._emit("pipeline.start", data={"input": str(input)[: self.EVENT_DATA_TRUNCATE]})
 
         try:
             # Phase A: Input (stage 1)
@@ -129,7 +129,9 @@ class Pipeline:
         unsubscribe = self._event_bus.on("*", collector)
 
         try:
-            yield PipelineEvent(type="pipeline.start", data={"input": str(input)[:self.EVENT_DATA_TRUNCATE]})
+            yield PipelineEvent(
+                type="pipeline.start", data={"input": str(input)[: self.EVENT_DATA_TRUNCATE]}
+            )
 
             # Phase A
             current = await self._run_stage(1, input, state)
@@ -170,7 +172,10 @@ class Pipeline:
 
             yield PipelineEvent(
                 type="pipeline.complete",
-                data={"result": state.final_text[:self.EVENT_DATA_TRUNCATE], "iterations": state.iteration},
+                data={
+                    "result": state.final_text[: self.EVENT_DATA_TRUNCATE],
+                    "iterations": state.iteration,
+                },
             )
 
         except Exception as e:
@@ -257,9 +262,7 @@ class Pipeline:
             recovery = await stage.on_error(e, state)
             if recovery is not None:
                 return recovery
-            raise StageError(
-                str(e), stage_name=stage.name, stage_order=order, cause=e
-            ) from e
+            raise StageError(str(e), stage_name=stage.name, stage_order=order, cause=e) from e
 
     async def _emit(self, event_type: str, **kwargs: Any) -> None:
         """Emit a pipeline event."""

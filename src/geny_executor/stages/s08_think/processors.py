@@ -68,11 +68,13 @@ class ExtractAndStoreProcessor(ThinkingProcessor):
         state: PipelineState,
     ) -> List[ThinkingBlock]:
         for block in thinking_blocks:
-            state.thinking_history.append({
-                "iteration": state.iteration,
-                "text": block.text,
-                "tokens": block.budget_tokens_used,
-            })
+            state.thinking_history.append(
+                {
+                    "iteration": state.iteration,
+                    "text": block.text,
+                    "tokens": block.budget_tokens_used,
+                }
+            )
         return thinking_blocks
 
 

@@ -58,10 +58,13 @@ class ToolStage(Stage[Any, Any]):
 
         tool_calls = list(state.pending_tool_calls)
 
-        state.add_event("tool.execute_start", {
-            "count": len(tool_calls),
-            "tools": [tc["tool_name"] for tc in tool_calls],
-        })
+        state.add_event(
+            "tool.execute_start",
+            {
+                "count": len(tool_calls),
+                "tools": [tc["tool_name"] for tc in tool_calls],
+            },
+        )
 
         # Set context
         ctx = ToolContext(
@@ -83,10 +86,13 @@ class ToolStage(Stage[Any, Any]):
         # Signal that we need to continue the loop (tool results need API call)
         state.loop_decision = "continue"
 
-        state.add_event("tool.execute_complete", {
-            "count": len(results),
-            "errors": sum(1 for r in results if r.get("is_error")),
-        })
+        state.add_event(
+            "tool.execute_complete",
+            {
+                "count": len(results),
+                "errors": sum(1 for r in results if r.get("is_error")),
+            },
+        )
 
         return input
 

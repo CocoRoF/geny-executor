@@ -33,11 +33,14 @@ class YieldStage(Stage[Any, Any]):
 
     async def execute(self, input: Any, state: PipelineState) -> Any:
         self._formatter.format(state)
-        state.add_event("yield.complete", {
-            "text_length": len(state.final_text),
-            "iterations": state.iteration,
-            "total_cost_usd": state.total_cost_usd,
-        })
+        state.add_event(
+            "yield.complete",
+            {
+                "text_length": len(state.final_text),
+                "iterations": state.iteration,
+                "total_cost_usd": state.total_cost_usd,
+            },
+        )
         return state.final_output if state.final_output is not None else state.final_text
 
     def list_strategies(self) -> List[StrategyInfo]:

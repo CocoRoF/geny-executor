@@ -8,7 +8,6 @@ from geny_executor.core.stage import Stage, StrategyInfo
 from geny_executor.core.state import PipelineState
 from geny_executor.stages.s13_loop.controllers import (
     LoopController,
-    LoopDecision,
     StandardLoopController,
 )
 
@@ -46,13 +45,16 @@ class LoopStage(Stage[Any, Any]):
 
         state.loop_decision = decision
 
-        state.add_event(f"loop.{decision}", {
-            "iteration": state.iteration,
-            "signal": state.completion_signal,
-            "pending_tools": len(state.pending_tool_calls),
-            "has_tool_results": bool(state.tool_results),
-            "upstream_decision": upstream,
-        })
+        state.add_event(
+            f"loop.{decision}",
+            {
+                "iteration": state.iteration,
+                "signal": state.completion_signal,
+                "pending_tools": len(state.pending_tool_calls),
+                "has_tool_results": bool(state.tool_results),
+                "upstream_decision": upstream,
+            },
+        )
 
         # Always clear tool_results after decision (they've been consumed)
         state.tool_results = []
