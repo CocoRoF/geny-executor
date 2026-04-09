@@ -35,7 +35,7 @@ from geny_executor.core.presets import PipelinePresets
 from geny_executor.core.artifact import create_stage, list_artifacts, get_artifact_map
 from geny_executor.events import EventBus, PipelineEvent
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 __all__ = [
     # Core
