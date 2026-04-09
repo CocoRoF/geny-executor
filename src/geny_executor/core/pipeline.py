@@ -30,6 +30,14 @@ class Pipeline:
     FINALIZE_END = 16  # inclusive
     EVENT_DATA_TRUNCATE = 500  # max chars for event data preview
 
+    # Default names for unregistered stage slots (used in bypass events)
+    _DEFAULT_STAGE_NAMES: Dict[int, str] = {
+        1: "input", 2: "context", 3: "system", 4: "guard",
+        5: "cache", 6: "api", 7: "token", 8: "think",
+        9: "parse", 10: "tool", 11: "agent", 12: "evaluate",
+        13: "loop", 14: "emit", 15: "memory", 16: "yield",
+    }
+
     def __init__(self, config: Optional[PipelineConfig] = None):
         self._config = config or PipelineConfig()
         self._stages: Dict[int, Stage] = {}
@@ -230,6 +238,9 @@ class Pipeline:
         """Run a stage if it exists and should not be bypassed."""
         stage = self._stages.get(order)
         if stage is None:
+            # Emit bypass event so the UI shows unregistered stages as skipped
+            name = self._DEFAULT_STAGE_NAMES.get(order, f"stage_{order}")
+            await self._emit("stage.bypass", stage=name, iteration=state.iteration)
             return current
         if stage.should_bypass(state):
             await self._emit("stage.bypass", stage=stage.name, iteration=state.iteration)
