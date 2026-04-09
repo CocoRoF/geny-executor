@@ -216,7 +216,7 @@ class Pipeline:
             else:
                 descriptions.append(
                     StageDescription(
-                        name=f"stage_{order}",
+                        name=self._DEFAULT_STAGE_NAMES.get(order, f"stage_{order}"),
                         order=order,
                         category="unregistered",
                         is_active=False,

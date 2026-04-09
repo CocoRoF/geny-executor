@@ -182,11 +182,12 @@ def test_preset_evaluator():
     pipeline = PipelinePresets.evaluator(api_key="test-key")
     desc = pipeline.describe()
     stage_names = [s.name for s in desc]
+    active_names = [s.name for s in desc if s.is_active]
     assert "system" in stage_names
     assert "evaluate" in stage_names
-    # Should NOT have loop or memory
-    assert "loop" not in stage_names
-    assert "memory" not in stage_names
+    # loop and memory should NOT be actively registered
+    assert "loop" not in active_names
+    assert "memory" not in active_names
 
 
 # ── Builder ──
