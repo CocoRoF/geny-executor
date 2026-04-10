@@ -20,6 +20,9 @@ class APIStage(Stage[Any, APIResponse]):
     Dual abstraction:
       - Level 2 provider: actual API call implementation
       - Level 2 retry: error recovery strategy
+
+    When stream=True (default), uses create_message_stream() and emits
+    text.delta events for real-time token streaming.
     """
 
     def __init__(
@@ -29,6 +32,7 @@ class APIStage(Stage[Any, APIResponse]):
         *,
         api_key: str = "",
         base_url: Optional[str] = None,
+        stream: bool = True,
     ):
         if provider:
             self._provider = provider
@@ -38,6 +42,7 @@ class APIStage(Stage[Any, APIResponse]):
             raise ValueError("Either 'provider' or 'api_key' must be provided")
 
         self._retry = retry or ExponentialBackoffRetry()
+        self._stream = stream
 
     @property
     def name(self) -> str:
@@ -60,10 +65,14 @@ class APIStage(Stage[Any, APIResponse]):
                 "message_count": len(request.messages),
                 "has_tools": bool(request.tools),
                 "has_thinking": bool(request.thinking),
+                "stream": self._stream,
             },
         )
 
-        response = await self._call_with_retry(request, state)
+        if self._stream:
+            response = await self._call_streaming(request, state)
+        else:
+            response = await self._call_with_retry(request, state)
 
         # Store raw response for downstream stages
         state.last_api_response = response
@@ -107,6 +116,24 @@ class APIStage(Stage[Any, APIResponse]):
             }
 
         return request
+
+    async def _call_streaming(self, request: APIRequest, state: PipelineState) -> APIResponse:
+        """Execute API call with streaming, emitting text.delta events."""
+        response: Optional[APIResponse] = None
+
+        async for chunk in self._provider.create_message_stream(request):
+            if chunk.get("type") == "message_complete":
+                response = chunk["response"]
+            elif chunk.get("text"):
+                # Emit text delta for real-time streaming
+                state.add_event("text.delta", {"text": chunk["text"]})
+
+        if response is None:
+            raise APIError(
+                "Stream ended without message_complete",
+                category=ErrorCategory.UNKNOWN,
+            )
+        return response
 
     async def _call_with_retry(self, request: APIRequest, state: PipelineState) -> APIResponse:
         """Execute API call with retry logic."""

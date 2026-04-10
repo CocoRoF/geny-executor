@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from typing import Any, AsyncIterator, Callable, Dict, List, Optional
 
@@ -125,71 +126,99 @@ class Pipeline:
     ) -> AsyncIterator[PipelineEvent]:
         """Streaming mode — yields PipelineEvents in real-time.
 
-        Each stage transition, API chunk, tool execution etc. is yielded.
+        Uses an asyncio.Queue so events emitted mid-stage (e.g. text.delta
+        during streaming API calls) are yielded immediately, not buffered
+        until stage completion.
         """
         state = self._init_state(state)
-        collected_events: List[PipelineEvent] = []
+        queue: asyncio.Queue[PipelineEvent] = asyncio.Queue()
+        _SENTINEL = object()
 
-        # Capture events
-        def collector(event: PipelineEvent) -> None:
-            collected_events.append(event)
+        # Capture EventBus events (stage.enter/exit/bypass etc.)
+        def bus_collector(event: PipelineEvent) -> None:
+            queue.put_nowait(event)
 
-        unsubscribe = self._event_bus.on("*", collector)
+        # Capture state.add_event() calls (text.delta, api.request etc.)
+        def state_collector(event_dict: Dict[str, Any]) -> None:
+            queue.put_nowait(
+                PipelineEvent(
+                    type=event_dict["type"],
+                    stage=event_dict.get("stage", ""),
+                    iteration=event_dict.get("iteration", 0),
+                    timestamp=event_dict.get("timestamp", ""),
+                    data=event_dict.get("data", {}),
+                )
+            )
+
+        unsubscribe = self._event_bus.on("*", bus_collector)
+        state._event_listener = state_collector
+
+        async def _run_pipeline() -> None:
+            """Execute pipeline phases, then push sentinel to signal completion."""
+            try:
+                # Phase A
+                current = await self._run_stage(1, input, state)
+
+                # Phase B
+                has_loop_stage = self.LOOP_END in self._stages
+                while True:
+                    for order in range(self.LOOP_START, self.LOOP_END + 1):
+                        current = await self._try_run_stage(order, current, state)
+
+                    if not has_loop_stage and state.loop_decision == "continue":
+                        state.loop_decision = "complete"
+
+                    if state.loop_decision != "continue":
+                        break
+                    state.iteration += 1
+                    if state.is_over_iterations:
+                        state.loop_decision = "complete"
+                        state.completion_signal = "MAX_ITERATIONS"
+                        state.add_event(
+                            "loop.force_complete",
+                            {"reason": "max_iterations", "iteration": state.iteration},
+                        )
+                        break
+
+                # Phase C
+                for order in range(self.FINALIZE_START, self.FINALIZE_END + 1):
+                    current = await self._try_run_stage(order, current, state)
+
+                queue.put_nowait(
+                    PipelineEvent(
+                        type="pipeline.complete",
+                        data={
+                            "result": state.final_text[: self.EVENT_DATA_TRUNCATE],
+                            "iterations": state.iteration,
+                        },
+                    )
+                )
+            except Exception as e:
+                queue.put_nowait(PipelineEvent(type="pipeline.error", data={"error": str(e)}))
+            finally:
+                queue.put_nowait(_SENTINEL)  # type: ignore[arg-type]
 
         try:
             yield PipelineEvent(
                 type="pipeline.start", data={"input": str(input)[: self.EVENT_DATA_TRUNCATE]}
             )
 
-            # Phase A
-            current = await self._run_stage(1, input, state)
-            for ev in collected_events:
-                yield ev
-            collected_events.clear()
+            # Run pipeline in background task so we can yield events as they arrive
+            task = asyncio.create_task(_run_pipeline())
 
-            # Phase B
-            has_loop_stage = self.LOOP_END in self._stages
             while True:
-                for order in range(self.LOOP_START, self.LOOP_END + 1):
-                    current = await self._try_run_stage(order, current, state)
-                    for ev in collected_events:
-                        yield ev
-                    collected_events.clear()
-
-                if not has_loop_stage and state.loop_decision == "continue":
-                    state.loop_decision = "complete"
-
-                if state.loop_decision != "continue":
+                event = await queue.get()
+                if event is _SENTINEL:
                     break
-                state.iteration += 1
-                if state.is_over_iterations:
-                    state.loop_decision = "complete"
-                    state.completion_signal = "MAX_ITERATIONS"
-                    state.add_event(
-                        "loop.force_complete",
-                        {"reason": "max_iterations", "iteration": state.iteration},
-                    )
-                    break
+                yield event
 
-            # Phase C
-            for order in range(self.FINALIZE_START, self.FINALIZE_END + 1):
-                current = await self._try_run_stage(order, current, state)
-                for ev in collected_events:
-                    yield ev
-                collected_events.clear()
-
-            yield PipelineEvent(
-                type="pipeline.complete",
-                data={
-                    "result": state.final_text[: self.EVENT_DATA_TRUNCATE],
-                    "iterations": state.iteration,
-                },
-            )
+            await task  # propagate any unexpected errors
 
         except Exception as e:
             yield PipelineEvent(type="pipeline.error", data={"error": str(e)})
 
         finally:
+            state._event_listener = None
             unsubscribe()
 
     # ── Events ──

@@ -127,18 +127,24 @@ class PipelineState:
     # ── Event log ──
     events: List[Dict[str, Any]] = field(default_factory=list)
 
+    # ── Event listener (set by pipeline for streaming) ──
+    _event_listener: Optional[Any] = field(default=None, repr=False)
+
     def add_event(self, event_type: str, data: Optional[Dict[str, Any]] = None) -> None:
-        """Append an event to the log."""
-        self.events.append(
-            {
-                "type": event_type,
-                "stage": self.current_stage,
-                "iteration": self.iteration,
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "data": data or {},
-            }
-        )
+        """Append an event to the log. If a listener is set, also notify it."""
+        event_dict = {
+            "type": event_type,
+            "stage": self.current_stage,
+            "iteration": self.iteration,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "data": data or {},
+        }
+        self.events.append(event_dict)
         self.updated_at = datetime.now(timezone.utc)
+
+        # Forward to pipeline event listener (for streaming)
+        if self._event_listener is not None:
+            self._event_listener(event_dict)
 
     def add_message(self, role: str, content: Any) -> None:
         """Append a message in Anthropic API format."""
