@@ -122,9 +122,10 @@ class APIStage(Stage[Any, APIResponse]):
         response: Optional[APIResponse] = None
 
         async for chunk in self._provider.create_message_stream(request):
-            if chunk.get("type") == "message_complete":
+            chunk_type = chunk.get("type")
+            if chunk_type == "message_complete":
                 response = chunk["response"]
-            elif chunk.get("text"):
+            elif chunk_type == "text_delta" and chunk.get("text"):
                 # Emit text delta for real-time streaming
                 state.add_event("text.delta", {"text": chunk["text"]})
 

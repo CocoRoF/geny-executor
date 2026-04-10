@@ -200,7 +200,7 @@ def test_pipeline_describe():
 
 @pytest.mark.asyncio
 async def test_streaming_mode():
-    """run_stream yields PipelineEvents."""
+    """run_stream yields PipelineEvents including text.delta."""
     pipeline = _make_mock_pipeline("Streamed response")
     events = []
     async for event in pipeline.run_stream("Hi"):
@@ -209,6 +209,10 @@ async def test_streaming_mode():
     types = [e.type for e in events]
     assert "pipeline.start" in types
     assert "pipeline.complete" in types
+
+    # MockProvider now streams text chunks → text.delta events must arrive
+    deltas = [e for e in events if e.type == "text.delta"]
+    assert len(deltas) > 0, f"Expected text.delta events, got: {types}"
 
 
 # ── Error handling ──

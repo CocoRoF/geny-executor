@@ -356,7 +356,7 @@ async def test_hybrid_context_trims_in_pipeline():
 
 @pytest.mark.asyncio
 async def test_streaming_pipeline():
-    """Pipeline streaming mode emits events."""
+    """Pipeline streaming mode emits text.delta events from MockProvider."""
     provider = MockProvider(default_text="Streamed response")
     pipeline = Pipeline(PipelineConfig(name="stream"))
     pipeline.register_stage(InputStage())
@@ -368,7 +368,18 @@ async def test_streaming_pipeline():
     async for event in pipeline.run_stream("Hello"):
         events.append(event)
 
-    assert len(events) > 0
+    types = [e.type for e in events]
+    assert "pipeline.start" in types
+    assert "pipeline.complete" in types
+
+    # Must contain text.delta events from streaming
+    deltas = [e for e in events if e.type == "text.delta"]
+    assert len(deltas) > 0, f"No text.delta events! Got types: {types}"
+
+    # Concatenated deltas should reconstruct the original text
+    streamed_text = "".join(e.data["text"] for e in deltas)
+    assert "Streamed" in streamed_text
+    assert "response" in streamed_text
 
 
 @pytest.mark.asyncio

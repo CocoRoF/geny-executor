@@ -58,17 +58,21 @@ class AnthropicProvider(APIProvider):
             raise self._classify_error(e) from e
 
     async def create_message_stream(self, request: APIRequest) -> AsyncIterator[Dict[str, Any]]:
-        """Streaming call to Anthropic Messages API."""
+        """Streaming call to Anthropic Messages API.
+
+        Uses client.messages.stream() (high-level SDK helper) which handles
+        stream=True internally.  Do NOT pass stream=True in kwargs — the
+        method does not accept it and raises TypeError.
+        """
         client = self._get_client()
         kwargs = self._build_kwargs(request)
-        kwargs["stream"] = True
 
         try:
             async with client.messages.stream(**kwargs) as stream:
-                async for event in stream:
-                    yield self._convert_stream_event(event)
+                async for text in stream.text_stream:
+                    yield {"type": "text_delta", "text": text}
 
-                # Final message
+                # Final message with full structured response
                 final = await stream.get_final_message()
                 yield {
                     "type": "message_complete",
@@ -253,6 +257,22 @@ class MockProvider(APIProvider):
             model=request.model,
             message_id=f"mock_{self._call_count}",
         )
+
+    async def create_message_stream(
+        self, request: APIRequest
+    ) -> AsyncIterator[Dict[str, Any]]:
+        """Mock streaming — yields text word-by-word, then final message."""
+        response = await self.create_message(request)
+        # Extract text from first text block (skip tool_use blocks)
+        text = ""
+        for block in response.content:
+            if block.type == "text" and block.text:
+                text = block.text
+                break
+        if text:
+            for word in text.split(" "):
+                yield {"type": "text_delta", "text": word + " "}
+        yield {"type": "message_complete", "response": response}
 
 
 class RecordingProvider(APIProvider):
