@@ -12,7 +12,6 @@ When not provided, only transcript recording occurs.
 
 from __future__ import annotations
 
-import json
 import logging
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 

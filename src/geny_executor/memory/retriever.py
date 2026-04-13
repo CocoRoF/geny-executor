@@ -18,7 +18,7 @@ is the canonical implementation).
 from __future__ import annotations
 
 import logging
-from typing import Any, Awaitable, Callable, Dict, List, Optional
+from typing import Any, Awaitable, Callable, List, Optional
 
 from geny_executor.core.state import PipelineState
 from geny_executor.stages.s02_context.interface import MemoryRetriever
