@@ -34,6 +34,12 @@ from geny_executor.core.builder import PipelineBuilder
 from geny_executor.core.presets import PipelinePresets
 from geny_executor.core.artifact import create_stage, list_artifacts, get_artifact_map
 from geny_executor.events import EventBus, PipelineEvent
+from geny_executor.memory import (
+    GenyMemoryRetriever,
+    GenyMemoryStrategy,
+    GenyPersistence,
+    GenyPresets,
+)
 
 __version__ = "0.4.0"
 
@@ -69,4 +75,9 @@ __all__ = [
     "APIError",
     "ToolExecutionError",
     "ErrorCategory",
+    # Geny Memory Integration
+    "GenyMemoryRetriever",
+    "GenyMemoryStrategy",
+    "GenyPersistence",
+    "GenyPresets",
 ]
