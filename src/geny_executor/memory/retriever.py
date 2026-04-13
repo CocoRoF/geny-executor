@@ -106,23 +106,17 @@ class GenyMemoryRetriever(MemoryRetriever):
 
         # 3. FAISS vector semantic search
         if self._enable_vector:
-            total_chars = await self._load_vector_memory(
-                chunks, search_query, total_chars, budget
-            )
+            total_chars = await self._load_vector_memory(chunks, search_query, total_chars, budget)
 
         # 4. Keyword-based recall with importance weighting
-        total_chars = self._load_keyword_memory(
-            chunks, search_query, total_chars, budget
-        )
+        total_chars = self._load_keyword_memory(chunks, search_query, total_chars, budget)
 
         # 5. Backlink context
         total_chars = self._load_backlink_context(chunks, total_chars, budget)
 
         # 6. Curated Knowledge (optional)
         if self._curated:
-            total_chars = self._load_curated_knowledge(
-                chunks, search_query, total_chars, budget
-            )
+            total_chars = self._load_curated_knowledge(chunks, search_query, total_chars, budget)
 
         logger.info(
             "geny_retriever: loaded %d chunks (%d chars) for session %s",
@@ -134,9 +128,7 @@ class GenyMemoryRetriever(MemoryRetriever):
 
     # ── Layer 1: Session Summary ─────────────────────────────────────
 
-    def _load_session_summary(
-        self, chunks: List[MemoryChunk], total: int, budget: int
-    ) -> int:
+    def _load_session_summary(self, chunks: List[MemoryChunk], total: int, budget: int) -> int:
         try:
             stm = getattr(self._mgr, "short_term", None)
             if stm is None:
@@ -159,9 +151,7 @@ class GenyMemoryRetriever(MemoryRetriever):
 
     # ── Layer 2: MEMORY.md ───────────────────────────────────────────
 
-    def _load_main_memory(
-        self, chunks: List[MemoryChunk], total: int, budget: int
-    ) -> int:
+    def _load_main_memory(self, chunks: List[MemoryChunk], total: int, budget: int) -> int:
         try:
             ltm = getattr(self._mgr, "long_term", None)
             if ltm is None:
@@ -300,9 +290,7 @@ class GenyMemoryRetriever(MemoryRetriever):
 
     # ── Layer 5: Backlink Context ────────────────────────────────────
 
-    def _load_backlink_context(
-        self, chunks: List[MemoryChunk], total: int, budget: int
-    ) -> int:
+    def _load_backlink_context(self, chunks: List[MemoryChunk], total: int, budget: int) -> int:
         remaining = budget - total
         if remaining <= 200 or not chunks:
             return total

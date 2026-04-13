@@ -43,9 +43,7 @@ class GenyMemoryStrategy(MemoryUpdateStrategy):
         memory_manager: Any,
         *,
         enable_reflection: bool = True,
-        llm_reflect: Optional[
-            Callable[[str, str], Awaitable[List[Dict[str, Any]]]]
-        ] = None,
+        llm_reflect: Optional[Callable[[str, str], Awaitable[List[Dict[str, Any]]]]] = None,
         max_insights: int = 3,
         auto_promote_importance: Optional[set] = None,
         curated_knowledge_manager: Any = None,
@@ -167,10 +165,13 @@ class GenyMemoryStrategy(MemoryUpdateStrategy):
         if self._llm_reflect is None:
             # No LLM callable provided — just set a flag
             state.metadata["needs_reflection"] = True
-            state.add_event("memory.reflection_queued", {
-                "message_count": len(state.messages),
-                "iteration": state.iteration,
-            })
+            state.add_event(
+                "memory.reflection_queued",
+                {
+                    "message_count": len(state.messages),
+                    "iteration": state.iteration,
+                },
+            )
             return
 
         # Extract input and output
@@ -187,9 +188,7 @@ class GenyMemoryStrategy(MemoryUpdateStrategy):
             return
 
         try:
-            insights = await self._llm_reflect(
-                input_text[:2000], output_text[:3000]
-            )
+            insights = await self._llm_reflect(input_text[:2000], output_text[:3000])
             if not insights:
                 return
 

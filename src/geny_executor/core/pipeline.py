@@ -33,10 +33,22 @@ class Pipeline:
 
     # Default names for unregistered stage slots (used in bypass events)
     _DEFAULT_STAGE_NAMES: Dict[int, str] = {
-        1: "input", 2: "context", 3: "system", 4: "guard",
-        5: "cache", 6: "api", 7: "token", 8: "think",
-        9: "parse", 10: "tool", 11: "agent", 12: "evaluate",
-        13: "loop", 14: "emit", 15: "memory", 16: "yield",
+        1: "input",
+        2: "context",
+        3: "system",
+        4: "guard",
+        5: "cache",
+        6: "api",
+        7: "token",
+        8: "think",
+        9: "parse",
+        10: "tool",
+        11: "agent",
+        12: "evaluate",
+        13: "loop",
+        14: "emit",
+        15: "memory",
+        16: "yield",
     }
 
     def __init__(self, config: Optional[PipelineConfig] = None):

@@ -349,9 +349,7 @@ class TestGenyMemoryStrategy:
                 }
             ]
 
-        strategy = GenyMemoryStrategy(
-            mgr, enable_reflection=True, llm_reflect=mock_reflect
-        )
+        strategy = GenyMemoryStrategy(mgr, enable_reflection=True, llm_reflect=mock_reflect)
 
         state = PipelineState()
         state.messages = [
@@ -511,9 +509,7 @@ class TestGenyPresets:
 
     def test_vtuber_custom_persona(self):
         mgr = MockMemoryManager()
-        pipeline = GenyPresets.vtuber(
-            "test-key", mgr, persona_prompt="I am a custom VTuber!"
-        )
+        pipeline = GenyPresets.vtuber("test-key", mgr, persona_prompt="I am a custom VTuber!")
         assert pipeline is not None
 
     def test_all_presets_have_memory_stage(self):

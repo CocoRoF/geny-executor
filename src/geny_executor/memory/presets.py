@@ -105,9 +105,7 @@ class GenyPresets:
         max_turns: int = 50,
         max_inject_chars: int = 10000,
         enable_reflection: bool = True,
-        llm_reflect: Optional[
-            Callable[[str, str], Awaitable[List[Dict[str, Any]]]]
-        ] = None,
+        llm_reflect: Optional[Callable[[str, str], Awaitable[List[Dict[str, Any]]]]] = None,
         llm_gate: Optional[Callable[[str], Awaitable[bool]]] = None,
         curated_knowledge_manager: Any = None,
     ) -> Pipeline:
@@ -163,9 +161,7 @@ class GenyPresets:
         persona_prompt: str = "",
         max_inject_chars: int = 8000,
         enable_reflection: bool = True,
-        llm_reflect: Optional[
-            Callable[[str, str], Awaitable[List[Dict[str, Any]]]]
-        ] = None,
+        llm_reflect: Optional[Callable[[str, str], Awaitable[List[Dict[str, Any]]]]] = None,
         tools: Optional[ToolRegistry] = None,
         curated_knowledge_manager: Any = None,
     ) -> Pipeline:

@@ -258,9 +258,7 @@ class MockProvider(APIProvider):
             message_id=f"mock_{self._call_count}",
         )
 
-    async def create_message_stream(
-        self, request: APIRequest
-    ) -> AsyncIterator[Dict[str, Any]]:
+    async def create_message_stream(self, request: APIRequest) -> AsyncIterator[Dict[str, Any]]:
         """Mock streaming — yields text word-by-word, then final message."""
         response = await self.create_message(request)
         # Extract text from first text block (skip tool_use blocks)

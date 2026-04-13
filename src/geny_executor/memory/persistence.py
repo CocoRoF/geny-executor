@@ -88,7 +88,7 @@ class GenyPersistence(ConversationPersistence):
                 if role in ("user", "assistant") and content:
                     # Strip the "[role] " prefix that STM adds
                     if content.startswith(f"[{role}] "):
-                        content = content[len(f"[{role}] "):]
+                        content = content[len(f"[{role}] ") :]
                     messages.append({"role": role, "content": content})
 
             return messages
@@ -103,9 +103,7 @@ class GenyPersistence(ConversationPersistence):
 
     async def clear(self, session_id: str) -> None:
         """Clear is a no-op — Geny's memory is append-only by design."""
-        logger.debug(
-            "geny_persistence: clear called for session %s (no-op)", session_id
-        )
+        logger.debug("geny_persistence: clear called for session %s (no-op)", session_id)
 
     # ── Internal ─────────────────────────────────────────────────────
 
