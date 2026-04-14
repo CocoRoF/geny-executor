@@ -89,11 +89,12 @@ class MCPServerConnection:
             read_stream, write_stream = await self._transport_ctx.__aenter__()
             self._client_session = ClientSession(read_stream, write_stream)
             await self._client_session.__aenter__()
-            await self._client_session.initialize()
+            # Timeout: if the server doesn't respond within 10s, give up
+            await asyncio.wait_for(self._client_session.initialize(), timeout=10.0)
             self._connected = True
 
             # Discover tools
-            result = await self._client_session.list_tools()
+            result = await asyncio.wait_for(self._client_session.list_tools(), timeout=10.0)
             self._tools = [
                 {
                     "name": t.name,
@@ -109,13 +110,18 @@ class MCPServerConnection:
                 len(self._tools),
             )
 
-        except Exception as e:
+        except BaseException as e:
+            # Catch BaseException: CancelledError is BaseException in Python 3.11+
             logger.warning(
-                "MCP server '%s' connection failed (%s) — running in no-op mode",
+                "MCP server '%s' connection failed (%s: %s) — running in no-op mode",
                 self.config.name,
+                type(e).__name__,
                 e,
             )
-            await self._cleanup()
+            try:
+                await self._cleanup()
+            except BaseException:
+                pass
             self._connected = True  # no-op: lifecycle works, call_tool will fail
 
     async def _connect_http(self) -> None:
@@ -143,10 +149,10 @@ class MCPServerConnection:
             read_stream, write_stream = await self._transport_ctx.__aenter__()
             self._client_session = ClientSession(read_stream, write_stream)
             await self._client_session.__aenter__()
-            await self._client_session.initialize()
+            await asyncio.wait_for(self._client_session.initialize(), timeout=10.0)
             self._connected = True
 
-            result = await self._client_session.list_tools()
+            result = await asyncio.wait_for(self._client_session.list_tools(), timeout=10.0)
             self._tools = [
                 {
                     "name": t.name,
@@ -162,13 +168,17 @@ class MCPServerConnection:
                 len(self._tools),
             )
 
-        except Exception as e:
+        except BaseException as e:
             logger.warning(
-                "MCP HTTP server '%s' connection failed (%s) — running in no-op mode",
+                "MCP HTTP server '%s' connection failed (%s: %s) — running in no-op mode",
                 self.config.name,
+                type(e).__name__,
                 e,
             )
-            await self._cleanup()
+            try:
+                await self._cleanup()
+            except BaseException:
+                pass
             self._connected = True  # no-op: lifecycle works, call_tool will fail
 
     async def disconnect(self) -> None:
