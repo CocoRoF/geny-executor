@@ -68,10 +68,11 @@ class MCPServerConnection:
             from mcp.client.stdio import stdio_client
         except ImportError:
             logger.warning(
-                "MCP SDK not installed — skipping MCP server '%s'. "
+                "MCP SDK not installed — server '%s' connected in no-op mode. "
                 "Install with: pip install mcp",
                 self.config.name,
             )
+            self._connected = True  # no-op mode: lifecycle works, call_tool will fail
             return
 
         env = os.environ.copy()
@@ -122,9 +123,10 @@ class MCPServerConnection:
             from mcp.client.sse import sse_client
         except ImportError:
             logger.warning(
-                "MCP SDK not installed — skipping MCP server '%s'.",
+                "MCP SDK not installed — server '%s' connected in no-op mode.",
                 self.config.name,
             )
+            self._connected = True  # no-op mode
             return
 
         if not self.config.url:
@@ -199,10 +201,15 @@ class MCPServerConnection:
         Raises:
             RuntimeError: If the server is not connected.
         """
-        if not self._connected or self._client_session is None:
+        if not self._connected:
             raise RuntimeError(
                 f"MCP server '{self.config.name}' is not connected. "
                 f"Cannot call tool '{tool_name}'."
+            )
+        if self._client_session is None:
+            raise RuntimeError(
+                f"MCP server '{self.config.name}' is in no-op mode (mcp SDK not installed). "
+                f"Cannot call tool '{tool_name}'. Install with: pip install mcp"
             )
 
         result = await self._client_session.call_tool(tool_name, arguments)
@@ -225,7 +232,7 @@ class MCPManager:
 
     Usage:
         manager = MCPManager()
-        await manager.connect_server("github", MCPServerConfig(
+        await manager.connect("github", MCPServerConfig(
             name="github",
             command="npx",
             args=["-y", "@modelcontextprotocol/server-github"],
@@ -238,7 +245,7 @@ class MCPManager:
         self._servers: Dict[str, MCPServerConnection] = {}
         self._configs: Dict[str, MCPServerConfig] = {}
 
-    async def connect_server(self, name: str, config: MCPServerConfig) -> None:
+    async def connect(self, name: str, config: MCPServerConfig) -> None:
         """Connect to an MCP server by config."""
         if name in self._servers:
             await self.disconnect(name)
@@ -251,7 +258,7 @@ class MCPManager:
         """Connect to multiple MCP servers concurrently."""
         tasks = []
         for name, config in configs.items():
-            tasks.append(self.connect_server(name, config))
+            tasks.append(self.connect(name, config))
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
 
