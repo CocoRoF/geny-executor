@@ -153,6 +153,82 @@ class GenyPresets:
         return pipeline_builder.build()
 
     @staticmethod
+    def worker_adaptive(
+        api_key: str,
+        memory_manager: Any,
+        *,
+        model: str = "claude-sonnet-4-20250514",
+        system_prompt: str = "",
+        tools: Optional[ToolRegistry] = None,
+        max_turns: int = 30,
+        easy_max_turns: int = 1,
+        max_inject_chars: int = 10000,
+        enable_reflection: bool = True,
+        llm_reflect: Optional[Callable[[str, str], Awaitable[List[Dict[str, Any]]]]] = None,
+        llm_gate: Optional[Callable[[str], Awaitable[bool]]] = None,
+        curated_knowledge_manager: Any = None,
+    ) -> Pipeline:
+        """Worker (adaptive) — binary classify + autonomous execution.
+
+        Auto-classifies tasks on the first turn:
+          - easy: 1-turn direct answer (no tools, minimal tokens)
+          - not_easy: multi-turn loop with TODO decomposition + tool use
+
+        Replaces the old template-optimized-autonomous workflow graph
+        with a single Pipeline using BinaryClassifyEvaluation strategy.
+
+        Active stages: Input → Context → System → Guard → Cache
+                       → API → Token → Think → Parse → Tool
+                       → Evaluate(BinaryClassify) → Loop → Memory → Yield
+        """
+        from geny_executor.stages.s12_evaluate.artifact.adaptive.strategy import (
+            BinaryClassifyConfig,
+            BinaryClassifyEvaluation,
+        )
+
+        retriever = GenyMemoryRetriever(
+            memory_manager,
+            max_inject_chars=max_inject_chars,
+            enable_vector_search=True,
+            llm_gate=llm_gate,
+            curated_knowledge_manager=curated_knowledge_manager,
+        )
+        strategy = GenyMemoryStrategy(
+            memory_manager,
+            enable_reflection=enable_reflection,
+            llm_reflect=llm_reflect,
+            curated_knowledge_manager=curated_knowledge_manager,
+        )
+        persistence = GenyPersistence(memory_manager)
+
+        # Combine user prompt with adaptive execution instructions
+        full_prompt = (system_prompt or _DEFAULT_WORKER_PROMPT) + "\n\n" + _ADAPTIVE_PROMPT
+        sys_builder = _build_system_builder(full_prompt)
+
+        classify_config = BinaryClassifyConfig(
+            easy_max_turns=easy_max_turns,
+            not_easy_max_turns=max_turns,
+        )
+        eval_strategy = BinaryClassifyEvaluation(classify_config)
+
+        pipeline_builder = (
+            PipelineBuilder("worker-adaptive", api_key=api_key, model=model)
+            .with_context(retriever=retriever)
+            .with_system(builder=sys_builder)
+            .with_guard()
+            .with_cache(strategy="aggressive")
+            .with_think()
+            .with_evaluate(strategy=eval_strategy)
+            .with_loop(max_turns=max_turns)
+            .with_memory(strategy=strategy, persistence=persistence)
+        )
+
+        if tools:
+            pipeline_builder = pipeline_builder.with_tools(registry=tools)
+
+        return pipeline_builder.build()
+
+    @staticmethod
     def vtuber(
         api_key: str,
         memory_manager: Any,
@@ -214,6 +290,21 @@ If you need to continue working, end with [CONTINUE: next action].
 If you are blocked and cannot proceed, end with [BLOCKED: reason].
 
 Be thorough, accurate, and concise."""
+
+_ADAPTIVE_PROMPT = """\
+## Execution Strategy
+
+Classify the task and act accordingly:
+
+**Easy tasks** (factual Q&A, simple lookups, greetings, short explanations):
+Answer directly in one response. Do not use tools unless absolutely necessary.
+
+**Complex tasks** (coding, research, multi-step work, file operations):
+1. Plan: Decompose into clear steps
+2. Execute: Use tools to complete each step
+3. Verify: Check your work
+4. Signal [CONTINUE: next step] after each step
+5. Signal [TASK_COMPLETE] when all steps are done"""
 
 _DEFAULT_VTUBER_PROMPT = """\
 You are a friendly AI VTuber assistant. Engage in natural conversation

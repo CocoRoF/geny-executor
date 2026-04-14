@@ -12,6 +12,10 @@ from geny_executor.stages.s12_evaluate.strategies import (
     QualityCriterion,
     EvaluationResult,
 )
+from geny_executor.stages.s12_evaluate.artifact.adaptive.strategy import (
+    BinaryClassifyEvaluation,
+    BinaryClassifyConfig,
+)
 
 __all__ = [
     "EvaluateStage",
@@ -19,6 +23,8 @@ __all__ = [
     "SignalBasedEvaluation",
     "CriteriaBasedEvaluation",
     "AgentEvaluation",
+    "BinaryClassifyEvaluation",
+    "BinaryClassifyConfig",
     "QualityScorer",
     "NoScorer",
     "WeightedScorer",
