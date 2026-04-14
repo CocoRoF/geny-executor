@@ -21,6 +21,7 @@ from geny_executor.core.pipeline import Pipeline
 from geny_executor.memory.retriever import GenyMemoryRetriever
 from geny_executor.memory.strategy import GenyMemoryStrategy
 from geny_executor.memory.persistence import GenyPersistence
+from geny_executor.tools.base import ToolContext
 from geny_executor.tools.registry import ToolRegistry
 
 
@@ -102,6 +103,7 @@ class GenyPresets:
         model: str = "claude-sonnet-4-20250514",
         system_prompt: str = "",
         tools: Optional[ToolRegistry] = None,
+        tool_context: Optional[ToolContext] = None,
         max_turns: int = 50,
         max_inject_chars: int = 10000,
         enable_reflection: bool = True,
@@ -148,7 +150,10 @@ class GenyPresets:
         )
 
         if tools:
-            pipeline_builder = pipeline_builder.with_tools(registry=tools)
+            tool_kwargs: Dict[str, Any] = {}
+            if tool_context:
+                tool_kwargs["context"] = tool_context
+            pipeline_builder = pipeline_builder.with_tools(registry=tools, **tool_kwargs)
 
         return pipeline_builder.build()
 
@@ -160,6 +165,7 @@ class GenyPresets:
         model: str = "claude-sonnet-4-20250514",
         system_prompt: str = "",
         tools: Optional[ToolRegistry] = None,
+        tool_context: Optional[ToolContext] = None,
         max_turns: int = 30,
         easy_max_turns: int = 1,
         max_inject_chars: int = 10000,
@@ -224,7 +230,10 @@ class GenyPresets:
         )
 
         if tools:
-            pipeline_builder = pipeline_builder.with_tools(registry=tools)
+            tool_kwargs: Dict[str, Any] = {}
+            if tool_context:
+                tool_kwargs["context"] = tool_context
+            pipeline_builder = pipeline_builder.with_tools(registry=tools, **tool_kwargs)
 
         return pipeline_builder.build()
 
@@ -239,6 +248,7 @@ class GenyPresets:
         enable_reflection: bool = True,
         llm_reflect: Optional[Callable[[str, str], Awaitable[List[Dict[str, Any]]]]] = None,
         tools: Optional[ToolRegistry] = None,
+        tool_context: Optional[ToolContext] = None,
         curated_knowledge_manager: Any = None,
     ) -> Pipeline:
         """VTuber — conversational agent with persona and memory reflection.
@@ -275,7 +285,10 @@ class GenyPresets:
         )
 
         if tools:
-            pipeline_builder = pipeline_builder.with_tools(registry=tools)
+            tool_kwargs: Dict[str, Any] = {}
+            if tool_context:
+                tool_kwargs["context"] = tool_context
+            pipeline_builder = pipeline_builder.with_tools(registry=tools, **tool_kwargs)
 
         return pipeline_builder.build()
 
