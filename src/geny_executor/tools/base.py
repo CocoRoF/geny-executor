@@ -4,15 +4,31 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Dict
+from typing import Any, Dict, List, Optional
 
 
 @dataclass
 class ToolContext:
-    """Context passed to tool execution."""
+    """Context passed to tool execution.
+
+    Attributes:
+        session_id: Unique session identifier.
+        working_dir: Working directory for file operations. Tools should
+            resolve relative paths against this directory.
+        storage_path: Session-specific storage directory (e.g. for logs,
+            session state files). May differ from working_dir.
+        env_vars: Environment variables to inject when spawning
+            subprocesses (e.g. GITHUB_TOKEN, ANTHROPIC_API_KEY).
+        allowed_paths: If set, tools MUST restrict file system access to
+            these directories. An empty list means no restriction.
+        metadata: Arbitrary key-value metadata forwarded to tools.
+    """
 
     session_id: str = ""
     working_dir: str = ""
+    storage_path: Optional[str] = None
+    env_vars: Optional[Dict[str, str]] = None
+    allowed_paths: Optional[List[str]] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
 
 

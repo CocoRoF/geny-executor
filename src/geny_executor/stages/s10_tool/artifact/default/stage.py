@@ -69,6 +69,9 @@ class ToolStage(Stage[Any, Any]):
         ctx = ToolContext(
             session_id=state.session_id,
             working_dir=self._context.working_dir,
+            storage_path=self._context.storage_path,
+            env_vars=self._context.env_vars,
+            allowed_paths=self._context.allowed_paths,
             metadata=self._context.metadata,
         )
 
