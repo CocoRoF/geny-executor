@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from geny_executor.tools.base import Tool, ToolContext, ToolResult
+from geny_executor.tools.base import Tool
 from geny_executor.tools.registry import ToolRegistry
 
 logger = logging.getLogger(__name__)
