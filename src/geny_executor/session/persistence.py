@@ -59,15 +59,12 @@ class FileSessionPersistence:
             "version": 1,
             "session_id": session_id,
             "saved_at": datetime.now(timezone.utc).isoformat(),
-
             # Conversation state (essential for --resume equivalent)
             "system": state.system,
             "messages": state.messages,
-
             # Execution stats
             "iteration": state.iteration,
             "total_cost_usd": state.total_cost_usd,
-
             # Token tracking
             "token_usage": {
                 "input_tokens": state.token_usage.input_tokens,
@@ -75,7 +72,6 @@ class FileSessionPersistence:
                 "cache_creation_input_tokens": state.token_usage.cache_creation_input_tokens,
                 "cache_read_input_tokens": state.token_usage.cache_read_input_tokens,
             },
-
             # Cache metrics
             "cache_metrics": {
                 "total_cache_writes": state.cache_metrics.total_cache_writes,
@@ -83,14 +79,11 @@ class FileSessionPersistence:
                 "estimated_savings_usd": state.cache_metrics.estimated_savings_usd,
                 "cache_hit_rate": state.cache_metrics.cache_hit_rate,
             },
-
             # Memory references
             "memory_refs": state.memory_refs,
-
             # Model config snapshot
             "model": state.model,
             "max_tokens": state.max_tokens,
-
             # Metadata
             "metadata": state.metadata,
         }
@@ -99,7 +92,9 @@ class FileSessionPersistence:
             path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
             logger.debug(
                 "Session state saved: %s (%d messages, cost=$%.6f)",
-                session_id, len(state.messages), state.total_cost_usd,
+                session_id,
+                len(state.messages),
+                state.total_cost_usd,
             )
         except OSError as e:
             logger.error("Failed to save session state for %s: %s", session_id, e)
@@ -164,7 +159,10 @@ class FileSessionPersistence:
 
         logger.info(
             "Session state loaded: %s (%d messages, iteration=%d, cost=$%.6f)",
-            session_id, len(state.messages), state.iteration, state.total_cost_usd,
+            session_id,
+            len(state.messages),
+            state.iteration,
+            state.total_cost_usd,
         )
 
         return state

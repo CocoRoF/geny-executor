@@ -154,14 +154,12 @@ class GrepTool(Tool):
             return ToolResult(content=output)
 
         elif output_mode == "count":
-            return ToolResult(
-                content=f"{total_matches} matches in {len(match_files)} files"
-            )
+            return ToolResult(content=f"{total_matches} matches in {len(match_files)} files")
 
         else:  # content
             if not match_lines:
                 return ToolResult(content=f"No matches for '{pattern_str}'")
-            output = "\n".join(match_lines[:_MAX_MATCHES * 3])
+            output = "\n".join(match_lines[: _MAX_MATCHES * 3])
             if total_matches > _MAX_MATCHES:
                 output += f"\n\n... ({total_matches} total matches, showing first {_MAX_MATCHES})"
             return ToolResult(content=output)

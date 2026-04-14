@@ -112,7 +112,8 @@ class MCPServerConnection:
         except Exception as e:
             logger.warning(
                 "MCP server '%s' connection failed (%s) — running in no-op mode",
-                self.config.name, e,
+                self.config.name,
+                e,
             )
             await self._cleanup()
             self._connected = True  # no-op: lifecycle works, call_tool will fail
@@ -164,7 +165,8 @@ class MCPServerConnection:
         except Exception as e:
             logger.warning(
                 "MCP HTTP server '%s' connection failed (%s) — running in no-op mode",
-                self.config.name, e,
+                self.config.name,
+                e,
             )
             await self._cleanup()
             self._connected = True  # no-op: lifecycle works, call_tool will fail
@@ -205,8 +207,7 @@ class MCPServerConnection:
         """
         if not self._connected:
             raise RuntimeError(
-                f"MCP server '{self.config.name}' is not connected. "
-                f"Cannot call tool '{tool_name}'."
+                f"MCP server '{self.config.name}' is not connected. Cannot call tool '{tool_name}'."
             )
         if self._client_session is None:
             raise RuntimeError(
@@ -299,7 +300,9 @@ class MCPManager:
         tools = await self.discover_tools()
         for tool in tools:
             registry.register(tool)
-        logger.info("MCP registry built: %d tools from %d servers", len(registry), len(self._servers))
+        logger.info(
+            "MCP registry built: %d tools from %d servers", len(registry), len(self._servers)
+        )
         return registry
 
     def list_servers(self) -> List[str]:

@@ -65,7 +65,10 @@ class ReadTool(Tool):
         if not resolved.exists():
             return ToolResult(content=f"File not found: {resolved}", is_error=True)
         if resolved.is_dir():
-            return ToolResult(content=f"Cannot read directory: {resolved}. Use Bash with 'ls' instead.", is_error=True)
+            return ToolResult(
+                content=f"Cannot read directory: {resolved}. Use Bash with 'ls' instead.",
+                is_error=True,
+            )
 
         # Binary detection
         mime, _ = mimetypes.guess_type(str(resolved))
@@ -97,7 +100,9 @@ class ReadTool(Tool):
 
         selected = lines[offset : offset + limit]
         if not selected and total > 0:
-            return ToolResult(content=f"Offset {offset} is beyond file end ({total} lines).", is_error=True)
+            return ToolResult(
+                content=f"Offset {offset} is beyond file end ({total} lines).", is_error=True
+            )
 
         # Format with line numbers (1-based display)
         numbered = []
