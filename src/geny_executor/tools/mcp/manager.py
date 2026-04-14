@@ -110,11 +110,12 @@ class MCPServerConnection:
             )
 
         except Exception as e:
-            logger.error(
-                "Failed to connect MCP server '%s': %s",
+            logger.warning(
+                "MCP server '%s' connection failed (%s) — running in no-op mode",
                 self.config.name, e,
             )
             await self._cleanup()
+            self._connected = True  # no-op: lifecycle works, call_tool will fail
 
     async def _connect_http(self) -> None:
         """Connect via HTTP/SSE transport (remote server)."""
@@ -161,11 +162,12 @@ class MCPServerConnection:
             )
 
         except Exception as e:
-            logger.error(
-                "Failed to connect MCP HTTP server '%s': %s",
+            logger.warning(
+                "MCP HTTP server '%s' connection failed (%s) — running in no-op mode",
                 self.config.name, e,
             )
             await self._cleanup()
+            self._connected = True  # no-op: lifecycle works, call_tool will fail
 
     async def disconnect(self) -> None:
         """Disconnect from the MCP server."""
