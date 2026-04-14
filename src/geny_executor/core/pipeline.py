@@ -202,11 +202,20 @@ class Pipeline:
                         data={
                             "result": state.final_text[: self.EVENT_DATA_TRUNCATE],
                             "iterations": state.iteration,
+                            "total_cost_usd": state.total_cost_usd,
                         },
                     )
                 )
             except Exception as e:
-                queue.put_nowait(PipelineEvent(type="pipeline.error", data={"error": str(e)}))
+                queue.put_nowait(
+                    PipelineEvent(
+                        type="pipeline.error",
+                        data={
+                            "error": str(e),
+                            "total_cost_usd": state.total_cost_usd,
+                        },
+                    )
+                )
             finally:
                 queue.put_nowait(_SENTINEL)  # type: ignore[arg-type]
 

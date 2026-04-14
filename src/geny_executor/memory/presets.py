@@ -281,6 +281,8 @@ class GenyPresets:
             .with_system(builder=sys_builder)
             .with_guard()
             .with_cache(strategy="system")
+            .with_evaluate()
+            .with_loop(max_turns=10)
             .with_memory(strategy=strategy, persistence=persistence)
         )
 
