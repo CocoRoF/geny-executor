@@ -503,9 +503,9 @@ class TestGenyPresets:
         assert "context" in stage_names
         assert "system" in stage_names
         assert "memory" in stage_names
-        # VTuber: no loop/evaluate (single-turn conversational)
-        assert "loop" not in stage_names
-        assert "evaluate" not in stage_names
+        # VTuber: has loop/evaluate for tool call support
+        assert "loop" in stage_names
+        assert "evaluate" in stage_names
 
     def test_vtuber_custom_persona(self):
         mgr = MockMemoryManager()
