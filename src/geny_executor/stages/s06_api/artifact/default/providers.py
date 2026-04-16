@@ -95,6 +95,8 @@ class AnthropicProvider(APIProvider):
             kwargs["temperature"] = request.temperature
         if request.top_p is not None:
             kwargs["top_p"] = request.top_p
+        if request.top_k is not None:
+            kwargs["top_k"] = request.top_k
         if request.tools:
             kwargs["tools"] = request.tools
         if request.tool_choice:

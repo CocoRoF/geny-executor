@@ -18,6 +18,7 @@ class APIRequest:
     system: Any = ""  # str or List[content blocks]
     temperature: float = 0.0
     top_p: Optional[float] = None
+    top_k: Optional[int] = None
     tools: Optional[List[Dict[str, Any]]] = None
     tool_choice: Optional[Dict[str, Any]] = None
     stop_sequences: Optional[List[str]] = None

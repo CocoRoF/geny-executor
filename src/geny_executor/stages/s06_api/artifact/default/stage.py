@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional
 
 from geny_executor.core.errors import APIError, ErrorCategory
 from geny_executor.core.stage import Stage, StrategyInfo
@@ -21,8 +21,11 @@ class APIStage(Stage[Any, APIResponse]):
       - Level 2 provider: actual API call implementation
       - Level 2 retry: error recovery strategy
 
-    When stream=True (default), uses create_message_stream() and emits
-    text.delta events for real-time token streaming.
+    Streaming is controlled by PipelineState.stream (set from PipelineConfig).
+    Falls back to the constructor parameter when state does not specify.
+
+    Both streaming and non-streaming paths share the same retry strategy:
+    same model, up to max_retries attempts, then fail.
     """
 
     def __init__(
@@ -42,7 +45,7 @@ class APIStage(Stage[Any, APIResponse]):
             raise ValueError("Either 'provider' or 'api_key' must be provided")
 
         self._retry = retry or ExponentialBackoffRetry()
-        self._stream = stream
+        self._stream_default = stream
 
     @property
     def name(self) -> str:
@@ -56,8 +59,17 @@ class APIStage(Stage[Any, APIResponse]):
     def category(self) -> str:
         return "execution"
 
+    def _resolve_stream(self, state: PipelineState) -> bool:
+        """Resolve streaming mode: state (from PipelineConfig) takes precedence."""
+        state_stream = getattr(state, "stream", None)
+        if state_stream is not None:
+            return state_stream
+        return self._stream_default
+
     async def execute(self, input: Any, state: PipelineState) -> APIResponse:
         request = self._build_request(state)
+        use_stream = self._resolve_stream(state)
+
         state.add_event(
             "api.request",
             {
@@ -65,19 +77,19 @@ class APIStage(Stage[Any, APIResponse]):
                 "message_count": len(request.messages),
                 "has_tools": bool(request.tools),
                 "has_thinking": bool(request.thinking),
-                "stream": self._stream,
+                "stream": use_stream,
             },
         )
 
-        if self._stream:
-            response = await self._call_streaming(request, state)
+        if use_stream:
+            response = await self._call_streaming_with_retry(request, state)
         else:
             response = await self._call_with_retry(request, state)
 
         # Store raw response for downstream stages
         state.last_api_response = response
 
-        # Add assistant message to conversation
+        # Add assistant message to conversation (always List[Dict])
         assistant_content = self._build_assistant_content(response)
         state.add_message("assistant", assistant_content)
 
@@ -95,13 +107,20 @@ class APIStage(Stage[Any, APIResponse]):
         return response
 
     def _build_request(self, state: PipelineState) -> APIRequest:
-        """Build APIRequest from pipeline state."""
+        """Build APIRequest from pipeline state.
+
+        Follows Anthropic API constraints:
+          - Use EITHER temperature OR top_p, not both.
+          - thinking.budget_tokens must be < max_tokens when type="enabled".
+        """
         request = APIRequest(
             model=state.model,
             messages=list(state.messages),
             max_tokens=state.max_tokens,
             system=state.system,
             temperature=state.temperature,
+            top_p=state.top_p,
+            top_k=state.top_k,
             stop_sequences=state.stop_sequences,
         )
 
@@ -109,16 +128,76 @@ class APIStage(Stage[Any, APIResponse]):
             request.tools = state.tools
         if state.tool_choice:
             request.tool_choice = state.tool_choice
+
+        # Extended thinking
         if state.thinking_enabled:
-            request.thinking = {
-                "type": "enabled",
-                "budget_tokens": state.thinking_budget_tokens,
-            }
+            thinking_type = getattr(state, "thinking_type", "enabled")
+            thinking: dict = {"type": thinking_type}
+
+            if thinking_type == "enabled":
+                thinking["budget_tokens"] = state.thinking_budget_tokens
+
+            thinking_display = getattr(state, "thinking_display", None)
+            if thinking_display:
+                thinking["display"] = thinking_display
+
+            request.thinking = thinking
 
         return request
 
+    # ── API call methods (both paths use the same retry strategy) ──
+
+    async def _call_streaming_with_retry(
+        self, request: APIRequest, state: PipelineState
+    ) -> APIResponse:
+        """Execute streaming API call with retry on recoverable errors.
+
+        Same model, up to max_retries attempts. No model switching.
+        On retry, previously streamed text.delta events are already emitted
+        but the final response is discarded — only the successful attempt's
+        response is returned.
+        """
+        last_error: Optional[Exception] = None
+
+        for attempt in range(self._retry.max_retries + 1):
+            try:
+                return await self._call_streaming(request, state)
+            except APIError as e:
+                last_error = e
+                if not self._retry.should_retry(e.category, attempt):
+                    raise
+                delay = self._retry.get_delay(attempt)
+                state.add_event(
+                    "api.retry",
+                    {
+                        "attempt": attempt + 1,
+                        "category": e.category.value,
+                        "delay": delay,
+                        "stream": True,
+                    },
+                )
+                await asyncio.sleep(delay)
+            except Exception as e:
+                last_error = e
+                category = ErrorCategory.UNKNOWN
+                if not self._retry.should_retry(category, attempt):
+                    raise APIError(str(e), category=category, cause=e) from e
+                delay = self._retry.get_delay(attempt)
+                state.add_event(
+                    "api.retry",
+                    {
+                        "attempt": attempt + 1,
+                        "category": category.value,
+                        "delay": delay,
+                        "stream": True,
+                    },
+                )
+                await asyncio.sleep(delay)
+
+        raise last_error or APIError("Max retries exceeded", category=ErrorCategory.UNKNOWN)
+
     async def _call_streaming(self, request: APIRequest, state: PipelineState) -> APIResponse:
-        """Execute API call with streaming, emitting text.delta events."""
+        """Single streaming attempt — emits text.delta events."""
         response: Optional[APIResponse] = None
 
         async for chunk in self._provider.create_message_stream(request):
@@ -126,7 +205,6 @@ class APIStage(Stage[Any, APIResponse]):
             if chunk_type == "message_complete":
                 response = chunk["response"]
             elif chunk_type == "text_delta" and chunk.get("text"):
-                # Emit text delta for real-time streaming
                 state.add_event("text.delta", {"text": chunk["text"]})
 
         if response is None:
@@ -137,7 +215,7 @@ class APIStage(Stage[Any, APIResponse]):
         return response
 
     async def _call_with_retry(self, request: APIRequest, state: PipelineState) -> APIResponse:
-        """Execute API call with retry logic."""
+        """Execute non-streaming API call with retry logic."""
         last_error: Optional[Exception] = None
 
         for attempt in range(self._retry.max_retries + 1):
@@ -176,9 +254,15 @@ class APIStage(Stage[Any, APIResponse]):
 
         raise last_error or APIError("Max retries exceeded", category=ErrorCategory.UNKNOWN)
 
-    def _build_assistant_content(self, response: APIResponse) -> Any:
-        """Build assistant content for message history."""
-        blocks = []
+    # ── Response formatting ──
+
+    def _build_assistant_content(self, response: APIResponse) -> List[Dict[str, Any]]:
+        """Build assistant content for message history.
+
+        Always returns List[Dict] (Anthropic content blocks format)
+        for consistent downstream processing.
+        """
+        blocks: List[Dict[str, Any]] = []
         for block in response.content:
             if block.raw:
                 blocks.append(block.raw)
@@ -193,11 +277,7 @@ class APIStage(Stage[Any, APIResponse]):
                         "input": block.tool_input,
                     }
                 )
-        return (
-            blocks
-            if len(blocks) != 1 or blocks[0].get("type") != "text"
-            else blocks[0].get("text", "")
-        )
+        return blocks
 
     def list_strategies(self) -> List[StrategyInfo]:
         return [
