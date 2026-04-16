@@ -254,7 +254,6 @@ async def test_pipeline_error_handling():
 async def test_model_config_propagates_all_params():
     """ModelConfig fields are fully propagated: config → state → request."""
     from geny_executor.core.config import ModelConfig, PipelineConfig
-    from geny_executor.stages.s06_api.types import APIRequest
 
     # 1. Config → State propagation
     model_config = ModelConfig(
@@ -378,7 +377,7 @@ async def test_cost_budget_enforced_in_loop():
     from geny_executor.stages.s10_tool import ToolStage
     from geny_executor.stages.s13_loop import LoopStage
     from geny_executor.tools.registry import ToolRegistry
-    from geny_executor.tools.base import Tool, ToolResult, ToolContext
+    from geny_executor.tools.base import Tool, ToolResult
 
     class DummyTool(Tool):
         @property
@@ -452,7 +451,6 @@ async def test_stream_config_propagates_to_api_stage():
 @pytest.mark.asyncio
 async def test_single_turn_completes_after_one_pass():
     """PipelineConfig.single_turn=True stops loop after first pass."""
-    from geny_executor.core.config import ModelConfig
 
     # Create a tool_use response that would normally cause looping
     tool_response = APIResponse(
