@@ -73,9 +73,42 @@ ANTHROPIC_PRICING: Dict[str, Dict[str, float]] = {
     },
 }
 
+# OpenAI pricing per million tokens (as of 2026-04)
+OPENAI_PRICING: Dict[str, Dict[str, float]] = {
+    "gpt-4.1": {"input": 2.0, "output": 8.0},
+    "gpt-4.1-mini": {"input": 0.40, "output": 1.60},
+    "gpt-4.1-nano": {"input": 0.10, "output": 0.40},
+    "o3": {"input": 2.0, "output": 8.0},
+    "o4-mini": {"input": 1.10, "output": 4.40},
+    "gpt-4o": {"input": 2.50, "output": 10.0},
+    "gpt-4o-mini": {"input": 0.15, "output": 0.60},
+}
+
+# Google Gemini pricing per million tokens (as of 2026-04)
+# Source: https://ai.google.dev/pricing
+GOOGLE_PRICING: Dict[str, Dict[str, float]] = {
+    "gemini-3.1-pro": {"input": 2.0, "output": 12.0},
+    "gemini-3-flash": {"input": 0.50, "output": 3.0},
+    "gemini-3.1-flash-lite": {"input": 0.25, "output": 1.50},
+    "gemini-2.5-pro": {"input": 1.25, "output": 10.0},
+    "gemini-2.5-flash": {"input": 0.30, "output": 2.50},
+    "gemini-2.5-flash-lite": {"input": 0.10, "output": 0.40},
+}
+
+# Unified pricing table
+ALL_PRICING: Dict[str, Dict[str, float]] = {
+    **ANTHROPIC_PRICING,
+    **OPENAI_PRICING,
+    **GOOGLE_PRICING,
+}
+
 
 class AnthropicPricingCalculator(CostCalculator):
-    """Anthropic official pricing calculator."""
+    """Anthropic official pricing calculator.
+
+    Kept for backward compatibility — use UnifiedPricingCalculator for
+    multi-provider pipelines.
+    """
 
     def __init__(self, custom_pricing: Optional[Dict[str, Dict[str, float]]] = None):
         self._pricing = {**ANTHROPIC_PRICING}
@@ -145,3 +178,55 @@ class CustomPricingCalculator(CostCalculator):
         cost = (usage.input_tokens / 1_000_000) * self._input_rate
         cost += (usage.output_tokens / 1_000_000) * self._output_rate
         return cost
+
+
+class UnifiedPricingCalculator(CostCalculator):
+    """Multi-provider pricing calculator.
+
+    Covers Anthropic, OpenAI, and Google Gemini models.
+    Uses cache pricing when available (Anthropic), falls back to
+    simple input/output pricing for other providers.
+    """
+
+    def __init__(self, custom_pricing: Optional[Dict[str, Dict[str, float]]] = None):
+        self._pricing = {**ALL_PRICING}
+        if custom_pricing:
+            self._pricing.update(custom_pricing)
+
+    @property
+    def name(self) -> str:
+        return "unified_pricing"
+
+    @property
+    def description(self) -> str:
+        return "Multi-provider pricing (Anthropic + OpenAI + Google)"
+
+    def calculate(self, usage: TokenUsage, model: str) -> float:
+        prices = self._get_prices(model)
+        if not prices:
+            return 0.0
+
+        cost = 0.0
+        has_cache_pricing = "cache_write" in prices
+
+        if has_cache_pricing:
+            # Anthropic-style: separate cache write/read pricing
+            regular_input = usage.input_tokens - usage.cache_read_input_tokens
+            cost += (regular_input / 1_000_000) * prices["input"]
+            cost += (usage.cache_creation_input_tokens / 1_000_000) * prices["cache_write"]
+            cost += (usage.cache_read_input_tokens / 1_000_000) * prices["cache_read"]
+        else:
+            # Simple input pricing (OpenAI, Google)
+            cost += (usage.input_tokens / 1_000_000) * prices["input"]
+
+        cost += (usage.output_tokens / 1_000_000) * prices["output"]
+        return cost
+
+    def _get_prices(self, model: str) -> Optional[Dict[str, float]]:
+        """Look up pricing: exact match → prefix match."""
+        if model in self._pricing:
+            return self._pricing[model]
+        for key in self._pricing:
+            if model.startswith(key.rsplit("-", 1)[0]):
+                return self._pricing[key]
+        return None

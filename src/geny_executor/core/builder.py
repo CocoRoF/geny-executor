@@ -128,13 +128,12 @@ class PipelineBuilder:
 
         # Always register: Input, API, Parse, Yield
         from geny_executor.stages.s01_input import InputStage
-        from geny_executor.stages.s06_api import APIStage
         from geny_executor.stages.s07_token import TokenStage
         from geny_executor.stages.s09_parse import ParseStage
         from geny_executor.stages.s16_yield import YieldStage
 
         pipeline.register_stage(InputStage())
-        pipeline.register_stage(APIStage(api_key=self._api_key))
+        pipeline.register_stage(self._build_api_stage(config))
         pipeline.register_stage(TokenStage())
         pipeline.register_stage(ParseStage())
         pipeline.register_stage(YieldStage())
@@ -222,6 +221,35 @@ class PipelineBuilder:
             pipeline.register_stage(MemoryStage(**self._stage_configs["memory"]))
 
         return pipeline
+
+    def _build_api_stage(self, config: PipelineConfig) -> Any:
+        """Build the API stage, selecting provider by artifact or model name."""
+        # Check if user explicitly specified an artifact for s06_api
+        artifact = config.artifacts.get("s06_api") or config.artifacts.get("api")
+
+        # Auto-detect from model name if no explicit artifact
+        if not artifact:
+            artifact = self._infer_api_artifact()
+
+        if artifact and artifact != "default":
+            from geny_executor.core.artifact import create_stage
+
+            return create_stage("s06_api", artifact=artifact, api_key=self._api_key)
+
+        # Default: Anthropic
+        from geny_executor.stages.s06_api import APIStage
+
+        return APIStage(api_key=self._api_key)
+
+    def _infer_api_artifact(self) -> Optional[str]:
+        """Infer API provider artifact from model name prefix."""
+        m = self._model.lower()
+        if m.startswith(("gpt-", "o1", "o3", "o4", "chatgpt")):
+            return "openai"
+        if m.startswith(("gemini-",)):
+            return "google"
+        # claude-*, or unknown → default (Anthropic)
+        return None
 
     def _resolve_cache_strategy(self, name: str) -> Any:
         from geny_executor.stages.s05_cache.strategies import (

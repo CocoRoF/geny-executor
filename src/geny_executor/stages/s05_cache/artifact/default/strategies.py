@@ -6,6 +6,16 @@ from geny_executor.core.state import PipelineState
 from geny_executor.stages.s05_cache.interface import CacheStrategy, EPHEMERAL_CACHE
 
 
+def _supports_cache_control(state: PipelineState) -> bool:
+    """Check if the current model supports Anthropic-style cache_control markers.
+
+    Only Anthropic models use the cache_control content block extension.
+    OpenAI and Google have their own automatic caching — applying
+    Anthropic markers to non-Anthropic models would produce invalid requests.
+    """
+    return state.model.startswith("claude-")
+
+
 class NoCacheStrategy(CacheStrategy):
     """No caching — pass through unchanged."""
 
@@ -25,6 +35,7 @@ class SystemCacheStrategy(CacheStrategy):
     """Cache system prompt only.
 
     Converts system to content blocks with cache_control on the last block.
+    Only applies to Anthropic models — other providers are bypassed.
     """
 
     @property
@@ -36,6 +47,8 @@ class SystemCacheStrategy(CacheStrategy):
         return "Cache system prompt"
 
     def apply_cache_markers(self, state: PipelineState) -> None:
+        if not _supports_cache_control(state):
+            return
         system = state.system
         if not system:
             return
@@ -78,6 +91,9 @@ class AggressiveCacheStrategy(CacheStrategy):
         return "Cache system + tools + stable history"
 
     def apply_cache_markers(self, state: PipelineState) -> None:
+        if not _supports_cache_control(state):
+            return
+
         # 1. Cache system prompt
         self._cache_system(state)
 
