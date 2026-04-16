@@ -69,10 +69,16 @@ class PipelineState:
     current_stage: str = ""
     stage_history: List[str] = field(default_factory=list)
 
+    # ── Behavior (from PipelineConfig) ──
+    stream: bool = True
+    single_turn: bool = False
+
     # ── Model config ──
     model: str = "claude-sonnet-4-20250514"
     max_tokens: int = 8192
     temperature: float = 0.0
+    top_p: Optional[float] = None
+    top_k: Optional[int] = None
     tools: List[Dict[str, Any]] = field(default_factory=list)
     tool_choice: Optional[Dict[str, Any]] = None
     stop_sequences: Optional[List[str]] = None
@@ -80,6 +86,8 @@ class PipelineState:
     # ── Extended Thinking ──
     thinking_enabled: bool = False
     thinking_budget_tokens: int = 10000
+    thinking_type: str = "enabled"  # "enabled" | "disabled" | "adaptive"
+    thinking_display: Optional[str] = None  # "summarized" | "omitted" | None
     thinking_history: List[Dict[str, Any]] = field(default_factory=list)
 
     # ── Token & Cost tracking ──

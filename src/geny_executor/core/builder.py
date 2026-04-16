@@ -2,19 +2,26 @@
 
 from __future__ import annotations
 
+from dataclasses import fields as dataclass_fields
 from typing import Any, Dict, Optional
 
 from geny_executor.core.config import ModelConfig, PipelineConfig
 from geny_executor.core.pipeline import Pipeline
 from geny_executor.tools.registry import ToolRegistry
 
+# ModelConfig field names — used to route kwargs correctly in build().
+_MODEL_CONFIG_FIELDS: set[str] = {f.name for f in dataclass_fields(ModelConfig)}
+
 
 class PipelineBuilder:
     """Declarative pipeline builder.
 
-    Usage:
+    Usage::
+
         pipeline = (
             PipelineBuilder("my-agent", api_key="sk-...")
+            .with_model("claude-sonnet-4-20250514",
+                         max_tokens=4096, temperature=0.7)
             .with_system(prompt="You are helpful.")
             .with_tools(registry=my_tools)
             .with_cache(strategy="system")
@@ -27,6 +34,7 @@ class PipelineBuilder:
         self._name = name
         self._api_key = api_key
         self._model = model or "claude-sonnet-4-20250514"
+        self._model_kwargs: Dict[str, Any] = {}
         self._config_kwargs: Dict[str, Any] = {}
         self._stage_configs: Dict[str, Dict[str, Any]] = {}
         self._tool_registry: Optional[ToolRegistry] = None
@@ -43,8 +51,20 @@ class PipelineBuilder:
         return self
 
     def with_model(self, model: str, **kwargs: Any) -> PipelineBuilder:
+        """Set model name and optional ModelConfig overrides.
+
+        ModelConfig fields (max_tokens, temperature, top_p, top_k,
+        stop_sequences, thinking_enabled, thinking_budget_tokens,
+        thinking_type, thinking_display) are routed to ModelConfig.
+
+        Other kwargs are routed to PipelineConfig.
+        """
         self._model = model
-        self._config_kwargs.update(kwargs)
+        for key, value in kwargs.items():
+            if key in _MODEL_CONFIG_FIELDS:
+                self._model_kwargs[key] = value
+            else:
+                self._config_kwargs[key] = value
         return self
 
     def with_system(self, prompt: str = "", **kwargs: Any) -> PipelineBuilder:
@@ -94,10 +114,12 @@ class PipelineBuilder:
 
     def build(self) -> Pipeline:
         """Build the pipeline with all configured stages."""
+        model_config = ModelConfig(model=self._model, **self._model_kwargs)
+
         config = PipelineConfig(
             name=self._name,
             api_key=self._api_key,
-            model=ModelConfig(model=self._model),
+            model=model_config,
             artifacts=dict(self._artifact_overrides),
             **self._config_kwargs,
         )

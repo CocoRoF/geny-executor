@@ -95,35 +95,7 @@ class Pipeline:
         await self._emit("pipeline.start", data={"input": str(input)[: self.EVENT_DATA_TRUNCATE]})
 
         try:
-            # Phase A: Input (stage 1)
-            current = await self._run_stage(1, input, state)
-
-            # Phase B: Agent Loop (stages 2~13)
-            has_loop_stage = self.LOOP_END in self._stages
-            while True:
-                for order in range(self.LOOP_START, self.LOOP_END + 1):
-                    current = await self._try_run_stage(order, current, state)
-
-                # If no Loop stage is registered, auto-complete after one pass
-                if not has_loop_stage and state.loop_decision == "continue":
-                    state.loop_decision = "complete"
-
-                if state.loop_decision != "continue":
-                    break
-
-                state.iteration += 1
-                if state.is_over_iterations:
-                    state.loop_decision = "complete"
-                    state.completion_signal = "MAX_ITERATIONS"
-                    state.add_event(
-                        "loop.force_complete",
-                        {"reason": "max_iterations", "iteration": state.iteration},
-                    )
-                    break
-
-            # Phase C: Finalize (stages 14~16)
-            for order in range(self.FINALIZE_START, self.FINALIZE_END + 1):
-                current = await self._try_run_stage(order, current, state)
+            await self._run_phases(input, state)
 
             result = PipelineResult.from_state(state)
             await self._emit("pipeline.complete", data={"iterations": state.iteration})
@@ -168,33 +140,7 @@ class Pipeline:
         async def _run_pipeline() -> None:
             """Execute pipeline phases, then push sentinel to signal completion."""
             try:
-                # Phase A
-                current = await self._run_stage(1, input, state)
-
-                # Phase B
-                has_loop_stage = self.LOOP_END in self._stages
-                while True:
-                    for order in range(self.LOOP_START, self.LOOP_END + 1):
-                        current = await self._try_run_stage(order, current, state)
-
-                    if not has_loop_stage and state.loop_decision == "continue":
-                        state.loop_decision = "complete"
-
-                    if state.loop_decision != "continue":
-                        break
-                    state.iteration += 1
-                    if state.is_over_iterations:
-                        state.loop_decision = "complete"
-                        state.completion_signal = "MAX_ITERATIONS"
-                        state.add_event(
-                            "loop.force_complete",
-                            {"reason": "max_iterations", "iteration": state.iteration},
-                        )
-                        break
-
-                # Phase C
-                for order in range(self.FINALIZE_START, self.FINALIZE_END + 1):
-                    current = await self._try_run_stage(order, current, state)
+                await self._run_phases(input, state)
 
                 queue.put_nowait(
                     PipelineEvent(
@@ -274,7 +220,64 @@ class Pipeline:
                 )
         return descriptions
 
-    # ── Internal ──
+    # ── Internal: Phase execution ──
+
+    async def _run_phases(self, input: Any, state: PipelineState) -> None:
+        """Execute all three pipeline phases (single source of truth).
+
+        Phase A: Stage 1 (Input) — once
+        Phase B: Stages 2~13 (Agent Loop) — repeats
+        Phase C: Stages 14~16 (Finalize) — once
+        """
+        # Phase A: Input
+        current = await self._run_stage(1, input, state)
+
+        # Phase B: Agent Loop
+        has_loop_stage = self.LOOP_END in self._stages
+        while True:
+            for order in range(self.LOOP_START, self.LOOP_END + 1):
+                current = await self._try_run_stage(order, current, state)
+
+            # If no Loop stage is registered, auto-complete after one pass
+            if not has_loop_stage and state.loop_decision == "continue":
+                state.loop_decision = "complete"
+
+            # single_turn: complete after one pass regardless of loop decision
+            if state.single_turn and state.loop_decision == "continue":
+                state.loop_decision = "complete"
+
+            if state.loop_decision != "continue":
+                break
+
+            state.iteration += 1
+
+            # Hard limits — checked at pipeline level, not delegated to stages
+            if state.is_over_iterations:
+                state.loop_decision = "complete"
+                state.completion_signal = "MAX_ITERATIONS"
+                state.add_event(
+                    "loop.force_complete",
+                    {"reason": "max_iterations", "iteration": state.iteration},
+                )
+                break
+            if state.is_over_budget:
+                state.loop_decision = "complete"
+                state.completion_signal = "COST_BUDGET"
+                state.add_event(
+                    "loop.force_complete",
+                    {
+                        "reason": "cost_budget",
+                        "total_cost_usd": state.total_cost_usd,
+                        "budget_usd": state.cost_budget_usd,
+                    },
+                )
+                break
+
+        # Phase C: Finalize
+        for order in range(self.FINALIZE_START, self.FINALIZE_END + 1):
+            current = await self._try_run_stage(order, current, state)
+
+    # ── Internal: Stage execution ──
 
     def _init_state(self, state: Optional[PipelineState]) -> PipelineState:
         """Initialize or apply config to state."""

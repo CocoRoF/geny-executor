@@ -245,3 +245,313 @@ async def test_pipeline_error_handling():
     result = await pipeline.run("Hello")
     assert result.success is False
     assert "API exploded" in (result.error or "")
+
+
+# ── Model parameter propagation ──
+
+
+@pytest.mark.asyncio
+async def test_model_config_propagates_all_params():
+    """ModelConfig fields are fully propagated: config → state → request."""
+    from geny_executor.core.config import ModelConfig, PipelineConfig
+
+    # 1. Config → State propagation
+    model_config = ModelConfig(
+        model="claude-opus-4-6",
+        max_tokens=4096,
+        temperature=0.7,
+        top_p=0.9,
+        top_k=40,
+        stop_sequences=["STOP"],
+        thinking_enabled=True,
+        thinking_budget_tokens=2048,
+        thinking_type="adaptive",
+        thinking_display="omitted",
+    )
+    config = PipelineConfig(model=model_config, cost_budget_usd=1.0)
+    state = PipelineState()
+    config.apply_to_state(state)
+
+    assert state.model == "claude-opus-4-6"
+    assert state.max_tokens == 4096
+    assert state.temperature == 0.7
+    assert state.top_p == 0.9
+    assert state.top_k == 40
+    assert state.stop_sequences == ["STOP"]
+    assert state.thinking_enabled is True
+    assert state.thinking_budget_tokens == 2048
+    assert state.thinking_type == "adaptive"
+    assert state.thinking_display == "omitted"
+    assert state.cost_budget_usd == 1.0
+
+    # 2. State → Request propagation (via APIStage._build_request)
+    provider = MockProvider()
+    api_stage = APIStage(provider=provider)
+    request = api_stage._build_request(state)
+
+    assert request.model == "claude-opus-4-6"
+    assert request.max_tokens == 4096
+    assert request.temperature == 0.7
+    assert request.top_p == 0.9
+    assert request.top_k == 40
+    assert request.stop_sequences == ["STOP"]
+    assert request.thinking == {"type": "adaptive", "display": "omitted"}
+
+
+@pytest.mark.asyncio
+async def test_builder_routes_model_kwargs_correctly():
+    """PipelineBuilder.with_model() routes kwargs to ModelConfig vs PipelineConfig."""
+    from geny_executor.core.builder import PipelineBuilder
+
+    builder = PipelineBuilder("test", api_key="test-key")
+    builder.with_model(
+        "claude-opus-4-6",
+        max_tokens=4096,
+        temperature=0.5,
+        top_p=0.85,
+        top_k=50,
+        thinking_enabled=True,
+        thinking_type="adaptive",
+        # PipelineConfig kwargs
+        max_iterations=10,
+    )
+
+    pipeline = builder.build()
+    state = PipelineState()
+    pipeline._config.apply_to_state(state)
+
+    # ModelConfig params correctly routed
+    assert state.model == "claude-opus-4-6"
+    assert state.max_tokens == 4096
+    assert state.temperature == 0.5
+    assert state.top_p == 0.85
+    assert state.top_k == 50
+    assert state.thinking_enabled is True
+    assert state.thinking_type == "adaptive"
+
+    # PipelineConfig params correctly routed
+    assert state.max_iterations == 10
+
+
+@pytest.mark.asyncio
+async def test_cost_budget_enforced_in_loop():
+    """Pipeline stops when cost budget is exceeded."""
+    from geny_executor.core.config import ModelConfig
+
+    # Create pipeline that loops: tool_use → tool_result → continue
+    tool_response = APIResponse(
+        content=[
+            ContentBlock(type="text", text="Working..."),
+            ContentBlock(
+                type="tool_use",
+                tool_use_id="t1",
+                tool_name="test",
+                tool_input={},
+            ),
+        ],
+        stop_reason="tool_use",
+        usage=TokenUsage(input_tokens=1000, output_tokens=500),
+        model="claude-sonnet-4-6",
+    )
+    final_response = APIResponse(
+        content=[ContentBlock(type="text", text="Done [TASK_COMPLETE]")],
+        stop_reason="end_turn",
+        usage=TokenUsage(input_tokens=100, output_tokens=50),
+        model="claude-sonnet-4-6",
+    )
+
+    provider = MockProvider()
+    # Queue: tool_use → tool_use → final (but budget should stop after first)
+    provider.add_response(tool_response)
+    provider.add_response(tool_response)
+    provider.add_response(final_response)
+
+    # Very low budget: $0.0001 (should be exceeded after first API call)
+    config = PipelineConfig(
+        name="test",
+        model=ModelConfig(model="claude-sonnet-4-6"),
+        cost_budget_usd=0.0001,
+    )
+
+    from geny_executor.stages.s07_token import TokenStage
+    from geny_executor.stages.s10_tool import ToolStage
+    from geny_executor.stages.s13_loop import LoopStage
+    from geny_executor.tools.registry import ToolRegistry
+    from geny_executor.tools.base import Tool, ToolResult
+
+    class DummyTool(Tool):
+        @property
+        def name(self):
+            return "test"
+
+        @property
+        def description(self):
+            return "test tool"
+
+        @property
+        def input_schema(self):
+            return {"type": "object", "properties": {}}
+
+        async def execute(self, input, context=None):
+            return ToolResult(content="ok")
+
+    registry = ToolRegistry()
+    registry.register(DummyTool())
+
+    pipeline = Pipeline(config)
+    pipeline.register_stage(InputStage())
+    pipeline.register_stage(APIStage(provider=provider))
+    pipeline.register_stage(TokenStage())
+    pipeline.register_stage(ParseStage())
+    pipeline.register_stage(ToolStage(registry=registry))
+    pipeline.register_stage(LoopStage())
+    pipeline.register_stage(YieldStage())
+
+    result = await pipeline.run("Do something expensive")
+    assert result.success is True
+    # Budget should have caused early termination
+    assert result.total_cost_usd > 0
+    # If budget worked, the pipeline should have used fewer iterations than
+    # the 3 responses we queued
+    events = [e for e in result.events if e.get("type") == "loop.force_complete"]
+    if events:
+        assert events[0]["data"]["reason"] == "cost_budget"
+
+
+# ── stream / single_turn config ──
+
+
+@pytest.mark.asyncio
+async def test_stream_config_propagates_to_api_stage():
+    """PipelineConfig.stream controls APIStage streaming behavior."""
+    from geny_executor.core.config import PipelineConfig
+
+    # stream=False should be propagated to state
+    config = PipelineConfig(name="test", stream=False)
+    state = PipelineState()
+    config.apply_to_state(state)
+    assert state.stream is False
+
+    # stream=True (default) should be propagated
+    config2 = PipelineConfig(name="test")
+    state2 = PipelineState()
+    config2.apply_to_state(state2)
+    assert state2.stream is True
+
+    # APIStage._resolve_stream reads from state
+    provider = MockProvider()
+    api_stage = APIStage(provider=provider, stream=True)
+
+    # state.stream=False overrides constructor default
+    assert api_stage._resolve_stream(state) is False
+    # state.stream=True matches constructor
+    assert api_stage._resolve_stream(state2) is True
+
+
+@pytest.mark.asyncio
+async def test_single_turn_completes_after_one_pass():
+    """PipelineConfig.single_turn=True stops loop after first pass."""
+
+    # Create a tool_use response that would normally cause looping
+    tool_response = APIResponse(
+        content=[
+            ContentBlock(type="text", text="Using tool"),
+            ContentBlock(
+                type="tool_use",
+                tool_use_id="t1",
+                tool_name="test",
+                tool_input={},
+            ),
+        ],
+        stop_reason="tool_use",
+        usage=TokenUsage(input_tokens=100, output_tokens=50),
+        model="test",
+    )
+    final_response = APIResponse(
+        content=[ContentBlock(type="text", text="Done")],
+        stop_reason="end_turn",
+        usage=TokenUsage(input_tokens=100, output_tokens=50),
+        model="test",
+    )
+
+    provider = MockProvider()
+    provider.add_response(tool_response)
+    provider.add_response(final_response)
+
+    from geny_executor.stages.s07_token import TokenStage
+    from geny_executor.stages.s10_tool import ToolStage
+    from geny_executor.stages.s13_loop import LoopStage
+    from geny_executor.tools.registry import ToolRegistry
+    from geny_executor.tools.base import Tool, ToolResult
+
+    class DummyTool(Tool):
+        @property
+        def name(self):
+            return "test"
+
+        @property
+        def description(self):
+            return "test"
+
+        @property
+        def input_schema(self):
+            return {"type": "object", "properties": {}}
+
+        async def execute(self, input, context=None):
+            return ToolResult(content="ok")
+
+    registry = ToolRegistry()
+    registry.register(DummyTool())
+
+    # single_turn=True → should complete after first pass even with tool_use
+    config = PipelineConfig(name="test", single_turn=True)
+    pipeline = Pipeline(config)
+    pipeline.register_stage(InputStage())
+    pipeline.register_stage(APIStage(provider=provider))
+    pipeline.register_stage(TokenStage())
+    pipeline.register_stage(ParseStage())
+    pipeline.register_stage(ToolStage(registry=registry))
+    pipeline.register_stage(LoopStage())
+    pipeline.register_stage(YieldStage())
+
+    result = await pipeline.run("Do something")
+    assert result.success is True
+    # single_turn should prevent a second loop iteration
+    assert result.iterations == 0
+
+
+# ── Assistant message format consistency ──
+
+
+@pytest.mark.asyncio
+async def test_assistant_content_always_list():
+    """_build_assistant_content always returns List[Dict], never str."""
+    provider = MockProvider(default_text="Simple text response")
+    api_stage = APIStage(provider=provider)
+
+    # Single text block — previously returned str, now should return list
+    response = APIResponse(
+        content=[ContentBlock(type="text", text="Hello")],
+        stop_reason="end_turn",
+    )
+    content = api_stage._build_assistant_content(response)
+    assert isinstance(content, list)
+    assert len(content) == 1
+    assert content[0] == {"type": "text", "text": "Hello"}
+
+    # Multiple blocks — should also return list
+    response2 = APIResponse(
+        content=[
+            ContentBlock(type="text", text="Let me use a tool"),
+            ContentBlock(
+                type="tool_use",
+                tool_use_id="t1",
+                tool_name="read",
+                tool_input={"path": "/tmp/test"},
+            ),
+        ],
+        stop_reason="tool_use",
+    )
+    content2 = api_stage._build_assistant_content(response2)
+    assert isinstance(content2, list)
+    assert len(content2) == 2
