@@ -15,22 +15,62 @@ ANTHROPIC_PRICING: Dict[str, Dict[str, float]] = {
     # ── Current models ──
     "claude-opus-4-6": {"input": 5.0, "output": 25.0, "cache_write": 6.25, "cache_read": 0.5},
     "claude-sonnet-4-6": {"input": 3.0, "output": 15.0, "cache_write": 3.75, "cache_read": 0.3},
-    "claude-haiku-4-5-20251001": {"input": 1.0, "output": 5.0, "cache_write": 1.25, "cache_read": 0.1},
+    "claude-haiku-4-5-20251001": {
+        "input": 1.0,
+        "output": 5.0,
+        "cache_write": 1.25,
+        "cache_read": 0.1,
+    },
     # ── Legacy models (still active) ──
-    "claude-sonnet-4-5-20250929": {"input": 3.0, "output": 15.0, "cache_write": 3.75, "cache_read": 0.3},
-    "claude-opus-4-5-20251101": {"input": 5.0, "output": 25.0, "cache_write": 6.25, "cache_read": 0.5},
-    "claude-opus-4-1-20250805": {"input": 15.0, "output": 75.0, "cache_write": 18.75, "cache_read": 1.5},
+    "claude-sonnet-4-5-20250929": {
+        "input": 3.0,
+        "output": 15.0,
+        "cache_write": 3.75,
+        "cache_read": 0.3,
+    },
+    "claude-opus-4-5-20251101": {
+        "input": 5.0,
+        "output": 25.0,
+        "cache_write": 6.25,
+        "cache_read": 0.5,
+    },
+    "claude-opus-4-1-20250805": {
+        "input": 15.0,
+        "output": 75.0,
+        "cache_write": 18.75,
+        "cache_read": 1.5,
+    },
     # ── Deprecated (retiring 2026-06-15) ──
-    "claude-sonnet-4-20250514": {"input": 3.0, "output": 15.0, "cache_write": 3.75, "cache_read": 0.3},
-    "claude-opus-4-20250514": {"input": 15.0, "output": 75.0, "cache_write": 18.75, "cache_read": 1.5},
+    "claude-sonnet-4-20250514": {
+        "input": 3.0,
+        "output": 15.0,
+        "cache_write": 3.75,
+        "cache_read": 0.3,
+    },
+    "claude-opus-4-20250514": {
+        "input": 15.0,
+        "output": 75.0,
+        "cache_write": 18.75,
+        "cache_read": 1.5,
+    },
     # ── Aliases for prefix matching ──
     "claude-haiku-4-5": {"input": 1.0, "output": 5.0, "cache_write": 1.25, "cache_read": 0.1},
     "claude-sonnet-4-5": {"input": 3.0, "output": 15.0, "cache_write": 3.75, "cache_read": 0.3},
     "claude-opus-4-5": {"input": 5.0, "output": 25.0, "cache_write": 6.25, "cache_read": 0.5},
     "claude-opus-4-1": {"input": 15.0, "output": 75.0, "cache_write": 18.75, "cache_read": 1.5},
     # ── Older legacy ──
-    "claude-haiku-3-5-20241022": {"input": 0.80, "output": 4.0, "cache_write": 1.0, "cache_read": 0.08},
-    "claude-3-haiku-20240307": {"input": 0.25, "output": 1.25, "cache_write": 0.30, "cache_read": 0.03},
+    "claude-haiku-3-5-20241022": {
+        "input": 0.80,
+        "output": 4.0,
+        "cache_write": 1.0,
+        "cache_read": 0.08,
+    },
+    "claude-3-haiku-20240307": {
+        "input": 0.25,
+        "output": 1.25,
+        "cache_write": 0.30,
+        "cache_read": 0.03,
+    },
 }
 
 
