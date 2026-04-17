@@ -29,16 +29,27 @@ class TextEmitter(Emitter):
 
 
 class CallbackEmitter(Emitter):
-    """Emit via a generic callback with full state access."""
+    """Emit via a generic callback with full state access.
 
-    def __init__(self, callback: Callable[[PipelineState], Any]):
+    The callback is optional at construction time so that the emitter can be
+    registered and hot-swapped via :class:`SlotChain`. When no callback is
+    bound, :meth:`emit` is a no-op.
+    """
+
+    def __init__(self, callback: Optional[Callable[[PipelineState], Any]] = None):
         self._callback = callback
 
     @property
     def name(self) -> str:
         return "callback"
 
+    def bind_callback(self, callback: Callable[[PipelineState], Any]) -> None:
+        """Late-bind the callback (for chain-registered instances)."""
+        self._callback = callback
+
     async def emit(self, state: PipelineState) -> EmitResult:
+        if self._callback is None:
+            return EmitResult(emitted=False, channels=["callback"])
         result = self._callback(state)
         if hasattr(result, "__await__"):
             await result

@@ -34,10 +34,35 @@ class InMemoryPersistence(ConversationPersistence):
         self._store.pop(session_id, None)
 
 
+class NullPersistence(ConversationPersistence):
+    """Null persistence — accepts writes but stores nothing.
+
+    Used as the default when no persistence backend is configured,
+    so every :class:`MemoryStage` has a non-None persistence slot.
+    """
+
+    @property
+    def name(self) -> str:
+        return "null"
+
+    @property
+    def description(self) -> str:
+        return "No-op persistence (default when memory is not persisted)"
+
+    async def save(self, session_id: str, messages: List[Dict[str, Any]]) -> None:
+        return None
+
+    async def load(self, session_id: str) -> List[Dict[str, Any]]:
+        return []
+
+    async def clear(self, session_id: str) -> None:
+        return None
+
+
 class FilePersistence(ConversationPersistence):
     """File-based JSON persistence."""
 
-    def __init__(self, base_dir: str):
+    def __init__(self, base_dir: str = "./memory"):
         self._base_dir = base_dir
         os.makedirs(base_dir, exist_ok=True)
 
