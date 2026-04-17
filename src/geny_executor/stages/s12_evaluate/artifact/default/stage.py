@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
-from typing import Any, List, Optional
+from typing import Any, Dict, Optional
 
-from geny_executor.core.stage import Stage, StrategyInfo
+from geny_executor.core.slot import StrategySlot
+from geny_executor.core.stage import Stage
 from geny_executor.core.state import PipelineState
 from geny_executor.stages.s12_evaluate.interface import EvaluationStrategy, QualityScorer
 from geny_executor.stages.s12_evaluate.artifact.default.strategies import (
-    SignalBasedEvaluation,
+    AgentEvaluation,
+    CriteriaBasedEvaluation,
     NoScorer,
+    SignalBasedEvaluation,
+    WeightedScorer,
 )
 
 
@@ -26,8 +30,35 @@ class EvaluateStage(Stage[Any, Any]):
         strategy: Optional[EvaluationStrategy] = None,
         scorer: Optional[QualityScorer] = None,
     ):
-        self._strategy = strategy or SignalBasedEvaluation()
-        self._scorer = scorer or NoScorer()
+        self._slots: Dict[str, StrategySlot] = {
+            "strategy": StrategySlot(
+                name="strategy",
+                strategy=strategy or SignalBasedEvaluation(),
+                registry={
+                    "signal_based": SignalBasedEvaluation,
+                    "criteria_based": CriteriaBasedEvaluation,
+                    "agent_evaluation": AgentEvaluation,
+                },
+                description="Evaluation strategy",
+            ),
+            "scorer": StrategySlot(
+                name="scorer",
+                strategy=scorer or NoScorer(),
+                registry={
+                    "no_scorer": NoScorer,
+                    "weighted": WeightedScorer,
+                },
+                description="Quality scorer strategy",
+            ),
+        }
+
+    @property
+    def _strategy(self) -> EvaluationStrategy:
+        return self._slots["strategy"].strategy  # type: ignore[return-value]
+
+    @property
+    def _scorer(self) -> QualityScorer:
+        return self._slots["scorer"].strategy  # type: ignore[return-value]
 
     @property
     def name(self) -> str:
@@ -40,6 +71,9 @@ class EvaluateStage(Stage[Any, Any]):
     @property
     def category(self) -> str:
         return "decision"
+
+    def get_strategy_slots(self) -> Dict[str, StrategySlot]:
+        return self._slots
 
     async def execute(self, input: Any, state: PipelineState) -> Any:
         state.add_event("evaluate.start", {"strategy": self._strategy.name})
@@ -74,21 +108,3 @@ class EvaluateStage(Stage[Any, Any]):
         )
 
         return input
-
-    def list_strategies(self) -> List[StrategyInfo]:
-        return [
-            StrategyInfo(
-                slot_name="strategy",
-                current_impl=type(self._strategy).__name__,
-                available_impls=[
-                    "SignalBasedEvaluation",
-                    "CriteriaBasedEvaluation",
-                    "AgentEvaluation",
-                ],
-            ),
-            StrategyInfo(
-                slot_name="scorer",
-                current_impl=type(self._scorer).__name__,
-                available_impls=["NoScorer", "WeightedScorer"],
-            ),
-        ]

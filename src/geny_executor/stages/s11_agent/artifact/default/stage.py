@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
-from typing import Any, List, Optional
+from typing import Any, Dict, Optional
 
-from geny_executor.core.stage import Stage, StrategyInfo
+from geny_executor.core.schema import ConfigField, ConfigSchema
+from geny_executor.core.slot import StrategySlot
+from geny_executor.core.stage import Stage
 from geny_executor.core.state import PipelineState
 from geny_executor.stages.s11_agent.interface import AgentOrchestrator
 from geny_executor.stages.s11_agent.artifact.default.orchestrators import (
+    DelegateOrchestrator,
+    EvaluatorOrchestrator,
     SingleAgentOrchestrator,
 )
 
@@ -22,8 +26,26 @@ class AgentStage(Stage[Any, Any]):
     def __init__(
         self,
         orchestrator: Optional[AgentOrchestrator] = None,
+        *,
+        max_delegations: int = 4,
     ):
-        self._orchestrator = orchestrator or SingleAgentOrchestrator()
+        self._slots: Dict[str, StrategySlot] = {
+            "orchestrator": StrategySlot(
+                name="orchestrator",
+                strategy=orchestrator or SingleAgentOrchestrator(),
+                registry={
+                    "single_agent": SingleAgentOrchestrator,
+                    "delegate": DelegateOrchestrator,
+                    "evaluator": EvaluatorOrchestrator,
+                },
+                description="Agent orchestration strategy",
+            ),
+        }
+        self._max_delegations = int(max_delegations)
+
+    @property
+    def _orchestrator(self) -> AgentOrchestrator:
+        return self._slots["orchestrator"].strategy  # type: ignore[return-value]
 
     @property
     def name(self) -> str:
@@ -36,6 +58,31 @@ class AgentStage(Stage[Any, Any]):
     @property
     def category(self) -> str:
         return "execution"
+
+    def get_strategy_slots(self) -> Dict[str, StrategySlot]:
+        return self._slots
+
+    def get_config_schema(self) -> ConfigSchema:
+        return ConfigSchema(
+            name="agent",
+            fields=[
+                ConfigField(
+                    name="max_delegations",
+                    type="integer",
+                    label="Max Delegations",
+                    description="Maximum number of sub-agent delegations per turn.",
+                    default=4,
+                    min_value=0,
+                ),
+            ],
+        )
+
+    def get_config(self) -> Dict[str, Any]:
+        return {"max_delegations": self._max_delegations}
+
+    def update_config(self, config: Dict[str, Any]) -> None:
+        if "max_delegations" in config:
+            self._max_delegations = int(config["max_delegations"])
 
     def should_bypass(self, state: PipelineState) -> bool:
         if isinstance(self._orchestrator, SingleAgentOrchestrator):
@@ -88,16 +135,3 @@ class AgentStage(Stage[Any, Any]):
         )
 
         return input
-
-    def list_strategies(self) -> List[StrategyInfo]:
-        return [
-            StrategyInfo(
-                slot_name="orchestrator",
-                current_impl=type(self._orchestrator).__name__,
-                available_impls=[
-                    "SingleAgentOrchestrator",
-                    "DelegateOrchestrator",
-                    "EvaluatorOrchestrator",
-                ],
-            ),
-        ]

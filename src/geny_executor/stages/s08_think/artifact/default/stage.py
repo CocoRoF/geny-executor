@@ -4,11 +4,16 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from geny_executor.core.stage import Stage, StrategyInfo
+from geny_executor.core.slot import StrategySlot
+from geny_executor.core.stage import Stage
 from geny_executor.core.state import PipelineState
 from geny_executor.stages.s08_think.interface import ThinkingProcessor
 from geny_executor.stages.s08_think.types import ThinkingBlock, ThinkingResult
-from geny_executor.stages.s08_think.artifact.default.processors import ExtractAndStoreProcessor
+from geny_executor.stages.s08_think.artifact.default.processors import (
+    ExtractAndStoreProcessor,
+    PassthroughProcessor,
+    ThinkingFilterProcessor,
+)
 
 
 class ThinkStage(Stage[Any, Any]):
@@ -27,7 +32,22 @@ class ThinkStage(Stage[Any, Any]):
         self,
         processor: Optional[ThinkingProcessor] = None,
     ):
-        self._processor = processor or ExtractAndStoreProcessor()
+        self._slots: Dict[str, StrategySlot] = {
+            "processor": StrategySlot(
+                name="processor",
+                strategy=processor or ExtractAndStoreProcessor(),
+                registry={
+                    "passthrough": PassthroughProcessor,
+                    "extract_and_store": ExtractAndStoreProcessor,
+                    "filter": ThinkingFilterProcessor,
+                },
+                description="Thinking block processing strategy",
+            ),
+        }
+
+    @property
+    def _processor(self) -> ThinkingProcessor:
+        return self._slots["processor"].strategy  # type: ignore[return-value]
 
     @property
     def name(self) -> str:
@@ -40,6 +60,9 @@ class ThinkStage(Stage[Any, Any]):
     @property
     def category(self) -> str:
         return "execution"
+
+    def get_strategy_slots(self) -> Dict[str, StrategySlot]:
+        return self._slots
 
     def should_bypass(self, state: PipelineState) -> bool:
         """Bypass if extended thinking is not enabled or no thinking blocks present."""
@@ -124,16 +147,3 @@ class ThinkStage(Stage[Any, Any]):
         if isinstance(block, dict):
             return block.get("type") == "thinking"
         return getattr(block, "type", None) == "thinking"
-
-    def list_strategies(self) -> List[StrategyInfo]:
-        return [
-            StrategyInfo(
-                slot_name="processor",
-                current_impl=type(self._processor).__name__,
-                available_impls=[
-                    "PassthroughProcessor",
-                    "ExtractAndStoreProcessor",
-                    "ThinkingFilterProcessor",
-                ],
-            ),
-        ]

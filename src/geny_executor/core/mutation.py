@@ -6,17 +6,31 @@ and configuration at runtime while maintaining consistency guarantees.
 
 from __future__ import annotations
 
+import itertools
 import threading
+import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set
+from typing import TYPE_CHECKING, Any, Callable, Dict, Iterator, List, Optional, Set
 
 from geny_executor.core.errors import MutationError, MutationLocked
 from geny_executor.core.snapshot import PipelineSnapshot, StageSnapshot
+from geny_executor.core.stage import Stage
 
 if TYPE_CHECKING:
     from geny_executor.core.pipeline import Pipeline
+
+
+_HOOK_EVENTS = {"on_enter", "on_exit", "on_error"}
+
+
+async def _await_maybe(value: Any) -> Any:
+    """Await *value* if it is awaitable; otherwise return as-is."""
+    if hasattr(value, "__await__"):
+        return await value
+    return value
 
 
 class MutationKind(str, Enum):
@@ -24,11 +38,22 @@ class MutationKind(str, Enum):
 
     SWAP_STRATEGY = "swap_strategy"
     UPDATE_STAGE_CONFIG = "update_stage_config"
+    UPDATE_STRATEGY_CONFIG = "update_strategy_config"
     UPDATE_MODEL_CONFIG = "update_model_config"
     UPDATE_PIPELINE_CONFIG = "update_pipeline_config"
     SET_STAGE_ACTIVE = "set_stage_active"
     REGISTER_STAGE = "register_stage"
     REMOVE_STAGE = "remove_stage"
+    REPLACE_STAGE = "replace_stage"
+    REORDER_CHAIN = "reorder_chain"
+    ADD_TO_CHAIN = "add_to_chain"
+    REMOVE_FROM_CHAIN = "remove_from_chain"
+    REGISTER_HOOK = "register_hook"
+    UNREGISTER_HOOK = "unregister_hook"
+    BIND_TOOL = "bind_tool"
+    UNBIND_TOOL = "unbind_tool"
+    SET_TOOL_SCOPE = "set_tool_scope"
+    SET_STAGE_MODEL = "set_stage_model"
     RESTORE_SNAPSHOT = "restore_snapshot"
 
 
@@ -71,6 +96,9 @@ class PipelineMutator:
         self._change_log: List[MutationRecord] = []
         self._lock = threading.Lock()
         self._locked_stages: Set[int] = set()
+        # (stage_order, event) → list of (hook_id, callback)
+        self._hooks: Dict[tuple, List[tuple]] = {}
+        self._hook_counter = itertools.count()
 
     # ── Public API ──────────────────────────────────────────
 
@@ -203,6 +231,321 @@ class PipelineMutator:
             )
             self._change_log.append(record)
             return MutationResult(success=True, record=record)
+
+    def update_strategy_config(
+        self, stage_order: int, slot_name: str, config: Dict[str, Any]
+    ) -> MutationResult:
+        """Patch the config of the currently-selected strategy in a slot.
+
+        Does not re-instantiate — the current Strategy is updated in place
+        via its ``configure()`` method.
+        """
+        with self._lock:
+            self._check_stage_lock(stage_order)
+            stage = self._get_stage(stage_order)
+            slots = stage.get_strategy_slots()
+            slot = slots.get(slot_name)
+            if slot is None:
+                raise MutationError(
+                    f"Stage '{stage.name}' has no strategy slot '{slot_name}'",
+                    stage_order=stage_order,
+                    slot_name=slot_name,
+                )
+            old_config: Dict[str, Any] = {}
+            if hasattr(slot.strategy, "get_config"):
+                old_config = dict(slot.strategy.get_config())
+            slot.strategy.configure(config)
+
+            record = MutationRecord(
+                kind=MutationKind.UPDATE_STRATEGY_CONFIG,
+                target=f"stage:{stage_order}.{slot_name}",
+                old_value=old_config,
+                new_value=config,
+            )
+            self._change_log.append(record)
+            return MutationResult(success=True, record=record)
+
+    def replace_stage(self, stage_order: int, new_stage: Stage) -> MutationResult:
+        """Fully replace the Stage instance at *stage_order*."""
+        if new_stage.order != stage_order:
+            raise MutationError(
+                f"new_stage.order={new_stage.order} does not match "
+                f"target stage_order={stage_order}",
+                stage_order=stage_order,
+            )
+        with self._lock:
+            self._check_stage_lock(stage_order)
+            old_stage = self._pipeline.get_stage(stage_order)
+            self._pipeline.register_stage(new_stage)
+
+            record = MutationRecord(
+                kind=MutationKind.REPLACE_STAGE,
+                target=f"stage:{stage_order}",
+                old_value=type(old_stage).__name__ if old_stage else None,
+                new_value=type(new_stage).__name__,
+            )
+            self._change_log.append(record)
+            return MutationResult(success=True, record=record)
+
+    def reorder_chain(self, stage_order: int, chain_name: str, order: List[str]) -> MutationResult:
+        """Reorder items in a stage's chain to the given permutation."""
+        with self._lock:
+            self._check_stage_lock(stage_order)
+            stage = self._get_stage(stage_order)
+            chains = stage.get_strategy_chains()
+            chain = chains.get(chain_name)
+            if chain is None:
+                raise MutationError(
+                    f"Stage '{stage.name}' has no chain '{chain_name}'",
+                    stage_order=stage_order,
+                )
+            old_order = [item.name for item in chain.items]
+            try:
+                stage.reorder_chain(chain_name, order)
+            except (KeyError, ValueError) as exc:
+                raise MutationError(str(exc), stage_order=stage_order) from exc
+
+            record = MutationRecord(
+                kind=MutationKind.REORDER_CHAIN,
+                target=f"stage:{stage_order}.{chain_name}",
+                old_value=old_order,
+                new_value=list(order),
+            )
+            self._change_log.append(record)
+            return MutationResult(success=True, record=record)
+
+    def add_to_chain(
+        self,
+        stage_order: int,
+        chain_name: str,
+        impl_name: str,
+        config: Optional[Dict[str, Any]] = None,
+    ) -> MutationResult:
+        """Append a new strategy onto a stage's chain."""
+        with self._lock:
+            self._check_stage_lock(stage_order)
+            stage = self._get_stage(stage_order)
+            try:
+                stage.add_to_chain(chain_name, impl_name, config)
+            except KeyError as exc:
+                raise MutationError(str(exc), stage_order=stage_order) from exc
+
+            record = MutationRecord(
+                kind=MutationKind.ADD_TO_CHAIN,
+                target=f"stage:{stage_order}.{chain_name}",
+                old_value=None,
+                new_value={"impl": impl_name, "config": config or {}},
+            )
+            self._change_log.append(record)
+            return MutationResult(success=True, record=record)
+
+    def remove_from_chain(
+        self, stage_order: int, chain_name: str, item_name: str
+    ) -> MutationResult:
+        """Remove an item from a stage's chain by its strategy name."""
+        with self._lock:
+            self._check_stage_lock(stage_order)
+            stage = self._get_stage(stage_order)
+            try:
+                removed = stage.remove_from_chain(chain_name, item_name)
+            except KeyError as exc:
+                raise MutationError(str(exc), stage_order=stage_order) from exc
+
+            record = MutationRecord(
+                kind=MutationKind.REMOVE_FROM_CHAIN,
+                target=f"stage:{stage_order}.{chain_name}",
+                old_value=type(removed).__name__,
+                new_value=None,
+            )
+            self._change_log.append(record)
+            return MutationResult(success=True, record=record)
+
+    # ── Hooks ───────────────────────────────────────────────
+
+    def register_hook(
+        self,
+        stage_order: int,
+        event: str,
+        callback: Callable[..., Any],
+    ) -> MutationResult:
+        """Attach *callback* to a stage lifecycle event.
+
+        Supported events: ``on_enter``, ``on_exit``, ``on_error``.
+        The callback is invoked in registration order after the stage's own
+        hook method runs. Its signature should match the corresponding
+        :class:`Stage` hook (``(state,)``, ``(result, state)``, or
+        ``(error, state)``).
+
+        Returns a :class:`MutationResult` whose ``message`` contains the
+        stable ``hook_id`` that :meth:`unregister_hook` accepts.
+        """
+        if event not in _HOOK_EVENTS:
+            raise MutationError(f"Unknown hook event '{event}'. Allowed: {sorted(_HOOK_EVENTS)}")
+        with self._lock:
+            stage = self._get_stage(stage_order)
+            hook_id = f"hook_{next(self._hook_counter)}_{uuid.uuid4().hex[:6]}"
+            key = (stage_order, event)
+            if key not in self._hooks:
+                self._install_hook_bridge(stage, event, key)
+            self._hooks.setdefault(key, []).append((hook_id, callback))
+
+            record = MutationRecord(
+                kind=MutationKind.REGISTER_HOOK,
+                target=f"stage:{stage_order}.{event}",
+                old_value=None,
+                new_value=hook_id,
+            )
+            self._change_log.append(record)
+            return MutationResult(success=True, message=hook_id, record=record)
+
+    def unregister_hook(self, stage_order: int, event: str, hook_id: str) -> MutationResult:
+        """Remove a previously registered hook by id."""
+        with self._lock:
+            key = (stage_order, event)
+            hooks = self._hooks.get(key, [])
+            for idx, (hid, _cb) in enumerate(hooks):
+                if hid == hook_id:
+                    hooks.pop(idx)
+                    record = MutationRecord(
+                        kind=MutationKind.UNREGISTER_HOOK,
+                        target=f"stage:{stage_order}.{event}",
+                        old_value=hook_id,
+                        new_value=None,
+                    )
+                    self._change_log.append(record)
+                    return MutationResult(success=True, record=record)
+            raise MutationError(
+                f"No hook '{hook_id}' registered at stage {stage_order}.{event}",
+                stage_order=stage_order,
+            )
+
+    def _install_hook_bridge(self, stage: Stage, event: str, key: tuple) -> None:
+        """Wrap the stage's lifecycle method so registered callbacks fire."""
+        original = getattr(stage, event)
+
+        if event == "on_enter":
+
+            async def wrapper(state):  # type: ignore[no-redef]
+                result = await original(state)
+                for _hid, cb in list(self._hooks.get(key, [])):
+                    await _await_maybe(cb(state))
+                return result
+        elif event == "on_exit":
+
+            async def wrapper(result, state):  # type: ignore[no-redef]
+                ret = await original(result, state)
+                for _hid, cb in list(self._hooks.get(key, [])):
+                    await _await_maybe(cb(result, state))
+                return ret
+        else:  # on_error
+
+            async def wrapper(error, state):  # type: ignore[no-redef]
+                ret = await original(error, state)
+                for _hid, cb in list(self._hooks.get(key, [])):
+                    await _await_maybe(cb(error, state))
+                return ret
+
+        setattr(stage, event, wrapper)
+
+    # ── Tool binding ────────────────────────────────────────
+
+    def bind_tool_to_stage(self, stage_order: int, tool_name: str) -> MutationResult:
+        """Grant *stage_order* access to *tool_name*."""
+        with self._lock:
+            stage = self._get_stage(stage_order)
+            stage.tool_binding.allow(tool_name)
+            record = MutationRecord(
+                kind=MutationKind.BIND_TOOL,
+                target=f"stage:{stage_order}.tools",
+                new_value=tool_name,
+            )
+            self._change_log.append(record)
+            return MutationResult(success=True, record=record)
+
+    def unbind_tool_from_stage(self, stage_order: int, tool_name: str) -> MutationResult:
+        """Revoke *stage_order* access to *tool_name*."""
+        with self._lock:
+            stage = self._get_stage(stage_order)
+            stage.tool_binding.block(tool_name)
+            record = MutationRecord(
+                kind=MutationKind.UNBIND_TOOL,
+                target=f"stage:{stage_order}.tools",
+                new_value=tool_name,
+            )
+            self._change_log.append(record)
+            return MutationResult(success=True, record=record)
+
+    def set_stage_tool_scope(
+        self,
+        stage_order: int,
+        allowed: Optional[List[str]] = None,
+        blocked: Optional[List[str]] = None,
+    ) -> MutationResult:
+        """Replace the whole tool scope for a stage.
+
+        ``allowed=None`` means inherit-everything; ``blocked=None`` means
+        no blocks. Passing an empty list intentionally restricts to
+        nothing / blocks nothing.
+        """
+        with self._lock:
+            stage = self._get_stage(stage_order)
+            binding = stage.tool_binding
+            binding.allowed = set(allowed) if allowed is not None else None
+            binding.blocked = set(blocked) if blocked is not None else None
+            record = MutationRecord(
+                kind=MutationKind.SET_TOOL_SCOPE,
+                target=f"stage:{stage_order}.tools",
+                new_value={
+                    "allowed": list(binding.allowed) if binding.allowed else None,
+                    "blocked": list(binding.blocked) if binding.blocked else None,
+                },
+            )
+            self._change_log.append(record)
+            return MutationResult(success=True, record=record)
+
+    # ── Model override ──────────────────────────────────────
+
+    def set_stage_model(self, stage_order: int, model: Optional[Any]) -> MutationResult:
+        """Override the model used by a single stage.
+
+        Pass ``None`` to revert the stage to the pipeline-wide model.
+        """
+        with self._lock:
+            stage = self._get_stage(stage_order)
+            stage.model_override = model
+            record = MutationRecord(
+                kind=MutationKind.SET_STAGE_MODEL,
+                target=f"stage:{stage_order}.model",
+                new_value=getattr(model, "model", None) if model else None,
+            )
+            self._change_log.append(record)
+            return MutationResult(success=True, record=record)
+
+    # ── Batch ───────────────────────────────────────────────
+
+    @contextmanager
+    def batch(self) -> Iterator["PipelineMutator"]:
+        """Atomic multi-mutation context.
+
+        All mutations committed inside the ``with`` block are rolled back
+        if any exception escapes. Uses :meth:`snapshot` / :meth:`restore`
+        to restore configuration state.
+
+        Usage::
+
+            with mutator.batch() as b:
+                b.swap_strategy(6, "provider", "openai")
+                b.update_model_config({"temperature": 0.3})
+        """
+        checkpoint = self.snapshot(description="batch-checkpoint")
+        log_before = len(self._change_log)
+        try:
+            yield self
+        except Exception:
+            self.restore(checkpoint)
+            # Discard records written during the failed batch
+            del self._change_log[log_before:]
+            raise
 
     # ── Snapshot ────────────────────────────────────────────
 

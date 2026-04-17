@@ -2,14 +2,22 @@
 
 from __future__ import annotations
 
-from typing import Any, List, Optional
+from typing import Any, Dict, Optional
 
-from geny_executor.core.stage import Stage, StrategyInfo
+from geny_executor.core.slot import StrategySlot
+from geny_executor.core.stage import Stage
 from geny_executor.core.state import PipelineState
 from geny_executor.stages.s06_api.types import APIResponse
 from geny_executor.stages.s07_token.interface import TokenTracker, CostCalculator
-from geny_executor.stages.s07_token.artifact.default.trackers import DefaultTracker
-from geny_executor.stages.s07_token.artifact.default.pricing import AnthropicPricingCalculator
+from geny_executor.stages.s07_token.artifact.default.trackers import (
+    DefaultTracker,
+    DetailedTracker,
+)
+from geny_executor.stages.s07_token.artifact.default.pricing import (
+    AnthropicPricingCalculator,
+    CustomPricingCalculator,
+    UnifiedPricingCalculator,
+)
 
 
 class TokenStage(Stage[Any, Any]):
@@ -25,8 +33,35 @@ class TokenStage(Stage[Any, Any]):
         tracker: Optional[TokenTracker] = None,
         calculator: Optional[CostCalculator] = None,
     ):
-        self._tracker = tracker or DefaultTracker()
-        self._calculator = calculator or AnthropicPricingCalculator()
+        self._slots: Dict[str, StrategySlot] = {
+            "tracker": StrategySlot(
+                name="tracker",
+                strategy=tracker or DefaultTracker(),
+                registry={
+                    "default": DefaultTracker,
+                    "detailed": DetailedTracker,
+                },
+                description="Token usage tracking strategy",
+            ),
+            "calculator": StrategySlot(
+                name="calculator",
+                strategy=calculator or AnthropicPricingCalculator(),
+                registry={
+                    "anthropic_pricing": AnthropicPricingCalculator,
+                    "custom_pricing": CustomPricingCalculator,
+                    "unified_pricing": UnifiedPricingCalculator,
+                },
+                description="Cost calculation strategy",
+            ),
+        }
+
+    @property
+    def _tracker(self) -> TokenTracker:
+        return self._slots["tracker"].strategy  # type: ignore[return-value]
+
+    @property
+    def _calculator(self) -> CostCalculator:
+        return self._slots["calculator"].strategy  # type: ignore[return-value]
 
     @property
     def name(self) -> str:
@@ -39,6 +74,9 @@ class TokenStage(Stage[Any, Any]):
     @property
     def category(self) -> str:
         return "execution"
+
+    def get_strategy_slots(self) -> Dict[str, StrategySlot]:
+        return self._slots
 
     async def execute(self, input: Any, state: PipelineState) -> Any:
         # Get API response from state
@@ -72,17 +110,3 @@ class TokenStage(Stage[Any, Any]):
         )
 
         return input
-
-    def list_strategies(self) -> List[StrategyInfo]:
-        return [
-            StrategyInfo(
-                slot_name="tracker",
-                current_impl=type(self._tracker).__name__,
-                available_impls=["DefaultTracker", "DetailedTracker"],
-            ),
-            StrategyInfo(
-                slot_name="calculator",
-                current_impl=type(self._calculator).__name__,
-                available_impls=["AnthropicPricingCalculator", "CustomPricingCalculator"],
-            ),
-        ]

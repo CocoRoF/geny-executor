@@ -2,18 +2,31 @@
 
 from __future__ import annotations
 
-from typing import Any, List, Optional
+from typing import Any, Dict, Optional
 
-from geny_executor.core.stage import Stage, StrategyInfo
+from geny_executor.core.schema import ConfigField, ConfigSchema
+from geny_executor.core.slot import StrategySlot
+from geny_executor.core.stage import Stage
 from geny_executor.core.state import PipelineState
 from geny_executor.stages.s02_context.interface import (
     ContextStrategy,
     HistoryCompactor,
     MemoryRetriever,
 )
-from geny_executor.stages.s02_context.artifact.default.strategies import SimpleLoadStrategy
-from geny_executor.stages.s02_context.artifact.default.compactors import TruncateCompactor
-from geny_executor.stages.s02_context.artifact.default.retrievers import NullRetriever
+from geny_executor.stages.s02_context.artifact.default.strategies import (
+    HybridStrategy,
+    ProgressiveDisclosureStrategy,
+    SimpleLoadStrategy,
+)
+from geny_executor.stages.s02_context.artifact.default.compactors import (
+    SlidingWindowCompactor,
+    SummaryCompactor,
+    TruncateCompactor,
+)
+from geny_executor.stages.s02_context.artifact.default.retrievers import (
+    NullRetriever,
+    StaticRetriever,
+)
 
 
 class ContextStage(Stage[Any, Any]):
@@ -33,10 +46,50 @@ class ContextStage(Stage[Any, Any]):
         *,
         stateless: bool = False,
     ):
-        self._strategy = strategy or SimpleLoadStrategy()
-        self._compactor = compactor or TruncateCompactor()
-        self._retriever = retriever or NullRetriever()
+        self._slots: Dict[str, StrategySlot] = {
+            "strategy": StrategySlot(
+                name="strategy",
+                strategy=strategy or SimpleLoadStrategy(),
+                registry={
+                    "simple_load": SimpleLoadStrategy,
+                    "hybrid": HybridStrategy,
+                    "progressive_disclosure": ProgressiveDisclosureStrategy,
+                },
+                description="Context collection strategy",
+            ),
+            "compactor": StrategySlot(
+                name="compactor",
+                strategy=compactor or TruncateCompactor(),
+                registry={
+                    "truncate": TruncateCompactor,
+                    "summary": SummaryCompactor,
+                    "sliding_window": SlidingWindowCompactor,
+                },
+                description="History compaction strategy",
+            ),
+            "retriever": StrategySlot(
+                name="retriever",
+                strategy=retriever or NullRetriever(),
+                registry={
+                    "null": NullRetriever,
+                    "static": StaticRetriever,
+                },
+                description="Memory retrieval strategy",
+            ),
+        }
         self._stateless = stateless
+
+    @property
+    def _strategy(self) -> ContextStrategy:
+        return self._slots["strategy"].strategy  # type: ignore[return-value]
+
+    @property
+    def _compactor(self) -> HistoryCompactor:
+        return self._slots["compactor"].strategy  # type: ignore[return-value]
+
+    @property
+    def _retriever(self) -> MemoryRetriever:
+        return self._slots["retriever"].strategy  # type: ignore[return-value]
 
     @property
     def name(self) -> str:
@@ -49,6 +102,31 @@ class ContextStage(Stage[Any, Any]):
     @property
     def category(self) -> str:
         return "ingress"
+
+    def get_strategy_slots(self) -> Dict[str, StrategySlot]:
+        return self._slots
+
+    def get_config_schema(self) -> ConfigSchema:
+        return ConfigSchema(
+            name="context",
+            fields=[
+                ConfigField(
+                    name="stateless",
+                    type="boolean",
+                    label="Stateless",
+                    description="Bypass context assembly (no conversation history).",
+                    default=False,
+                    ui_widget="toggle",
+                ),
+            ],
+        )
+
+    def get_config(self) -> Dict[str, Any]:
+        return {"stateless": self._stateless}
+
+    def update_config(self, config: Dict[str, Any]) -> None:
+        if "stateless" in config:
+            self._stateless = bool(config["stateless"])
 
     def should_bypass(self, state: PipelineState) -> bool:
         return self._stateless
@@ -114,33 +192,3 @@ class ContextStage(Stage[Any, Any]):
         )
 
         return input
-
-    def list_strategies(self) -> List[StrategyInfo]:
-        return [
-            StrategyInfo(
-                slot_name="strategy",
-                current_impl=type(self._strategy).__name__,
-                available_impls=[
-                    "SimpleLoadStrategy",
-                    "HybridStrategy",
-                    "ProgressiveDisclosureStrategy",
-                ],
-            ),
-            StrategyInfo(
-                slot_name="compactor",
-                current_impl=type(self._compactor).__name__,
-                available_impls=[
-                    "TruncateCompactor",
-                    "SummaryCompactor",
-                    "SlidingWindowCompactor",
-                ],
-            ),
-            StrategyInfo(
-                slot_name="retriever",
-                current_impl=type(self._retriever).__name__,
-                available_impls=[
-                    "NullRetriever",
-                    "StaticRetriever",
-                ],
-            ),
-        ]

@@ -33,7 +33,7 @@ from geny_executor.core.errors import (
     MutationLocked,
 )
 from geny_executor.core.schema import ConfigField, ConfigSchema
-from geny_executor.core.slot import StrategySlot
+from geny_executor.core.slot import SlotChain, StrategySlot
 from geny_executor.core.snapshot import PipelineSnapshot, StageSnapshot
 from geny_executor.core.mutation import (
     PipelineMutator,
@@ -42,7 +42,13 @@ from geny_executor.core.mutation import (
     MutationResult,
 )
 from geny_executor.core.builder import PipelineBuilder
-from geny_executor.core.presets import PipelinePresets, PresetInfo, PresetManager
+from geny_executor.core.presets import (
+    PipelinePresets,
+    PresetInfo,
+    PresetManager,
+    PresetRegistry,
+    register_preset,
+)
 from geny_executor.core.diff import DiffEntry, EnvironmentDiff
 from geny_executor.core.environment import (
     EnvironmentManifest,
@@ -62,7 +68,7 @@ from geny_executor.memory import (
     GenyPresets,
 )
 
-__version__ = "0.11.0"
+__version__ = "0.12.0"
 
 __all__ = [
     # Core
@@ -83,6 +89,8 @@ __all__ = [
     "PipelinePresets",
     "PresetInfo",
     "PresetManager",
+    "PresetRegistry",
+    "register_preset",
     # Environment & Diff
     "EnvironmentManifest",
     "EnvironmentManager",
@@ -114,6 +122,7 @@ __all__ = [
     "ConfigField",
     "ConfigSchema",
     "StrategySlot",
+    "SlotChain",
     "PipelineSnapshot",
     "StageSnapshot",
     "PipelineMutator",

@@ -2,14 +2,19 @@
 
 from __future__ import annotations
 
-from typing import Any, List, Optional
+from typing import Any, Dict, Optional
 
-from geny_executor.core.stage import Stage, StrategyInfo
+from geny_executor.core.slot import StrategySlot
+from geny_executor.core.stage import Stage
 from geny_executor.core.state import PipelineState
 from geny_executor.tools.base import ToolContext
 from geny_executor.tools.registry import ToolRegistry
+from geny_executor.tools.stage_binding import ToolAccessDenied
 from geny_executor.stages.s10_tool.interface import ToolExecutor, ToolRouter
-from geny_executor.stages.s10_tool.artifact.default.executors import SequentialExecutor
+from geny_executor.stages.s10_tool.artifact.default.executors import (
+    ParallelExecutor,
+    SequentialExecutor,
+)
 from geny_executor.stages.s10_tool.artifact.default.routers import RegistryRouter
 
 
@@ -29,9 +34,34 @@ class ToolStage(Stage[Any, Any]):
         context: Optional[ToolContext] = None,
     ):
         self._registry = registry or ToolRegistry()
-        self._executor = executor or SequentialExecutor()
-        self._router = router or RegistryRouter(self._registry)
+        self._slots: Dict[str, StrategySlot] = {
+            "executor": StrategySlot(
+                name="executor",
+                strategy=executor or SequentialExecutor(),
+                registry={
+                    "sequential": SequentialExecutor,
+                    "parallel": ParallelExecutor,
+                },
+                description="Tool execution strategy",
+            ),
+            "router": StrategySlot(
+                name="router",
+                strategy=router or RegistryRouter(self._registry),
+                registry={
+                    "registry": RegistryRouter,
+                },
+                description="Tool dispatch strategy",
+            ),
+        }
         self._context = context or ToolContext()
+
+    @property
+    def _executor(self) -> ToolExecutor:
+        return self._slots["executor"].strategy  # type: ignore[return-value]
+
+    @property
+    def _router(self) -> ToolRouter:
+        return self._slots["router"].strategy  # type: ignore[return-value]
 
     @property
     def name(self) -> str:
@@ -49,6 +79,9 @@ class ToolStage(Stage[Any, Any]):
     def registry(self) -> ToolRegistry:
         return self._registry
 
+    def get_strategy_slots(self) -> Dict[str, StrategySlot]:
+        return self._slots
+
     def should_bypass(self, state: PipelineState) -> bool:
         return not state.pending_tool_calls
 
@@ -57,6 +90,12 @@ class ToolStage(Stage[Any, Any]):
             return input
 
         tool_calls = list(state.pending_tool_calls)
+
+        binding = self.tool_binding
+        for tc in tool_calls:
+            tool_name = tc.get("tool_name", "")
+            if not binding.is_allowed(tool_name):
+                raise ToolAccessDenied(tool_name, self.order)
 
         state.add_event(
             "tool.execute_start",
@@ -73,9 +112,15 @@ class ToolStage(Stage[Any, Any]):
             env_vars=self._context.env_vars,
             allowed_paths=self._context.allowed_paths,
             metadata=self._context.metadata,
+            stage_order=self.order,
+            stage_name=self.name,
         )
 
-        results = await self._executor.execute_all(tool_calls, self._router, ctx)
+        router = self._router
+        if isinstance(router, RegistryRouter):
+            router.bind_registry(self._registry)
+
+        results = await self._executor.execute_all(tool_calls, router, ctx)
 
         state.add_message("user", results)
         state.tool_results = results
@@ -91,17 +136,3 @@ class ToolStage(Stage[Any, Any]):
         )
 
         return input
-
-    def list_strategies(self) -> List[StrategyInfo]:
-        return [
-            StrategyInfo(
-                slot_name="executor",
-                current_impl=type(self._executor).__name__,
-                available_impls=["SequentialExecutor", "ParallelExecutor"],
-            ),
-            StrategyInfo(
-                slot_name="router",
-                current_impl=type(self._router).__name__,
-                available_impls=["RegistryRouter"],
-            ),
-        ]

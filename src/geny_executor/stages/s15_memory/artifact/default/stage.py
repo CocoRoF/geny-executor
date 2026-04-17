@@ -3,14 +3,25 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, List, Optional
+from typing import Any, Dict, Optional
 
-from geny_executor.core.stage import Stage, StrategyInfo
+from geny_executor.core.schema import ConfigField, ConfigSchema
+from geny_executor.core.slot import StrategySlot
+from geny_executor.core.stage import Stage
 from geny_executor.core.state import PipelineState
-from geny_executor.stages.s15_memory.interface import MemoryUpdateStrategy, ConversationPersistence
+from geny_executor.stages.s15_memory.interface import (
+    ConversationPersistence,
+    MemoryUpdateStrategy,
+)
+from geny_executor.stages.s15_memory.artifact.default.persistence import (
+    FilePersistence,
+    InMemoryPersistence,
+    NullPersistence,
+)
 from geny_executor.stages.s15_memory.artifact.default.strategies import (
     AppendOnlyStrategy,
     NoMemoryStrategy,
+    ReflectiveStrategy,
 )
 
 logger = logging.getLogger(__name__)
@@ -30,10 +41,42 @@ class MemoryStage(Stage[Any, Any]):
         persistence: Optional[ConversationPersistence] = None,
         *,
         stateless: bool = False,
+        persistence_path: str = "",
     ):
-        self._strategy = strategy or AppendOnlyStrategy()
-        self._persistence = persistence
+        self._slots: Dict[str, StrategySlot] = {
+            "strategy": StrategySlot(
+                name="strategy",
+                strategy=strategy or AppendOnlyStrategy(),
+                registry={
+                    "append_only": AppendOnlyStrategy,
+                    "no_memory": NoMemoryStrategy,
+                    "reflective": ReflectiveStrategy,
+                },
+                description="Memory update strategy",
+            ),
+            "persistence": StrategySlot(
+                name="persistence",
+                strategy=persistence or NullPersistence(),
+                registry={
+                    "null": NullPersistence,
+                    "in_memory": InMemoryPersistence,
+                    "file": FilePersistence,
+                },
+                description="Conversation persistence backend",
+            ),
+        }
         self._stateless = stateless
+        self._persistence_path = str(persistence_path)
+        if self._persistence_path and isinstance(self._persistence, NullPersistence):
+            self._slots["persistence"].strategy = FilePersistence(base_dir=self._persistence_path)
+
+    @property
+    def _strategy(self) -> MemoryUpdateStrategy:
+        return self._slots["strategy"].strategy  # type: ignore[return-value]
+
+    @property
+    def _persistence(self) -> ConversationPersistence:
+        return self._slots["persistence"].strategy  # type: ignore[return-value]
 
     @property
     def name(self) -> str:
@@ -47,40 +90,71 @@ class MemoryStage(Stage[Any, Any]):
     def category(self) -> str:
         return "egress"
 
+    def get_strategy_slots(self) -> Dict[str, StrategySlot]:
+        return self._slots
+
+    def get_config_schema(self) -> ConfigSchema:
+        return ConfigSchema(
+            name="memory",
+            fields=[
+                ConfigField(
+                    name="stateless",
+                    type="boolean",
+                    label="Stateless",
+                    description="Skip persistence and memory update (ephemeral sessions).",
+                    default=False,
+                    ui_widget="toggle",
+                ),
+                ConfigField(
+                    name="persistence_path",
+                    type="string",
+                    label="Persistence Path",
+                    description="Directory used by FilePersistence when set.",
+                    default="",
+                ),
+            ],
+        )
+
+    def get_config(self) -> Dict[str, Any]:
+        return {
+            "stateless": self._stateless,
+            "persistence_path": self._persistence_path,
+        }
+
+    def update_config(self, config: Dict[str, Any]) -> None:
+        if "stateless" in config:
+            self._stateless = bool(config["stateless"])
+        if "persistence_path" in config:
+            path = str(config["persistence_path"])
+            self._persistence_path = path
+            if path:
+                self._slots["persistence"].strategy = FilePersistence(base_dir=path)
+            elif not path and isinstance(self._persistence, FilePersistence):
+                self._slots["persistence"].strategy = NullPersistence()
+
     def should_bypass(self, state: PipelineState) -> bool:
         return self._stateless or isinstance(self._strategy, NoMemoryStrategy)
 
     async def execute(self, input: Any, state: PipelineState) -> Any:
         await self._strategy.update(state)
 
-        if self._persistence and not state.session_id:
+        persistence = self._persistence
+        persistence_active = not isinstance(persistence, NullPersistence)
+
+        if persistence_active and not state.session_id:
             logger.warning(
                 "Memory persistence configured but session_id is empty — skipping persist"
             )
-        if self._persistence and state.session_id:
-            await self._persistence.save(state.session_id, state.messages)
+        if persistence_active and state.session_id:
+            await persistence.save(state.session_id, state.messages)
             state.add_event(
                 "memory.persisted",
                 {
                     "session_id": state.session_id,
                     "message_count": len(state.messages),
-                    "persistence": type(self._persistence).__name__,
+                    "persistence": type(persistence).__name__,
                 },
             )
 
         state.add_event("memory.updated", {"strategy": type(self._strategy).__name__})
         return input
-
-    def list_strategies(self) -> List[StrategyInfo]:
-        return [
-            StrategyInfo(
-                slot_name="strategy",
-                current_impl=type(self._strategy).__name__,
-                available_impls=["AppendOnlyStrategy", "NoMemoryStrategy", "ReflectiveStrategy"],
-            ),
-            StrategyInfo(
-                slot_name="persistence",
-                current_impl=(type(self._persistence).__name__ if self._persistence else "None"),
-                available_impls=["InMemoryPersistence", "FilePersistence"],
-            ),
-        ]

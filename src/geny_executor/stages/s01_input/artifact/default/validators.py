@@ -89,8 +89,8 @@ class StrictValidator(InputValidator):
 class SchemaValidator(InputValidator):
     """JSON Schema based validation for structured input."""
 
-    def __init__(self, schema: Dict[str, Any]):
-        self._schema = schema
+    def __init__(self, schema: Optional[Dict[str, Any]] = None):
+        self._schema = schema or {}
 
     @property
     def name(self) -> str:
@@ -99,6 +99,14 @@ class SchemaValidator(InputValidator):
     @property
     def description(self) -> str:
         return "JSON Schema based validation"
+
+    def configure(self, config: Dict[str, Any]) -> None:
+        schema = config.get("schema")
+        if isinstance(schema, dict):
+            self._schema = schema
+
+    def get_config(self) -> Dict[str, Any]:
+        return {"schema": self._schema}
 
     def validate(self, raw_input: Any) -> Optional[str]:
         if not isinstance(raw_input, dict):

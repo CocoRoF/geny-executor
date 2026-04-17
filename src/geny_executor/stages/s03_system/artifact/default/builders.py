@@ -12,7 +12,7 @@ from geny_executor.stages.s03_system.interface import PromptBlock, PromptBuilder
 class StaticPromptBuilder(PromptBuilder):
     """Returns a fixed system prompt."""
 
-    def __init__(self, prompt: str):
+    def __init__(self, prompt: str = "You are a helpful assistant."):
         self._prompt = prompt
 
     @property
@@ -22,6 +22,14 @@ class StaticPromptBuilder(PromptBuilder):
     @property
     def description(self) -> str:
         return "Fixed system prompt"
+
+    def configure(self, config: Dict[str, Any]) -> None:
+        prompt = config.get("prompt")
+        if isinstance(prompt, str):
+            self._prompt = prompt
+
+    def get_config(self) -> Dict[str, Any]:
+        return {"prompt": self._prompt}
 
     def build(self, state: PipelineState) -> str:
         return self._prompt
