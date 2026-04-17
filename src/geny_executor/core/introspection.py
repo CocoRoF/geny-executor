@@ -71,6 +71,45 @@ def _introspection_kwargs(stage_module: str, artifact: str) -> Dict[str, Any]:
     return dict(specific)
 
 
+# ── Per-stage runtime capabilities ──────────────────────────────
+#
+# Not every stage actually consumes ``tool_binding`` or ``model_override`` at
+# runtime — most are plumbing. A UI that offers the binding/override inputs on
+# every stage misleads the user into editing fields that get silently ignored.
+#
+# The truth, verified by grepping ``self.tool_binding`` / ``self.model_override``
+# reads across ``src/geny_executor``:
+#
+#   - ``s06_api`` reads ``self.model_override`` in ``_build_request`` (only LLM-
+#     calling stage — overrides model / max_tokens / sampling / thinking).
+#   - ``s10_tool`` reads ``self.tool_binding`` in ``execute`` (only tool-calling
+#     stage — enforces the per-stage allow/block list).
+#   - Every other stage reads neither.
+#
+# Alternative artifacts for these stages (e.g. ``s06_api/openai``) inherit the
+# same capability because they're still the LLM-call / tool-call stage.
+# If a future stage starts consuming these, add an entry here.
+#
+# Keyed by stage *module* name — same granularity as
+# ``_STAGE_INTROSPECTION_KWARGS`` above.
+
+_StageCapabilities = Dict[str, bool]
+
+_STAGE_CAPABILITIES: Dict[str, _StageCapabilities] = {
+    "s06_api": {"tool_binding": False, "model_override": True},
+    "s10_tool": {"tool_binding": True, "model_override": False},
+}
+
+
+def _stage_capabilities(stage_module: str) -> _StageCapabilities:
+    """Return the ``(tool_binding, model_override)`` support flags for a stage.
+
+    Unknown stages default to both-False — the safe position, since claiming
+    support the runtime doesn't actually exercise is worse than under-promising.
+    """
+    return _STAGE_CAPABILITIES.get(stage_module, {"tool_binding": False, "model_override": False})
+
+
 # ── Dataclasses ────────────────────────────────────────────────
 
 
@@ -142,8 +181,8 @@ class StageIntrospection:
     config: Dict[str, Any]
     strategy_slots: Dict[str, SlotIntrospection]
     strategy_chains: Dict[str, ChainIntrospection]
-    tool_binding_supported: bool = True
-    model_override_supported: bool = True
+    tool_binding_supported: bool = False
+    model_override_supported: bool = False
     extra: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -262,6 +301,7 @@ def introspect_stage(stage: str, artifact: str = DEFAULT_ARTIFACT) -> StageIntro
     chains_raw = instance.get_strategy_chains()
     strategy_slots = {name: _introspect_slot(slot) for name, slot in slots_raw.items()}
     strategy_chains = {name: _introspect_chain(chain) for name, chain in chains_raw.items()}
+    caps = _stage_capabilities(module_name)
 
     return StageIntrospection(
         stage=module_name,
@@ -274,8 +314,8 @@ def introspect_stage(stage: str, artifact: str = DEFAULT_ARTIFACT) -> StageIntro
         config=instance.get_config(),
         strategy_slots=strategy_slots,
         strategy_chains=strategy_chains,
-        tool_binding_supported=True,
-        model_override_supported=True,
+        tool_binding_supported=caps["tool_binding"],
+        model_override_supported=caps["model_override"],
     )
 
 
