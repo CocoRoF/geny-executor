@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 from geny_executor.history.models import ABSide, ABTestResult
 from geny_executor.history.service import HistoryService
@@ -54,9 +53,7 @@ class ABTestRunner:
             usage=usage,
         )
 
-    def get_comparison(
-        self, exec_a_id: str, exec_b_id: str
-    ) -> Optional[Dict[str, Any]]:
+    def get_comparison(self, exec_a_id: str, exec_b_id: str) -> Optional[Dict[str, Any]]:
         """Compare two completed executions."""
         detail_a = self._history.get_execution_detail(exec_a_id)
         detail_b = self._history.get_execution_detail(exec_b_id)
@@ -88,8 +85,11 @@ class ABTestRunner:
                 "tool_calls": detail_b.get("tool_calls", 0),
             },
             "diff": {
-                "cost_diff": (detail_a.get("cost_usd", 0) or 0) - (detail_b.get("cost_usd", 0) or 0),
-                "duration_diff": (detail_a.get("duration_ms", 0) or 0) - (detail_b.get("duration_ms", 0) or 0),
-                "token_diff": (detail_a.get("total_tokens", 0) or 0) - (detail_b.get("total_tokens", 0) or 0),
+                "cost_diff": (detail_a.get("cost_usd", 0) or 0)
+                - (detail_b.get("cost_usd", 0) or 0),
+                "duration_diff": (detail_a.get("duration_ms", 0) or 0)
+                - (detail_b.get("duration_ms", 0) or 0),
+                "token_diff": (detail_a.get("total_tokens", 0) or 0)
+                - (detail_b.get("total_tokens", 0) or 0),
             },
         }

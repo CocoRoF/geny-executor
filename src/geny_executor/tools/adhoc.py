@@ -235,8 +235,7 @@ class AdhocExecutor(ABC):
         self.definition = definition
 
     @abstractmethod
-    async def execute(self, input: Dict[str, Any], context: ToolContext) -> ToolResult:
-        ...
+    async def execute(self, input: Dict[str, Any], context: ToolContext) -> ToolResult: ...
 
 
 # ── Executor implementations ────────────────────────────────
@@ -326,12 +325,42 @@ class ScriptAdhocExecutor(AdhocExecutor):
 
     # Safe subset of builtins
     _SAFE_BUILTINS = {
-        "abs", "all", "any", "bool", "dict", "enumerate", "filter",
-        "float", "format", "frozenset", "int", "isinstance", "issubclass",
-        "iter", "len", "list", "map", "max", "min", "next", "print",
-        "range", "repr", "reversed", "round", "set", "slice", "sorted",
-        "str", "sum", "tuple", "type", "zip",
-        "True", "False", "None",
+        "abs",
+        "all",
+        "any",
+        "bool",
+        "dict",
+        "enumerate",
+        "filter",
+        "float",
+        "format",
+        "frozenset",
+        "int",
+        "isinstance",
+        "issubclass",
+        "iter",
+        "len",
+        "list",
+        "map",
+        "max",
+        "min",
+        "next",
+        "print",
+        "range",
+        "repr",
+        "reversed",
+        "round",
+        "set",
+        "slice",
+        "sorted",
+        "str",
+        "sum",
+        "tuple",
+        "type",
+        "zip",
+        "True",
+        "False",
+        "None",
     }
 
     async def execute(self, input: Dict[str, Any], context: ToolContext) -> ToolResult:
@@ -351,20 +380,14 @@ class ScriptAdhocExecutor(AdhocExecutor):
         import builtins
 
         safe_builtins = {
-            k: getattr(builtins, k)
-            for k in self._SAFE_BUILTINS
-            if hasattr(builtins, k)
+            k: getattr(builtins, k) for k in self._SAFE_BUILTINS if hasattr(builtins, k)
         }
-        safe_builtins["__import__"] = self._make_restricted_import(
-            config.allowed_modules
-        )
+        safe_builtins["__import__"] = self._make_restricted_import(config.allowed_modules)
 
         restricted_globals: Dict[str, Any] = {"__builtins__": safe_builtins}
         for mod_name in config.allowed_modules:
             try:
-                restricted_globals[mod_name.split(".")[-1]] = importlib.import_module(
-                    mod_name
-                )
+                restricted_globals[mod_name.split(".")[-1]] = importlib.import_module(mod_name)
             except ImportError:
                 pass
 
@@ -393,9 +416,7 @@ class ScriptAdhocExecutor(AdhocExecutor):
                 else str(result)
             )
         except asyncio.TimeoutError:
-            return ToolResult(
-                content=f"Script timed out after {config.timeout}s", is_error=True
-            )
+            return ToolResult(content=f"Script timed out after {config.timeout}s", is_error=True)
         except Exception as e:
             return ToolResult(content=f"Script error: {e}", is_error=True)
 
@@ -422,9 +443,7 @@ class ScriptAdhocExecutor(AdhocExecutor):
                 else str(result)
             )
         except asyncio.TimeoutError:
-            return ToolResult(
-                content=f"Script timed out after {config.timeout}s", is_error=True
-            )
+            return ToolResult(content=f"Script timed out after {config.timeout}s", is_error=True)
         except Exception as e:
             return ToolResult(content=f"Script error: {e}", is_error=True)
 
@@ -433,9 +452,7 @@ class ScriptAdhocExecutor(AdhocExecutor):
         """Create a restricted __import__ that only allows specified modules."""
 
         def restricted_import(name, *args, **kwargs):
-            if name not in allowed and not any(
-                name.startswith(a + ".") for a in allowed
-            ):
+            if name not in allowed and not any(name.startswith(a + ".") for a in allowed):
                 raise ImportError(f"Import of '{name}' not allowed in sandbox")
             return importlib.import_module(name)
 
@@ -476,9 +493,7 @@ class CompositeAdhocExecutor(AdhocExecutor):
             return ToolResult(content="No composite_config provided", is_error=True)
 
         if not self._tool_resolver:
-            return ToolResult(
-                content="Composite tool has no tool_resolver", is_error=True
-            )
+            return ToolResult(content="Composite tool has no tool_resolver", is_error=True)
 
         state: Dict[str, Any] = {"input": input}
 
@@ -494,9 +509,7 @@ class CompositeAdhocExecutor(AdhocExecutor):
             # Resolve tool
             tool = self._tool_resolver(step.tool_name)
             if tool is None:
-                return ToolResult(
-                    content=f"Tool '{step.tool_name}' not found", is_error=True
-                )
+                return ToolResult(content=f"Tool '{step.tool_name}' not found", is_error=True)
 
             # Map input
             step_input: Dict[str, Any] = {}
@@ -513,8 +526,7 @@ class CompositeAdhocExecutor(AdhocExecutor):
             result = await tool.execute(step_input, context)
             state[step.output_key] = (
                 json.loads(result.content)
-                if isinstance(result.content, str)
-                and result.content.startswith(("{", "["))
+                if isinstance(result.content, str) and result.content.startswith(("{", "["))
                 else result.content
             )
 

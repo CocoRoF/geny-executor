@@ -387,13 +387,15 @@ class MCPManager:
         """Return status for all servers."""
         statuses = []
         for name, conn in self._servers.items():
-            statuses.append({
-                "name": name,
-                "connected": conn.is_connected,
-                "transport": conn.config.transport,
-                "tool_count": len(conn._tools),
-                "has_session": conn._client_session is not None,
-            })
+            statuses.append(
+                {
+                    "name": name,
+                    "connected": conn.is_connected,
+                    "transport": conn.config.transport,
+                    "tool_count": len(conn._tools),
+                    "has_session": conn._client_session is not None,
+                }
+            )
         return statuses
 
     async def refresh_tools(self, name: str) -> List[Tool]:
@@ -405,9 +407,7 @@ class MCPManager:
         from geny_executor.tools.mcp.adapter import MCPToolAdapter
 
         try:
-            result = await asyncio.wait_for(
-                conn._client_session.list_tools(), timeout=10.0
-            )
+            result = await asyncio.wait_for(conn._client_session.list_tools(), timeout=10.0)
             conn._tools = [
                 {
                     "name": t.name,

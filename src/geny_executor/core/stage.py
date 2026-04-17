@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Dict, Generic, List, Optional, Type, TypeVar
+from typing import TYPE_CHECKING, Any, Dict, Generic, List, Optional, TypeVar
 
 if TYPE_CHECKING:
     from geny_executor.core.state import PipelineState
@@ -163,7 +163,9 @@ class Stage(ABC, Generic[T_In, T_Out]):
         """
         return {}
 
-    def set_strategy(self, slot_name: str, impl_name: str, config: Optional[Dict[str, Any]] = None) -> None:
+    def set_strategy(
+        self, slot_name: str, impl_name: str, config: Optional[Dict[str, Any]] = None
+    ) -> None:
         """Hot-swap a strategy in the named slot.
 
         Args:

@@ -7,7 +7,7 @@ forbidden imports, dangerous built-in calls, and file access.
 from __future__ import annotations
 
 import ast
-from typing import ClassVar, FrozenSet, List
+from typing import FrozenSet, List
 
 
 class ScriptSecurityError(Exception):
@@ -15,36 +15,110 @@ class ScriptSecurityError(Exception):
 
 
 # Modules that must never be imported from user scripts.
-FORBIDDEN_MODULES: FrozenSet[str] = frozenset({
-    "os", "sys", "subprocess", "shutil", "ctypes", "importlib",
-    "socket", "http", "urllib", "requests", "pathlib",
-    "pickle", "marshal", "shelve", "dbm",
-    "signal", "threading", "multiprocessing",
-    "builtins", "__builtin__",
-    "code", "codeop", "compileall",
-    "pty", "pipes", "resource",
-    "webbrowser", "antigravity",
-})
+FORBIDDEN_MODULES: FrozenSet[str] = frozenset(
+    {
+        "os",
+        "sys",
+        "subprocess",
+        "shutil",
+        "ctypes",
+        "importlib",
+        "socket",
+        "http",
+        "urllib",
+        "requests",
+        "pathlib",
+        "pickle",
+        "marshal",
+        "shelve",
+        "dbm",
+        "signal",
+        "threading",
+        "multiprocessing",
+        "builtins",
+        "__builtin__",
+        "code",
+        "codeop",
+        "compileall",
+        "pty",
+        "pipes",
+        "resource",
+        "webbrowser",
+        "antigravity",
+    }
+)
 
 # Built-in names considered safe for user scripts.
-ALLOWED_BUILTINS: FrozenSet[str] = frozenset({
-    "abs", "all", "any", "bin", "bool", "bytes", "callable",
-    "chr", "complex", "dict", "dir", "divmod", "enumerate",
-    "filter", "float", "format", "frozenset", "getattr",
-    "hasattr", "hash", "hex", "id", "int", "isinstance",
-    "issubclass", "iter", "len", "list", "map", "max", "min",
-    "next", "oct", "ord", "pow", "print", "range", "repr",
-    "reversed", "round", "set", "slice", "sorted", "str",
-    "sum", "tuple", "type", "vars", "zip",
-})
+ALLOWED_BUILTINS: FrozenSet[str] = frozenset(
+    {
+        "abs",
+        "all",
+        "any",
+        "bin",
+        "bool",
+        "bytes",
+        "callable",
+        "chr",
+        "complex",
+        "dict",
+        "dir",
+        "divmod",
+        "enumerate",
+        "filter",
+        "float",
+        "format",
+        "frozenset",
+        "getattr",
+        "hasattr",
+        "hash",
+        "hex",
+        "id",
+        "int",
+        "isinstance",
+        "issubclass",
+        "iter",
+        "len",
+        "list",
+        "map",
+        "max",
+        "min",
+        "next",
+        "oct",
+        "ord",
+        "pow",
+        "print",
+        "range",
+        "repr",
+        "reversed",
+        "round",
+        "set",
+        "slice",
+        "sorted",
+        "str",
+        "sum",
+        "tuple",
+        "type",
+        "vars",
+        "zip",
+    }
+)
 
 # Function names that must never be called.
-FORBIDDEN_CALLS: FrozenSet[str] = frozenset({
-    "exec", "eval", "compile", "__import__",
-    "breakpoint", "exit", "quit",
-    "globals", "locals", "memoryview",
-    "open",  # file access
-})
+FORBIDDEN_CALLS: FrozenSet[str] = frozenset(
+    {
+        "exec",
+        "eval",
+        "compile",
+        "__import__",
+        "breakpoint",
+        "exit",
+        "quit",
+        "globals",
+        "locals",
+        "memoryview",
+        "open",  # file access
+    }
+)
 
 
 def validate_script(code: str) -> List[str]:
@@ -90,9 +164,15 @@ def validate_script(code: str) -> List[str]:
             if node.attr.startswith("__") and node.attr.endswith("__"):
                 # Allow __init__, __str__, __repr__ but block __subclasses__ etc.
                 dangerous_dunders = {
-                    "__subclasses__", "__bases__", "__mro__",
-                    "__globals__", "__builtins__", "__code__",
-                    "__import__", "__loader__", "__spec__",
+                    "__subclasses__",
+                    "__bases__",
+                    "__mro__",
+                    "__globals__",
+                    "__builtins__",
+                    "__code__",
+                    "__import__",
+                    "__loader__",
+                    "__spec__",
                 }
                 if node.attr in dangerous_dunders:
                     violations.append(f"Forbidden attribute access: {node.attr}")
@@ -105,5 +185,5 @@ def check_script(code: str) -> None:
     violations = validate_script(code)
     if violations:
         raise ScriptSecurityError(
-            f"Script security violations:\n" + "\n".join(f"  - {v}" for v in violations)
+            "Script security violations:\n" + "\n".join(f"  - {v}" for v in violations)
         )

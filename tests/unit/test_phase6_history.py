@@ -9,7 +9,12 @@ Tests:
   - DebugExecutor: breakpoints, continue, step
 """
 
-import sys, os, json, tempfile, shutil, asyncio
+import sys
+import os
+import tempfile
+import shutil
+import asyncio
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "src"))
 
 import pytest
@@ -22,7 +27,6 @@ from geny_executor.history.models import (
     StageTimingRecord,
     ToolCallRecord,
     WaterfallData,
-    StageStats,
     CostSummary,
     CostTrendPoint,
     ReplayEvent,
@@ -53,52 +57,108 @@ def populated_svc(svc):
     """Service with two completed executions and stage timings."""
     # Exec 1 — completed
     e1 = svc.start_execution("sess-1", "claude-sonnet-4-20250514", "hello world")
-    svc.record_stage_timing(e1, StageTimingRecord(
-        iteration=0, stage_order=1, stage_name="Input",
-        started_at="2025-01-01T00:00:00Z", finished_at="2025-01-01T00:00:00.050Z",
-        duration_ms=50, input_tokens=100, output_tokens=0,
-    ))
-    svc.record_stage_timing(e1, StageTimingRecord(
-        iteration=0, stage_order=2, stage_name="Think",
-        started_at="2025-01-01T00:00:00.050Z", finished_at="2025-01-01T00:00:00.300Z",
-        duration_ms=250, input_tokens=100, output_tokens=200,
-        was_cached=True,
-    ))
-    svc.record_stage_timing(e1, StageTimingRecord(
-        iteration=0, stage_order=3, stage_name="Emit",
-        started_at="2025-01-01T00:00:00.300Z", finished_at="2025-01-01T00:00:00.500Z",
-        duration_ms=200, input_tokens=0, output_tokens=300,
-    ))
-    svc.record_tool_call(e1, ToolCallRecord(
-        iteration=0, tool_name="web_search",
-        called_at="2025-01-01T00:00:00.100Z",
-        input_json='{"query": "test"}', output_text="result",
-        duration_ms=120,
-    ))
-    svc.record_tool_call(e1, ToolCallRecord(
-        iteration=0, tool_name="calculator",
-        called_at="2025-01-01T00:00:00.200Z",
-        input_json='{"expr": "1+1"}', output_text="2",
-        duration_ms=10,
-    ))
+    svc.record_stage_timing(
+        e1,
+        StageTimingRecord(
+            iteration=0,
+            stage_order=1,
+            stage_name="Input",
+            started_at="2025-01-01T00:00:00Z",
+            finished_at="2025-01-01T00:00:00.050Z",
+            duration_ms=50,
+            input_tokens=100,
+            output_tokens=0,
+        ),
+    )
+    svc.record_stage_timing(
+        e1,
+        StageTimingRecord(
+            iteration=0,
+            stage_order=2,
+            stage_name="Think",
+            started_at="2025-01-01T00:00:00.050Z",
+            finished_at="2025-01-01T00:00:00.300Z",
+            duration_ms=250,
+            input_tokens=100,
+            output_tokens=200,
+            was_cached=True,
+        ),
+    )
+    svc.record_stage_timing(
+        e1,
+        StageTimingRecord(
+            iteration=0,
+            stage_order=3,
+            stage_name="Emit",
+            started_at="2025-01-01T00:00:00.300Z",
+            finished_at="2025-01-01T00:00:00.500Z",
+            duration_ms=200,
+            input_tokens=0,
+            output_tokens=300,
+        ),
+    )
+    svc.record_tool_call(
+        e1,
+        ToolCallRecord(
+            iteration=0,
+            tool_name="web_search",
+            called_at="2025-01-01T00:00:00.100Z",
+            input_json='{"query": "test"}',
+            output_text="result",
+            duration_ms=120,
+        ),
+    )
+    svc.record_tool_call(
+        e1,
+        ToolCallRecord(
+            iteration=0,
+            tool_name="calculator",
+            called_at="2025-01-01T00:00:00.200Z",
+            input_json='{"expr": "1+1"}',
+            output_text="2",
+            duration_ms=10,
+        ),
+    )
     svc.add_tags(e1, ["test", "v1"])
-    svc.finish_execution(e1, "completed", result_text="Hello!", usage={
-        "total_tokens": 600, "input_tokens": 200, "output_tokens": 400,
-        "cache_read_tokens": 50, "cache_write_tokens": 10,
-        "cost_usd": 0.0123, "iterations": 1, "tool_calls": 2,
-        "thinking_tokens": 30,
-    })
+    svc.finish_execution(
+        e1,
+        "completed",
+        result_text="Hello!",
+        usage={
+            "total_tokens": 600,
+            "input_tokens": 200,
+            "output_tokens": 400,
+            "cache_read_tokens": 50,
+            "cache_write_tokens": 10,
+            "cost_usd": 0.0123,
+            "iterations": 1,
+            "tool_calls": 2,
+            "thinking_tokens": 30,
+        },
+    )
 
     # Exec 2 — error
     e2 = svc.start_execution("sess-1", "claude-opus-4-20250514", "fail test")
-    svc.record_stage_timing(e2, StageTimingRecord(
-        iteration=0, stage_order=1, stage_name="Input",
-        started_at="2025-01-01T01:00:00Z", finished_at="2025-01-01T01:00:00.030Z",
-        duration_ms=30,
-    ))
-    svc.finish_execution(e2, "error", error={
-        "type": "ToolError", "message": "not found", "stage": 5,
-    })
+    svc.record_stage_timing(
+        e2,
+        StageTimingRecord(
+            iteration=0,
+            stage_order=1,
+            stage_name="Input",
+            started_at="2025-01-01T01:00:00Z",
+            finished_at="2025-01-01T01:00:00.030Z",
+            duration_ms=30,
+        ),
+    )
+    svc.finish_execution(
+        e2,
+        "error",
+        error={
+            "type": "ToolError",
+            "message": "not found",
+            "stage": 5,
+        },
+    )
 
     return svc, e1, e2
 
@@ -123,10 +183,18 @@ class TestHistoryServiceLifecycle:
 
     def test_finish_with_usage(self, svc):
         eid = svc.start_execution("s1", "model-a", "test")
-        svc.finish_execution(eid, "completed", usage={
-            "total_tokens": 1000, "input_tokens": 300, "output_tokens": 700,
-            "cost_usd": 0.05, "iterations": 2, "tool_calls": 3,
-        })
+        svc.finish_execution(
+            eid,
+            "completed",
+            usage={
+                "total_tokens": 1000,
+                "input_tokens": 300,
+                "output_tokens": 700,
+                "cost_usd": 0.05,
+                "iterations": 2,
+                "tool_calls": 3,
+            },
+        )
         detail = svc.get_execution_detail(eid)
         assert detail["total_tokens"] == 1000
         assert detail["cost_usd"] == 0.05
@@ -134,9 +202,15 @@ class TestHistoryServiceLifecycle:
 
     def test_finish_with_error(self, svc):
         eid = svc.start_execution("s1", "model-a", "test")
-        svc.finish_execution(eid, "error", error={
-            "type": "RuntimeError", "message": "boom", "stage": 3,
-        })
+        svc.finish_execution(
+            eid,
+            "error",
+            error={
+                "type": "RuntimeError",
+                "message": "boom",
+                "stage": 3,
+            },
+        )
         detail = svc.get_execution_detail(eid)
         assert detail["status"] == "error"
         assert detail["error_type"] == "RuntimeError"
@@ -147,13 +221,20 @@ class TestHistoryServiceLifecycle:
 class TestHistoryServiceRecording:
     def test_record_stage_timing(self, svc):
         eid = svc.start_execution("s1", "m1", "inp")
-        svc.record_stage_timing(eid, StageTimingRecord(
-            iteration=0, stage_order=1, stage_name="Input",
-            started_at="2025-01-01T00:00:00Z",
-            finished_at="2025-01-01T00:00:00.100Z",
-            duration_ms=100, input_tokens=50, output_tokens=0,
-            was_cached=True,
-        ))
+        svc.record_stage_timing(
+            eid,
+            StageTimingRecord(
+                iteration=0,
+                stage_order=1,
+                stage_name="Input",
+                started_at="2025-01-01T00:00:00Z",
+                finished_at="2025-01-01T00:00:00.100Z",
+                duration_ms=100,
+                input_tokens=50,
+                output_tokens=0,
+                was_cached=True,
+            ),
+        )
         detail = svc.get_execution_detail(eid)
         assert len(detail["stage_timings"]) == 1
         t = detail["stage_timings"][0]
@@ -163,12 +244,18 @@ class TestHistoryServiceRecording:
 
     def test_record_tool_call(self, svc):
         eid = svc.start_execution("s1", "m1", "inp")
-        svc.record_tool_call(eid, ToolCallRecord(
-            iteration=0, tool_name="web_search",
-            called_at="2025-01-01T00:00:00Z",
-            input_json='{"q":"test"}', output_text="result",
-            is_error=False, duration_ms=50,
-        ))
+        svc.record_tool_call(
+            eid,
+            ToolCallRecord(
+                iteration=0,
+                tool_name="web_search",
+                called_at="2025-01-01T00:00:00Z",
+                input_json='{"q":"test"}',
+                output_text="result",
+                is_error=False,
+                duration_ms=50,
+            ),
+        )
         detail = svc.get_execution_detail(eid)
         assert len(detail["tool_call_records"]) == 1
         tc = detail["tool_call_records"][0]
@@ -335,6 +422,9 @@ class TestPerformanceMonitor:
 
     def test_get_bottlenecks_high_threshold(self, populated_svc):
         svc, e1, _ = populated_svc
+        # Set realistic duration_ms (sum of stages = 500ms)
+        svc._conn.execute("UPDATE executions SET duration_ms = 500 WHERE id = ?", (e1,))
+        svc._conn.commit()
         monitor = PerformanceMonitor(svc)
         bottlenecks = monitor.get_bottlenecks(e1, threshold_pct=0.99)
         assert len(bottlenecks) == 0
@@ -438,7 +528,12 @@ class TestABTestRunner:
         runner.complete_side(
             result.env_a.execution_id,
             result_text="Answer A",
-            usage={"total_tokens": 500, "input_tokens": 200, "output_tokens": 300, "cost_usd": 0.01},
+            usage={
+                "total_tokens": 500,
+                "input_tokens": 200,
+                "output_tokens": 300,
+                "cost_usd": 0.01,
+            },
             duration_ms=1000,
             iterations=1,
             tool_calls_count=2,
@@ -455,13 +550,17 @@ class TestABTestRunner:
             result.env_a.execution_id,
             result_text="A result",
             usage={"total_tokens": 500, "cost_usd": 0.01, "iterations": 1, "tool_calls": 2},
-            duration_ms=1000, iterations=1, tool_calls_count=2,
+            duration_ms=1000,
+            iterations=1,
+            tool_calls_count=2,
         )
         runner.complete_side(
             result.env_b.execution_id,
             result_text="B result",
             usage={"total_tokens": 800, "cost_usd": 0.02, "iterations": 2, "tool_calls": 3},
-            duration_ms=2000, iterations=2, tool_calls_count=3,
+            duration_ms=2000,
+            iterations=2,
+            tool_calls_count=3,
         )
         comp = runner.get_comparison(result.env_a.execution_id, result.env_b.execution_id)
         assert comp is not None
@@ -484,11 +583,26 @@ class TestExecutionReplayer:
         eid = svc.start_execution("s1", "m1", "test")
         events = [
             {"type": "stage_start", "stage": "Input", "data": {"stage_order": 1}, "iteration": 0},
-            {"type": "stage_complete", "stage": "Input", "data": {"stage_order": 1}, "iteration": 0},
+            {
+                "type": "stage_complete",
+                "stage": "Input",
+                "data": {"stage_order": 1},
+                "iteration": 0,
+            },
             {"type": "stage_start", "stage": "Think", "data": {"stage_order": 2}, "iteration": 0},
-            {"type": "stage_complete", "stage": "Think", "data": {"stage_order": 2}, "iteration": 0},
+            {
+                "type": "stage_complete",
+                "stage": "Think",
+                "data": {"stage_order": 2},
+                "iteration": 0,
+            },
             {"type": "stage_start", "stage": "Input", "data": {"stage_order": 1}, "iteration": 1},
-            {"type": "stage_complete", "stage": "Input", "data": {"stage_order": 1}, "iteration": 1},
+            {
+                "type": "stage_complete",
+                "stage": "Input",
+                "data": {"stage_order": 1},
+                "iteration": 1,
+            },
         ]
         svc.save_event_stream(eid, events)
 
@@ -527,8 +641,16 @@ class TestExecutionReplayer:
         """Test replay yields all events (speed=0 for instant)."""
         eid = svc.start_execution("s1", "m1", "test")
         events = [
-            {"type": "stage_start", "data": {"stage_order": 1}, "timestamp": "2025-01-01T00:00:00Z"},
-            {"type": "stage_complete", "data": {"stage_order": 1}, "timestamp": "2025-01-01T00:00:01Z"},
+            {
+                "type": "stage_start",
+                "data": {"stage_order": 1},
+                "timestamp": "2025-01-01T00:00:00Z",
+            },
+            {
+                "type": "stage_complete",
+                "data": {"stage_order": 1},
+                "timestamp": "2025-01-01T00:00:01Z",
+            },
         ]
         svc.save_event_stream(eid, events)
 

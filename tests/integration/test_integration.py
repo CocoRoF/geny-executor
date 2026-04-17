@@ -8,27 +8,28 @@ Tests:
   - Sandbox security enforcement
 """
 
-import sys, os, json, tempfile, shutil, asyncio
+import sys
+import os
+import json
+import tempfile
+import shutil
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "src"))
 
 import pytest
 from geny_executor.core.snapshot import PipelineSnapshot, StageSnapshot
 from geny_executor.core.environment import (
     EnvironmentManager,
-    EnvironmentManifest,
-    EnvironmentMetadata,
-    EnvironmentResolver,
     EnvironmentSanitizer,
-    EnvironmentSummary,
     ToolsSnapshot,
 )
-from geny_executor.core.diff import DiffEntry, EnvironmentDiff
-from geny_executor.core.presets import PresetInfo, PresetManager
+from geny_executor.core.diff import EnvironmentDiff
+from geny_executor.core.presets import PresetManager
 from geny_executor.history.service import HistoryService
 from geny_executor.history.monitor import PerformanceMonitor
 from geny_executor.history.cost import CostAnalyzer
 from geny_executor.history.ab_test import ABTestRunner
-from geny_executor.history.models import StageTimingRecord, ToolCallRecord
+from geny_executor.history.models import StageTimingRecord
 from geny_executor.tools.adhoc import AdhocToolDefinition, AdhocToolFactory, TemplateToolConfig
 from geny_executor.tools.scope import ToolScope, ToolScopeRule
 
@@ -61,14 +62,16 @@ def _make_snapshot(name="test-pipeline", n_stages=3, model="claude-sonnet-4-2025
     """Helper to create a basic pipeline snapshot."""
     stages = []
     for i in range(1, n_stages + 1):
-        stages.append(StageSnapshot(
-            order=i,
-            name=f"stage_{i}",
-            is_active=True,
-            strategies={"main": f"Strategy{i}"},
-            strategy_configs={"main": {"param": i}},
-            stage_config={"timeout": 30},
-        ))
+        stages.append(
+            StageSnapshot(
+                order=i,
+                name=f"stage_{i}",
+                is_active=True,
+                strategies={"main": f"Strategy{i}"},
+                strategy_configs={"main": {"param": i}},
+                stage_config={"timeout": 30},
+            )
+        )
     return PipelineSnapshot(
         pipeline_name=name,
         stages=stages,
@@ -147,13 +150,14 @@ class TestEnvironmentRoundtrip:
 
     def test_variable_resolution(self, env_mgr):
         snap = _make_snapshot()
-        env_id = env_mgr.save(snap, name="Var Test", tags=["vars"],
-                              tools=ToolsSnapshot(
-                                  mcp_servers=[{
-                                      "name": "github",
-                                      "env": {"GITHUB_TOKEN": "${GITHUB_TOKEN}"}
-                                  }]
-                              ))
+        env_id = env_mgr.save(
+            snap,
+            name="Var Test",
+            tags=["vars"],
+            tools=ToolsSnapshot(
+                mcp_servers=[{"name": "github", "env": {"GITHUB_TOKEN": "${GITHUB_TOKEN}"}}]
+            ),
+        )
         # Check required variables
         required = env_mgr.get_required_variables(env_id)
         assert "GITHUB_TOKEN" in required
@@ -256,6 +260,7 @@ class TestToolLifecycle:
         class FakeState:
             iteration = 0
             total_cost = 0.0
+
         state = FakeState()
 
         resolved = scope.resolve(all_tools, state)
@@ -282,6 +287,7 @@ class TestToolLifecycle:
         class FakeState:
             iteration = 1
             total_cost_usd = 0.0
+
         state = FakeState()
 
         # Iteration 1: expensive_api not added
@@ -307,7 +313,9 @@ class TestHistoryEnvironmentCrossModule:
         env_id = env_mgr.save(snap, name="Production Env")
 
         exec_id = history_svc.start_execution(
-            "sess-1", "claude-sonnet-4-20250514", "test query",
+            "sess-1",
+            "claude-sonnet-4-20250514",
+            "test query",
             environment_id=env_id,
         )
         history_svc.finish_execution(exec_id, "completed", result_text="done")
@@ -327,15 +335,21 @@ class TestHistoryEnvironmentCrossModule:
         result = runner.create_test(env_a, env_b, "Compare these models")
 
         # Complete both sides
-        runner.complete_side(result.env_a.execution_id,
+        runner.complete_side(
+            result.env_a.execution_id,
             result_text="Sonnet result",
             usage={"total_tokens": 500, "cost_usd": 0.01, "iterations": 1, "tool_calls": 0},
-            duration_ms=1000, iterations=1, tool_calls_count=0,
+            duration_ms=1000,
+            iterations=1,
+            tool_calls_count=0,
         )
-        runner.complete_side(result.env_b.execution_id,
+        runner.complete_side(
+            result.env_b.execution_id,
             result_text="Opus result",
             usage={"total_tokens": 800, "cost_usd": 0.05, "iterations": 1, "tool_calls": 0},
-            duration_ms=2000, iterations=1, tool_calls_count=0,
+            duration_ms=2000,
+            iterations=1,
+            tool_calls_count=0,
         )
 
         # Compare
@@ -353,16 +367,28 @@ class TestHistoryEnvironmentCrossModule:
         """Run several executions and verify analytics."""
         for i in range(5):
             eid = history_svc.start_execution("sess-1", "claude-sonnet-4-20250514", f"query {i}")
-            history_svc.record_stage_timing(eid, StageTimingRecord(
-                iteration=0, stage_order=1, stage_name="Input",
-                started_at=f"2025-01-01T0{i}:00:00Z",
-                finished_at=f"2025-01-01T0{i}:00:00.100Z",
-                duration_ms=100, input_tokens=50*(i+1),
-            ))
-            history_svc.finish_execution(eid, "completed", usage={
-                "total_tokens": 100*(i+1), "cost_usd": 0.01*(i+1),
-                "input_tokens": 50*(i+1), "output_tokens": 50*(i+1),
-            })
+            history_svc.record_stage_timing(
+                eid,
+                StageTimingRecord(
+                    iteration=0,
+                    stage_order=1,
+                    stage_name="Input",
+                    started_at=f"2025-01-01T0{i}:00:00Z",
+                    finished_at=f"2025-01-01T0{i}:00:00.100Z",
+                    duration_ms=100,
+                    input_tokens=50 * (i + 1),
+                ),
+            )
+            history_svc.finish_execution(
+                eid,
+                "completed",
+                usage={
+                    "total_tokens": 100 * (i + 1),
+                    "cost_usd": 0.01 * (i + 1),
+                    "input_tokens": 50 * (i + 1),
+                    "output_tokens": 50 * (i + 1),
+                },
+            )
 
         stats = history_svc.get_stats("sess-1")
         assert stats["total"] == 5

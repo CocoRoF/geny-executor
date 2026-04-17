@@ -20,7 +20,7 @@ from geny_executor.tools.adhoc import (
     CompositeToolConfig,
     CompositeStep,
 )
-from geny_executor.tools.composer import ToolComposer, ToolInfo, ToolPreset
+from geny_executor.tools.composer import ToolComposer, ToolPreset
 from geny_executor.tools.scope import ToolScope, ToolScopeRule, ToolScopeManager
 from geny_executor.tools.sandbox import ToolSandbox, SandboxConfig, SandboxPolicy
 
@@ -115,13 +115,13 @@ class TestAdhocToolDefinition:
             input_schema={"type": "object"},
             executor_type="script",
             script_config=ScriptToolConfig(
-                code='async def execute(input, ctx): return 42',
+                code="async def execute(input, ctx): return 42",
                 timeout=10,
             ),
         )
         d = defn.to_dict()
         restored = AdhocToolDefinition.from_dict(d)
-        assert restored.script_config.code == 'async def execute(input, ctx): return 42'
+        assert restored.script_config.code == "async def execute(input, ctx): return 42"
         assert restored.script_config.timeout == 10
 
     def test_http_roundtrip(self):
@@ -149,8 +149,14 @@ class TestAdhocToolDefinition:
             executor_type="composite",
             composite_config=CompositeToolConfig(
                 steps=[
-                    CompositeStep(tool_name="Read", input_mapping={"path": "input['file']"}, output_key="content"),
-                    CompositeStep(tool_name="Grep", input_mapping={"text": "content"}, output_key="matches"),
+                    CompositeStep(
+                        tool_name="Read",
+                        input_mapping={"path": "input['file']"},
+                        output_key="content",
+                    ),
+                    CompositeStep(
+                        tool_name="Grep", input_mapping={"text": "content"}, output_key="matches"
+                    ),
                 ]
             ),
         )
@@ -396,8 +402,10 @@ class TestToolScope:
             rules=[
                 ToolScopeRule(tool_name="Secret", action="add", condition_type="always"),
                 ToolScopeRule(
-                    tool_name="Read", action="remove",
-                    condition_type="iteration", condition_value=">= 3",
+                    tool_name="Read",
+                    action="remove",
+                    condition_type="iteration",
+                    condition_value=">= 3",
                 ),
             ]
         )

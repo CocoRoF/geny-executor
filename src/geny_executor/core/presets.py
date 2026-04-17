@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
+from typing import Dict, List, Optional, TYPE_CHECKING
 
 from geny_executor.core.builder import PipelineBuilder
 from geny_executor.core.pipeline import Pipeline
@@ -169,22 +169,26 @@ class PresetManager:
 
         # Built-in
         for name in self._built_in_factories:
-            presets.append(PresetInfo(
-                name=name,
-                description=self._BUILT_IN_DESCRIPTIONS.get(name, ""),
-                preset_type="built_in",
-            ))
+            presets.append(
+                PresetInfo(
+                    name=name,
+                    description=self._BUILT_IN_DESCRIPTIONS.get(name, ""),
+                    preset_type="built_in",
+                )
+            )
 
         # User presets (environments tagged "preset")
         for env in self._env_manager.list_all():
             if "preset" in env.tags:
-                presets.append(PresetInfo(
-                    name=f"user:{env.id}",
-                    description=env.description,
-                    preset_type="user",
-                    tags=env.tags,
-                    environment_id=env.id,
-                ))
+                presets.append(
+                    PresetInfo(
+                        name=f"user:{env.id}",
+                        description=env.description,
+                        preset_type="user",
+                        tags=env.tags,
+                        environment_id=env.id,
+                    )
+                )
 
         return presets
 
@@ -193,15 +197,11 @@ class PresetManager:
         manifest = self._env_manager.load(env_id)
         if "preset" not in manifest.metadata.tags:
             manifest.metadata.tags.append("preset")
-            self._env_manager.update(
-                env_id, {"metadata": {"tags": manifest.metadata.tags}}
-            )
+            self._env_manager.update(env_id, {"metadata": {"tags": manifest.metadata.tags}})
 
     def remove_preset_flag(self, env_id: str) -> None:
         """Un-mark an environment as a preset."""
         manifest = self._env_manager.load(env_id)
         if "preset" in manifest.metadata.tags:
             manifest.metadata.tags.remove("preset")
-            self._env_manager.update(
-                env_id, {"metadata": {"tags": manifest.metadata.tags}}
-            )
+            self._env_manager.update(env_id, {"metadata": {"tags": manifest.metadata.tags}})

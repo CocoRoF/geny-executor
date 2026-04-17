@@ -14,10 +14,10 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set
 from uuid import uuid4
 
-from geny_executor.core.diff import DiffEntry, EnvironmentDiff
+from geny_executor.core.diff import EnvironmentDiff
 from geny_executor.core.snapshot import PipelineSnapshot, StageSnapshot
 
 
@@ -35,12 +35,8 @@ class EnvironmentMetadata:
     description: str = ""
     author: str = ""
     tags: List[str] = field(default_factory=list)
-    created_at: str = field(
-        default_factory=lambda: datetime.now(timezone.utc).isoformat()
-    )
-    updated_at: str = field(
-        default_factory=lambda: datetime.now(timezone.utc).isoformat()
-    )
+    created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    updated_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     base_preset: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
@@ -143,14 +139,16 @@ class EnvironmentManifest:
 
         stages = []
         for s in snapshot.stages:
-            stages.append({
-                "order": s.order,
-                "name": s.name,
-                "active": s.is_active,
-                "strategies": s.strategies,
-                "strategy_configs": s.strategy_configs,
-                "config": s.stage_config,
-            })
+            stages.append(
+                {
+                    "order": s.order,
+                    "name": s.name,
+                    "active": s.is_active,
+                    "strategies": s.strategies,
+                    "strategy_configs": s.strategy_configs,
+                    "config": s.stage_config,
+                }
+            )
 
         return cls(
             version="1.0",
@@ -173,14 +171,16 @@ class EnvironmentManifest:
         """Convert back to a PipelineSnapshot for restoration."""
         stages = []
         for s in self.stages:
-            stages.append(StageSnapshot(
-                order=s.get("order", 0),
-                name=s.get("name", ""),
-                is_active=s.get("active", True),
-                strategies=s.get("strategies", {}),
-                strategy_configs=s.get("strategy_configs", {}),
-                stage_config=s.get("config", {}),
-            ))
+            stages.append(
+                StageSnapshot(
+                    order=s.get("order", 0),
+                    name=s.get("name", ""),
+                    is_active=s.get("active", True),
+                    strategies=s.get("strategies", {}),
+                    strategy_configs=s.get("strategy_configs", {}),
+                    stage_config=s.get("config", {}),
+                )
+            )
 
         return PipelineSnapshot(
             pipeline_name=self.metadata.base_preset or self.metadata.name,
@@ -221,7 +221,9 @@ class EnvironmentResolver:
     PATTERN = re.compile(r"\$\{([A-Z_][A-Z0-9_]*)\}")
 
     @classmethod
-    def resolve(cls, data: Dict[str, Any], env_vars: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+    def resolve(
+        cls, data: Dict[str, Any], env_vars: Optional[Dict[str, str]] = None
+    ) -> Dict[str, Any]:
         """Replace all ${VAR} references with actual values."""
         env = {**os.environ, **(env_vars or {})}
         return cls._walk(data, env)
@@ -294,9 +296,7 @@ class EnvironmentManager:
         tools: Optional[ToolsSnapshot] = None,
     ) -> str:
         """Save a pipeline snapshot as an environment. Returns env_id."""
-        manifest = EnvironmentManifest.from_snapshot(
-            snapshot, name, description, tags, tools
-        )
+        manifest = EnvironmentManifest.from_snapshot(snapshot, name, description, tags, tools)
         env_id = manifest.metadata.id
 
         path = self._storage / f"{env_id}.json"
@@ -329,20 +329,19 @@ class EnvironmentManager:
                 data = json.loads(path.read_text(encoding="utf-8"))
                 meta = data.get("metadata", {})
                 tools = data.get("tools", {})
-                envs.append(EnvironmentSummary(
-                    id=meta.get("id", path.stem),
-                    name=meta.get("name", "Unnamed"),
-                    description=meta.get("description", ""),
-                    tags=meta.get("tags", []),
-                    model=data.get("model", {}).get("model", ""),
-                    stage_count=len(data.get("stages", [])),
-                    tool_count=(
-                        len(tools.get("built_in", []))
-                        + len(tools.get("adhoc", []))
-                    ),
-                    created_at=meta.get("created_at", ""),
-                    updated_at=meta.get("updated_at", ""),
-                ))
+                envs.append(
+                    EnvironmentSummary(
+                        id=meta.get("id", path.stem),
+                        name=meta.get("name", "Unnamed"),
+                        description=meta.get("description", ""),
+                        tags=meta.get("tags", []),
+                        model=data.get("model", {}).get("model", ""),
+                        stage_count=len(data.get("stages", [])),
+                        tool_count=(len(tools.get("built_in", [])) + len(tools.get("adhoc", []))),
+                        created_at=meta.get("created_at", ""),
+                        updated_at=meta.get("updated_at", ""),
+                    )
+                )
             except (json.JSONDecodeError, KeyError):
                 continue
         return envs
@@ -376,9 +375,7 @@ class EnvironmentManager:
         manifest = self.load(env_id)
         return json.dumps(manifest.to_dict(), ensure_ascii=False, indent=2)
 
-    def import_json(
-        self, json_str: str, override_name: Optional[str] = None
-    ) -> str:
+    def import_json(self, json_str: str, override_name: Optional[str] = None) -> str:
         """Import an environment from JSON. Returns new env_id."""
         data = json.loads(json_str)
 

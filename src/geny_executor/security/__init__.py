@@ -21,7 +21,7 @@ _BLOCKED_NETWORKS: List[ipaddress._BaseNetwork] = [
     ipaddress.ip_network("169.254.0.0/16"),
     ipaddress.ip_network("172.16.0.0/12"),
     ipaddress.ip_network("192.168.0.0/16"),
-    ipaddress.ip_network("224.0.0.0/4"),      # multicast
+    ipaddress.ip_network("224.0.0.0/4"),  # multicast
     ipaddress.ip_network("255.255.255.255/32"),
     # IPv6
     ipaddress.ip_network("::1/128"),
@@ -80,10 +80,7 @@ def validate_url(url: str, *, extra_blocked: Optional[List[str]] = None) -> str:
         ip = ipaddress.ip_address(sockaddr[0])
         for network in blocked:
             if ip in network:
-                raise SSRFError(
-                    f"Blocked: {hostname!r} resolves to {ip} "
-                    f"which is in {network}"
-                )
+                raise SSRFError(f"Blocked: {hostname!r} resolves to {ip} which is in {network}")
 
     return url
 

@@ -9,25 +9,27 @@ Tests:
   - PresetManager built-in + user presets
 """
 
-import sys, os, json, tempfile, shutil
+import sys
+import os
+import json
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "src"))
 
 import pytest
 from geny_executor.core.environment import (
     EnvironmentManifest,
     EnvironmentManager,
-    EnvironmentMetadata,
     EnvironmentResolver,
     EnvironmentSanitizer,
-    EnvironmentSummary,
     ToolsSnapshot,
 )
 from geny_executor.core.diff import DiffEntry, EnvironmentDiff
 from geny_executor.core.snapshot import PipelineSnapshot, StageSnapshot
-from geny_executor.core.presets import PresetInfo, PresetManager
+from geny_executor.core.presets import PresetManager
 
 
 # ── Fixtures ──────────────────────────────────────────────
+
 
 @pytest.fixture
 def tmp_storage(tmp_path):
@@ -89,8 +91,8 @@ def sample_snapshot():
 #  EnvironmentManifest
 # ═══════════════════════════════════════════════════════════
 
-class TestEnvironmentManifest:
 
+class TestEnvironmentManifest:
     def test_from_snapshot(self, sample_snapshot):
         manifest = EnvironmentManifest.from_snapshot(
             sample_snapshot, "Test Env", "Description", ["test", "dev"]
@@ -143,7 +145,6 @@ class TestEnvironmentManifest:
 
 
 class TestToolsSnapshot:
-
     def test_roundtrip(self):
         tools = ToolsSnapshot(
             built_in=["Read", "Glob"],
@@ -162,8 +163,8 @@ class TestToolsSnapshot:
 #  EnvironmentResolver
 # ═══════════════════════════════════════════════════════════
 
-class TestEnvironmentResolver:
 
+class TestEnvironmentResolver:
     def test_resolve_simple(self):
         data = {"api_key": "${API_KEY}", "name": "test"}
         resolved = EnvironmentResolver.resolve(data, {"API_KEY": "sk-123"})
@@ -171,13 +172,7 @@ class TestEnvironmentResolver:
         assert resolved["name"] == "test"
 
     def test_resolve_nested(self):
-        data = {
-            "tools": {
-                "mcp_servers": [
-                    {"env": {"GITHUB_TOKEN": "${GITHUB_TOKEN}"}}
-                ]
-            }
-        }
+        data = {"tools": {"mcp_servers": [{"env": {"GITHUB_TOKEN": "${GITHUB_TOKEN}"}}]}}
         resolved = EnvironmentResolver.resolve(data, {"GITHUB_TOKEN": "ghp_abc"})
         assert resolved["tools"]["mcp_servers"][0]["env"]["GITHUB_TOKEN"] == "ghp_abc"
 
@@ -188,9 +183,7 @@ class TestEnvironmentResolver:
 
     def test_multiple_in_string(self):
         data = {"url": "https://${HOST}:${PORT}/api"}
-        resolved = EnvironmentResolver.resolve(
-            data, {"HOST": "localhost", "PORT": "8080"}
-        )
+        resolved = EnvironmentResolver.resolve(data, {"HOST": "localhost", "PORT": "8080"})
         assert resolved["url"] == "https://localhost:8080/api"
 
     def test_extract_variables(self):
@@ -212,8 +205,8 @@ class TestEnvironmentResolver:
 #  EnvironmentDiff
 # ═══════════════════════════════════════════════════════════
 
-class TestEnvironmentDiff:
 
+class TestEnvironmentDiff:
     def test_identical(self):
         a = {"model": {"temperature": 0.5}, "pipeline": {"stream": True}}
         diff = EnvironmentDiff.compute(a, a)
@@ -271,27 +264,33 @@ class TestEnvironmentDiff:
         assert "→" in e.human_readable()
 
     def test_filter_by_type(self):
-        diff = EnvironmentDiff(entries=[
-            DiffEntry("a", "added", new_value=1),
-            DiffEntry("b", "removed", old_value=2),
-            DiffEntry("c", "changed", 3, 4),
-        ])
+        diff = EnvironmentDiff(
+            entries=[
+                DiffEntry("a", "added", new_value=1),
+                DiffEntry("b", "removed", old_value=2),
+                DiffEntry("c", "changed", 3, 4),
+            ]
+        )
         added = diff.filter_by_type("added")
         assert len(added.entries) == 1
 
     def test_filter_by_prefix(self):
-        diff = EnvironmentDiff(entries=[
-            DiffEntry("model.temperature", "changed", 0.5, 0.8),
-            DiffEntry("pipeline.stream", "changed", True, False),
-        ])
+        diff = EnvironmentDiff(
+            entries=[
+                DiffEntry("model.temperature", "changed", 0.5, 0.8),
+                DiffEntry("pipeline.stream", "changed", True, False),
+            ]
+        )
         model_only = diff.filter_by_prefix("model")
         assert len(model_only.entries) == 1
 
     def test_serialization_roundtrip(self):
-        diff = EnvironmentDiff(entries=[
-            DiffEntry("model.temperature", "changed", 0.5, 0.8),
-            DiffEntry("pipeline.stream", "added", new_value=True),
-        ])
+        diff = EnvironmentDiff(
+            entries=[
+                DiffEntry("model.temperature", "changed", 0.5, 0.8),
+                DiffEntry("pipeline.stream", "added", new_value=True),
+            ]
+        )
         d = diff.to_dict()
         restored = EnvironmentDiff.from_dict(d)
         assert len(restored.entries) == 2
@@ -302,8 +301,8 @@ class TestEnvironmentDiff:
 #  EnvironmentManager
 # ═══════════════════════════════════════════════════════════
 
-class TestEnvironmentManager:
 
+class TestEnvironmentManager:
     def test_save_and_load(self, manager, sample_snapshot):
         env_id = manager.save(sample_snapshot, "Test Env", "Desc", ["tag1"])
         loaded = manager.load(env_id)
@@ -375,6 +374,7 @@ class TestEnvironmentManager:
         manifest = manager.load(env_id)
         manifest.model["api_key"] = "${MY_API_KEY}"
         import pathlib
+
         path = pathlib.Path(manager._storage) / f"{env_id}.json"
         path.write_text(json.dumps(manifest.to_dict(), ensure_ascii=False, indent=2))
         manager._cache.clear()
@@ -385,10 +385,9 @@ class TestEnvironmentManager:
     def test_get_required_variables(self, manager, sample_snapshot):
         env_id = manager.save(sample_snapshot, "Var Env")
         manifest = manager.load(env_id)
-        manifest.tools = ToolsSnapshot(
-            mcp_servers=[{"env": {"TOKEN": "${GITHUB_TOKEN}"}}]
-        )
+        manifest.tools = ToolsSnapshot(mcp_servers=[{"env": {"TOKEN": "${GITHUB_TOKEN}"}}])
         import pathlib
+
         path = pathlib.Path(manager._storage) / f"{env_id}.json"
         path.write_text(json.dumps(manifest.to_dict(), ensure_ascii=False, indent=2))
         manager._cache.clear()
@@ -401,8 +400,8 @@ class TestEnvironmentManager:
 #  EnvironmentSanitizer
 # ═══════════════════════════════════════════════════════════
 
-class TestEnvironmentSanitizer:
 
+class TestEnvironmentSanitizer:
     def test_sanitize_api_key(self):
         data = {"model": {"api_key": "sk-real-secret"}}
         sanitized = EnvironmentSanitizer.sanitize(data)
@@ -411,13 +410,7 @@ class TestEnvironmentSanitizer:
         assert data["model"]["api_key"] == "sk-real-secret"
 
     def test_sanitize_nested_token(self):
-        data = {
-            "tools": {
-                "mcp_servers": [
-                    {"name": "github", "env": {"GITHUB_TOKEN": "ghp_real"}}
-                ]
-            }
-        }
+        data = {"tools": {"mcp_servers": [{"name": "github", "env": {"GITHUB_TOKEN": "ghp_real"}}]}}
         sanitized = EnvironmentSanitizer.sanitize(data)
         assert sanitized["tools"]["mcp_servers"][0]["env"]["GITHUB_TOKEN"] == "${GITHUB_TOKEN}"
 
@@ -448,8 +441,8 @@ class TestEnvironmentSanitizer:
 #  PresetManager
 # ═══════════════════════════════════════════════════════════
 
-class TestPresetManager:
 
+class TestPresetManager:
     def test_list_built_in(self, manager):
         pm = PresetManager(manager)
         presets = pm.list_all()

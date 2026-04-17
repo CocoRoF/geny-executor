@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 from geny_executor.tools.base import Tool, ToolContext, ToolResult
@@ -73,10 +73,7 @@ class ToolSandbox:
             )
         except asyncio.TimeoutError:
             return ToolResult(
-                content=(
-                    f"Tool '{tool.name}' timed out after "
-                    f"{self._config.max_execution_time}s"
-                ),
+                content=(f"Tool '{tool.name}' timed out after {self._config.max_execution_time}s"),
                 is_error=True,
             )
         except Exception as e:
@@ -89,17 +86,14 @@ class ToolSandbox:
         if isinstance(result.content, str):
             if len(result.content) > self._config.max_output_size:
                 result = ToolResult(
-                    content=result.content[: self._config.max_output_size]
-                    + "\n... (truncated)",
+                    content=result.content[: self._config.max_output_size] + "\n... (truncated)",
                     is_error=result.is_error,
                     metadata=result.metadata,
                 )
 
         return result
 
-    def _validate_paths(
-        self, input: Dict[str, Any], context: ToolContext
-    ) -> Optional[str]:
+    def _validate_paths(self, input: Dict[str, Any], context: ToolContext) -> Optional[str]:
         """Check that file-related inputs are within allowed paths."""
         if not self._config.allowed_paths:
             return None
@@ -117,13 +111,10 @@ class ToolSandbox:
                 continue
 
             resolved = os.path.realpath(
-                os.path.join(context.working_dir, val)
-                if not os.path.isabs(val)
-                else val
+                os.path.join(context.working_dir, val) if not os.path.isabs(val) else val
             )
             if not any(
-                resolved.startswith(os.path.realpath(ap))
-                for ap in self._config.allowed_paths
+                resolved.startswith(os.path.realpath(ap)) for ap in self._config.allowed_paths
             ):
                 return (
                     f"Path '{val}' resolves to '{resolved}' which is outside "

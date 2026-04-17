@@ -189,9 +189,7 @@ class HistoryService:
         if row:
             started = datetime.fromisoformat(row["started_at"])
             finished = datetime.fromisoformat(now)
-            updates["duration_ms"] = int(
-                (finished - started).total_seconds() * 1000
-            )
+            updates["duration_ms"] = int((finished - started).total_seconds() * 1000)
 
         set_clause = ", ".join(f"{k} = ?" for k in updates)
         self._conn.execute(
@@ -310,7 +308,8 @@ class HistoryService:
         where = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
 
         total = self._conn.execute(
-            f"SELECT COUNT(*) FROM executions {where}", params  # noqa: S608
+            f"SELECT COUNT(*) FROM executions {where}",
+            params,  # noqa: S608
         ).fetchone()[0]
 
         if order_by not in _ALLOWED_ORDERS:
@@ -335,9 +334,7 @@ class HistoryService:
 
     def get_execution_detail(self, exec_id: str) -> Optional[Dict[str, Any]]:
         """Get full execution detail including timings and tool calls."""
-        row = self._conn.execute(
-            "SELECT * FROM executions WHERE id = ?", (exec_id,)
-        ).fetchone()
+        row = self._conn.execute("SELECT * FROM executions WHERE id = ?", (exec_id,)).fetchone()
         if not row:
             return None
 
@@ -372,9 +369,7 @@ class HistoryService:
 
     def delete_execution(self, exec_id: str) -> bool:
         """Delete an execution and associated data."""
-        row = self._conn.execute(
-            "SELECT id FROM executions WHERE id = ?", (exec_id,)
-        ).fetchone()
+        row = self._conn.execute("SELECT id FROM executions WHERE id = ?", (exec_id,)).fetchone()
         if not row:
             return False
         # CASCADE deletes stage_timings, tool_calls, execution_tags
@@ -385,13 +380,12 @@ class HistoryService:
         blob_dir = self._blob_path / exec_id
         if blob_dir.exists():
             import shutil
+
             shutil.rmtree(blob_dir, ignore_errors=True)
 
         return True
 
-    def get_stats(
-        self, session_id: Optional[str] = None
-    ) -> Dict[str, Any]:
+    def get_stats(self, session_id: Optional[str] = None) -> Dict[str, Any]:
         """Get aggregate statistics."""
         where = "WHERE session_id = ?" if session_id else ""
         params = [session_id] if session_id else []

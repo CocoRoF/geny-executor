@@ -94,21 +94,15 @@ class PerformanceMonitor:
                 avg_ms=row["avg_ms"] or 0.0,
                 min_ms=row["min_ms"] or 0.0,
                 max_ms=row["max_ms"] or 0.0,
-                cache_hit_rate=(
-                    row["cache_hits"] / row["count"] if row["count"] > 0 else 0.0
-                ),
-                skip_rate=(
-                    row["skips"] / row["count"] if row["count"] > 0 else 0.0
-                ),
+                cache_hit_rate=(row["cache_hits"] / row["count"] if row["count"] > 0 else 0.0),
+                skip_rate=(row["skips"] / row["count"] if row["count"] > 0 else 0.0),
                 avg_input_tokens=row["avg_input_tokens"] or 0.0,
                 avg_output_tokens=row["avg_output_tokens"] or 0.0,
             )
             for row in rows
         }
 
-    def get_bottlenecks(
-        self, exec_id: str, threshold_pct: float = 0.3
-    ) -> List[Dict[str, Any]]:
+    def get_bottlenecks(self, exec_id: str, threshold_pct: float = 0.3) -> List[Dict[str, Any]]:
         """Identify bottleneck stages (> threshold_pct of total duration)."""
         waterfall = self.get_waterfall(exec_id)
         total = waterfall.total_duration_ms

@@ -9,7 +9,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Type
 
-from geny_executor.core.schema import ConfigSchema
 from geny_executor.core.stage import Strategy, StrategyInfo
 
 

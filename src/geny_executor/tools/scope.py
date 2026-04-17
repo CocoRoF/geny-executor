@@ -36,9 +36,7 @@ class ToolScopeRule:
         if self.condition_type == "iteration":
             return self._eval_comparison(state.iteration, self.condition_value)
         if self.condition_type == "cost":
-            return self._eval_comparison(
-                state.total_cost_usd, self.condition_value
-            )
+            return self._eval_comparison(state.total_cost_usd, self.condition_value)
         if self.condition_type == "stage":
             return stage_order == self.condition_value
         return False
@@ -57,7 +55,7 @@ class ToolScopeRule:
             for op in (">=", "<=", "!=", "==", ">", "<"):
                 if expr.startswith(op):
                     try:
-                        val = float(expr[len(op):].strip())
+                        val = float(expr[len(op) :].strip())
                         if op == ">=":
                             return actual >= val
                         elif op == "<=":
@@ -143,9 +141,7 @@ class ToolScopeManager:
 
         stage_scope = self._stage_scopes.get(stage_order)
         if stage_scope:
-            return stage_scope.resolve(
-                list(global_tools), state, stage_order
-            )
+            return stage_scope.resolve(list(global_tools), state, stage_order)
 
         return global_tools
 

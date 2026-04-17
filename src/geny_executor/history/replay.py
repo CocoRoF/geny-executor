@@ -43,7 +43,7 @@ class ExecutionReplayer:
             ts_str = event.get("timestamp")
             if ts_str and speed > 0:
                 try:
-                    from datetime import datetime, timezone
+                    from datetime import datetime
 
                     ts = datetime.fromisoformat(ts_str).timestamp()
                     if prev_ts is not None:
@@ -57,9 +57,7 @@ class ExecutionReplayer:
             # Breakpoint check
             stage_order = event.get("data", {}).get("stage_order")
             if bp and stage_order in bp and event.get("type") == "stage_start":
-                command = yield ReplayEvent(
-                    type="breakpoint", event=event, stage_order=stage_order
-                )
+                command = yield ReplayEvent(type="breakpoint", event=event, stage_order=stage_order)
                 while command != "continue":
                     if command == "step":
                         bp = {stage_order + 1}

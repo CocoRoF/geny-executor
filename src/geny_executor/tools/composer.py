@@ -9,9 +9,9 @@ Provides a unified interface for:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set
 
-from geny_executor.tools.base import Tool, ToolContext, ToolResult
+from geny_executor.tools.base import Tool
 from geny_executor.tools.registry import ToolRegistry
 from geny_executor.tools.adhoc import (
     AdhocTool,
@@ -60,10 +60,7 @@ class ToolPreset:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> ToolPreset:
-        adhoc_tools = [
-            AdhocToolDefinition.from_dict(t)
-            for t in data.get("adhoc_tools", [])
-        ]
+        adhoc_tools = [AdhocToolDefinition.from_dict(t) for t in data.get("adhoc_tools", [])]
         return cls(
             name=data["name"],
             description=data.get("description", ""),
@@ -86,9 +83,7 @@ class ToolComposer:
 
     def register_adhoc(self, definition: AdhocToolDefinition) -> AdhocTool:
         """Register an ad-hoc tool from a definition."""
-        tool = AdhocToolFactory.create(
-            definition, tool_resolver=self._resolve_tool
-        )
+        tool = AdhocToolFactory.create(definition, tool_resolver=self._resolve_tool)
         self._adhoc_tools[tool.name] = tool
         return tool
 
@@ -186,9 +181,7 @@ class ToolComposer:
         registry = ToolRegistry()
 
         # Built-in
-        for tool in self._built_in.filter(
-            include=include_built_in, exclude=exclude_built_in
-        ):
+        for tool in self._built_in.filter(include=include_built_in, exclude=exclude_built_in):
             registry.register(tool)
 
         # Ad-hoc

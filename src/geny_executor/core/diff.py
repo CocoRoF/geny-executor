@@ -10,8 +10,8 @@ from typing import Any, ClassVar, Dict, List, Optional, Set
 class DiffEntry:
     """A single difference between two environment configs."""
 
-    path: str               # JSON path (e.g., "model.temperature")
-    change_type: str        # "added" | "removed" | "changed"
+    path: str  # JSON path (e.g., "model.temperature")
+    change_type: str  # "added" | "removed" | "changed"
     old_value: Any = None
     new_value: Any = None
 
@@ -68,14 +68,10 @@ class EnvironmentDiff:
     # ── Filtering ──────────────────────────────────────────
 
     def filter_by_type(self, change_type: str) -> EnvironmentDiff:
-        return EnvironmentDiff(
-            entries=[e for e in self.entries if e.change_type == change_type]
-        )
+        return EnvironmentDiff(entries=[e for e in self.entries if e.change_type == change_type])
 
     def filter_by_prefix(self, prefix: str) -> EnvironmentDiff:
-        return EnvironmentDiff(
-            entries=[e for e in self.entries if e.path.startswith(prefix)]
-        )
+        return EnvironmentDiff(entries=[e for e in self.entries if e.path.startswith(prefix)])
 
     # ── Computation ────────────────────────────────────────
 
@@ -133,9 +129,7 @@ class EnvironmentDiff:
                             DiffEntry(path, "changed", old_value=a[key], new_value=b[key])
                         )
             elif a[key] != b[key]:
-                entries.append(
-                    DiffEntry(path, "changed", old_value=a[key], new_value=b[key])
-                )
+                entries.append(DiffEntry(path, "changed", old_value=a[key], new_value=b[key]))
 
         return cls(entries=entries)
 

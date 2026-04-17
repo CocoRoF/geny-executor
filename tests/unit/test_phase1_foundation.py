@@ -13,12 +13,9 @@ from geny_executor.core.snapshot import PipelineSnapshot, StageSnapshot
 from geny_executor.core.mutation import (
     PipelineMutator,
     MutationKind,
-    MutationRecord,
-    MutationResult,
 )
 from geny_executor.core.errors import MutationError, MutationLocked
 from geny_executor.core.stage import Stage, Strategy, StrategyInfo
-from geny_executor.core.state import PipelineState
 from geny_executor import Pipeline, PipelineConfig
 
 
@@ -163,8 +160,12 @@ class ConfigurableStage(Stage):
 class TestConfigField:
     def test_to_json_schema_number(self):
         f = ConfigField(
-            name="temp", type="number", label="Temperature",
-            default=0.7, min_value=0.0, max_value=2.0,
+            name="temp",
+            type="number",
+            label="Temperature",
+            default=0.7,
+            min_value=0.0,
+            max_value=2.0,
         )
         js = f.to_json_schema()
         assert js["type"] == "number"
@@ -175,7 +176,9 @@ class TestConfigField:
 
     def test_to_json_schema_select(self):
         f = ConfigField(
-            name="mode", type="select", label="Mode",
+            name="mode",
+            type="select",
+            label="Mode",
             options=[
                 {"value": "fast", "label": "Fast"},
                 {"value": "slow", "label": "Slow"},
@@ -187,8 +190,12 @@ class TestConfigField:
 
     def test_to_json_schema_string_constraints(self):
         f = ConfigField(
-            name="pattern", type="string", label="Pattern",
-            min_length=1, max_length=100, pattern="^[a-z]+$",
+            name="pattern",
+            type="string",
+            label="Pattern",
+            min_length=1,
+            max_length=100,
+            pattern="^[a-z]+$",
         )
         js = f.to_json_schema()
         assert js["minLength"] == 1
@@ -197,8 +204,12 @@ class TestConfigField:
 
     def test_to_json_schema_ui_extensions(self):
         f = ConfigField(
-            name="prompt", type="string", label="Prompt",
-            ui_widget="textarea", ui_group="advanced", ui_order=5,
+            name="prompt",
+            type="string",
+            label="Prompt",
+            ui_widget="textarea",
+            ui_group="advanced",
+            ui_order=5,
         )
         js = f.to_json_schema()
         assert js["x-ui-widget"] == "textarea"
@@ -212,10 +223,19 @@ class TestConfigSchema:
             name="test_schema",
             fields=[
                 ConfigField(name="name", type="string", label="Name", required=True, min_length=1),
-                ConfigField(name="count", type="integer", label="Count", default=10, min_value=1, max_value=100),
+                ConfigField(
+                    name="count",
+                    type="integer",
+                    label="Count",
+                    default=10,
+                    min_value=1,
+                    max_value=100,
+                ),
                 ConfigField(name="enabled", type="boolean", label="Enabled", default=True),
                 ConfigField(
-                    name="mode", type="select", label="Mode",
+                    name="mode",
+                    type="select",
+                    label="Mode",
                     options=[{"value": "a", "label": "A"}, {"value": "b", "label": "B"}],
                 ),
             ],
@@ -400,7 +420,9 @@ class TestPipelineSnapshot:
             stages=[
                 StageSnapshot(order=1, name="input", is_active=True),
                 StageSnapshot(
-                    order=2, name="context", is_active=True,
+                    order=2,
+                    name="context",
+                    is_active=True,
                     strategies={"primary": "alpha"},
                     strategy_configs={"primary": {"mode": "fast"}},
                     stage_config={"verbosity": 2},
@@ -446,8 +468,8 @@ def _make_pipeline_with_stages():
     """Create a pipeline with SlotStage, BareStage, ConfigurableStage."""
     config = PipelineConfig(name="mut-test")
     pipeline = Pipeline(config)
-    pipeline.register_stage(SlotStage())      # order 2
-    pipeline.register_stage(BareStage())      # order 3
+    pipeline.register_stage(SlotStage())  # order 2
+    pipeline.register_stage(BareStage())  # order 3
     pipeline.register_stage(ConfigurableStage())  # order 4
     return pipeline
 
@@ -648,5 +670,6 @@ class TestMutationErrors:
 
     def test_inheritance(self):
         from geny_executor.core.errors import GenyExecutorError
+
         assert issubclass(MutationError, GenyExecutorError)
         assert issubclass(MutationLocked, GenyExecutorError)

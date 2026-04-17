@@ -29,10 +29,20 @@ MAX_SCRIPT_LENGTH = 10_000
 SUPPORTED_VERSIONS = frozenset({"1.0"})
 
 # Commands considered too dangerous for MCP stdio transport.
-DANGEROUS_COMMANDS = frozenset({
-    "rm", "dd", "mkfs", "kill", "shutdown", "reboot",
-    "fdisk", "format", "del", "rmdir",
-})
+DANGEROUS_COMMANDS = frozenset(
+    {
+        "rm",
+        "dd",
+        "mkfs",
+        "kill",
+        "shutdown",
+        "reboot",
+        "fdisk",
+        "format",
+        "del",
+        "rmdir",
+    }
+)
 
 
 def validate_import(data: Dict[str, Any], *, raw_size: Optional[int] = None) -> List[str]:
@@ -44,9 +54,7 @@ def validate_import(data: Dict[str, Any], *, raw_size: Optional[int] = None) -> 
 
     # ── Raw size ──
     if raw_size is not None and raw_size > MAX_JSON_SIZE:
-        errors.append(
-            f"File too large: {raw_size:,} bytes (max {MAX_JSON_SIZE:,})"
-        )
+        errors.append(f"File too large: {raw_size:,} bytes (max {MAX_JSON_SIZE:,})")
 
     # ── Version ──
     version = data.get("version", data.get("metadata", {}).get("version"))
@@ -83,15 +91,12 @@ def _validate_adhoc_tools(adhoc: Any, errors: List[str]) -> None:
             code = (tool.get("script_config") or {}).get("code", "")
             if len(code) > MAX_SCRIPT_LENGTH:
                 errors.append(
-                    f"Script too long in tool '{name}': "
-                    f"{len(code)} chars (max {MAX_SCRIPT_LENGTH})"
+                    f"Script too long in tool '{name}': {len(code)} chars (max {MAX_SCRIPT_LENGTH})"
                 )
             if code:
                 violations = validate_script(code)
                 if violations:
-                    errors.append(
-                        f"Script security issue in tool '{name}': {violations}"
-                    )
+                    errors.append(f"Script security issue in tool '{name}': {violations}")
 
 
 def _validate_mcp_servers(servers: Any, errors: List[str]) -> None:
@@ -110,9 +115,7 @@ def _validate_mcp_servers(servers: Any, errors: List[str]) -> None:
             if isinstance(command, str):
                 binary = command.split("/")[-1].split()[0] if command else ""
                 if binary in DANGEROUS_COMMANDS:
-                    errors.append(
-                        f"Dangerous MCP command in server '{name}': {binary}"
-                    )
+                    errors.append(f"Dangerous MCP command in server '{name}': {binary}")
 
 
 def check_import(data: Dict[str, Any], *, raw_size: Optional[int] = None) -> None:

@@ -12,7 +12,6 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set
 
-from geny_executor.core.config import ModelConfig, PipelineConfig
 from geny_executor.core.errors import MutationError, MutationLocked
 from geny_executor.core.snapshot import PipelineSnapshot, StageSnapshot
 
@@ -41,9 +40,7 @@ class MutationRecord:
     target: str  # e.g. "stage:6.provider", "model.temperature"
     old_value: Any = None
     new_value: Any = None
-    timestamp: str = field(
-        default_factory=lambda: datetime.now(timezone.utc).isoformat()
-    )
+    timestamp: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
 
 @dataclass
@@ -95,17 +92,13 @@ class PipelineMutator:
         with self._lock:
             self._check_stage_lock(stage_order)
             stage = self._get_stage(stage_order)
-            old_impls = {
-                s.slot_name: s.current_impl for s in stage.list_strategies()
-            }
+            old_impls = {s.slot_name: s.current_impl for s in stage.list_strategies()}
             old_value = old_impls.get(slot_name, "")
 
             try:
                 stage.set_strategy(slot_name, impl_name, config)
             except KeyError as exc:
-                raise MutationError(
-                    str(exc), stage_order=stage_order, slot_name=slot_name
-                ) from exc
+                raise MutationError(str(exc), stage_order=stage_order, slot_name=slot_name) from exc
 
             record = MutationRecord(
                 kind=MutationKind.SWAP_STRATEGY,
@@ -116,9 +109,7 @@ class PipelineMutator:
             self._change_log.append(record)
             return MutationResult(success=True, record=record)
 
-    def update_stage_config(
-        self, stage_order: int, config: Dict[str, Any]
-    ) -> MutationResult:
+    def update_stage_config(self, stage_order: int, config: Dict[str, Any]) -> MutationResult:
         """Apply a partial config update to a stage."""
         with self._lock:
             self._check_stage_lock(stage_order)
@@ -143,9 +134,7 @@ class PipelineMutator:
             old_values: Dict[str, Any] = {}
             for key, value in changes.items():
                 if not hasattr(cfg, key):
-                    raise MutationError(
-                        f"ModelConfig has no field '{key}'"
-                    )
+                    raise MutationError(f"ModelConfig has no field '{key}'")
                 old_values[key] = getattr(cfg, key)
                 setattr(cfg, key, value)
 
@@ -167,9 +156,7 @@ class PipelineMutator:
                 if key == "model":
                     continue  # use update_model_config() instead
                 if not hasattr(cfg, key):
-                    raise MutationError(
-                        f"PipelineConfig has no field '{key}'"
-                    )
+                    raise MutationError(f"PipelineConfig has no field '{key}'")
                 old_values[key] = getattr(cfg, key)
                 setattr(cfg, key, value)
 
@@ -243,9 +230,7 @@ class PipelineMutator:
                     )
                 )
             else:
-                stages.append(
-                    StageSnapshot(order=order, name=f"stage_{order}", is_active=False)
-                )
+                stages.append(StageSnapshot(order=order, name=f"stage_{order}", is_active=False))
 
         # Serialize PipelineConfig
         cfg = self._pipeline._config

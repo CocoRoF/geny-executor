@@ -35,7 +35,12 @@ from geny_executor.core.errors import (
 from geny_executor.core.schema import ConfigField, ConfigSchema
 from geny_executor.core.slot import StrategySlot
 from geny_executor.core.snapshot import PipelineSnapshot, StageSnapshot
-from geny_executor.core.mutation import PipelineMutator, MutationKind, MutationRecord, MutationResult
+from geny_executor.core.mutation import (
+    PipelineMutator,
+    MutationKind,
+    MutationRecord,
+    MutationResult,
+)
 from geny_executor.core.builder import PipelineBuilder
 from geny_executor.core.presets import PipelinePresets, PresetInfo, PresetManager
 from geny_executor.core.diff import DiffEntry, EnvironmentDiff

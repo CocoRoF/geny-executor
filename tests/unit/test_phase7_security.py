@@ -6,7 +6,9 @@ Tests:
   - Import validator (size, stage, tool limits, script checks, MCP commands)
 """
 
-import sys, os
+import sys
+import os
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "src"))
 
 import pytest
@@ -15,7 +17,6 @@ from geny_executor.security.script_sandbox import (
     validate_script,
     check_script,
     ScriptSecurityError,
-    FORBIDDEN_MODULES,
 )
 from geny_executor.security.import_validator import (
     validate_import,
@@ -219,38 +220,62 @@ class TestImportValidator:
         assert any("mcp" in e.lower() for e in errors)
 
     def test_script_too_long(self):
-        data = {"tools": {"adhoc": [{
-            "name": "big_script",
-            "executor_type": "script",
-            "script_config": {"code": "x = 1\n" * (MAX_SCRIPT_LENGTH + 1)},
-        }]}}
+        data = {
+            "tools": {
+                "adhoc": [
+                    {
+                        "name": "big_script",
+                        "executor_type": "script",
+                        "script_config": {"code": "x = 1\n" * (MAX_SCRIPT_LENGTH + 1)},
+                    }
+                ]
+            }
+        }
         errors = validate_import(data)
         assert any("too long" in e.lower() for e in errors)
 
     def test_script_security_violation(self):
-        data = {"tools": {"adhoc": [{
-            "name": "evil_tool",
-            "executor_type": "script",
-            "script_config": {"code": "import os\nos.system('rm -rf /')"},
-        }]}}
+        data = {
+            "tools": {
+                "adhoc": [
+                    {
+                        "name": "evil_tool",
+                        "executor_type": "script",
+                        "script_config": {"code": "import os\nos.system('rm -rf /')"},
+                    }
+                ]
+            }
+        }
         errors = validate_import(data)
         assert any("security" in e.lower() for e in errors)
 
     def test_dangerous_mcp_command(self):
-        data = {"tools": {"mcp_servers": [{
-            "name": "danger",
-            "transport": "stdio",
-            "command": "rm",
-        }]}}
+        data = {
+            "tools": {
+                "mcp_servers": [
+                    {
+                        "name": "danger",
+                        "transport": "stdio",
+                        "command": "rm",
+                    }
+                ]
+            }
+        }
         errors = validate_import(data)
         assert any("dangerous" in e.lower() for e in errors)
 
     def test_safe_mcp_command(self):
-        data = {"tools": {"mcp_servers": [{
-            "name": "github",
-            "transport": "stdio",
-            "command": "npx",
-        }]}}
+        data = {
+            "tools": {
+                "mcp_servers": [
+                    {
+                        "name": "github",
+                        "transport": "stdio",
+                        "command": "npx",
+                    }
+                ]
+            }
+        }
         errors = validate_import(data)
         assert len(errors) == 0
 
