@@ -45,7 +45,16 @@ def test_describe_artifact_defaults_for_missing_meta():
     assert info.stability == "stable"
     assert info.version == "1.0"
     assert info.requires == ()
+    assert info.provides_stage is True
     assert info.extra == {}
+
+
+def test_describe_artifact_flags_strategy_only_artifacts():
+    """``Stage = None`` artifacts (e.g. evaluate/adaptive) report provides_stage=False."""
+    info = describe_artifact("s12_evaluate", "adaptive")
+    assert info.provides_stage is False
+    # default artifact remains fully instantiable
+    assert describe_artifact("s12_evaluate", "default").provides_stage is True
 
 
 def test_describe_artifact_accepts_all_stage_identifier_forms():
@@ -109,6 +118,7 @@ def test_artifact_info_to_dict_is_json_ready():
         stability="stable",
         requires=("anthropic>=0.40",),
         is_default=True,
+        provides_stage=True,
         extra={"cost_tier": "free"},
     )
     payload = info.to_dict()
@@ -120,6 +130,7 @@ def test_artifact_info_to_dict_is_json_ready():
         "stability": "stable",
         "requires": ["anthropic>=0.40"],
         "is_default": True,
+        "provides_stage": True,
         "extra": {"cost_tier": "free"},
     }
 

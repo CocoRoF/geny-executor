@@ -149,12 +149,14 @@ def create_stage(stage: str, artifact: str = DEFAULT_ARTIFACT, **kwargs: Any) ->
     """
     module_name = _resolve_stage_module(stage)
     mod = load_artifact_module(module_name, artifact)
-    if not hasattr(mod, "Stage"):
+    stage_cls = getattr(mod, "Stage", None)
+    if stage_cls is None:
         raise AttributeError(
-            f"Artifact '{artifact}' for stage '{stage}' does not export 'Stage'. "
-            f"Every artifact __init__.py must have: Stage = <ConcreteStageClass>"
+            f"Artifact '{artifact}' for stage '{module_name}' does not provide a "
+            f"Stage class (Stage is None or missing). Strategy-only artifacts must "
+            f"be injected into the default Stage instead of instantiated directly."
         )
-    instance = mod.Stage(**kwargs)
+    instance = stage_cls(**kwargs)
     # Record provenance so Environment serialization can round-trip.
     instance._artifact_name = artifact
     instance._stage_module = module_name
@@ -198,6 +200,13 @@ class ArtifactInfo:
     Populated from an artifact module's optional ``ARTIFACT_META`` dict.
     Any missing keys fall back to conservative defaults so that every artifact
     on disk is discoverable, even without metadata.
+
+    Note on ``provides_stage``:
+        Some artifacts (e.g. ``s12_evaluate/adaptive``) ship a Strategy to be
+        injected into the default Stage rather than a standalone Stage class.
+        These set ``Stage = None`` in their ``__init__.py`` — ``describe_artifact``
+        detects that and surfaces ``provides_stage=False`` so UIs can disable
+        "instantiate" actions for such artifacts.
     """
 
     stage: str
@@ -207,6 +216,7 @@ class ArtifactInfo:
     stability: str = "stable"  # "stable" | "beta" | "experimental"
     requires: Tuple[str, ...] = ()
     is_default: bool = False
+    provides_stage: bool = True
     extra: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -219,6 +229,7 @@ class ArtifactInfo:
             "stability": self.stability,
             "requires": list(self.requires),
             "is_default": self.is_default,
+            "provides_stage": self.provides_stage,
             "extra": dict(self.extra),
         }
 
@@ -247,6 +258,9 @@ def describe_artifact(stage: str, artifact: str = DEFAULT_ARTIFACT) -> ArtifactI
     requires_raw = meta.get("requires", ())
     requires: Tuple[str, ...] = tuple(requires_raw) if requires_raw else ()
 
+    # Detect strategy-only artifacts (``Stage = None`` convention).
+    provides_stage = getattr(mod, "Stage", None) is not None
+
     return ArtifactInfo(
         stage=module_name,
         name=artifact,
@@ -255,6 +269,7 @@ def describe_artifact(stage: str, artifact: str = DEFAULT_ARTIFACT) -> ArtifactI
         stability=str(meta.get("stability", "stable")),
         requires=requires,
         is_default=(artifact == DEFAULT_ARTIFACT),
+        provides_stage=provides_stage,
         extra=extra,
     )
 

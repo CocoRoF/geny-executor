@@ -67,6 +67,14 @@ from geny_executor.core.artifact import (
     list_artifacts,
     list_artifacts_with_meta,
 )
+from geny_executor.core.introspection import (
+    ChainIntrospection,
+    IntrospectionUnsupported,
+    SlotIntrospection,
+    StageIntrospection,
+    introspect_all,
+    introspect_stage,
+)
 from geny_executor.events import EventBus, PipelineEvent
 from geny_executor.memory import (
     GenyMemoryRetriever,
@@ -115,6 +123,13 @@ __all__ = [
     "get_artifact_map",
     "list_artifacts",
     "list_artifacts_with_meta",
+    # Introspection
+    "ChainIntrospection",
+    "IntrospectionUnsupported",
+    "SlotIntrospection",
+    "StageIntrospection",
+    "introspect_all",
+    "introspect_stage",
     # Events
     "EventBus",
     "PipelineEvent",
