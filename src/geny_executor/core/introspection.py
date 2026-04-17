@@ -20,7 +20,7 @@ raise :class:`IntrospectionUnsupported` with a clear message.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 from geny_executor.core.artifact import (
     ArtifactInfo,
@@ -110,6 +110,37 @@ def _stage_capabilities(stage_module: str) -> _StageCapabilities:
     return _STAGE_CAPABILITIES.get(stage_module, {"tool_binding": False, "model_override": False})
 
 
+# ── Structurally required stages ────────────────────────────────
+#
+# Every geny-executor pipeline is fundamentally an LLM agent loop. Four stages
+# are load-bearing for that contract and cannot be deactivated without making
+# the pipeline meaningless:
+#
+#   - ``s01_input``  — turns the user's prompt into the initial artifact; no
+#     pipeline can start without it.
+#   - ``s06_api``    — the LLM call itself; removing it leaves nothing to parse
+#     or emit.
+#   - ``s09_parse``  — converts raw API output into the typed events every
+#     downstream stage (tool, loop, memory, yield) consumes.
+#   - ``s16_yield``  — surfaces the final result to the caller; without it the
+#     run produces no output.
+#
+# This set mirrors the ``minimal`` preset (Input → API → Parse → Yield), which
+# is the smallest canonical PipelineBuilder config. Every other stage is
+# optional — a UI should let users toggle them, but the runtime will happily
+# accept a manifest that omits them.
+#
+# Environment Builder UIs read this via ``StageIntrospection.required`` and
+# force the stage's Active toggle on.
+
+_STAGE_REQUIRED: Set[str] = {"s01_input", "s06_api", "s09_parse", "s16_yield"}
+
+
+def _stage_required(stage_module: str) -> bool:
+    """Return True if the stage is structurally required for any pipeline."""
+    return stage_module in _STAGE_REQUIRED
+
+
 # ── Dataclasses ────────────────────────────────────────────────
 
 
@@ -183,6 +214,7 @@ class StageIntrospection:
     strategy_chains: Dict[str, ChainIntrospection]
     tool_binding_supported: bool = False
     model_override_supported: bool = False
+    required: bool = False
     extra: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -202,6 +234,7 @@ class StageIntrospection:
             },
             "tool_binding_supported": self.tool_binding_supported,
             "model_override_supported": self.model_override_supported,
+            "required": self.required,
             "extra": dict(self.extra),
         }
 
@@ -316,6 +349,7 @@ def introspect_stage(stage: str, artifact: str = DEFAULT_ARTIFACT) -> StageIntro
         strategy_chains=strategy_chains,
         tool_binding_supported=caps["tool_binding"],
         model_override_supported=caps["model_override"],
+        required=_stage_required(module_name),
     )
 
 

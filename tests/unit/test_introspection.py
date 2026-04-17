@@ -86,6 +86,40 @@ def test_capability_flags_default_false_elsewhere(order: int, module_name: str):
     )
 
 
+# ── Structurally required stages ─────────────────────────────────
+#
+# Input → API → Parse → Yield is the ``minimal`` preset. These 4 stages must
+# always stay active — UIs read ``required`` to force the Active toggle on.
+
+_REQUIRED_STAGES = {"s01_input", "s06_api", "s09_parse", "s16_yield"}
+
+
+@pytest.mark.parametrize("module_name", sorted(_REQUIRED_STAGES))
+def test_required_flag_true_for_structurally_required_stages(module_name: str):
+    insp = introspect_stage(module_name, "default")
+    assert insp.required is True, (
+        f"{module_name} belongs to the minimum Input/API/Parse/Yield set but reports required=False"
+    )
+
+
+@pytest.mark.parametrize(
+    "module_name",
+    sorted({m for m in STAGE_MODULES.values() if m not in _REQUIRED_STAGES}),
+)
+def test_required_flag_false_for_optional_stages(module_name: str):
+    insp = introspect_stage(module_name, "default")
+    assert insp.required is False, (
+        f"{module_name} is not structurally required but reports required=True — "
+        "UIs will refuse to let users deactivate it"
+    )
+
+
+def test_required_flag_serializes_in_to_dict():
+    insp = introspect_stage("s01_input", "default")
+    payload = insp.to_dict()
+    assert payload["required"] is True
+
+
 def test_introspect_stage_accepts_alias_and_order():
     by_module = introspect_stage("s06_api", "default")
     by_alias = introspect_stage("api", "default")
