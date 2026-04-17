@@ -46,12 +46,47 @@ def test_introspect_stage_default_every_stage(order: int, module_name: str):
     assert insp.stage == module_name
     assert insp.artifact == "default"
     assert insp.order == order
-    assert insp.tool_binding_supported is True
-    assert insp.model_override_supported is True
     assert insp.artifact_info.provides_stage is True
     # Every stage exposes *something* configurable (either schema, a slot, or a chain)
     assert insp.config_schema is not None or insp.strategy_slots or insp.strategy_chains, (
         f"{module_name} exposes no introspectable surface"
+    )
+
+
+# ── Per-stage capability flags (honest plumbing) ─────────────────
+#
+# A UI that offers model/tool-binding inputs on every stage is misleading —
+# the runtime only honours them on the API and tool stages respectively.
+# These tests pin the contract so regressions can't quietly return.
+
+
+def test_capability_flags_api_stage_only_allows_model_override():
+    insp = introspect_stage("s06_api", "default")
+    assert insp.model_override_supported is True
+    assert insp.tool_binding_supported is False
+
+
+def test_capability_flags_tool_stage_only_allows_tool_binding():
+    insp = introspect_stage("s10_tool", "default")
+    assert insp.tool_binding_supported is True
+    assert insp.model_override_supported is False
+
+
+@pytest.mark.parametrize(
+    "order,module_name",
+    [
+        (o, m)
+        for o, m in sorted(STAGE_MODULES.items())
+        if m not in {"s06_api", "s10_tool"}
+    ],
+)
+def test_capability_flags_default_false_elsewhere(order: int, module_name: str):
+    insp = introspect_stage(module_name, "default")
+    assert insp.tool_binding_supported is False, (
+        f"{module_name} claims tool_binding support but its runtime ignores the binding"
+    )
+    assert insp.model_override_supported is False, (
+        f"{module_name} claims model_override support but its runtime ignores the override"
     )
 
 
