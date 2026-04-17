@@ -202,11 +202,10 @@ class PipelineBuilder:
 
         # Loop
         if "loop" in self._stage_configs:
-            from geny_executor.stages.s13_loop import LoopStage, StandardLoopController
+            from geny_executor.stages.s13_loop import LoopStage
 
-            loop_cfg = dict(self._stage_configs["loop"])  # Copy to avoid mutation
-            max_turns = loop_cfg.pop("max_turns", 50)
-            pipeline.register_stage(LoopStage(StandardLoopController(max_turns=max_turns)))
+            loop_cfg = dict(self._stage_configs["loop"])
+            pipeline.register_stage(LoopStage(**loop_cfg))
 
         # Emit
         if "emit" in self._stage_configs:

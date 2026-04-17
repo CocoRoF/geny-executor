@@ -6,11 +6,20 @@ import asyncio
 from typing import Any, Dict, List, Optional
 
 from geny_executor.core.errors import APIError, ErrorCategory
-from geny_executor.core.stage import Stage, StrategyInfo
+from geny_executor.core.schema import ConfigField, ConfigSchema
+from geny_executor.core.slot import StrategySlot
+from geny_executor.core.stage import Stage
 from geny_executor.core.state import PipelineState
 from geny_executor.stages.s06_api.interface import APIProvider, RetryStrategy
-from geny_executor.stages.s06_api.artifact.default.providers import AnthropicProvider
-from geny_executor.stages.s06_api.artifact.default.retry import ExponentialBackoffRetry
+from geny_executor.stages.s06_api.artifact.default.providers import (
+    AnthropicProvider,
+    MockProvider,
+)
+from geny_executor.stages.s06_api.artifact.default.retry import (
+    ExponentialBackoffRetry,
+    NoRetry,
+    RateLimitAwareRetry,
+)
 from geny_executor.stages.s06_api.types import APIRequest, APIResponse
 
 
@@ -36,16 +45,47 @@ class APIStage(Stage[Any, APIResponse]):
         api_key: str = "",
         base_url: Optional[str] = None,
         stream: bool = True,
+        timeout_ms: Optional[int] = None,
     ):
-        if provider:
-            self._provider = provider
+        if provider is not None:
+            initial_provider: APIProvider = provider
         elif api_key:
-            self._provider = AnthropicProvider(api_key=api_key, base_url=base_url)
+            initial_provider = AnthropicProvider(api_key=api_key, base_url=base_url)
         else:
             raise ValueError("Either 'provider' or 'api_key' must be provided")
 
-        self._retry = retry or ExponentialBackoffRetry()
+        self._slots: Dict[str, StrategySlot] = {
+            "provider": StrategySlot(
+                name="provider",
+                strategy=initial_provider,
+                registry={
+                    "anthropic": AnthropicProvider,
+                    "mock": MockProvider,
+                },
+                description="API provider (actual LLM endpoint)",
+            ),
+            "retry": StrategySlot(
+                name="retry",
+                strategy=retry or ExponentialBackoffRetry(),
+                registry={
+                    "exponential_backoff": ExponentialBackoffRetry,
+                    "no_retry": NoRetry,
+                    "rate_limit_aware": RateLimitAwareRetry,
+                },
+                description="Retry strategy on API errors",
+            ),
+        }
         self._stream_default = stream
+        self._base_url = base_url
+        self._timeout_ms = timeout_ms
+
+    @property
+    def _provider(self) -> APIProvider:
+        return self._slots["provider"].strategy  # type: ignore[return-value]
+
+    @property
+    def _retry(self) -> RetryStrategy:
+        return self._slots["retry"].strategy  # type: ignore[return-value]
 
     @property
     def name(self) -> str:
@@ -58,6 +98,55 @@ class APIStage(Stage[Any, APIResponse]):
     @property
     def category(self) -> str:
         return "execution"
+
+    def get_strategy_slots(self) -> Dict[str, StrategySlot]:
+        return self._slots
+
+    def get_config_schema(self) -> ConfigSchema:
+        return ConfigSchema(
+            name="api",
+            fields=[
+                ConfigField(
+                    name="base_url",
+                    type="string",
+                    label="Base URL",
+                    description="Override API endpoint (useful for proxies or mocks).",
+                    default="",
+                ),
+                ConfigField(
+                    name="stream",
+                    type="boolean",
+                    label="Stream",
+                    description="Use Server-Sent Events streaming when supported.",
+                    default=True,
+                    ui_widget="toggle",
+                ),
+                ConfigField(
+                    name="timeout_ms",
+                    type="integer",
+                    label="Timeout (ms)",
+                    description="Per-request timeout in milliseconds. Blank for provider default.",
+                    default=0,
+                    min_value=0,
+                ),
+            ],
+        )
+
+    def get_config(self) -> Dict[str, Any]:
+        return {
+            "base_url": self._base_url or "",
+            "stream": self._stream_default,
+            "timeout_ms": self._timeout_ms or 0,
+        }
+
+    def update_config(self, config: Dict[str, Any]) -> None:
+        if "base_url" in config:
+            self._base_url = str(config["base_url"]) or None
+        if "stream" in config:
+            self._stream_default = bool(config["stream"])
+        if "timeout_ms" in config:
+            value = int(config["timeout_ms"])
+            self._timeout_ms = value if value > 0 else None
 
     def _resolve_stream(self, state: PipelineState) -> bool:
         """Resolve streaming mode: state (from PipelineConfig) takes precedence."""
@@ -112,16 +201,22 @@ class APIStage(Stage[Any, APIResponse]):
         Follows Anthropic API constraints:
           - Use EITHER temperature OR top_p, not both.
           - thinking.budget_tokens must be < max_tokens when type="enabled".
+
+        Honors ``self.model_override`` (set via :meth:`PipelineMutator.set_stage_model`)
+        when present — each field falls back to *state* otherwise.
         """
+        override = self.model_override
         request = APIRequest(
-            model=state.model,
+            model=override.model if override else state.model,
             messages=list(state.messages),
-            max_tokens=state.max_tokens,
+            max_tokens=override.max_tokens if override else state.max_tokens,
             system=state.system,
-            temperature=state.temperature,
-            top_p=state.top_p,
-            top_k=state.top_k,
-            stop_sequences=state.stop_sequences,
+            temperature=override.temperature if override else state.temperature,
+            top_p=override.top_p if override else state.top_p,
+            top_k=override.top_k if override else state.top_k,
+            stop_sequences=(
+                override.stop_sequences if override else state.stop_sequences
+            ),
         )
 
         if state.tools:
@@ -129,15 +224,30 @@ class APIStage(Stage[Any, APIResponse]):
         if state.tool_choice:
             request.tool_choice = state.tool_choice
 
-        # Extended thinking
-        if state.thinking_enabled:
-            thinking_type = getattr(state, "thinking_type", "enabled")
+        # Extended thinking — override can force enable/disable per-stage.
+        thinking_enabled = (
+            override.thinking_enabled if override else state.thinking_enabled
+        )
+        if thinking_enabled:
+            thinking_type = (
+                override.thinking_type
+                if override
+                else getattr(state, "thinking_type", "enabled")
+            )
             thinking: dict = {"type": thinking_type}
 
             if thinking_type == "enabled":
-                thinking["budget_tokens"] = state.thinking_budget_tokens
+                thinking["budget_tokens"] = (
+                    override.thinking_budget_tokens
+                    if override
+                    else state.thinking_budget_tokens
+                )
 
-            thinking_display = getattr(state, "thinking_display", None)
+            thinking_display = (
+                override.thinking_display
+                if override
+                else getattr(state, "thinking_display", None)
+            )
             if thinking_display:
                 thinking["display"] = thinking_display
 
@@ -278,25 +388,3 @@ class APIStage(Stage[Any, APIResponse]):
                     }
                 )
         return blocks
-
-    def list_strategies(self) -> List[StrategyInfo]:
-        return [
-            StrategyInfo(
-                slot_name="provider",
-                current_impl=type(self._provider).__name__,
-                available_impls=[
-                    "AnthropicProvider",
-                    "MockProvider",
-                    "RecordingProvider",
-                ],
-            ),
-            StrategyInfo(
-                slot_name="retry",
-                current_impl=type(self._retry).__name__,
-                available_impls=[
-                    "ExponentialBackoffRetry",
-                    "NoRetry",
-                    "RateLimitAwareRetry",
-                ],
-            ),
-        ]
