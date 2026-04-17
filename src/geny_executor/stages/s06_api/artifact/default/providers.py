@@ -17,7 +17,7 @@ class AnthropicProvider(APIProvider):
 
     def __init__(
         self,
-        api_key: str,
+        api_key: str = "",
         base_url: Optional[str] = None,
         default_headers: Optional[Dict[str, str]] = None,
     ):
@@ -25,6 +25,24 @@ class AnthropicProvider(APIProvider):
         self._base_url = base_url
         self._default_headers = default_headers
         self._client: Optional[Any] = None
+
+    def configure(self, config: Dict[str, Any]) -> None:
+        if "api_key" in config:
+            self._api_key = config["api_key"] or ""
+            self._client = None
+        if "base_url" in config:
+            self._base_url = config["base_url"]
+            self._client = None
+        if "default_headers" in config:
+            self._default_headers = config["default_headers"]
+            self._client = None
+
+    def get_config(self) -> Dict[str, Any]:
+        return {
+            "api_key": "***" if self._api_key else "",
+            "base_url": self._base_url,
+            "default_headers": self._default_headers or {},
+        }
 
     @property
     def name(self) -> str:

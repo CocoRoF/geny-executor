@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Any, List, Optional
+from typing import Any, Dict, Optional
 
-from geny_executor.core.stage import Stage, StrategyInfo
+from geny_executor.core.slot import StrategySlot
+from geny_executor.core.stage import Stage
 from geny_executor.core.state import PipelineState
 from geny_executor.stages.s06_api.types import APIResponse
 from geny_executor.stages.s09_parse.interface import (
@@ -13,8 +14,15 @@ from geny_executor.stages.s09_parse.interface import (
     CompletionSignal,
 )
 from geny_executor.stages.s09_parse.types import ParsedResponse
-from geny_executor.stages.s09_parse.artifact.default.parsers import DefaultParser
-from geny_executor.stages.s09_parse.artifact.default.signals import RegexDetector
+from geny_executor.stages.s09_parse.artifact.default.parsers import (
+    DefaultParser,
+    StructuredOutputParser,
+)
+from geny_executor.stages.s09_parse.artifact.default.signals import (
+    HybridDetector,
+    RegexDetector,
+    StructuredDetector,
+)
 
 
 class ParseStage(Stage[Any, ParsedResponse]):
@@ -30,8 +38,35 @@ class ParseStage(Stage[Any, ParsedResponse]):
         parser: Optional[ResponseParser] = None,
         signal_detector: Optional[CompletionSignalDetector] = None,
     ):
-        self._parser = parser or DefaultParser()
-        self._signal_detector = signal_detector or RegexDetector()
+        self._slots: Dict[str, StrategySlot] = {
+            "parser": StrategySlot(
+                name="parser",
+                strategy=parser or DefaultParser(),
+                registry={
+                    "default": DefaultParser,
+                    "structured_output": StructuredOutputParser,
+                },
+                description="Response parsing strategy",
+            ),
+            "signal_detector": StrategySlot(
+                name="signal_detector",
+                strategy=signal_detector or RegexDetector(),
+                registry={
+                    "regex": RegexDetector,
+                    "structured": StructuredDetector,
+                    "hybrid": HybridDetector,
+                },
+                description="Completion signal detection strategy",
+            ),
+        }
+
+    @property
+    def _parser(self) -> ResponseParser:
+        return self._slots["parser"].strategy  # type: ignore[return-value]
+
+    @property
+    def _signal_detector(self) -> CompletionSignalDetector:
+        return self._slots["signal_detector"].strategy  # type: ignore[return-value]
 
     @property
     def name(self) -> str:
@@ -44,6 +79,9 @@ class ParseStage(Stage[Any, ParsedResponse]):
     @property
     def category(self) -> str:
         return "execution"
+
+    def get_strategy_slots(self) -> Dict[str, StrategySlot]:
+        return self._slots
 
     async def execute(self, input: Any, state: PipelineState) -> ParsedResponse:
         # Accept either APIResponse directly or pull from state
@@ -102,17 +140,3 @@ class ParseStage(Stage[Any, ParsedResponse]):
         )
 
         return parsed
-
-    def list_strategies(self) -> List[StrategyInfo]:
-        return [
-            StrategyInfo(
-                slot_name="parser",
-                current_impl=type(self._parser).__name__,
-                available_impls=["DefaultParser", "StructuredOutputParser"],
-            ),
-            StrategyInfo(
-                slot_name="signal_detector",
-                current_impl=type(self._signal_detector).__name__,
-                available_impls=["RegexDetector", "StructuredDetector", "HybridDetector"],
-            ),
-        ]

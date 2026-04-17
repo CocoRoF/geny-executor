@@ -88,6 +88,12 @@ class Stage(ABC, Generic[T_In, T_Out]):
     Stage 자체를 통째로 교체할 수 있다.
     """
 
+    # Per-stage overrides populated lazily through accessors below. We avoid
+    # requiring concrete stages to call ``super().__init__`` so that existing
+    # stages keep working without edits.
+    _tool_binding: Optional[Any] = None
+    _model_override: Optional[Any] = None
+
     @property
     @abstractmethod
     def name(self) -> str:
@@ -145,12 +151,21 @@ class Stage(ABC, Generic[T_In, T_Out]):
         )
 
     def list_strategies(self) -> List[StrategyInfo]:
-        """List available strategies in this stage (for UI)."""
-        # Auto-generate from slots if available
+        """List available strategies in this stage (for UI).
+
+        Auto-generated from :meth:`get_strategy_slots` and
+        :meth:`get_strategy_chains` when a concrete stage overrides them.
+        Stages that still hardcode ``list_strategies`` should migrate to
+        the slot/chain hooks.
+        """
+        infos: List[StrategyInfo] = []
         slots = self.get_strategy_slots()
-        if slots:
-            return [s.describe() for s in slots.values()]
-        return []
+        for slot in slots.values():
+            infos.append(slot.describe())
+        chains = self.get_strategy_chains()
+        for chain in chains.values():
+            infos.append(chain.describe())
+        return infos
 
     # ── Mutation API (Phase 1) ──────────────────────────────────────
 
@@ -160,6 +175,14 @@ class Stage(ABC, Generic[T_In, T_Out]):
         Override in concrete stages that adopt the StrategySlot pattern.
         Stages that do not override this return an empty dict, preserving
         backward compatibility with the legacy ``list_strategies()`` approach.
+        """
+        return {}
+
+    def get_strategy_chains(self) -> Dict[str, Any]:
+        """Return a dict of chain_name → :class:`SlotChain`.
+
+        Override in stages whose semantics require an ordered sequence
+        of strategies (Guard, Emit). Default: no chains.
         """
         return {}
 
@@ -185,6 +208,37 @@ class Stage(ABC, Generic[T_In, T_Out]):
             )
         slot.swap(impl_name, config)
 
+    def _get_chain(self, chain_name: str) -> Any:
+        chains = self.get_strategy_chains()
+        chain = chains.get(chain_name)
+        if chain is None:
+            raise KeyError(
+                f"Stage '{self.name}' has no strategy chain '{chain_name}'. "
+                f"Available: {list(chains.keys())}"
+            )
+        return chain
+
+    def add_to_chain(
+        self,
+        chain_name: str,
+        impl_name: str,
+        config: Optional[Dict[str, Any]] = None,
+    ) -> Any:
+        """Append a new strategy onto the named chain."""
+        return self._get_chain(chain_name).append(impl_name, config)
+
+    def remove_from_chain(self, chain_name: str, item_name: str) -> Any:
+        """Remove the first item named *item_name* from the chain."""
+        return self._get_chain(chain_name).remove(item_name)
+
+    def reorder_chain(self, chain_name: str, order: List[str]) -> None:
+        """Reorder the chain to match *order* (a permutation of current names)."""
+        self._get_chain(chain_name).reorder(order)
+
+    def clear_chain(self, chain_name: str) -> None:
+        """Empty the named chain."""
+        self._get_chain(chain_name).clear()
+
     def get_config_schema(self) -> Optional[Any]:
         """Return a :class:`ConfigSchema` for this stage's own parameters.
 
@@ -200,3 +254,43 @@ class Stage(ABC, Generic[T_In, T_Out]):
     def update_config(self, config: Dict[str, Any]) -> None:
         """Apply partial configuration update to this stage."""
         pass
+
+    # ── Per-stage overrides ───────────────────────────────────
+
+    @property
+    def tool_binding(self) -> Any:
+        """Per-stage :class:`StageToolBinding` view of the tool registry.
+
+        Lazily constructed on first access so existing stages work unchanged.
+        """
+        if self._tool_binding is None:
+            from geny_executor.tools.stage_binding import StageToolBinding
+
+            self._tool_binding = StageToolBinding(stage_order=self.order)
+        return self._tool_binding
+
+    @tool_binding.setter
+    def tool_binding(self, value: Any) -> None:
+        self._tool_binding = value
+
+    @property
+    def model_override(self) -> Any:
+        """Optional per-stage :class:`ModelConfig` override. ``None`` = inherit."""
+        return self._model_override
+
+    @model_override.setter
+    def model_override(self, value: Any) -> None:
+        self._model_override = value
+
+    def resolve_model(self, state: PipelineState) -> Any:
+        """Return the effective model identifier for this stage.
+
+        When :attr:`model_override` is set, its ``model`` attribute wins; otherwise
+        falls back to the pipeline-wide ``state.model``. Model-using stages
+        (API, agent sub-pipelines, evaluators, memory summarizers) should call
+        this helper instead of reading ``state.model`` directly so the override
+        is honored uniformly.
+        """
+        if self._model_override is not None:
+            return getattr(self._model_override, "model", state.model)
+        return state.model

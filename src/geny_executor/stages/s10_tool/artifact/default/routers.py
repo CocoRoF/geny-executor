@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from geny_executor.tools.base import ToolContext, ToolResult
 from geny_executor.tools.registry import ToolRegistry
@@ -12,7 +12,11 @@ from geny_executor.stages.s10_tool.interface import ToolRouter
 class RegistryRouter(ToolRouter):
     """Routes tool calls via ToolRegistry lookup."""
 
-    def __init__(self, registry: ToolRegistry):
+    def __init__(self, registry: Optional[ToolRegistry] = None):
+        self._registry = registry or ToolRegistry()
+
+    def bind_registry(self, registry: ToolRegistry) -> None:
+        """Swap the backing registry after construction."""
         self._registry = registry
 
     @property
