@@ -362,3 +362,94 @@ class MCPManager:
         """
         configs = dict(self._configs)
         await self.connect_all(configs)
+
+    # ── Dynamic management (Phase 2 additions) ──────────────
+
+    async def add_server(self, config: MCPServerConfig) -> List[Tool]:
+        """Add and connect an MCP server at runtime. Returns discovered tools."""
+        await self.connect(config.name, config)
+        conn = self._servers.get(config.name)
+        if conn and conn.is_connected:
+            from geny_executor.tools.mcp.adapter import MCPToolAdapter
+
+            definitions = await conn.discover_tools()
+            return [MCPToolAdapter(server=conn, definition=d) for d in definitions]
+        return []
+
+    async def remove_server(self, name: str) -> bool:
+        """Disconnect and remove an MCP server. Returns True if found."""
+        if name in self._servers:
+            await self.disconnect(name)
+            return True
+        return False
+
+    def list_server_status(self) -> List[Dict[str, Any]]:
+        """Return status for all servers."""
+        statuses = []
+        for name, conn in self._servers.items():
+            statuses.append(
+                {
+                    "name": name,
+                    "connected": conn.is_connected,
+                    "transport": conn.config.transport,
+                    "tool_count": len(conn._tools),
+                    "has_session": conn._client_session is not None,
+                }
+            )
+        return statuses
+
+    async def refresh_tools(self, name: str) -> List[Tool]:
+        """Re-discover tools from a connected server."""
+        conn = self._servers.get(name)
+        if not conn or not conn.is_connected or not conn._client_session:
+            return []
+
+        from geny_executor.tools.mcp.adapter import MCPToolAdapter
+
+        try:
+            result = await asyncio.wait_for(conn._client_session.list_tools(), timeout=10.0)
+            conn._tools = [
+                {
+                    "name": t.name,
+                    "description": t.description or "",
+                    "input_schema": t.inputSchema if hasattr(t, "inputSchema") else {},
+                }
+                for t in result.tools
+            ]
+            return [MCPToolAdapter(server=conn, definition=d) for d in conn._tools]
+        except Exception as e:
+            logger.warning("Failed to refresh tools from '%s': %s", name, e)
+            return []
+
+    async def test_connection(self, config: MCPServerConfig) -> Dict[str, Any]:
+        """Test connection to an MCP server without persisting it.
+
+        Returns a dict with ``success``, ``tools_discovered``, ``error``.
+        """
+        import time
+
+        conn = MCPServerConnection(config)
+        start = time.monotonic()
+        try:
+            await conn.connect()
+            elapsed = (time.monotonic() - start) * 1000
+            tools = await conn.discover_tools()
+            await conn.disconnect()
+            return {
+                "success": conn._client_session is not None or len(tools) > 0,
+                "latency_ms": round(elapsed, 1),
+                "tools_discovered": len(tools),
+                "error": None,
+            }
+        except Exception as e:
+            elapsed = (time.monotonic() - start) * 1000
+            try:
+                await conn.disconnect()
+            except Exception:
+                pass
+            return {
+                "success": False,
+                "latency_ms": round(elapsed, 1),
+                "tools_discovered": 0,
+                "error": str(e),
+            }

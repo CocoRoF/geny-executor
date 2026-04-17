@@ -2,11 +2,26 @@
 
 from __future__ import annotations
 
-from typing import Optional
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional, TYPE_CHECKING
 
 from geny_executor.core.builder import PipelineBuilder
 from geny_executor.core.pipeline import Pipeline
 from geny_executor.tools.registry import ToolRegistry
+
+if TYPE_CHECKING:
+    from geny_executor.core.environment import EnvironmentManager
+
+
+@dataclass
+class PresetInfo:
+    """Metadata about a preset (built-in or user-defined)."""
+
+    name: str
+    description: str = ""
+    preset_type: str = "built_in"  # "built_in" | "user"
+    tags: List[str] = field(default_factory=list)
+    environment_id: Optional[str] = None
 
 
 class PipelinePresets:
@@ -120,3 +135,73 @@ class PipelinePresets:
             builder = builder.with_tools(registry=tools)
 
         return builder.build()
+
+
+# ═══════════════════════════════════════════════════════════
+#  PresetManager — built-in + user presets
+# ═══════════════════════════════════════════════════════════
+
+
+class PresetManager:
+    """Manages pipeline presets (built-in + user-defined from environments)."""
+
+    _BUILT_IN_DESCRIPTIONS: Dict[str, str] = {
+        "minimal": "Minimal Q&A pipeline — Input → API → Parse → Yield",
+        "chat": "Chat pipeline — history, system prompt, optional tools",
+        "agent": "Agent pipeline — full autonomous agent with all stages",
+        "evaluator": "Evaluator pipeline — lightweight evaluation",
+        "geny_vtuber": "Geny VTuber pipeline — full Geny system reproduction",
+    }
+
+    def __init__(self, env_manager: EnvironmentManager) -> None:
+        self._env_manager = env_manager
+        self._built_in_factories = {
+            "minimal": PipelinePresets.minimal,
+            "chat": PipelinePresets.chat,
+            "agent": PipelinePresets.agent,
+            "evaluator": PipelinePresets.evaluator,
+            "geny_vtuber": PipelinePresets.geny_vtuber,
+        }
+
+    def list_all(self) -> List[PresetInfo]:
+        """List built-in + user-defined presets."""
+        presets: List[PresetInfo] = []
+
+        # Built-in
+        for name in self._built_in_factories:
+            presets.append(
+                PresetInfo(
+                    name=name,
+                    description=self._BUILT_IN_DESCRIPTIONS.get(name, ""),
+                    preset_type="built_in",
+                )
+            )
+
+        # User presets (environments tagged "preset")
+        for env in self._env_manager.list_all():
+            if "preset" in env.tags:
+                presets.append(
+                    PresetInfo(
+                        name=f"user:{env.id}",
+                        description=env.description,
+                        preset_type="user",
+                        tags=env.tags,
+                        environment_id=env.id,
+                    )
+                )
+
+        return presets
+
+    def save_as_preset(self, env_id: str) -> None:
+        """Mark an environment as a reusable preset."""
+        manifest = self._env_manager.load(env_id)
+        if "preset" not in manifest.metadata.tags:
+            manifest.metadata.tags.append("preset")
+            self._env_manager.update(env_id, {"metadata": {"tags": manifest.metadata.tags}})
+
+    def remove_preset_flag(self, env_id: str) -> None:
+        """Un-mark an environment as a preset."""
+        manifest = self._env_manager.load(env_id)
+        if "preset" in manifest.metadata.tags:
+            manifest.metadata.tags.remove("preset")
+            self._env_manager.update(env_id, {"metadata": {"tags": manifest.metadata.tags}})

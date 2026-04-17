@@ -56,6 +56,29 @@ class Strategy(ABC):
         """Inject strategy-specific configuration."""
         pass
 
+    @classmethod
+    def config_schema(cls) -> Optional[Any]:
+        """Return a :class:`ConfigSchema` describing configurable parameters.
+
+        Override in subclasses to expose tunable parameters to the UI.
+        Returns ``None`` when the strategy has no configurable parameters.
+        """
+        return None
+
+    @classmethod
+    def from_config(cls, config: Dict[str, Any]) -> Strategy:
+        """Create an instance and apply *config* in one step."""
+        instance = cls()
+        instance.configure(config)
+        return instance
+
+    def get_config(self) -> Dict[str, Any]:
+        """Return current configuration as a serializable dict.
+
+        Override in subclasses that store runtime configuration.
+        """
+        return {}
+
 
 class Stage(ABC, Generic[T_In, T_Out]):
     """파이프라인의 개별 단계 — Level 1 추상화.
@@ -123,4 +146,57 @@ class Stage(ABC, Generic[T_In, T_Out]):
 
     def list_strategies(self) -> List[StrategyInfo]:
         """List available strategies in this stage (for UI)."""
+        # Auto-generate from slots if available
+        slots = self.get_strategy_slots()
+        if slots:
+            return [s.describe() for s in slots.values()]
         return []
+
+    # ── Mutation API (Phase 1) ──────────────────────────────────────
+
+    def get_strategy_slots(self) -> Dict[str, Any]:
+        """Return a dict of slot_name → :class:`StrategySlot`.
+
+        Override in concrete stages that adopt the StrategySlot pattern.
+        Stages that do not override this return an empty dict, preserving
+        backward compatibility with the legacy ``list_strategies()`` approach.
+        """
+        return {}
+
+    def set_strategy(
+        self, slot_name: str, impl_name: str, config: Optional[Dict[str, Any]] = None
+    ) -> None:
+        """Hot-swap a strategy in the named slot.
+
+        Args:
+            slot_name: Which slot to modify.
+            impl_name: Registered implementation name.
+            config: Optional configuration dict.
+
+        Raises:
+            KeyError: If *slot_name* does not exist or *impl_name* is unknown.
+        """
+        slots = self.get_strategy_slots()
+        slot = slots.get(slot_name)
+        if slot is None:
+            raise KeyError(
+                f"Stage '{self.name}' has no strategy slot '{slot_name}'. "
+                f"Available: {list(slots.keys())}"
+            )
+        slot.swap(impl_name, config)
+
+    def get_config_schema(self) -> Optional[Any]:
+        """Return a :class:`ConfigSchema` for this stage's own parameters.
+
+        Override in concrete stages that have stage-level configuration
+        (separate from strategy-level configs).
+        """
+        return None
+
+    def get_config(self) -> Dict[str, Any]:
+        """Return the stage's current configuration as a serializable dict."""
+        return {}
+
+    def update_config(self, config: Dict[str, Any]) -> None:
+        """Apply partial configuration update to this stage."""
+        pass

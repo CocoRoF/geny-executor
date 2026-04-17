@@ -93,3 +93,33 @@ class ToolExecutionError(GenyExecutorError):
     ):
         super().__init__(message, cause=cause)
         self.tool_name = tool_name
+
+
+class MutationError(GenyExecutorError):
+    """Invalid mutation request (bad stage/slot/impl)."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        stage_order: int = 0,
+        slot_name: str = "",
+        cause: Optional[Exception] = None,
+    ):
+        super().__init__(message, cause=cause)
+        self.stage_order = stage_order
+        self.slot_name = slot_name
+
+
+class MutationLocked(GenyExecutorError):
+    """Mutation blocked because the target stage is currently executing."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        stage_order: int = 0,
+        cause: Optional[Exception] = None,
+    ):
+        super().__init__(message, cause=cause)
+        self.stage_order = stage_order

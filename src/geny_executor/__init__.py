@@ -29,9 +29,30 @@ from geny_executor.core.errors import (
     APIError,
     ToolExecutionError,
     ErrorCategory,
+    MutationError,
+    MutationLocked,
+)
+from geny_executor.core.schema import ConfigField, ConfigSchema
+from geny_executor.core.slot import StrategySlot
+from geny_executor.core.snapshot import PipelineSnapshot, StageSnapshot
+from geny_executor.core.mutation import (
+    PipelineMutator,
+    MutationKind,
+    MutationRecord,
+    MutationResult,
 )
 from geny_executor.core.builder import PipelineBuilder
-from geny_executor.core.presets import PipelinePresets
+from geny_executor.core.presets import PipelinePresets, PresetInfo, PresetManager
+from geny_executor.core.diff import DiffEntry, EnvironmentDiff
+from geny_executor.core.environment import (
+    EnvironmentManifest,
+    EnvironmentManager,
+    EnvironmentMetadata,
+    EnvironmentResolver,
+    EnvironmentSanitizer,
+    EnvironmentSummary,
+    ToolsSnapshot,
+)
 from geny_executor.core.artifact import create_stage, list_artifacts, get_artifact_map
 from geny_executor.events import EventBus, PipelineEvent
 from geny_executor.memory import (
@@ -41,7 +62,7 @@ from geny_executor.memory import (
     GenyPresets,
 )
 
-__version__ = "0.10.0"
+__version__ = "0.11.0"
 
 __all__ = [
     # Core
@@ -60,6 +81,18 @@ __all__ = [
     # Builder & Presets
     "PipelineBuilder",
     "PipelinePresets",
+    "PresetInfo",
+    "PresetManager",
+    # Environment & Diff
+    "EnvironmentManifest",
+    "EnvironmentManager",
+    "EnvironmentMetadata",
+    "EnvironmentResolver",
+    "EnvironmentSanitizer",
+    "EnvironmentSummary",
+    "ToolsSnapshot",
+    "DiffEntry",
+    "EnvironmentDiff",
     # Artifact system
     "create_stage",
     "list_artifacts",
@@ -75,6 +108,18 @@ __all__ = [
     "APIError",
     "ToolExecutionError",
     "ErrorCategory",
+    "MutationError",
+    "MutationLocked",
+    # Schema & Mutation
+    "ConfigField",
+    "ConfigSchema",
+    "StrategySlot",
+    "PipelineSnapshot",
+    "StageSnapshot",
+    "PipelineMutator",
+    "MutationKind",
+    "MutationRecord",
+    "MutationResult",
     # Geny Memory Integration
     "GenyMemoryRetriever",
     "GenyMemoryStrategy",
