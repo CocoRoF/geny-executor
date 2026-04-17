@@ -54,6 +54,7 @@ from geny_executor.stages.s16_yield.artifact.default.stage import YieldStage
 
 # ── Stage Factory ────────────────────────────────────────────────
 
+
 def _build_api_stage() -> APIStage:
     """APIStage needs a provider — use MockProvider to avoid network."""
     return APIStage(provider=MockProvider())
@@ -93,6 +94,7 @@ def stage(request) -> Stage:
 
 # ── Core contract ────────────────────────────────────────────────
 
+
 class TestStageUniformityContract:
     """Every stage must expose the full uniformity surface."""
 
@@ -120,8 +122,7 @@ class TestStageUniformityContract:
         slots = stage.get_strategy_slots()
         chains = stage.get_strategy_chains()
         assert slots or chains, (
-            f"Stage {stage.name} exposes no configurable strategies "
-            f"(neither slots nor chains)."
+            f"Stage {stage.name} exposes no configurable strategies (neither slots nor chains)."
         )
 
     def test_describe_matches_identity(self, stage: Stage) -> None:
@@ -165,6 +166,7 @@ class TestStageUniformityContract:
 
 # ── Chain stage contract ─────────────────────────────────────────
 
+
 class TestChainStageContract:
     """s04 Guard and s14 Emit must expose the canonical chain names."""
 
@@ -182,6 +184,7 @@ class TestChainStageContract:
 
 
 # ── Ordering contract ────────────────────────────────────────────
+
 
 def test_stage_orders_are_unique_and_dense() -> None:
     """Each stage declares a distinct order; the set covers 1..16 exactly."""

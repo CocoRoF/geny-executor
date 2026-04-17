@@ -67,8 +67,6 @@ class ToolAccessDenied(Exception):
     """Raised when a stage attempts to use a tool outside its binding scope."""
 
     def __init__(self, tool_name: str, stage_order: int) -> None:
-        super().__init__(
-            f"Tool '{tool_name}' is not bound to stage {stage_order}"
-        )
+        super().__init__(f"Tool '{tool_name}' is not bound to stage {stage_order}")
         self.tool_name = tool_name
         self.stage_order = stage_order

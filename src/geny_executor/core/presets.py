@@ -168,9 +168,7 @@ class PresetRegistry:
                 tags = list(getattr(target, "tags", []) or [])
 
             if factory is None:
-                logger.warning(
-                    "Preset entry-point %s did not expose a callable factory", ep.name
-                )
+                logger.warning("Preset entry-point %s did not expose a callable factory", ep.name)
                 continue
 
             cls.register(
@@ -201,9 +199,7 @@ def register_preset(
     """
 
     def _decorator(func: Callable[..., Pipeline]) -> Callable[..., Pipeline]:
-        PresetRegistry.register(
-            name, func, description=description, tags=tags, source="plugin"
-        )
+        PresetRegistry.register(name, func, description=description, tags=tags, source="plugin")
         return func
 
     return _decorator

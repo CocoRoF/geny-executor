@@ -214,9 +214,7 @@ class APIStage(Stage[Any, APIResponse]):
             temperature=override.temperature if override else state.temperature,
             top_p=override.top_p if override else state.top_p,
             top_k=override.top_k if override else state.top_k,
-            stop_sequences=(
-                override.stop_sequences if override else state.stop_sequences
-            ),
+            stop_sequences=(override.stop_sequences if override else state.stop_sequences),
         )
 
         if state.tools:
@@ -225,28 +223,20 @@ class APIStage(Stage[Any, APIResponse]):
             request.tool_choice = state.tool_choice
 
         # Extended thinking — override can force enable/disable per-stage.
-        thinking_enabled = (
-            override.thinking_enabled if override else state.thinking_enabled
-        )
+        thinking_enabled = override.thinking_enabled if override else state.thinking_enabled
         if thinking_enabled:
             thinking_type = (
-                override.thinking_type
-                if override
-                else getattr(state, "thinking_type", "enabled")
+                override.thinking_type if override else getattr(state, "thinking_type", "enabled")
             )
             thinking: dict = {"type": thinking_type}
 
             if thinking_type == "enabled":
                 thinking["budget_tokens"] = (
-                    override.thinking_budget_tokens
-                    if override
-                    else state.thinking_budget_tokens
+                    override.thinking_budget_tokens if override else state.thinking_budget_tokens
                 )
 
             thinking_display = (
-                override.thinking_display
-                if override
-                else getattr(state, "thinking_display", None)
+                override.thinking_display if override else getattr(state, "thinking_display", None)
             )
             if thinking_display:
                 thinking["display"] = thinking_display

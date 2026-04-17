@@ -287,9 +287,7 @@ class PipelineMutator:
             self._change_log.append(record)
             return MutationResult(success=True, record=record)
 
-    def reorder_chain(
-        self, stage_order: int, chain_name: str, order: List[str]
-    ) -> MutationResult:
+    def reorder_chain(self, stage_order: int, chain_name: str, order: List[str]) -> MutationResult:
         """Reorder items in a stage's chain to the given permutation."""
         with self._lock:
             self._check_stage_lock(stage_order)
@@ -382,9 +380,7 @@ class PipelineMutator:
         stable ``hook_id`` that :meth:`unregister_hook` accepts.
         """
         if event not in _HOOK_EVENTS:
-            raise MutationError(
-                f"Unknown hook event '{event}'. Allowed: {sorted(_HOOK_EVENTS)}"
-            )
+            raise MutationError(f"Unknown hook event '{event}'. Allowed: {sorted(_HOOK_EVENTS)}")
         with self._lock:
             stage = self._get_stage(stage_order)
             hook_id = f"hook_{next(self._hook_counter)}_{uuid.uuid4().hex[:6]}"
@@ -402,9 +398,7 @@ class PipelineMutator:
             self._change_log.append(record)
             return MutationResult(success=True, message=hook_id, record=record)
 
-    def unregister_hook(
-        self, stage_order: int, event: str, hook_id: str
-    ) -> MutationResult:
+    def unregister_hook(self, stage_order: int, event: str, hook_id: str) -> MutationResult:
         """Remove a previously registered hook by id."""
         with self._lock:
             key = (stage_order, event)
@@ -425,19 +419,19 @@ class PipelineMutator:
                 stage_order=stage_order,
             )
 
-    def _install_hook_bridge(
-        self, stage: Stage, event: str, key: tuple
-    ) -> None:
+    def _install_hook_bridge(self, stage: Stage, event: str, key: tuple) -> None:
         """Wrap the stage's lifecycle method so registered callbacks fire."""
         original = getattr(stage, event)
 
         if event == "on_enter":
+
             async def wrapper(state):  # type: ignore[no-redef]
                 result = await original(state)
                 for _hid, cb in list(self._hooks.get(key, [])):
                     await _await_maybe(cb(state))
                 return result
         elif event == "on_exit":
+
             async def wrapper(result, state):  # type: ignore[no-redef]
                 ret = await original(result, state)
                 for _hid, cb in list(self._hooks.get(key, [])):
@@ -455,9 +449,7 @@ class PipelineMutator:
 
     # ── Tool binding ────────────────────────────────────────
 
-    def bind_tool_to_stage(
-        self, stage_order: int, tool_name: str
-    ) -> MutationResult:
+    def bind_tool_to_stage(self, stage_order: int, tool_name: str) -> MutationResult:
         """Grant *stage_order* access to *tool_name*."""
         with self._lock:
             stage = self._get_stage(stage_order)
@@ -470,9 +462,7 @@ class PipelineMutator:
             self._change_log.append(record)
             return MutationResult(success=True, record=record)
 
-    def unbind_tool_from_stage(
-        self, stage_order: int, tool_name: str
-    ) -> MutationResult:
+    def unbind_tool_from_stage(self, stage_order: int, tool_name: str) -> MutationResult:
         """Revoke *stage_order* access to *tool_name*."""
         with self._lock:
             stage = self._get_stage(stage_order)
@@ -515,9 +505,7 @@ class PipelineMutator:
 
     # ── Model override ──────────────────────────────────────
 
-    def set_stage_model(
-        self, stage_order: int, model: Optional[Any]
-    ) -> MutationResult:
+    def set_stage_model(self, stage_order: int, model: Optional[Any]) -> MutationResult:
         """Override the model used by a single stage.
 
         Pass ``None`` to revert the stage to the pipeline-wide model.

@@ -122,9 +122,7 @@ class SlotChain:
         self.items.append(item)
         return self
 
-    def append(
-        self, impl_name: str, config: Optional[Dict[str, Any]] = None
-    ) -> Strategy:
+    def append(self, impl_name: str, config: Optional[Dict[str, Any]] = None) -> Strategy:
         """Instantiate *impl_name* from the registry and append it.
 
         Args:
@@ -178,8 +176,7 @@ class SlotChain:
         missing = [n for n in order if n not in by_name]
         if missing:
             raise KeyError(
-                f"Chain '{self.name}' has no items named {missing}. "
-                f"Current: {list(by_name.keys())}"
+                f"Chain '{self.name}' has no items named {missing}. Current: {list(by_name.keys())}"
             )
         if len(order) != len(self.items) or set(order) != set(by_name.keys()):
             raise ValueError(
