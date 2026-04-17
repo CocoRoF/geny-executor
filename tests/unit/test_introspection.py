@@ -74,11 +74,7 @@ def test_capability_flags_tool_stage_only_allows_tool_binding():
 
 @pytest.mark.parametrize(
     "order,module_name",
-    [
-        (o, m)
-        for o, m in sorted(STAGE_MODULES.items())
-        if m not in {"s06_api", "s10_tool"}
-    ],
+    [(o, m) for o, m in sorted(STAGE_MODULES.items()) if m not in {"s06_api", "s10_tool"}],
 )
 def test_capability_flags_default_false_elsewhere(order: int, module_name: str):
     insp = introspect_stage(module_name, "default")

@@ -107,9 +107,7 @@ def _stage_capabilities(stage_module: str) -> _StageCapabilities:
     Unknown stages default to both-False — the safe position, since claiming
     support the runtime doesn't actually exercise is worse than under-promising.
     """
-    return _STAGE_CAPABILITIES.get(
-        stage_module, {"tool_binding": False, "model_override": False}
-    )
+    return _STAGE_CAPABILITIES.get(stage_module, {"tool_binding": False, "model_override": False})
 
 
 # ── Dataclasses ────────────────────────────────────────────────
