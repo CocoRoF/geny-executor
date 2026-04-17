@@ -93,6 +93,8 @@ class Stage(ABC, Generic[T_In, T_Out]):
     # stages keep working without edits.
     _tool_binding: Optional[Any] = None
     _model_override: Optional[Any] = None
+    _artifact_name: Optional[str] = None
+    _stage_module: Optional[str] = None
 
     @property
     @abstractmethod
@@ -281,6 +283,28 @@ class Stage(ABC, Generic[T_In, T_Out]):
     @model_override.setter
     def model_override(self, value: Any) -> None:
         self._model_override = value
+
+    @property
+    def artifact_name(self) -> str:
+        """Name of the artifact that produced this stage instance.
+
+        Set by :func:`geny_executor.core.artifact.create_stage`. Stages that
+        are constructed directly (bypassing ``create_stage``) report ``"default"``
+        so manifest serialization still has a stable value.
+        """
+        return self._artifact_name or "default"
+
+    @property
+    def stage_module(self) -> str:
+        """Canonical module name of this stage (e.g., ``"s06_api"``).
+
+        Falls back to ``f"s{order:02d}_{name}"`` when ``create_stage`` was not
+        used. Environment manifest serialization prefers this over ``self.name``
+        because the module name is the stable key in :data:`STAGE_MODULES`.
+        """
+        if self._stage_module:
+            return self._stage_module
+        return f"s{self.order:02d}_{self.name}"
 
     def resolve_model(self, state: PipelineState) -> Any:
         """Return the effective model identifier for this stage.

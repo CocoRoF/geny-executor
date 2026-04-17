@@ -57,9 +57,25 @@ from geny_executor.core.environment import (
     EnvironmentResolver,
     EnvironmentSanitizer,
     EnvironmentSummary,
+    StageManifestEntry,
     ToolsSnapshot,
 )
-from geny_executor.core.artifact import create_stage, list_artifacts, get_artifact_map
+from geny_executor.core.artifact import (
+    ArtifactInfo,
+    create_stage,
+    describe_artifact,
+    get_artifact_map,
+    list_artifacts,
+    list_artifacts_with_meta,
+)
+from geny_executor.core.introspection import (
+    ChainIntrospection,
+    IntrospectionUnsupported,
+    SlotIntrospection,
+    StageIntrospection,
+    introspect_all,
+    introspect_stage,
+)
 from geny_executor.events import EventBus, PipelineEvent
 from geny_executor.memory import (
     GenyMemoryRetriever,
@@ -68,7 +84,7 @@ from geny_executor.memory import (
     GenyPresets,
 )
 
-__version__ = "0.12.0"
+__version__ = "0.13.0"
 
 __all__ = [
     # Core
@@ -98,13 +114,24 @@ __all__ = [
     "EnvironmentResolver",
     "EnvironmentSanitizer",
     "EnvironmentSummary",
+    "StageManifestEntry",
     "ToolsSnapshot",
     "DiffEntry",
     "EnvironmentDiff",
     # Artifact system
+    "ArtifactInfo",
     "create_stage",
-    "list_artifacts",
+    "describe_artifact",
     "get_artifact_map",
+    "list_artifacts",
+    "list_artifacts_with_meta",
+    # Introspection
+    "ChainIntrospection",
+    "IntrospectionUnsupported",
+    "SlotIntrospection",
+    "StageIntrospection",
+    "introspect_all",
+    "introspect_stage",
     # Events
     "EventBus",
     "PipelineEvent",

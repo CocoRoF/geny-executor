@@ -62,6 +62,27 @@ class StageToolBinding:
         self.allowed = None
         self.blocked = None
 
+    def to_dict(self) -> Dict[str, Any]:
+        """Return a JSON-ready representation of this binding."""
+        return {
+            "stage_order": self.stage_order,
+            "allowed": sorted(self.allowed) if self.allowed is not None else None,
+            "blocked": sorted(self.blocked) if self.blocked is not None else None,
+            "extra_context": dict(self.extra_context),
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "StageToolBinding":
+        """Rehydrate a :class:`StageToolBinding` from :meth:`to_dict` output."""
+        allowed_raw = data.get("allowed")
+        blocked_raw = data.get("blocked")
+        return cls(
+            stage_order=int(data["stage_order"]),
+            allowed=set(allowed_raw) if allowed_raw is not None else None,
+            blocked=set(blocked_raw) if blocked_raw is not None else None,
+            extra_context=dict(data.get("extra_context", {})),
+        )
+
 
 class ToolAccessDenied(Exception):
     """Raised when a stage attempts to use a tool outside its binding scope."""

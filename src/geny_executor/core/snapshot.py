@@ -10,12 +10,25 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
+
+
+DEFAULT_ARTIFACT_NAME = "default"
 
 
 @dataclass
 class StageSnapshot:
-    """Configuration state of a single stage."""
+    """Configuration state of a single stage.
+
+    v2 additions (Environment Builder):
+        * ``artifact`` — which artifact produced this stage (default ``"default"``).
+        * ``tool_binding`` — ``StageToolBinding.to_dict()`` payload or ``None``.
+        * ``model_override`` — ``ModelConfig.to_dict()`` payload or ``None``.
+        * ``chain_order`` — chain_name → ordered item names, for chain stages.
+
+    These fields default to safe "nothing overridden" values so v1 snapshots
+    that lack them continue to load unchanged.
+    """
 
     order: int
     name: str
@@ -23,6 +36,10 @@ class StageSnapshot:
     strategies: Dict[str, str] = field(default_factory=dict)  # slot_name → impl_name
     strategy_configs: Dict[str, Dict[str, Any]] = field(default_factory=dict)  # slot_name → config
     stage_config: Dict[str, Any] = field(default_factory=dict)
+    artifact: str = DEFAULT_ARTIFACT_NAME
+    tool_binding: Optional[Dict[str, Any]] = None
+    model_override: Optional[Dict[str, Any]] = None
+    chain_order: Dict[str, List[str]] = field(default_factory=dict)
 
 
 @dataclass
@@ -35,7 +52,7 @@ class PipelineSnapshot:
     model_config: Dict[str, Any] = field(default_factory=dict)
     created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     description: str = ""
-    version: str = "1.0"
+    version: str = "2.0"
 
     # ── Serialization ──────────────────────────────────────
 
@@ -56,6 +73,10 @@ class PipelineSnapshot:
                     "strategies": s.strategies,
                     "strategy_configs": s.strategy_configs,
                     "stage_config": s.stage_config,
+                    "artifact": s.artifact,
+                    "tool_binding": s.tool_binding,
+                    "model_override": s.model_override,
+                    "chain_order": s.chain_order,
                 }
                 for s in self.stages
             ],
@@ -67,7 +88,12 @@ class PipelineSnapshot:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> PipelineSnapshot:
-        """Reconstruct a snapshot from a dict."""
+        """Reconstruct a snapshot from a dict.
+
+        Missing v2 fields (from a v1 payload) are filled with safe defaults:
+        ``artifact="default"``, ``tool_binding=None``, ``model_override=None``,
+        ``chain_order={}``. No warning is emitted — the migration is silent.
+        """
         stages = [
             StageSnapshot(
                 order=s["order"],
@@ -76,6 +102,10 @@ class PipelineSnapshot:
                 strategies=s.get("strategies", {}),
                 strategy_configs=s.get("strategy_configs", {}),
                 stage_config=s.get("stage_config", {}),
+                artifact=s.get("artifact", DEFAULT_ARTIFACT_NAME),
+                tool_binding=s.get("tool_binding"),
+                model_override=s.get("model_override"),
+                chain_order=s.get("chain_order", {}),
             )
             for s in data.get("stages", [])
         ]
@@ -86,7 +116,7 @@ class PipelineSnapshot:
             model_config=data.get("model_config", {}),
             created_at=data.get("created_at", ""),
             description=data.get("description", ""),
-            version=data.get("version", "1.0"),
+            version=data.get("version", "2.0"),
         )
 
     @classmethod

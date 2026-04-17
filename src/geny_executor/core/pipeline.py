@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from typing import Any, AsyncIterator, Callable, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, AsyncIterator, Callable, Dict, List, Optional
 
 from geny_executor.core.config import PipelineConfig
 from geny_executor.core.errors import StageError
@@ -13,6 +13,58 @@ from geny_executor.core.stage import Stage, StageDescription
 from geny_executor.core.state import PipelineState
 from geny_executor.events.bus import EventBus
 from geny_executor.events.types import PipelineEvent
+
+if TYPE_CHECKING:
+    from geny_executor.core.environment import EnvironmentManifest, StageManifestEntry
+
+
+# Stages whose default/openai/google artifacts require an ``api_key`` kwarg.
+# Other artifacts (mock, etc.) construct without credentials.
+_API_KEY_REQUIRING = {
+    ("s06_api", "default"),
+    ("s06_api", "openai"),
+    ("s06_api", "google"),
+}
+
+
+def _pipeline_config_from_manifest(
+    manifest: "EnvironmentManifest", *, api_key: Optional[str]
+) -> PipelineConfig:
+    """Build a :class:`PipelineConfig` from manifest pipeline+model blocks.
+
+    The manifest stores ``pipeline`` and ``model`` as plain dicts; reunite
+    them into the nested ``PipelineConfig(model=ModelConfig(...))`` shape the
+    runtime expects. An explicit ``api_key`` kwarg wins over anything
+    embedded in the manifest.
+    """
+    raw = dict(manifest.pipeline or {})
+    if manifest.model:
+        # ``pipeline.model`` (if present) loses to the top-level ``model``
+        # block — the latter is the canonical location in v2 manifests.
+        raw["model"] = dict(manifest.model)
+    if api_key is not None:
+        raw["api_key"] = api_key
+    return PipelineConfig.from_dict(raw)
+
+
+def _stage_kwargs_for_entry(entry: "StageManifestEntry", *, api_key: str) -> Dict[str, Any]:
+    """Minimum kwargs required to instantiate *entry* via ``create_stage``.
+
+    Most stages take no constructor args; API artifacts need ``api_key``
+    when the manifest did not wire in a provider directly. Short-name
+    stage identifiers ("api") are resolved to their module name before the
+    lookup, so manifests written either way work uniformly.
+    """
+    from geny_executor.core.artifact import _resolve_stage_module
+
+    try:
+        module_name = _resolve_stage_module(entry.name)
+    except ValueError:
+        module_name = entry.name
+    key = (module_name, entry.artifact)
+    if key in _API_KEY_REQUIRING and api_key:
+        return {"api_key": api_key}
+    return {}
 
 
 class Pipeline:
@@ -55,6 +107,90 @@ class Pipeline:
         self._config = config or PipelineConfig()
         self._stages: Dict[int, Stage] = {}
         self._event_bus = EventBus()
+
+    # ── Construction from serialized state ──
+
+    @classmethod
+    def from_manifest(
+        cls,
+        manifest: "EnvironmentManifest",
+        *,
+        api_key: Optional[str] = None,
+        strict: bool = True,
+    ) -> "Pipeline":
+        """Construct a ready-to-run Pipeline from an :class:`EnvironmentManifest`.
+
+        Steps:
+          1. Build a :class:`PipelineConfig` from ``manifest.pipeline`` and
+             ``manifest.model``. A caller-supplied ``api_key`` (kwarg) wins
+             over whatever is inside the manifest — manifests are templates
+             and credentials usually live outside them.
+          2. Instantiate each ``active`` stage via
+             :func:`~geny_executor.core.artifact.create_stage` with the
+             recorded ``artifact`` name. Stages whose artifact requires an
+             ``api_key`` (e.g. ``s06_api/default``) receive it here.
+          3. Run :meth:`PipelineMutator.restore` over
+             ``manifest.to_snapshot()`` to apply strategies, strategy
+             configs, stage configs, chain ordering, tool bindings, and
+             model overrides.
+          4. When ``strict`` is true, every stage's config is validated
+             against its ``ConfigSchema`` and instantiation failures
+             propagate. When false, broken stages are silently skipped so
+             a partial environment still yields a runnable pipeline.
+
+        Args:
+            manifest: The environment template to materialize.
+            api_key: Credential injected into API-backed stage constructors.
+                When omitted, the value (if any) embedded in
+                ``manifest.pipeline`` is used instead.
+            strict: Fail on stage instantiation / schema errors versus
+                dropping the offending stage.
+
+        Returns:
+            A :class:`Pipeline` with every registered stage reflecting the
+            manifest's template state. The returned pipeline is ready for
+            ``.run()`` once a tool registry and runtime state are attached.
+        """
+        from geny_executor.core.artifact import create_stage
+        from geny_executor.core.mutation import PipelineMutator
+
+        pipeline_config = _pipeline_config_from_manifest(manifest, api_key=api_key)
+        pipeline = cls(pipeline_config)
+
+        entries = sorted(manifest.stage_entries(), key=lambda e: e.order)
+        effective_key = api_key if api_key is not None else pipeline_config.api_key
+
+        for entry in entries:
+            if not entry.active:
+                continue
+            kwargs = _stage_kwargs_for_entry(entry, api_key=effective_key)
+            try:
+                stage = create_stage(entry.name, entry.artifact, **kwargs)
+            except Exception:
+                if strict:
+                    raise
+                continue
+            pipeline.register_stage(stage)
+
+        PipelineMutator(pipeline).restore(manifest.to_snapshot())
+
+        if strict:
+            for stage in pipeline.stages:
+                schema_fn = getattr(stage, "get_config_schema", None)
+                if schema_fn is None:
+                    continue
+                schema = schema_fn()
+                if schema is None:
+                    continue
+                stage_config = stage.get_config() if hasattr(stage, "get_config") else {}
+                errors = schema.validate(stage_config) if hasattr(schema, "validate") else []
+                if errors:
+                    raise ValueError(
+                        f"Stage {stage.name} (order {stage.order}) config invalid: "
+                        f"{'; '.join(errors)}"
+                    )
+
+        return pipeline
 
     # ── Stage management ──
 

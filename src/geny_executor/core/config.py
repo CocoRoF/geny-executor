@@ -38,6 +38,47 @@ class ModelConfig:
     thinking_type: str = "enabled"  # "enabled" | "disabled" | "adaptive"
     thinking_display: Optional[str] = None  # "summarized" | "omitted" | None
 
+    def to_dict(self) -> Dict[str, Any]:
+        """Return a JSON-ready representation."""
+        return {
+            "model": self.model,
+            "max_tokens": self.max_tokens,
+            "temperature": self.temperature,
+            "top_p": self.top_p,
+            "top_k": self.top_k,
+            "stop_sequences": list(self.stop_sequences) if self.stop_sequences else None,
+            "thinking_enabled": self.thinking_enabled,
+            "thinking_budget_tokens": self.thinking_budget_tokens,
+            "thinking_type": self.thinking_type,
+            "thinking_display": self.thinking_display,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "ModelConfig":
+        """Rehydrate a :class:`ModelConfig` from :meth:`to_dict` output.
+
+        Unknown keys are ignored so forward-compatibility across minor versions
+        is preserved. Missing keys fall back to dataclass defaults.
+        """
+        stop_raw = data.get("stop_sequences")
+        kwargs: Dict[str, Any] = {}
+        for key in (
+            "model",
+            "max_tokens",
+            "temperature",
+            "top_p",
+            "top_k",
+            "thinking_enabled",
+            "thinking_budget_tokens",
+            "thinking_type",
+            "thinking_display",
+        ):
+            if key in data:
+                kwargs[key] = data[key]
+        if stop_raw is not None:
+            kwargs["stop_sequences"] = list(stop_raw)
+        return cls(**kwargs)
+
 
 @dataclass
 class PipelineConfig:
@@ -68,6 +109,57 @@ class PipelineConfig:
 
     # Metadata
     metadata: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Return a JSON-ready representation of top-level pipeline settings.
+
+        The nested :class:`ModelConfig` is serialized via its own ``to_dict``.
+        """
+        return {
+            "name": self.name,
+            "model": self.model.to_dict(),
+            "api_key": self.api_key,
+            "base_url": self.base_url,
+            "max_iterations": self.max_iterations,
+            "cost_budget_usd": self.cost_budget_usd,
+            "context_window_budget": self.context_window_budget,
+            "stream": self.stream,
+            "single_turn": self.single_turn,
+            "artifacts": dict(self.artifacts),
+            "metadata": dict(self.metadata),
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "PipelineConfig":
+        """Rehydrate a :class:`PipelineConfig` from :meth:`to_dict` output.
+
+        Unknown keys are ignored so forward-compatibility is preserved. The
+        nested ``model`` key accepts either a dict (parsed via
+        :meth:`ModelConfig.from_dict`) or a :class:`ModelConfig` instance.
+        """
+        kwargs: Dict[str, Any] = {}
+        for key in (
+            "name",
+            "api_key",
+            "base_url",
+            "max_iterations",
+            "cost_budget_usd",
+            "context_window_budget",
+            "stream",
+            "single_turn",
+        ):
+            if key in data:
+                kwargs[key] = data[key]
+        if "artifacts" in data and data["artifacts"] is not None:
+            kwargs["artifacts"] = dict(data["artifacts"])
+        if "metadata" in data and data["metadata"] is not None:
+            kwargs["metadata"] = dict(data["metadata"])
+        model_raw = data.get("model")
+        if isinstance(model_raw, ModelConfig):
+            kwargs["model"] = model_raw
+        elif isinstance(model_raw, dict):
+            kwargs["model"] = ModelConfig.from_dict(model_raw)
+        return cls(**kwargs)
 
     def apply_to_state(self, state: PipelineState) -> None:
         """Apply config values to a PipelineState."""
