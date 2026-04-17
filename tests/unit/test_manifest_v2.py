@@ -272,3 +272,82 @@ def test_snapshot_json_is_valid_utf8():
     assert restored.version == "2.0"
     # Also safe for json.loads
     json.loads(text)
+
+
+# ── EnvironmentManifest.blank_manifest ────────────────────────
+
+
+def test_blank_manifest_returns_all_16_stages_inactive():
+    m = EnvironmentManifest.blank_manifest("Blank Env")
+    entries = m.stage_entries()
+    assert [e.order for e in entries] == list(range(1, 17))
+    assert all(e.active is False for e in entries)
+
+
+def test_blank_manifest_uses_default_artifact_per_stage():
+    m = EnvironmentManifest.blank_manifest("Blank Env")
+    for entry in m.stage_entries():
+        # introspect_all() uses DEFAULT_ARTIFACT when no overrides given
+        assert entry.artifact == "default"
+
+
+def test_blank_manifest_seeds_strategy_current_impls():
+    """Each stage captures its artifact's default strategy picks so toggling
+    active doesn't produce a manifest that fails to rehydrate."""
+    m = EnvironmentManifest.blank_manifest("Blank Env")
+    s06 = next(e for e in m.stage_entries() if e.order == 6)
+    # s06_api/default exposes a 'provider' slot with a default impl
+    assert "provider" in s06.strategies
+    assert s06.strategies["provider"]  # non-empty impl name
+
+
+def test_blank_manifest_metadata_has_no_base_preset():
+    m = EnvironmentManifest.blank_manifest("Blank Env", description="seed")
+    assert m.metadata.name == "Blank Env"
+    assert m.metadata.description == "seed"
+    assert m.metadata.base_preset == ""
+    assert m.metadata.id.startswith("env_")
+    assert m.metadata.created_at
+    assert m.metadata.updated_at == m.metadata.created_at
+
+
+def test_blank_manifest_accepts_optional_tags_model_pipeline():
+    m = EnvironmentManifest.blank_manifest(
+        "Tagged",
+        tags=["scratch", "experiment"],
+        model={"model": "claude-opus-4-7"},
+        pipeline={"single_turn": True},
+    )
+    assert m.metadata.tags == ["scratch", "experiment"]
+    assert m.model == {"model": "claude-opus-4-7"}
+    assert m.pipeline == {"single_turn": True}
+
+
+def test_blank_manifest_roundtrips_through_json():
+    original = EnvironmentManifest.blank_manifest("RT")
+    restored = EnvironmentManifest.from_dict(json.loads(json.dumps(original.to_dict())))
+    assert restored.version == MANIFEST_VERSION
+    assert len(restored.stages) == 16
+    assert restored.metadata.base_preset == ""
+
+
+def test_blank_manifest_builds_empty_pipeline_via_from_manifest():
+    """All stages inactive → Pipeline.from_manifest yields zero registered stages."""
+    m = EnvironmentManifest.blank_manifest("Blank")
+    rebuilt = Pipeline.from_manifest(m, api_key="dummy", strict=False)
+    assert list(rebuilt.stages) == []
+
+
+def test_blank_manifest_activation_then_rebuild_succeeds():
+    """Flipping a stage active and rebuilding instantiates that stage."""
+    m = EnvironmentManifest.blank_manifest("Blank")
+    entries = m.stage_entries()
+    for e in entries:
+        if e.order == 1:
+            e.active = True
+        if e.order == 16:
+            e.active = True
+    m.set_stage_entries(entries)
+
+    rebuilt = Pipeline.from_manifest(m, api_key="dummy", strict=True)
+    assert {s.order for s in rebuilt.stages} == {1, 16}

@@ -275,6 +275,74 @@ class EnvironmentManifest:
             tools=tools or ToolsSnapshot(),
         )
 
+    @classmethod
+    def blank_manifest(
+        cls,
+        name: str,
+        *,
+        description: str = "",
+        tags: Optional[List[str]] = None,
+        model: Optional[Dict[str, Any]] = None,
+        pipeline: Optional[Dict[str, Any]] = None,
+    ) -> EnvironmentManifest:
+        """Build an empty 16-stage template with every stage inactive.
+
+        Each stage is populated with its default artifact plus the artifact's
+        default strategy implementations and config, so a UI can render all
+        16 rows immediately and the user only has to toggle stages on (and
+        edit fields) — no "missing required field" errors the moment a
+        stage is flipped active.
+
+        Unlike :meth:`from_snapshot`, ``blank_manifest`` never sets
+        ``metadata.base_preset`` — a blank environment has no origin preset.
+
+        Session-less: construction goes through
+        :func:`~geny_executor.core.introspection.introspect_all`, so no live
+        :class:`Pipeline` is required.
+
+        Raises:
+            Any import-time error surfaced by :func:`introspect_all` — the
+            library itself must be importable before the UI can call this.
+        """
+        from geny_executor.core.introspection import introspect_all
+
+        env_id = f"env_{uuid4().hex[:8]}"
+        now = datetime.now(timezone.utc).isoformat()
+
+        stages: List[Dict[str, Any]] = []
+        for insp in introspect_all():
+            entry = StageManifestEntry(
+                order=insp.order,
+                name=insp.name,
+                active=False,
+                artifact=insp.artifact,
+                strategies={
+                    slot: slot_info.current_impl
+                    for slot, slot_info in insp.strategy_slots.items()
+                    if slot_info.current_impl
+                },
+                strategy_configs={},
+                config=dict(insp.config),
+            )
+            stages.append(entry.to_dict())
+
+        return cls(
+            version=MANIFEST_VERSION,
+            metadata=EnvironmentMetadata(
+                id=env_id,
+                name=name,
+                description=description,
+                tags=list(tags or []),
+                created_at=now,
+                updated_at=now,
+                base_preset="",
+            ),
+            model=dict(model) if model else {},
+            pipeline=dict(pipeline) if pipeline else {},
+            stages=stages,
+            tools=ToolsSnapshot(),
+        )
+
     def to_snapshot(self) -> PipelineSnapshot:
         """Convert back to a PipelineSnapshot for restoration."""
         stages = []
