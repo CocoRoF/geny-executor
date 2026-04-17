@@ -550,17 +550,41 @@ class PipelineMutator:
     # ── Snapshot ────────────────────────────────────────────
 
     def snapshot(self, description: str = "") -> PipelineSnapshot:
-        """Capture the current pipeline configuration state."""
+        """Capture the current pipeline configuration state.
+
+        Captures the full v2 surface: strategy selections, stage config,
+        artifact provenance, per-stage tool_binding, per-stage model_override,
+        and chain ordering. Fields that were never set (e.g. model_override
+        on a stage without overrides) serialize as ``None`` / ``{}``.
+        """
         stages: List[StageSnapshot] = []
         for order in range(1, 17):
             stage = self._pipeline.get_stage(order)
             if stage:
                 strategies: Dict[str, str] = {}
                 strategy_configs: Dict[str, Dict[str, Any]] = {}
-                for info in stage.list_strategies():
-                    strategies[info.slot_name] = info.current_impl
+                # list_strategies includes both slots and chains; only slots
+                # carry a single current_impl we can use directly. Chains are
+                # captured separately via chain_order.
+                for slot_name, slot in stage.get_strategy_slots().items():
+                    info = slot.describe()
+                    strategies[slot_name] = info.current_impl
                     if info.config:
-                        strategy_configs[info.slot_name] = info.config
+                        strategy_configs[slot_name] = info.config
+
+                chain_order: Dict[str, List[str]] = {}
+                for chain_name, chain in stage.get_strategy_chains().items():
+                    chain_order[chain_name] = [item.name for item in chain.items]
+
+                tool_binding_payload: Optional[Dict[str, Any]] = None
+                binding = getattr(stage, "_tool_binding", None)
+                if binding is not None:
+                    tool_binding_payload = binding.to_dict()
+
+                model_override_payload: Optional[Dict[str, Any]] = None
+                model_override = getattr(stage, "_model_override", None)
+                if model_override is not None and hasattr(model_override, "to_dict"):
+                    model_override_payload = model_override.to_dict()
 
                 stages.append(
                     StageSnapshot(
@@ -570,6 +594,10 @@ class PipelineMutator:
                         strategies=strategies,
                         strategy_configs=strategy_configs,
                         stage_config=stage.get_config(),
+                        artifact=stage.artifact_name,
+                        tool_binding=tool_binding_payload,
+                        model_override=model_override_payload,
+                        chain_order=chain_order,
                     )
                 )
             else:
@@ -577,18 +605,7 @@ class PipelineMutator:
 
         # Serialize PipelineConfig
         cfg = self._pipeline._config
-        model_dict = {
-            "model": cfg.model.model,
-            "max_tokens": cfg.model.max_tokens,
-            "temperature": cfg.model.temperature,
-            "top_p": cfg.model.top_p,
-            "top_k": cfg.model.top_k,
-            "stop_sequences": cfg.model.stop_sequences,
-            "thinking_enabled": cfg.model.thinking_enabled,
-            "thinking_budget_tokens": cfg.model.thinking_budget_tokens,
-            "thinking_type": cfg.model.thinking_type,
-            "thinking_display": cfg.model.thinking_display,
-        }
+        model_dict = cfg.model.to_dict()
         pipeline_dict = {
             "name": cfg.name,
             "max_iterations": cfg.max_iterations,
@@ -613,7 +630,12 @@ class PipelineMutator:
 
         This restores strategy selections and configurations. It does NOT
         replace Stage instances themselves — stages must already be registered.
+        v2 snapshots additionally restore chain ordering, tool_binding, and
+        model_override; absent fields in v1 snapshots are no-ops.
         """
+        from geny_executor.core.config import ModelConfig
+        from geny_executor.tools.stage_binding import StageToolBinding
+
         with self._lock:
             for stage_snap in snapshot.stages:
                 stage = self._pipeline.get_stage(stage_snap.order)
@@ -631,6 +653,25 @@ class PipelineMutator:
                 # Restore stage config
                 if stage_snap.stage_config:
                     stage.update_config(stage_snap.stage_config)
+
+                # Restore chain ordering (v2)
+                for chain_name, order in (stage_snap.chain_order or {}).items():
+                    if not order:
+                        continue
+                    try:
+                        stage.reorder_chain(chain_name, order)
+                    except (KeyError, ValueError):
+                        pass  # Unknown chain or incompatible order — skip silently
+
+                # Restore tool binding (v2) — only apply when captured.
+                if stage_snap.tool_binding is not None:
+                    stage.tool_binding = StageToolBinding.from_dict(stage_snap.tool_binding)
+
+                # Restore model override (v2) — only apply when captured. A None
+                # payload from a v1 snapshot doesn't clear the live override; use
+                # set_stage_model(order, None) for an explicit reset.
+                if stage_snap.model_override is not None:
+                    stage.model_override = ModelConfig.from_dict(stage_snap.model_override)
 
             # Restore model config
             if snapshot.model_config:

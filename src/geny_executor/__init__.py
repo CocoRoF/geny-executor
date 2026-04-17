@@ -57,6 +57,7 @@ from geny_executor.core.environment import (
     EnvironmentResolver,
     EnvironmentSanitizer,
     EnvironmentSummary,
+    StageManifestEntry,
     ToolsSnapshot,
 )
 from geny_executor.core.artifact import (
@@ -113,6 +114,7 @@ __all__ = [
     "EnvironmentResolver",
     "EnvironmentSanitizer",
     "EnvironmentSummary",
+    "StageManifestEntry",
     "ToolsSnapshot",
     "DiffEntry",
     "EnvironmentDiff",

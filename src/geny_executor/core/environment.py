@@ -92,11 +92,102 @@ class ToolsSnapshot:
         )
 
 
+MANIFEST_VERSION = "2.0"
+_LEGACY_VERSIONS = {"1.0"}
+
+
+@dataclass
+class StageManifestEntry:
+    """Structured stage entry in a v2 environment manifest.
+
+    Mirrors :class:`StageSnapshot` but uses manifest-native field names
+    (e.g. ``active`` / ``config``) for backward compat with v1 consumers.
+    """
+
+    order: int
+    name: str
+    active: bool = True
+    artifact: str = "default"
+    strategies: Dict[str, str] = field(default_factory=dict)
+    strategy_configs: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    config: Dict[str, Any] = field(default_factory=dict)
+    tool_binding: Optional[Dict[str, Any]] = None
+    model_override: Optional[Dict[str, Any]] = None
+    chain_order: Dict[str, List[str]] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "order": self.order,
+            "name": self.name,
+            "active": self.active,
+            "artifact": self.artifact,
+            "strategies": dict(self.strategies),
+            "strategy_configs": {k: dict(v) for k, v in self.strategy_configs.items()},
+            "config": dict(self.config),
+            "tool_binding": self.tool_binding,
+            "model_override": self.model_override,
+            "chain_order": {k: list(v) for k, v in self.chain_order.items()},
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> StageManifestEntry:
+        return cls(
+            order=int(data.get("order", 0)),
+            name=str(data.get("name", "")),
+            active=bool(data.get("active", True)),
+            artifact=str(data.get("artifact", "default")),
+            strategies=dict(data.get("strategies", {})),
+            strategy_configs={k: dict(v) for k, v in data.get("strategy_configs", {}).items()},
+            config=dict(data.get("config", {})),
+            tool_binding=data.get("tool_binding"),
+            model_override=data.get("model_override"),
+            chain_order={k: list(v) for k, v in data.get("chain_order", {}).items()},
+        )
+
+
+def _migrate_v1_to_v2(data: Dict[str, Any]) -> Dict[str, Any]:
+    """Upgrade a v1 manifest dict to v2 shape in place.
+
+    v1 manifests lack the ``artifact``/``tool_binding``/``model_override``/
+    ``chain_order`` fields on each stage; default them conservatively. No
+    behavioural defaults are injected — the v1 payload's existing strategies
+    and configs are preserved byte-for-byte.
+    """
+    data = copy.deepcopy(data)
+    stages = data.get("stages", [])
+    migrated: List[Dict[str, Any]] = []
+    for entry in stages:
+        migrated.append(
+            {
+                "order": entry.get("order", 0),
+                "name": entry.get("name", ""),
+                "active": entry.get("active", True),
+                "artifact": entry.get("artifact", "default"),
+                "strategies": entry.get("strategies", {}),
+                "strategy_configs": entry.get("strategy_configs", {}),
+                "config": entry.get("config", {}),
+                "tool_binding": entry.get("tool_binding"),
+                "model_override": entry.get("model_override"),
+                "chain_order": entry.get("chain_order", {}),
+            }
+        )
+    data["stages"] = migrated
+    data["version"] = MANIFEST_VERSION
+    return data
+
+
 @dataclass
 class EnvironmentManifest:
-    """Complete environment definition — the .geny-env.json format."""
+    """Complete environment definition — the .geny-env.json format.
 
-    version: str = "1.0"
+    **v2 (geny-executor v0.13.0)** adds first-class template fields to each
+    stage entry: ``artifact``, ``tool_binding``, ``model_override``,
+    ``chain_order``. v1 payloads are silently migrated on
+    :meth:`from_dict` — callers that simply load + save a legacy file will
+    upgrade it on next write.
+    """
+
+    version: str = MANIFEST_VERSION
     metadata: EnvironmentMetadata = field(default_factory=EnvironmentMetadata)
     model: Dict[str, Any] = field(default_factory=dict)
     pipeline: Dict[str, Any] = field(default_factory=dict)
@@ -115,14 +206,28 @@ class EnvironmentManifest:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> EnvironmentManifest:
+        version = str(data.get("version", "1.0"))
+        if version in _LEGACY_VERSIONS:
+            data = _migrate_v1_to_v2(data)
+            version = MANIFEST_VERSION
         return cls(
-            version=data.get("version", "1.0"),
+            version=version,
             metadata=EnvironmentMetadata.from_dict(data.get("metadata", {})),
             model=data.get("model", {}),
             pipeline=data.get("pipeline", {}),
             stages=data.get("stages", []),
             tools=ToolsSnapshot.from_dict(data.get("tools", {})),
         )
+
+    # ── Structured stage access ─────────────────────────────
+
+    def stage_entries(self) -> List[StageManifestEntry]:
+        """Return stages as typed :class:`StageManifestEntry` objects."""
+        return [StageManifestEntry.from_dict(s) for s in self.stages]
+
+    def set_stage_entries(self, entries: List[StageManifestEntry]) -> None:
+        """Replace the stages list from typed entries (back to dict form)."""
+        self.stages = [e.to_dict() for e in entries]
 
     @classmethod
     def from_snapshot(
@@ -133,25 +238,28 @@ class EnvironmentManifest:
         tags: Optional[List[str]] = None,
         tools: Optional[ToolsSnapshot] = None,
     ) -> EnvironmentManifest:
-        """Create a manifest from a PipelineSnapshot."""
+        """Create a v2 manifest from a PipelineSnapshot."""
         env_id = f"env_{uuid4().hex[:8]}"
         now = datetime.now(timezone.utc).isoformat()
 
         stages = []
         for s in snapshot.stages:
-            stages.append(
-                {
-                    "order": s.order,
-                    "name": s.name,
-                    "active": s.is_active,
-                    "strategies": s.strategies,
-                    "strategy_configs": s.strategy_configs,
-                    "config": s.stage_config,
-                }
+            entry = StageManifestEntry(
+                order=s.order,
+                name=s.name,
+                active=s.is_active,
+                artifact=s.artifact,
+                strategies=dict(s.strategies),
+                strategy_configs={k: dict(v) for k, v in s.strategy_configs.items()},
+                config=dict(s.stage_config),
+                tool_binding=s.tool_binding,
+                model_override=s.model_override,
+                chain_order={k: list(v) for k, v in s.chain_order.items()},
             )
+            stages.append(entry.to_dict())
 
         return cls(
-            version="1.0",
+            version=MANIFEST_VERSION,
             metadata=EnvironmentMetadata(
                 id=env_id,
                 name=name,
@@ -179,6 +287,10 @@ class EnvironmentManifest:
                     strategies=s.get("strategies", {}),
                     strategy_configs=s.get("strategy_configs", {}),
                     stage_config=s.get("config", {}),
+                    artifact=s.get("artifact", "default"),
+                    tool_binding=s.get("tool_binding"),
+                    model_override=s.get("model_override"),
+                    chain_order=s.get("chain_order", {}),
                 )
             )
 
