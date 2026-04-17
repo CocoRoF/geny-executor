@@ -30,6 +30,8 @@ class ToolContext:
     env_vars: Optional[Dict[str, str]] = None
     allowed_paths: Optional[List[str]] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
+    stage_order: int = 0
+    stage_name: str = ""
 
 
 @dataclass
