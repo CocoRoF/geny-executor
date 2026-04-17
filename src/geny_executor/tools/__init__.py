@@ -1,9 +1,49 @@
-"""Tool system — registration, routing, execution."""
+"""Tool system — registration, routing, execution, composition."""
 
 from geny_executor.tools.base import Tool, ToolResult, ToolContext
 from geny_executor.tools.registry import ToolRegistry
+from geny_executor.tools.adhoc import (
+    AdhocTool,
+    AdhocToolDefinition,
+    AdhocToolFactory,
+    HttpToolConfig,
+    ScriptToolConfig,
+    TemplateToolConfig,
+    CompositeToolConfig,
+    CompositeStep,
+)
+from geny_executor.tools.composer import ToolComposer, ToolInfo, ToolPreset
+from geny_executor.tools.scope import ToolScope, ToolScopeRule, ToolScopeManager
+from geny_executor.tools.sandbox import ToolSandbox, SandboxConfig, SandboxPolicy
 
-__all__ = ["Tool", "ToolResult", "ToolContext", "ToolRegistry"]
+__all__ = [
+    # Base
+    "Tool",
+    "ToolResult",
+    "ToolContext",
+    "ToolRegistry",
+    # Ad-hoc
+    "AdhocTool",
+    "AdhocToolDefinition",
+    "AdhocToolFactory",
+    "HttpToolConfig",
+    "ScriptToolConfig",
+    "TemplateToolConfig",
+    "CompositeToolConfig",
+    "CompositeStep",
+    # Composer
+    "ToolComposer",
+    "ToolInfo",
+    "ToolPreset",
+    # Scope
+    "ToolScope",
+    "ToolScopeRule",
+    "ToolScopeManager",
+    # Sandbox
+    "ToolSandbox",
+    "SandboxConfig",
+    "SandboxPolicy",
+]
 
 
 # Lazy import for built-in tools to avoid circular dependencies
