@@ -38,6 +38,47 @@ class ModelConfig:
     thinking_type: str = "enabled"  # "enabled" | "disabled" | "adaptive"
     thinking_display: Optional[str] = None  # "summarized" | "omitted" | None
 
+    def to_dict(self) -> Dict[str, Any]:
+        """Return a JSON-ready representation."""
+        return {
+            "model": self.model,
+            "max_tokens": self.max_tokens,
+            "temperature": self.temperature,
+            "top_p": self.top_p,
+            "top_k": self.top_k,
+            "stop_sequences": list(self.stop_sequences) if self.stop_sequences else None,
+            "thinking_enabled": self.thinking_enabled,
+            "thinking_budget_tokens": self.thinking_budget_tokens,
+            "thinking_type": self.thinking_type,
+            "thinking_display": self.thinking_display,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "ModelConfig":
+        """Rehydrate a :class:`ModelConfig` from :meth:`to_dict` output.
+
+        Unknown keys are ignored so forward-compatibility across minor versions
+        is preserved. Missing keys fall back to dataclass defaults.
+        """
+        stop_raw = data.get("stop_sequences")
+        kwargs: Dict[str, Any] = {}
+        for key in (
+            "model",
+            "max_tokens",
+            "temperature",
+            "top_p",
+            "top_k",
+            "thinking_enabled",
+            "thinking_budget_tokens",
+            "thinking_type",
+            "thinking_display",
+        ):
+            if key in data:
+                kwargs[key] = data[key]
+        if stop_raw is not None:
+            kwargs["stop_sequences"] = list(stop_raw)
+        return cls(**kwargs)
+
 
 @dataclass
 class PipelineConfig:

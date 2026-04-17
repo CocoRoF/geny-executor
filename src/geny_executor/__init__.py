@@ -59,7 +59,14 @@ from geny_executor.core.environment import (
     EnvironmentSummary,
     ToolsSnapshot,
 )
-from geny_executor.core.artifact import create_stage, list_artifacts, get_artifact_map
+from geny_executor.core.artifact import (
+    ArtifactInfo,
+    create_stage,
+    describe_artifact,
+    get_artifact_map,
+    list_artifacts,
+    list_artifacts_with_meta,
+)
 from geny_executor.events import EventBus, PipelineEvent
 from geny_executor.memory import (
     GenyMemoryRetriever,
@@ -102,9 +109,12 @@ __all__ = [
     "DiffEntry",
     "EnvironmentDiff",
     # Artifact system
+    "ArtifactInfo",
     "create_stage",
-    "list_artifacts",
+    "describe_artifact",
     "get_artifact_map",
+    "list_artifacts",
+    "list_artifacts_with_meta",
     # Events
     "EventBus",
     "PipelineEvent",

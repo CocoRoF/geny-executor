@@ -27,7 +27,8 @@ from __future__ import annotations
 
 import importlib
 import pkgutil
-from typing import Any, Dict, List, Optional
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional, Tuple
 
 from geny_executor.core.stage import Stage
 
@@ -36,6 +37,11 @@ from geny_executor.core.stage import Stage
 STAGES_PACKAGE = "geny_executor.stages"
 ARTIFACT_DIR = "artifact"
 DEFAULT_ARTIFACT = "default"
+
+# Optional module-level attribute that artifact modules may define.
+# Shape: ``ARTIFACT_META = {"description": str, "version": str, "stability": str,
+#                           "requires": list[str]}``. Missing keys fall back to defaults.
+ARTIFACT_META_ATTR = "ARTIFACT_META"
 
 # Canonical stage identifiers (order -> module name)
 STAGE_MODULES: Dict[int, str] = {
@@ -129,6 +135,10 @@ def load_artifact_module(stage: str, artifact: str = DEFAULT_ARTIFACT) -> Any:
 def create_stage(stage: str, artifact: str = DEFAULT_ARTIFACT, **kwargs: Any) -> Stage:
     """Create a stage instance from an artifact.
 
+    The created instance records which artifact produced it via the
+    ``_artifact_name`` attribute; this powers :attr:`Stage.artifact_name` and
+    Environment manifest serialization.
+
     Args:
         stage: Stage identifier.
         artifact: Artifact name.
@@ -137,13 +147,18 @@ def create_stage(stage: str, artifact: str = DEFAULT_ARTIFACT, **kwargs: Any) ->
     Returns:
         An instantiated Stage.
     """
-    mod = load_artifact_module(stage, artifact)
+    module_name = _resolve_stage_module(stage)
+    mod = load_artifact_module(module_name, artifact)
     if not hasattr(mod, "Stage"):
         raise AttributeError(
             f"Artifact '{artifact}' for stage '{stage}' does not export 'Stage'. "
             f"Every artifact __init__.py must have: Stage = <ConcreteStageClass>"
         )
-    return mod.Stage(**kwargs)
+    instance = mod.Stage(**kwargs)
+    # Record provenance so Environment serialization can round-trip.
+    instance._artifact_name = artifact
+    instance._stage_module = module_name
+    return instance
 
 
 def list_artifacts(stage: str) -> List[str]:
@@ -174,6 +189,99 @@ def list_artifacts(stage: str) -> List[str]:
             names.append(name)
 
     return sorted(names)
+
+
+@dataclass(frozen=True)
+class ArtifactInfo:
+    """Descriptive metadata about a single artifact.
+
+    Populated from an artifact module's optional ``ARTIFACT_META`` dict.
+    Any missing keys fall back to conservative defaults so that every artifact
+    on disk is discoverable, even without metadata.
+    """
+
+    stage: str
+    name: str
+    description: str = ""
+    version: str = "1.0"
+    stability: str = "stable"  # "stable" | "beta" | "experimental"
+    requires: Tuple[str, ...] = ()
+    is_default: bool = False
+    extra: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Return a JSON-ready representation."""
+        return {
+            "stage": self.stage,
+            "name": self.name,
+            "description": self.description,
+            "version": self.version,
+            "stability": self.stability,
+            "requires": list(self.requires),
+            "is_default": self.is_default,
+            "extra": dict(self.extra),
+        }
+
+
+def describe_artifact(stage: str, artifact: str = DEFAULT_ARTIFACT) -> ArtifactInfo:
+    """Return metadata for a single artifact.
+
+    Reads the optional ``ARTIFACT_META`` dict from the artifact module. Unknown
+    fields are preserved under ``extra`` so UIs can render custom hints without
+    library changes.
+
+    Raises:
+        ImportError: If the artifact module cannot be found.
+    """
+    module_name = _resolve_stage_module(stage)
+    mod = load_artifact_module(module_name, artifact)
+    meta = getattr(mod, ARTIFACT_META_ATTR, None) or {}
+    if not isinstance(meta, dict):
+        raise TypeError(
+            f"{module_name}.{artifact}.{ARTIFACT_META_ATTR} must be a dict, "
+            f"got {type(meta).__name__}"
+        )
+
+    known = {"description", "version", "stability", "requires"}
+    extra = {k: v for k, v in meta.items() if k not in known}
+    requires_raw = meta.get("requires", ())
+    requires: Tuple[str, ...] = tuple(requires_raw) if requires_raw else ()
+
+    return ArtifactInfo(
+        stage=module_name,
+        name=artifact,
+        description=str(meta.get("description", "")),
+        version=str(meta.get("version", "1.0")),
+        stability=str(meta.get("stability", "stable")),
+        requires=requires,
+        is_default=(artifact == DEFAULT_ARTIFACT),
+        extra=extra,
+    )
+
+
+def list_artifacts_with_meta(stage: str) -> List[ArtifactInfo]:
+    """Enumerate artifacts for *stage* along with their metadata.
+
+    Artifacts that fail to import surface as a best-effort ``ArtifactInfo`` with
+    ``stability="experimental"`` and the import error recorded under
+    ``extra["error"]`` so UIs can still show the name and flag the breakage.
+    """
+    module_name = _resolve_stage_module(stage)
+    infos: List[ArtifactInfo] = []
+    for name in list_artifacts(module_name):
+        try:
+            infos.append(describe_artifact(module_name, name))
+        except Exception as exc:  # pragma: no cover - defensive
+            infos.append(
+                ArtifactInfo(
+                    stage=module_name,
+                    name=name,
+                    stability="experimental",
+                    is_default=(name == DEFAULT_ARTIFACT),
+                    extra={"error": f"{type(exc).__name__}: {exc}"},
+                )
+            )
+    return infos
 
 
 def get_artifact_map(
