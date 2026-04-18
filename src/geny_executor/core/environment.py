@@ -285,13 +285,21 @@ class EnvironmentManifest:
         model: Optional[Dict[str, Any]] = None,
         pipeline: Optional[Dict[str, Any]] = None,
     ) -> EnvironmentManifest:
-        """Build an empty 16-stage template with every stage inactive.
+        """Build a 16-stage template with the structurally required stages on.
 
-        Each stage is populated with its default artifact plus the artifact's
+        Every stage is populated with its default artifact plus the artifact's
         default strategy implementations and config, so a UI can render all
-        16 rows immediately and the user only has to toggle stages on (and
-        edit fields) — no "missing required field" errors the moment a
-        stage is flipped active.
+        16 rows immediately and the user only has to edit fields — no
+        "missing required field" errors the moment a stage is flipped active.
+
+        Four stages — ``s01_input``, ``s06_api``, ``s09_parse``, ``s16_yield``
+        — are load-bearing for every pipeline (see
+        :data:`~geny_executor.core.introspection._STAGE_REQUIRED`) and default
+        to ``active=True``; every other stage defaults to ``active=False`` so
+        the user explicitly opts in. Requiring the UI to flip the required
+        four on for every new blank env was the source of confusion that
+        motivated this default — the runtime can't function without them, so
+        the template shouldn't pretend they're optional.
 
         Unlike :meth:`from_snapshot`, ``blank_manifest`` never sets
         ``metadata.base_preset`` — a blank environment has no origin preset.
@@ -314,7 +322,7 @@ class EnvironmentManifest:
             entry = StageManifestEntry(
                 order=insp.order,
                 name=insp.name,
-                active=False,
+                active=insp.required,
                 artifact=insp.artifact,
                 strategies={
                     slot: slot_info.current_impl

@@ -277,11 +277,25 @@ def test_snapshot_json_is_valid_utf8():
 # ── EnvironmentManifest.blank_manifest ────────────────────────
 
 
-def test_blank_manifest_returns_all_16_stages_inactive():
+REQUIRED_STAGE_ORDERS = {1, 6, 9, 16}
+
+
+def test_blank_manifest_returns_16_stages_with_required_ones_active():
+    """Required stages (s01_input, s06_api, s09_parse, s16_yield) default
+    active=True so a blank env is runnable without forcing the user to flip
+    the load-bearing four. The other twelve remain active=False."""
     m = EnvironmentManifest.blank_manifest("Blank Env")
     entries = m.stage_entries()
     assert [e.order for e in entries] == list(range(1, 17))
-    assert all(e.active is False for e in entries)
+    active_orders = {e.order for e in entries if e.active}
+    assert active_orders == REQUIRED_STAGE_ORDERS
+
+
+def test_blank_manifest_optional_stages_default_inactive():
+    """Every non-required stage must default active=False — users opt in."""
+    m = EnvironmentManifest.blank_manifest("Blank Env")
+    inactive_orders = {e.order for e in m.stage_entries() if not e.active}
+    assert inactive_orders == set(range(1, 17)) - REQUIRED_STAGE_ORDERS
 
 
 def test_blank_manifest_uses_default_artifact_per_stage():
@@ -331,23 +345,24 @@ def test_blank_manifest_roundtrips_through_json():
     assert restored.metadata.base_preset == ""
 
 
-def test_blank_manifest_builds_empty_pipeline_via_from_manifest():
-    """All stages inactive → Pipeline.from_manifest yields zero registered stages."""
+def test_blank_manifest_builds_minimal_pipeline_via_from_manifest():
+    """blank_manifest turns on the required four stages (Input/API/Parse/
+    Yield), so Pipeline.from_manifest on a fresh blank env already
+    registers exactly those four — matching the ``minimal`` preset."""
     m = EnvironmentManifest.blank_manifest("Blank")
     rebuilt = Pipeline.from_manifest(m, api_key="dummy", strict=False)
-    assert list(rebuilt.stages) == []
+    assert {s.order for s in rebuilt.stages} == REQUIRED_STAGE_ORDERS
 
 
-def test_blank_manifest_activation_then_rebuild_succeeds():
-    """Flipping a stage active and rebuilding instantiates that stage."""
+def test_blank_manifest_extra_activation_then_rebuild_succeeds():
+    """Flipping an optional stage on top of the required defaults adds it
+    to the rebuilt pipeline alongside the required four."""
     m = EnvironmentManifest.blank_manifest("Blank")
     entries = m.stage_entries()
     for e in entries:
-        if e.order == 1:
-            e.active = True
-        if e.order == 16:
+        if e.order == 5:  # cache — optional
             e.active = True
     m.set_stage_entries(entries)
 
     rebuilt = Pipeline.from_manifest(m, api_key="dummy", strict=True)
-    assert {s.order for s in rebuilt.stages} == {1, 16}
+    assert {s.order for s in rebuilt.stages} == REQUIRED_STAGE_ORDERS | {5}
