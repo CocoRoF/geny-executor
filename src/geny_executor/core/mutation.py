@@ -642,9 +642,21 @@ class PipelineMutator:
                 if stage is None:
                     continue  # Cannot restore an unregistered stage
 
-                # Restore strategy selections
+                # Restore strategy selections. When the live slot already
+                # holds the same implementation (common case for APIStage
+                # whose provider was constructed with an api_key at
+                # :meth:`Pipeline.from_manifest` time), skip the swap and
+                # only replay the captured config — rebuilding the instance
+                # via ``cls()`` would discard constructor-bound state such
+                # as credentials, leaving the runtime provider unusable.
+                slots = stage.get_strategy_slots()
                 for slot_name, impl_name in stage_snap.strategies.items():
                     slot_config = stage_snap.strategy_configs.get(slot_name)
+                    slot = slots.get(slot_name)
+                    if slot is not None and slot.current_impl == impl_name:
+                        if slot_config and hasattr(slot.strategy, "configure"):
+                            slot.strategy.configure(slot_config)
+                        continue
                     try:
                         stage.set_strategy(slot_name, impl_name, slot_config)
                     except (KeyError, AttributeError):

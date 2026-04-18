@@ -41,21 +41,18 @@ class IntrospectionUnsupported(RuntimeError):
 
 # ── Per-stage ctor kwargs for introspection ─────────────────────
 #
-# Stages whose default ctor requires arguments (e.g. APIStage demands a
-# provider) need a library-owned mock so introspection is truly session-less.
-# Non-default artifacts with network-bound ctors receive a dummy credential
-# that is never used at introspection time (no network call is issued).
-
-
-def _api_default_kwargs() -> Dict[str, Any]:
-    """Inject MockProvider so APIStage's default artifact introspects offline."""
-    from geny_executor.stages.s06_api.artifact.default.providers import MockProvider
-
-    return {"provider": MockProvider()}
+# Stages whose default ctor requires credentials (e.g. APIStage demands
+# ``api_key`` or an explicit provider) receive a dummy string. No network
+# call is issued during introspection — AnthropicProvider lazy-instantiates
+# its SDK client on the first ``create_message`` call — so the dummy key is
+# never exercised. Using a real (even fake) ``api_key`` is load-bearing: it
+# makes ``slot.current_impl`` on the provider slot resolve to ``"anthropic"``
+# (the runtime default) instead of ``"mock"``, so ``blank_manifest`` does
+# not accidentally seed new environments with the test-only MockProvider.
 
 
 _STAGE_INTROSPECTION_KWARGS: Dict[tuple, Any] = {
-    ("s06_api", "default"): _api_default_kwargs,
+    ("s06_api", "default"): {"api_key": "introspection-dummy-key"},
     ("s06_api", "openai"): {"api_key": "introspection-dummy-key"},
     ("s06_api", "google"): {"api_key": "introspection-dummy-key"},
 }

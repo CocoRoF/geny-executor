@@ -307,12 +307,16 @@ def test_blank_manifest_uses_default_artifact_per_stage():
 
 def test_blank_manifest_seeds_strategy_current_impls():
     """Each stage captures its artifact's default strategy picks so toggling
-    active doesn't produce a manifest that fails to rehydrate."""
+    active doesn't produce a manifest that fails to rehydrate.
+
+    The provider slot on s06_api must resolve to ``"anthropic"`` — the real
+    runtime default. Introspection historically injected a ``MockProvider``
+    to stay session-less, which bled into manifests and made new envs hit
+    the test-only mock at run time.
+    """
     m = EnvironmentManifest.blank_manifest("Blank Env")
     s06 = next(e for e in m.stage_entries() if e.order == 6)
-    # s06_api/default exposes a 'provider' slot with a default impl
-    assert "provider" in s06.strategies
-    assert s06.strategies["provider"]  # non-empty impl name
+    assert s06.strategies.get("provider") == "anthropic"
 
 
 def test_blank_manifest_metadata_has_no_base_preset():
@@ -352,6 +356,25 @@ def test_blank_manifest_builds_minimal_pipeline_via_from_manifest():
     m = EnvironmentManifest.blank_manifest("Blank")
     rebuilt = Pipeline.from_manifest(m, api_key="dummy", strict=False)
     assert {s.order for s in rebuilt.stages} == REQUIRED_STAGE_ORDERS
+
+
+def test_blank_manifest_rebuild_uses_real_provider_with_supplied_api_key():
+    """Regression: a blank manifest rehydrated via ``Pipeline.from_manifest``
+    must land on AnthropicProvider carrying the caller's api_key. Earlier
+    snapshots recorded ``provider: mock`` (from introspection) and the
+    restore pass swapped in MockProvider at run time, so sessions silently
+    answered with ``"Mock response"`` instead of calling the real API.
+    """
+    from geny_executor.stages.s06_api.artifact.default.providers import (
+        AnthropicProvider,
+    )
+
+    m = EnvironmentManifest.blank_manifest("Blank")
+    rebuilt = Pipeline.from_manifest(m, api_key="sk-test-key")
+    api_stage = rebuilt.get_stage(6)
+    provider = api_stage.get_strategy_slots()["provider"].strategy
+    assert isinstance(provider, AnthropicProvider)
+    assert provider._api_key == "sk-test-key"
 
 
 def test_blank_manifest_extra_activation_then_rebuild_succeeds():
