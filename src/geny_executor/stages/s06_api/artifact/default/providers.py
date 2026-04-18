@@ -38,8 +38,12 @@ class AnthropicProvider(APIProvider):
             self._client = None
 
     def get_config(self) -> Dict[str, Any]:
+        # ``api_key`` is deliberately excluded: credentials belong to the
+        # runtime session, not to the environment template. If we round-
+        # tripped the masked ``"***"`` through a manifest, PipelineMutator.
+        # restore() would happily write that string back onto a freshly
+        # constructed provider and silently break the API call.
         return {
-            "api_key": "***" if self._api_key else "",
             "base_url": self._base_url,
             "default_headers": self._default_headers or {},
         }
