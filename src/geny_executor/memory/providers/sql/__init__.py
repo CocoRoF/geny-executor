@@ -1,11 +1,13 @@
 """SQL-backed `MemoryProvider`.
 
-Default dialect is SQLite via the stdlib `sqlite3` module. The
-schema is dialect-agnostic enough that a future Postgres+pgvector
-backend can plug in via the same `SQLMemoryProvider` shell — that
-work lives in sub-PR 2c.1 / Phase 2d.
+Two dialects ship today: SQLite (default, stdlib `sqlite3`) and
+Postgres (optional `[postgres]` extra → `psycopg`). Pick by DSN
+scheme — ``postgresql://`` / ``postgres://`` routes to the Postgres
+backend, anything else (filesystem path or ``sqlite://`` URL) routes
+to SQLite. Override via the ``dialect=`` constructor kwarg if needed.
 """
 
 from geny_executor.memory.providers.sql.provider import SQLMemoryProvider
+from geny_executor.memory.providers.sql.schema import Dialect
 
-__all__ = ["SQLMemoryProvider"]
+__all__ = ["SQLMemoryProvider", "Dialect"]

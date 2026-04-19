@@ -23,7 +23,7 @@ from typing import List, Optional, Tuple
 
 from geny_executor.memory.provider import NoteRef, Scope
 from geny_executor.memory.providers.file.timezone import now_in
-from geny_executor.memory.providers.sql.connection import _SQLiteConnection
+from geny_executor.memory.providers.sql.connection import _SQLConnection
 from geny_executor.stages.s02_context.types import MemoryChunk
 
 
@@ -36,14 +36,16 @@ class _SQLLTMStore:
 
     def __init__(
         self,
-        conn: _SQLiteConnection,
+        conn: _SQLConnection,
         *,
         tz: tzinfo,
         scope: Scope = Scope.SESSION,
+        backend_name: str = "sqlite",
     ) -> None:
         self._conn = conn
         self._tz = tz
         self._scope = scope
+        self._backend_name = backend_name
 
     # ── LTMHandle contract ──────────────────────────────────────────
 
@@ -55,7 +57,7 @@ class _SQLLTMStore:
             filename="MEMORY.md",
             scope=self._scope,
             category="ltm-main",
-            backend="sqlite",
+            backend=self._backend_name,
         )
 
     async def write_dated(self, body: str, *, day: Optional[datetime] = None) -> NoteRef:
@@ -68,7 +70,7 @@ class _SQLLTMStore:
             filename=ref_name,
             scope=self._scope,
             category="ltm-dated",
-            backend="sqlite",
+            backend=self._backend_name,
         )
 
     async def write_topic(self, slug: str, body: str) -> NoteRef:
@@ -81,7 +83,7 @@ class _SQLLTMStore:
             filename=ref_name,
             scope=self._scope,
             category="ltm-topic",
-            backend="sqlite",
+            backend=self._backend_name,
         )
 
     async def read_main(self) -> str:

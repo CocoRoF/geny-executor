@@ -30,7 +30,7 @@ from geny_executor.memory.provider import (
     Scope,
 )
 from geny_executor.memory.providers.file.timezone import now_in
-from geny_executor.memory.providers.sql.connection import _SQLiteConnection
+from geny_executor.memory.providers.sql.connection import _SQLConnection
 from geny_executor.stages.s02_context.types import MemoryChunk
 
 
@@ -43,14 +43,16 @@ class _SQLNotesStore(NotesHandle):
 
     def __init__(
         self,
-        conn: _SQLiteConnection,
+        conn: _SQLConnection,
         *,
         tz: tzinfo,
         scope: Scope = Scope.SESSION,
+        backend_name: str = "sqlite",
     ) -> None:
         self._conn = conn
         self._tz = tz
         self._scope = scope
+        self._backend_name = backend_name
 
     # ── NotesHandle contract ────────────────────────────────────────
 
@@ -111,7 +113,7 @@ class _SQLNotesStore(NotesHandle):
                 draft.importance.value,
                 draft.category,
                 self._scope.value,
-                "sqlite",
+                self._backend_name,
                 front,
                 ts,
                 ts,
@@ -124,7 +126,7 @@ class _SQLNotesStore(NotesHandle):
                 filename=filename,
                 scope=self._scope,
                 category=draft.category,
-                backend="sqlite",
+                backend=self._backend_name,
             ),
             title=draft.title,
             importance=draft.importance,
@@ -373,7 +375,7 @@ class _SQLNotesStore(NotesHandle):
                 filename=filename,
                 scope=scope,
                 category=_optional_str(row["category"]),
-                backend=str(row["backend"] or "sqlite"),
+                backend=str(row["backend"] or self._backend_name),
             ),
             title=str(row["title"]),
             body=str(row["body"]),
