@@ -30,7 +30,6 @@ from datetime import datetime, timezone
 from typing import (
     TYPE_CHECKING,
     Any,
-    Awaitable,
     Callable,
     Dict,
     List,
@@ -129,7 +128,9 @@ class NoteRef:
     backend: Optional[str] = None  # e.g. "filesystem", "postgres" — for diagnostics
 
     def with_scope(self, scope: Scope) -> "NoteRef":
-        return NoteRef(filename=self.filename, scope=scope, category=self.category, backend=self.backend)
+        return NoteRef(
+            filename=self.filename, scope=scope, category=self.category, backend=self.backend
+        )
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -316,6 +317,7 @@ class Turn:
             return len(self.content.encode("utf-8"))
         try:
             import json
+
             return len(json.dumps(self.content, ensure_ascii=False).encode("utf-8"))
         except (TypeError, ValueError):
             return len(repr(self.content).encode("utf-8"))
@@ -461,7 +463,7 @@ class RetrievalResult:
         parts: List[str] = []
         for c in self.chunks:
             tag = c.source or "memory"
-            parts.append(f"<{tag} score=\"{c.relevance_score:.3f}\">\n{c.content}\n</{tag}>")
+            parts.append(f'<{tag} score="{c.relevance_score:.3f}">\n{c.content}\n</{tag}>')
         return "\n".join(parts)
 
     def to_event(self) -> Dict[str, Any]:
@@ -660,7 +662,9 @@ class VectorHandle(Protocol):
     def descriptor(self) -> EmbeddingDescriptor: ...
     async def index(self, ref: NoteRef, text: str) -> int: ...
     async def index_batch(self, items: Sequence[Tuple[NoteRef, str]]) -> int: ...
-    async def search(self, text: str, *, top_k: int = 5, threshold: float = 0.0) -> List[MemoryChunk]: ...
+    async def search(
+        self, text: str, *, top_k: int = 5, threshold: float = 0.0
+    ) -> List[MemoryChunk]: ...
     async def reindex(self, *, plan: Optional[ReindexPlan] = None) -> ReindexPlan: ...
     async def remove(self, ref: NoteRef) -> bool: ...
 
@@ -788,23 +792,45 @@ def _extract_first_user_text(state: "PipelineState") -> str:
 
 __all__ = [
     # enums
-    "Layer", "Capability", "Scope", "Importance", "MemoryEvent",
+    "Layer",
+    "Capability",
+    "Scope",
+    "Importance",
+    "MemoryEvent",
     # value types
-    "NoteRef", "BackendInfo", "EmbeddingDescriptor",
-    "CostEvent", "CostModel",
+    "NoteRef",
+    "BackendInfo",
+    "EmbeddingDescriptor",
+    "CostEvent",
+    "CostModel",
     # notes
-    "Note", "NoteMeta", "NoteDraft", "NotePatch", "NoteGraph",
+    "Note",
+    "NoteMeta",
+    "NoteDraft",
+    "NotePatch",
+    "NoteGraph",
     # turn / reflection / execution
-    "Turn", "ExecutionSummary", "RecordReceipt", "Insight", "ReflectionContext",
+    "Turn",
+    "ExecutionSummary",
+    "RecordReceipt",
+    "Insight",
+    "ReflectionContext",
     # retrieval
-    "RetrievalQuery", "RetrievalResult",
+    "RetrievalQuery",
+    "RetrievalResult",
     # snapshot / migration
-    "MemorySnapshot", "ReindexPlan",
+    "MemorySnapshot",
+    "ReindexPlan",
     # descriptor
     "MemoryDescriptor",
     # handles
-    "STMHandle", "LTMHandle", "NotesHandle", "VectorHandle",
-    "CuratedHandle", "GlobalHandle", "IndexHandle",
+    "STMHandle",
+    "LTMHandle",
+    "NotesHandle",
+    "VectorHandle",
+    "CuratedHandle",
+    "GlobalHandle",
+    "IndexHandle",
     # provider
     "MemoryProvider",
     # policy

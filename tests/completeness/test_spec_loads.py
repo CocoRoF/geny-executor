@@ -26,15 +26,27 @@ EXPECTED_TOP_LEVEL = {
 
 REQUIRED_LAYER_IDS = {"stm", "ltm", "notes", "vector", "index", "curated", "global"}
 REQUIRED_CAPABILITIES = {
-    "read", "write", "search", "link", "promote",
-    "reindex", "snapshot", "reflect", "summarize",
+    "read",
+    "write",
+    "search",
+    "link",
+    "promote",
+    "reindex",
+    "snapshot",
+    "reflect",
+    "summarize",
 }
 REQUIRED_SCOPES = {"ephemeral", "session", "user", "tenant", "global"}
 REQUIRED_EVENTS = {
-    "context.built", "context.compacted",
-    "memory.turn_recorded", "memory.execution_recorded",
-    "memory.insight", "memory.promoted",
-    "memory.reindexed", "memory.cost", "memory.snapshot",
+    "context.built",
+    "context.compacted",
+    "memory.turn_recorded",
+    "memory.execution_recorded",
+    "memory.insight",
+    "memory.promoted",
+    "memory.reindexed",
+    "memory.cost",
+    "memory.snapshot",
 }
 
 

@@ -127,6 +127,7 @@ class MemoryProviderContract:
 
     async def test_ltm_dated_segregates_by_day(self, provider: MemoryProvider):
         from datetime import datetime, timezone, timedelta
+
         ltm = provider.ltm()
         d1 = datetime(2026, 4, 18, tzinfo=timezone.utc)
         d2 = d1 + timedelta(days=1)
@@ -159,7 +160,9 @@ class MemoryProviderContract:
         await notes.write(NoteDraft(title="A", body="x", tags=["t1"], importance=Importance.HIGH))
         await notes.write(NoteDraft(title="B", body="y", tags=["t2"], importance=Importance.LOW))
         await notes.write(
-            NoteDraft(title="C", body="z", tags=["t1"], importance=Importance.MEDIUM, category="cat")
+            NoteDraft(
+                title="C", body="z", tags=["t1"], importance=Importance.MEDIUM, category="cat"
+            )
         )
         all_t1 = await notes.list(tag="t1")
         assert {m.title for m in all_t1} == {"A", "C"}
@@ -171,7 +174,7 @@ class MemoryProviderContract:
     async def test_notes_update_patches_only_supplied_fields(self, provider: MemoryProvider):
         notes = provider.notes()
         meta = await notes.write(NoteDraft(title="orig", body="hello", tags=["a"]))
-        updated = await notes.update(meta.ref.filename, NotePatch(append_body="world"))
+        await notes.update(meta.ref.filename, NotePatch(append_body="world"))
         full = await notes.read(meta.ref.filename)
         assert full is not None
         assert "hello" in full.body and "world" in full.body
@@ -222,7 +225,7 @@ class MemoryProviderContract:
 
     async def test_index_graph_matches_notes_graph(self, provider: MemoryProvider):
         notes = provider.notes()
-        a = await notes.write(NoteDraft(title="a", body="see [[b]]"))
+        await notes.write(NoteDraft(title="a", body="see [[b]]"))
         graph_n = await notes.graph()
         graph_i = await provider.index().graph()
         # Index handle may add aggregates, but every notes-graph edge
@@ -234,7 +237,9 @@ class MemoryProviderContract:
 
     async def test_retrieve_returns_layer_breakdown(self, provider: MemoryProvider):
         await provider.notes().write(
-            NoteDraft(title="alpha", body="quick brown fox", tags=["fox"], importance=Importance.HIGH)
+            NoteDraft(
+                title="alpha", body="quick brown fox", tags=["fox"], importance=Importance.HIGH
+            )
         )
         await provider.ltm().append("the fox is quick")
         await provider.stm().append(Turn(role="user", content="tell me about the fox"))
@@ -271,9 +276,7 @@ class MemoryProviderContract:
 
     async def test_record_execution_returns_receipt(self, provider: MemoryProvider):
         receipt = await provider.record_execution(
-            ExecutionSummary(
-                session_id="s1", user_input="ping", final_text="pong"
-            )
+            ExecutionSummary(session_id="s1", user_input="ping", final_text="pong")
         )
         # Providers must produce a receipt; counts depend on impl but
         # files_updated must be a list and notes_written must be ≥ 0.

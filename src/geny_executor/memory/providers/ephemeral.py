@@ -37,8 +37,6 @@ from geny_executor.core.schema import ConfigField, ConfigSchema
 from geny_executor.memory.provider import (
     BackendInfo,
     Capability,
-    CostEvent,
-    EmbeddingDescriptor,
     ExecutionSummary,
     Importance,
     Insight,
@@ -89,9 +87,7 @@ class _STMStore:
         out: List[Turn] = []
         for turn in reversed(self._turns):
             haystack = (
-                turn.content.lower()
-                if isinstance(turn.content, str)
-                else str(turn.content).lower()
+                turn.content.lower() if isinstance(turn.content, str) else str(turn.content).lower()
             )
             if needle in haystack:
                 out.append(turn)
@@ -557,6 +553,7 @@ class EphemeralMemoryProvider(MemoryProvider):
             "notes": [_note_to_dict(n) for n in self._notes.all()],
         }
         import json
+
         blob = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
         return MemorySnapshot(
             provider=self.NAME,

@@ -23,6 +23,7 @@ PHASE_REASON = (
 def _provider_module_available() -> bool:
     try:
         import geny_executor.memory.provider  # noqa: F401
+
         return True
     except ImportError:
         return False

@@ -18,6 +18,7 @@ PHASE_REASON = "C3 awaits Phase 2: reflect() + promote() + auto-promotion hook."
 def _provider_module_available() -> bool:
     try:
         from geny_executor.memory.provider import MemoryProvider  # noqa: F401
+
         return True
     except ImportError:
         return False

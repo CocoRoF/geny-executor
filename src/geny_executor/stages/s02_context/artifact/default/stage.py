@@ -9,7 +9,6 @@ from geny_executor.core.slot import StrategySlot
 from geny_executor.core.stage import Stage
 from geny_executor.core.state import PipelineState
 from geny_executor.memory.provider import (
-    Layer,
     MemoryEvent,
     MemoryProvider,
     RetrievalQuery,

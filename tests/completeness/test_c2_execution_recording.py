@@ -19,6 +19,7 @@ PHASE_REASON = "C2 awaits Phase 2: native FileMemoryProvider with LTM/notes/vect
 def _provider_module_available() -> bool:
     try:
         from geny_executor.memory.provider import MemoryProvider  # noqa: F401
+
         return True
     except ImportError:
         return False

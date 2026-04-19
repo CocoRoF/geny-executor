@@ -56,8 +56,12 @@ def pytest_collection_modifyitems(config, items):  # noqa: D401
         name = item.nodeid.rsplit("/", 1)[-1]
         if name.startswith("test_c1_"):
             item.add_marker(pytest.mark.c_phase_1)
-        elif name.startswith("test_c2_") or name.startswith("test_c3_") \
-                or name.startswith("test_c5_") or name.startswith("test_c6_"):
+        elif (
+            name.startswith("test_c2_")
+            or name.startswith("test_c3_")
+            or name.startswith("test_c5_")
+            or name.startswith("test_c6_")
+        ):
             item.add_marker(pytest.mark.c_phase_2)
         elif name.startswith("test_c4_"):
             item.add_marker(pytest.mark.c_phase_4)
