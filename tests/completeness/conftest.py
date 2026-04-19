@@ -1,22 +1,39 @@
 """Shared fixtures for the completeness suite.
 
-Loads `docs/MEMORY_SPEC.yaml` as the `spec` fixture and exposes the
-`provider_kind` parametrize point that Phase 2+ implementations fill
-in. Until Phase 1 lands `EphemeralMemoryProvider`, `provider_kind`
-is the empty list and the parametrized C-tests are collected but
-report "no providers registered" — clearly distinguishing "not yet
-implemented" from "broken".
+Exposes:
+- `spec` / `spec_path` — the frozen `docs/MEMORY_SPEC.yaml` as a dict.
+- `registered_providers` — list of `(name, factory)` tuples that the
+  C-criteria tests iterate over. Each factory is an async callable
+  `(tmp_path: Path) -> MemoryProvider` returning a freshly-initialised
+  provider, which keeps per-provider setup out of the test bodies.
+
+Phase 2 populates `registered_providers` with the providers that
+survive each sub-PR: `ephemeral`, `file`, `sql`, and `geny-adapter`
+(quarantined C7 fixture). C1·C2·C3·C5·C6 activate by virtue of the
+list being non-empty.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Awaitable, Callable, Dict, List, Tuple
 
 import pytest
 
+from geny_executor.memory.provider import MemoryProvider
+from geny_executor.memory.providers import (
+    EphemeralMemoryProvider,
+    FileMemoryProvider,
+    SQLMemoryProvider,
+)
+from tests.completeness.fixtures.adapter import GenyManagerAdapter
+
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SPEC_PATH = REPO_ROOT / "docs" / "MEMORY_SPEC.yaml"
+
+
+ProviderFactory = Callable[[Path], Awaitable[MemoryProvider]]
 
 
 @pytest.fixture(scope="session")
@@ -36,16 +53,51 @@ def spec() -> Dict[str, Any]:
     return yaml.safe_load(SPEC_PATH.read_text(encoding="utf-8"))
 
 
-@pytest.fixture(scope="session")
-def registered_providers() -> List[str]:
-    """Names of MemoryProvider implementations the C-suite should run
-    against. Empty until Phase 1 (EphemeralMemoryProvider) and Phase 2
-    (FileMemoryProvider, SQLMemoryProvider, ...) register entries.
+# ── provider factories ─────────────────────────────────────────────
 
-    The activation point is intentionally a fixture rather than a hard
-    import so we can run `tests/completeness/` in any partial state.
+
+async def _ephemeral_factory(_: Path) -> MemoryProvider:
+    provider = EphemeralMemoryProvider()
+    await provider.initialize()
+    return provider
+
+
+async def _file_factory(tmp: Path) -> MemoryProvider:
+    provider = FileMemoryProvider(root=tmp / "file_root")
+    await provider.initialize()
+    return provider
+
+
+async def _sql_factory(tmp: Path) -> MemoryProvider:
+    provider = SQLMemoryProvider(dsn=str(tmp / "sql.db"))
+    await provider.initialize()
+    return provider
+
+
+async def _adapter_factory(_: Path) -> MemoryProvider:
+    provider = GenyManagerAdapter()
+    await provider.initialize()
+    return provider
+
+
+@pytest.fixture(scope="session")
+def registered_providers() -> List[Tuple[str, ProviderFactory]]:
+    """Providers the C-suite parametrises over.
+
+    Empty-list means "Phase 0/1" — every C-test skips with a clear
+    reason. With Phase 2e landed, all four providers ship: ephemeral,
+    file, sql, and the quarantined geny-adapter fixture that C7
+    (Phase 3) will parity-check the native providers against.
     """
-    return []
+    return [
+        ("ephemeral", _ephemeral_factory),
+        ("file", _file_factory),
+        ("sql", _sql_factory),
+        ("geny-adapter", _adapter_factory),
+    ]
+
+
+# ── collection hook ─────────────────────────────────────────────────
 
 
 def pytest_collection_modifyitems(config, items):  # noqa: D401
