@@ -62,7 +62,7 @@ from geny_executor.memory.provider import (
     Turn,
     VectorHandle,
 )
-from geny_executor.memory.providers import EphemeralMemoryProvider
+from geny_executor.memory.providers import EphemeralMemoryProvider, FileMemoryProvider
 
 # ── Legacy adapter (Phase 3 validation only) ────────────────────────
 from geny_executor.memory.retriever import GenyMemoryRetriever
@@ -108,6 +108,7 @@ __all__ = [
     "IndexHandle",
     # providers
     "EphemeralMemoryProvider",
+    "FileMemoryProvider",
     # legacy adapter (validation fixture)
     "GenyMemoryRetriever",
     "GenyMemoryStrategy",
