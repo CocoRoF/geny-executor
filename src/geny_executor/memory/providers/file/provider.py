@@ -40,6 +40,7 @@ from geny_executor.memory.provider import (
     Turn,
     VectorHandle,
 )
+from geny_executor.memory.embedding.client import EmbeddingClient
 from geny_executor.memory.providers.file.config import file_provider_config_schema
 from geny_executor.memory.providers.file.index_store import _FileIndexStore
 from geny_executor.memory.providers.file.layout import DirectoryLayout
@@ -48,6 +49,7 @@ from geny_executor.memory.providers.file.notes_store import _FilesystemNotesStor
 from geny_executor.memory.providers.file.snapshot import build_tarball, restore_tarball
 from geny_executor.memory.providers.file.stm_store import _JSONLSTMStore
 from geny_executor.memory.providers.file.timezone import resolve_timezone
+from geny_executor.memory.providers.file.vector_store import _FileVectorStore
 from geny_executor.stages.s02_context.types import MemoryChunk
 
 logger = logging.getLogger(__name__)
@@ -72,19 +74,39 @@ class FileMemoryProvider(MemoryProvider):
         session_id: str = "",
         timezone_name: Optional[str] = None,
         embedding: Optional[EmbeddingDescriptor] = None,
+        embedding_client: Optional[EmbeddingClient] = None,
     ) -> None:
         self._root = Path(root).resolve()
         self._scope = scope
         self._session_id = session_id
         self._tz = resolve_timezone(timezone_name)
-        self._embedding = embedding
+        self._embedding_client = embedding_client
+        self._embedding = embedding or (
+            embedding_client.descriptor if embedding_client is not None else None
+        )
         self._layout = DirectoryLayout(self._root)
         self._stm = _JSONLSTMStore(self._layout.stm_jsonl, tz=self._tz)
         self._ltm = _MarkdownLTMStore(self._layout, tz=self._tz, scope=scope)
         self._notes = _FilesystemNotesStore(self._layout, tz=self._tz, scope=scope)
         self._index = _FileIndexStore(self._notes, layout=self._layout, tz=self._tz)
+        self._vector = self._build_vector_store()
         self._initialized = False
         self._descriptor = self._build_descriptor()
+
+    def _build_vector_store(self) -> Optional[_FileVectorStore]:
+        if self._embedding_client is None:
+            return None
+        return _FileVectorStore(
+            self._layout,
+            client=self._embedding_client,
+            notes_text_lookup=self._lookup_note_text,
+        )
+
+    async def _lookup_note_text(self, filename: str) -> Optional[str]:
+        note = await self._notes.read(filename)
+        if note is None:
+            return None
+        return note.body
 
     # ── MemoryProvider: descriptor + lifecycle ─────────────────────
 
@@ -116,7 +138,7 @@ class FileMemoryProvider(MemoryProvider):
         return self._notes
 
     def vector(self) -> Optional[VectorHandle]:
-        return None
+        return self._vector  # type: ignore[return-value]
 
     def curated(self) -> Optional[CuratedHandle]:
         return None
@@ -153,6 +175,9 @@ class FileMemoryProvider(MemoryProvider):
             )
             files.append(note_meta.ref.filename)
             receipt.notes_written = 1
+
+            if self._vector is not None:
+                await self._vector.index(note_meta.ref, summary.final_text)
 
         # Refresh the index cache so subsequent retrieves see the new note
         await self._index.rebuild()
@@ -209,6 +234,14 @@ class FileMemoryProvider(MemoryProvider):
             chunks.extend(note_chunks)
             breakdown[Layer.NOTES] = len(note_chunks)
 
+        if Layer.VECTOR in query.layers and self._vector is not None and query.text:
+            vec_chunks = await self._vector.search(
+                query.text,
+                top_k=query.max_per_layer,
+            )
+            chunks.extend(vec_chunks)
+            breakdown[Layer.VECTOR] = len(vec_chunks)
+
         # Char budget trim — preserves order, always keeps at least one
         kept: List[MemoryChunk] = []
         used = 0
@@ -228,11 +261,14 @@ class FileMemoryProvider(MemoryProvider):
     async def snapshot(self) -> MemorySnapshot:
         # Make sure the derived index is materialised before archiving.
         await self._index.snapshot()
+        layers = [Layer.STM, Layer.LTM, Layer.NOTES, Layer.INDEX]
+        if self._vector is not None:
+            layers.append(Layer.VECTOR)
         payload, checksum = build_tarball(self._root)
         return MemorySnapshot(
             provider=self.NAME,
             version=self.VERSION,
-            layers=[Layer.STM, Layer.LTM, Layer.NOTES, Layer.INDEX],
+            layers=layers,
             payload=payload,
             size_bytes=len(payload),
             checksum=checksum,
@@ -252,6 +288,7 @@ class FileMemoryProvider(MemoryProvider):
         self._ltm = _MarkdownLTMStore(self._layout, tz=self._tz, scope=self._scope)
         self._notes = _FilesystemNotesStore(self._layout, tz=self._tz, scope=self._scope)
         self._index = _FileIndexStore(self._notes, layout=self._layout, tz=self._tz)
+        self._vector = self._build_vector_store()
         await self._index.rebuild()
 
     async def promote(self, ref: NoteRef, to: Scope) -> NoteRef:
@@ -300,6 +337,26 @@ class FileMemoryProvider(MemoryProvider):
                 location=str(self._layout.index_json),
             ),
         ]
+        if self._vector is not None:
+            layers.add(Layer.VECTOR)
+            capabilities.add(Capability.REINDEX)
+            backends.append(
+                BackendInfo(
+                    layer=Layer.VECTOR,
+                    backend="filesystem",
+                    location=str(self._layout.vector_metadata),
+                    metadata={
+                        "embedding_provider": self._vector.descriptor.provider,
+                        "embedding_model": self._vector.descriptor.model,
+                        "dimension": self._vector.descriptor.dimension,
+                    },
+                )
+            )
+        vector_note = (
+            "Vector layer wired via EmbeddingClient. "
+            if self._vector is not None
+            else "Vector / Curated / Global not wired in this release."
+        )
         return MemoryDescriptor(
             name=self.NAME,
             version=self.VERSION,
@@ -312,7 +369,7 @@ class FileMemoryProvider(MemoryProvider):
             description=(
                 "Filesystem-backed memory provider. Geny-compatible layout: "
                 "STM JSONL, LTM markdown (dated + topic), notes with YAML frontmatter. "
-                "Vector / Curated / Global not wired in this release."
+                + vector_note
             ),
             metadata={
                 "root": str(self._root),

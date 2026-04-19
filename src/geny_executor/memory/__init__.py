@@ -62,6 +62,12 @@ from geny_executor.memory.provider import (
     Turn,
     VectorHandle,
 )
+from geny_executor.memory.embedding import (
+    EmbeddingClient,
+    EmbeddingError,
+    LocalHashEmbeddingClient,
+    create_embedding_client,
+)
 from geny_executor.memory.providers import EphemeralMemoryProvider, FileMemoryProvider
 
 # ── Legacy adapter (Phase 3 validation only) ────────────────────────
@@ -109,6 +115,11 @@ __all__ = [
     # providers
     "EphemeralMemoryProvider",
     "FileMemoryProvider",
+    # embedding
+    "EmbeddingClient",
+    "EmbeddingError",
+    "LocalHashEmbeddingClient",
+    "create_embedding_client",
     # legacy adapter (validation fixture)
     "GenyMemoryRetriever",
     "GenyMemoryStrategy",

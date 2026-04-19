@@ -195,3 +195,123 @@ in the provider without updating the lock is a test failure.
   TENANT → GLOBAL).
 - Sub-PR 2e — quarantined `GenyManagerAdapter` fixture + activation of
   C1·C2·C3·C5·C6 completeness tests against the file provider.
+
+---
+
+## Sub-PR 2b — EmbeddingClient + Vector layer (closed 2026-04-19)
+
+**Target tag**: `v0.16.0`
+**Branch**: `feat/memory-phase-2b-embedding-clients`
+
+### Summary
+
+Adds the embedding pluggability axis and wires the Vector layer into
+`FileMemoryProvider`. Four embedding backends conforming to a single
+`EmbeddingClient` Protocol; the file provider now owns a
+VectorHandle-conformant `_FileVectorStore` when an embedding client is
+supplied at construction. Local (deterministic) backend has zero
+dependencies and is used across the test suite. Remote backends are
+optional installs.
+
+### Changes
+
+Subpackage `src/geny_executor/memory/embedding/` — 6 modules:
+
+- **`client.py`** — `EmbeddingClient` Protocol (`embed`, `close`,
+  `descriptor`) + `EmbeddingError`. Every backend satisfies this
+  Protocol, and `FileMemoryProvider` / `_FileVectorStore` only ever
+  speaks through it.
+- **`local.py`** — `LocalHashEmbeddingClient`. SHA-256 hashing trick
+  producing a deterministic L2-normalised vector of configurable
+  dimension (default 384, bounded to [32, 4096]). Zero deps. Not
+  semantic — but same-token texts land closer than no-token-overlap
+  texts, which is enough for testability.
+- **`openai.py`** — `OpenAIEmbeddingClient`. Wraps the `openai` SDK's
+  `AsyncOpenAI.embeddings.create`. Reference dims baked in for
+  `text-embedding-3-small/large/ada-002`. SDK optional; import only
+  happens on first `embed` call so the module loads without the extra.
+- **`voyage.py`** — `VoyageEmbeddingClient`. POSTs directly to
+  `https://api.voyageai.com/v1/embeddings` via httpx (transitive dep
+  through anthropic). Supports a `transport=` injection for tests
+  so the happy path can be exercised without network.
+- **`google.py`** — `GoogleEmbeddingClient`. Uses `google-genai`'s
+  async surface `client.aio.models.embed_content`.
+- **`registry.py`** — `create_embedding_client(provider, …)` factory
+  dispatching on provider name. Unknown names raise `ValueError`;
+  missing optional SDKs surface the original `ImportError` with the
+  correct install instructions.
+
+Vector store — `src/geny_executor/memory/providers/file/vector_store.py`:
+
+- **`_FileVectorStore`** — VectorHandle-conformant store. Vectors
+  packed as little-endian float32 into `vectordb/index.bin`; metadata
+  mirror in `vectordb/metadata.json`. Pure-Python cosine similarity
+  (no numpy dep). Single lock serialises all writes. Reindexing same
+  filename replaces the row. Dimension validation on every insert
+  (raises `ValueError("vector dimension mismatch: …")`) — this is the
+  invariant C5 relies on. `reindex()` rebuilds every row from source
+  notes and returns a `ReindexPlan(layer=VECTOR, …)` the UI can
+  surface.
+
+Provider wiring — `src/geny_executor/memory/providers/file/provider.py`:
+
+- Constructor now accepts `embedding_client: Optional[EmbeddingClient]`.
+  If supplied, `vector()` returns the `_FileVectorStore`; otherwise
+  `None` (back-compat with sub-PR 2a).
+- `record_execution()` now indexes the written note into the vector
+  store when one is configured, so the vector row is born with the
+  note — no separate pass needed.
+- `retrieve()` adds a Vector layer arm (guarded on
+  `Layer.VECTOR in query.layers` and vector presence).
+- `descriptor` now surfaces `Layer.VECTOR` + `Capability.REINDEX` when
+  wired, plus a `BackendInfo` entry carrying provider/model/dimension
+  metadata for the web console to render.
+- `snapshot().layers` now includes `Layer.VECTOR` when present. The
+  on-disk tarball already captured the `vectordb/` tree; the only
+  change is the declared layer list.
+- `restore()` rebuilds `_vector` against the restored layout so the
+  handle keeps working after a swap.
+
+### Tests
+
+- **`tests/contract/test_embedding_clients.py`** — 19 tests covering
+  descriptor fields, embed order/determinism/normalisation for local;
+  SDK-stubbed OpenAI happy path + error path + helpful ImportError on
+  missing SDK; transport-stubbed Voyage happy/error; registry
+  dispatch for every provider plus unknown-provider guard.
+- **`tests/contract/test_memory_provider_file_vector.py`** — 12 tests
+  across five areas: wiring (vector is non-None when configured, None
+  otherwise, descriptor surfaces VECTOR layer), index+search
+  (deterministic hits, row replacement, removal, dimension-mismatch
+  rejection), auto-index on `record_execution`, `retrieve()` includes
+  vector source when declared, `reindex()` rebuilds from source and
+  returns the right plan shape, snapshot round-trip preserves the
+  vector payload.
+
+Full suite: **795 passed, 21 skipped** (31 new tests since 2a).
+
+### Compatibility
+
+- `vectordb/index.faiss` path is reserved in `DirectoryLayout` but
+  not written — the pure-Python store uses `index.bin` alongside so
+  a future FAISS-based provider can live beside it without collision.
+- `vectordb/metadata.json` is self-describing (dimension, model,
+  metric) so a replacement store can validate compatibility before
+  reading.
+- Adding an embedding client is strictly additive — existing sessions
+  without one continue working unchanged. C5 dimension-change
+  handling lights up now; the reindex flow is surfaced via the
+  `ReindexPlan` dataclass from Phase 1 without any schema changes.
+
+### Version bumps
+
+`0.15.0` → `0.16.0`.
+
+### Follow-up
+
+- Sub-PR 2c — `SQLMemoryProvider` mirrors the same surface via
+  SQLite + sqlite-vss / Postgres + pgvector.
+- Sub-PR 2d — `CompositeMemoryProvider` fans the Vector layer out
+  per-scope (SESSION / USER / TENANT / GLOBAL).
+- Sub-PR 2e — C5 completeness test lights up (dimension swap →
+  reindex plan → apply → `memory.reindexed` event).
