@@ -315,3 +315,192 @@ Full suite: **795 passed, 21 skipped** (31 new tests since 2a).
   per-scope (SESSION / USER / TENANT / GLOBAL).
 - Sub-PR 2e — C5 completeness test lights up (dimension swap →
   reindex plan → apply → `memory.reindexed` event).
+
+---
+
+## Sub-PR 2c — SQLMemoryProvider (closed 2026-04-19)
+
+**Target tag**: `v0.17.0`
+**Branch**: `feat/memory-phase-2c-sql-provider`
+
+### Summary
+
+Second on-disk `MemoryProvider`, this time with SQL semantics. Same
+seven layer handles, same descriptor surface, same behavioural
+contract — different storage shape. STM/LTM/Notes/Vector/Index live as
+SQLite tables in a single `*.db` file; the file provider's
+markdown/JSONL surface remains unchanged. Zero new core dependencies:
+the provider is built on stdlib `sqlite3` wrapped in an asyncio lock
+so the rest of the runtime can `await` it.
+
+The dialect choice (SQLite today, Postgres + pgvector later) flows
+through `_SQLiteConnection`. Stores never reach for the cursor
+directly, which keeps a future Postgres swap to a per-connection-class
+change instead of a per-store rewrite.
+
+### Changes
+
+Subpackage `src/geny_executor/memory/providers/sql/` — 11 modules:
+
+- **`schema.py`** — `SCHEMA_VERSION = "1"` + idempotent
+  `CREATE TABLE IF NOT EXISTS` for the canonical seven tables
+  (`stm_turns`, `ltm_documents`, `notes`, `note_tags`, `note_links`,
+  `vector_rows`, `provider_meta`). FK cascades from `note_tags` and
+  the `source` side of `note_links` to `notes(filename)`; `target`
+  is intentionally not an FK so a wikilink can point at a not-yet-
+  written note (matches the file provider's eager-link behaviour).
+  `SQLITE_TABLES` is the lock used by the schema test.
+- **`connection.py`** — `_SQLiteConnection` async wrapper around
+  stdlib `sqlite3`. One `asyncio.Lock` serialises every
+  cursor.execute / executemany / fetchone / fetchall;
+  `check_same_thread=False` is explicit because the lock is the
+  single source of mutual exclusion. `transaction()` is an async
+  context manager using `BEGIN IMMEDIATE` so two concurrent writers
+  never silently overlap. `truncate_all()` is what `restore_snapshot`
+  rides on.
+- **`stm_store.py`** — `_SQLSTMStore`. One row per turn in
+  `stm_turns` with `(role, content, content_kind, type, ts,
+  metadata_json)`. `content_kind` discriminates `"string"` vs
+  `"json"` so structured tool-call content survives a round trip
+  byte-for-byte. `truncate(keep_last=N)` uses `OFFSET` to find the
+  cutoff `id` in a single statement.
+- **`ltm_store.py`** — `_SQLLTMStore`. Three logical kinds (main,
+  dated, topic) on one table with `UNIQUE(kind, ref_name)` so an
+  append to MEMORY.md is an UPSERT, a dated write picks the day's
+  row, and a topic write keys off slug. Body composition (HTML
+  timestamp comments on main, evergreen + dated render in
+  `read_main`) matches the file provider character-for-character so
+  the cross-provider contract test passes.
+- **`notes_store.py`** — `_SQLNotesStore`. Notes row has the same
+  fields the file provider's frontmatter carries; tags are
+  normalised into `note_tags`; wikilinks are parsed at write time
+  into `note_links` with `origin='wikilink'`, and explicit
+  `link()` / `unlink()` writes `origin='explicit'`. `read()`
+  reconstructs the full Note (tags + links_to + backlinks) in two
+  follow-up queries. `delete()` also drops `note_links WHERE
+  target = ?` because target isn't an FK. `search()` reuses the
+  file provider's scoring formula
+  `(1 + keyword_hits) * importance.boost + 0.3 * tag_overlap`.
+- **`vector_store.py`** — `_SQLVectorStore`. Vectors live in
+  `vector_rows` as packed little-endian float32 BLOBs alongside
+  provenance metadata. `index()` / `index_batch()` use SQLite
+  UPSERT (`ON CONFLICT(filename) DO UPDATE`) so a re-index is one
+  statement. Cosine similarity is pure Python — same calculation
+  the file provider uses — so no native extension is needed for
+  this PR. `_validate_dim` raises `ValueError("vector dimension
+  mismatch: …")` on every insert; this is the invariant C5
+  depends on. `reindex()` clears + rebuilds rows from the notes
+  store via `notes_text_lookup`, returning a `ReindexPlan`
+  carrying the descriptor + rebuilt-row count.
+- **`index_store.py`** — `_SQLIndexStore`. The DB is canonical, so
+  `rebuild()` is a no-op; `snapshot()` materialises a derived view
+  (`{files, tag_map, link_graph, last_rebuilt, total_files,
+  total_chars}`) shaped identically to the file provider so
+  external readers don't branch on backend.
+- **`snapshot.py`** — `build_snapshot(conn) -> (bytes, sha256_hex)`
+  dumps every row of every owned table to a JSON document with the
+  shape `{format, version, generated_at, tables: {name: rows}}`.
+  BLOBs are base64-encoded on the wire (`{"__b64__": "…"}`). The
+  checksum is SHA-256 of the JSON bytes. `restore_snapshot` validates
+  the checksum, calls `truncate_all()` inside a transaction, and
+  re-inserts rows with the BLOB decoder mirror — so a half-restore
+  cannot leave a hybrid state.
+- **`config.py`** — `sql_provider_config_schema()` mirrors the file
+  provider's 21 R-F fields plus a `dsn` field, so the same
+  `geny-executor-web` form renders both providers without a code
+  fork.
+- **`provider.py`** — `SQLMemoryProvider(MemoryProvider)`. Wires
+  the stores; declares `Layer.{STM,LTM,NOTES,INDEX}` +
+  `Capability.{READ,WRITE,SEARCH,LINK,SNAPSHOT}`; lights up
+  `Layer.VECTOR` + `Capability.REINDEX` when an `EmbeddingClient`
+  is supplied. `record_execution()` mirrors the file provider
+  (writes LTM dated + insights note + indexes the vector row when
+  wired). `retrieve()` composes STM + LTM + Notes + Vector with the
+  same char budget. `promote()` updates `notes.scope` directly so
+  subsequent reads agree.
+- **`__init__.py`** — `from .provider import SQLMemoryProvider`.
+
+Also updated:
+
+- `src/geny_executor/memory/providers/__init__.py` — re-exports
+  `SQLMemoryProvider`.
+- `src/geny_executor/memory/__init__.py` — re-exports
+  `SQLMemoryProvider`; `__all__` now lists ephemeral, file, and SQL
+  providers.
+- `pyproject.toml` / `src/geny_executor/__init__.py` — bumped to
+  `0.17.0`.
+
+### Tests
+
+Three new files under `tests/contract/`:
+
+- **`test_memory_provider_sql.py`** — single subclass
+  `TestSQLProviderContract(MemoryProviderContract)` with a
+  `tmp_path` fixture. The 28-assertion behavioural mixin runs
+  verbatim against the SQL backend; the only override is
+  `_fresh_from`, which builds a sibling `*-restored.db` so the
+  snapshot round-trip restores into an independent file.
+- **`test_memory_provider_sql_schema.py`** — format-lock suite for
+  the SQL backend. Opens a sibling sync `sqlite3` connection and
+  asserts: every table in `SQLITE_TABLES` is created on
+  `initialize()`; the `notes` column set matches the contract
+  (`filename, title, body, importance, category, scope, backend,
+  frontmatter_json, created_at, updated_at`); `vector_rows` carries
+  `vector_blob`, `dimension`, and `filename`; `stm_turns` writes
+  string and json content with the right `content_kind`
+  discriminator and ISO-8601 `ts`; `note_links` distinguishes
+  `origin='wikilink'` from `origin='explicit'`; `note_tags`
+  deduplicates and normalises; the snapshot payload is JSON with a
+  `tables` key and includes every owned table; tampered checksum
+  raises `ValueError, match="checksum"`; `retrieve()` composes
+  Notes + LTM; `promote()` persists the new scope to the row.
+- **`test_memory_provider_sql_vector.py`** — 9 tests covering
+  vector wiring (handle present/absent + descriptor surfaces VECTOR
+  layer + REINDEX capability), index+search (deterministic hits +
+  row replacement on re-index of same filename), dimension-mismatch
+  rejection, auto-index on `record_execution()`, retrieve includes
+  vector source when declared, `reindex()` returns the right plan
+  shape, and snapshot round-trip preserves the vector rows
+  including their BLOB payload.
+
+Full suite (post-2c): **843 passed, 22 skipped** (48 new tests since
+2b — 28 from the contract mixin reuse, 12 from schema lock, 8 from
+vector parity).
+
+### Compatibility
+
+- **Same descriptor surface as the file provider.** `Layer` set,
+  `Capability` set, `EmbeddingDescriptor` shape, scope semantics,
+  and `BackendInfo` schema are identical — only the `backend`
+  string differs (`"sqlite"` vs `"filesystem"`) and the per-layer
+  metadata describes tables instead of paths.
+- **Cross-provider contract parity.** The 28-test
+  `MemoryProviderContract` mixin runs unchanged against both
+  providers, which is the proof that user code (and the eventual
+  Composite) doesn't have to branch on backend.
+- **Snapshot format is provider-tagged.** `MemorySnapshot.provider`
+  is `"sql"` here vs `"file"` in 2a; restore explicitly rejects
+  cross-provider payloads — there is no silent format coercion.
+  Cross-provider migration is a Composite-level concern (sub-PR 2d).
+- **Embedding pluggability.** Same `EmbeddingClient` Protocol from
+  2b. The SQL provider can be wired with any of the four backends
+  (local / OpenAI / Voyage / Google) without store changes.
+- **Zero net new core dependencies.** Stdlib `sqlite3` only. The
+  pgvector arm is a follow-up sub-PR and would slot in by replacing
+  `_SQLiteConnection` + `_SQLVectorStore` while leaving the public
+  surface untouched.
+
+### Version bumps
+
+`0.16.0` → `0.17.0`.
+
+### Follow-up
+
+- Sub-PR 2d — `CompositeMemoryProvider` + `MemoryProviderFactory`
+  (per-layer backend routing, scope promotion SESSION → USER →
+  TENANT → GLOBAL, cross-provider migration helpers).
+- Sub-PR 2e — quarantined `GenyManagerAdapter` fixture + activation
+  of C1·C2·C3·C5·C6 against both file and SQL providers.
+- Postgres + pgvector backend — separate follow-up PR. The dialect
+  abstraction keeps stores portable; the swap point is
+  `_SQLiteConnection` plus the `vector_store` UPSERT statement.

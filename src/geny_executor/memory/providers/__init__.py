@@ -3,13 +3,14 @@
 Shipped so far:
     - `EphemeralMemoryProvider` (Phase 1) — in-memory reference.
     - `FileMemoryProvider` (Phase 2a) — disk-persistent, Geny-compatible.
+    - `SQLMemoryProvider` (Phase 2c) — SQLite (Postgres adapter pending).
 
 Coming next:
-    - `SQLMemoryProvider` (Phase 2c) — SQLite / Postgres.
     - `CompositeMemoryProvider` (Phase 2d) — per-layer backend routing.
 """
 
 from geny_executor.memory.providers.ephemeral import EphemeralMemoryProvider
 from geny_executor.memory.providers.file import FileMemoryProvider
+from geny_executor.memory.providers.sql import SQLMemoryProvider
 
-__all__ = ["EphemeralMemoryProvider", "FileMemoryProvider"]
+__all__ = ["EphemeralMemoryProvider", "FileMemoryProvider", "SQLMemoryProvider"]
