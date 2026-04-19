@@ -813,3 +813,137 @@ surface coverage) is Phase 4 — requires `geny-executor-web`.
 ### Version bumps
 
 `0.18.0` → `0.19.0`.
+
+---
+
+## Sub-PR 2f — Postgres dialect for SQLMemoryProvider (this PR)
+
+**Target tag**: `v0.20.0`
+**Branch**: `feat/memory-phase-2f-postgres-dialect`
+
+### Summary
+
+The user's directive: *"메모리 로직이 config에 따라서 postgres 및 sqlite 등의
+database를 정상적으로 지원해야 함"* — config selects backend; both
+SQLite and Postgres must be supported. Per the follow-up: *"postgres는
+굳이 테스트 할 필요는 없고 그것이 지원 가능한 형태로 존재하게 만들라는
+얘기야"* — Postgres needs to exist in a supportable form, not be CI-tested.
+
+This PR ships the Postgres dialect as a *wired-but-untested* backend.
+Scope is the routing logic + dialect boundary, not a Postgres-on-CI
+matrix.
+
+### Dialect boundary
+
+| Concern | SQLite | Postgres | Implementation |
+|---|---|---|---|
+| Driver | stdlib `sqlite3` | `psycopg` (v3) | per-class `_SQLConnection` subclass |
+| Auto-PK | `INTEGER PRIMARY KEY AUTOINCREMENT` | `SERIAL PRIMARY KEY` | `schema.py::build_ddl(dialect)` |
+| BLOB type | `BLOB` | `BYTEA` | same |
+| Placeholders | `?` | `%s` | translated by `_PostgresConnection.execute*` |
+| Conflict-ignore | `INSERT OR IGNORE` | `INSERT … ON CONFLICT DO NOTHING` | translator regex rewrite |
+| UPSERT | `ON CONFLICT(col) DO UPDATE SET … excluded.col` | identical | common subset, no rewrite needed |
+| Row mapping | `sqlite3.Row` | `psycopg.rows.dict_row` | both expose `row["col"]` |
+| FK enforcement | `PRAGMA foreign_keys = ON` | always on | SQLite-only PRAGMA at `open()` |
+
+The two `_SQLConnection` subclasses share a nine-method abstract
+surface (`open`, `close`, `execute`, `executemany`, `fetchone`,
+`fetchall`, `execute_returning`, `transaction`, `truncate_all`).
+Every per-store SQL builder (`_SQLSTMStore`, `_SQLLTMStore`,
+`_SQLNotesStore`, `_SQLVectorStore`, `_SQLIndexStore`) talks to that
+surface using SQLite-flavoured SQL. The Postgres connection
+translates on the fly.
+
+### Changes
+
+- `src/geny_executor/memory/providers/sql/schema.py`:
+  - `Dialect` enum (`SQLITE`, `POSTGRES`).
+  - `build_ddl(dialect)` parametric DDL builder.
+  - `SQLITE_DDL`, `POSTGRES_DDL`, `TABLES`. Backwards-compat alias
+    `SQLITE_TABLES = TABLES` keeps existing importers unbroken.
+- `src/geny_executor/memory/providers/sql/connection.py`:
+  - Common `_SQLConnection` ABC.
+  - `_SQLiteConnection` (kept verbatim, now subclass of base).
+  - `_PostgresConnection` lazy-imports `psycopg` only at `open()`
+    time so SQLite-only deployments do not need the optional extra.
+  - `_translate_to_postgres(sql)` rewrites `?` → `%s` and
+    `INSERT OR IGNORE` → `INSERT … ON CONFLICT DO NOTHING`.
+    `?` inside single-quoted string literals is preserved.
+  - `detect_dialect(dsn)` and `open_connection(dsn, dialect=…)`
+    factory helpers.
+- `src/geny_executor/memory/providers/sql/provider.py`:
+  - `SQLMemoryProvider.__init__` accepts `dialect=` (auto-detects
+    from DSN scheme when omitted) and exposes `provider.dialect`.
+  - Threads `backend_name` (= `dialect.value`) into the LTM, Notes,
+    and Vector stores so `NoteRef.backend` and the descriptor's
+    `BackendInfo.backend` reflect the chosen dialect.
+  - Descriptor metadata gains a `"dialect"` key.
+- `src/geny_executor/memory/providers/sql/{ltm,notes,stm,vector,index}_store.py`:
+  - Switched typed connection parameters from `_SQLiteConnection` to
+    the dialect-agnostic `_SQLConnection`.
+  - LTM / Notes / Vector accept a `backend_name` constructor kwarg.
+- `src/geny_executor/memory/providers/sql/snapshot.py`:
+  - Uses the dialect-agnostic `_SQLConnection` and the renamed
+    `TABLES` tuple.
+- `src/geny_executor/memory/factory.py`:
+  - `_build_sql()` accepts an optional `dialect` config key
+    (`"postgres"` / `"sqlite"`) that overrides the DSN scheme
+    detection. Bogus values raise `ValueError` via the `Dialect`
+    enum constructor.
+  - Docstring extended with Postgres example.
+- `src/geny_executor/memory/providers/sql/__init__.py`:
+  - Re-exports `Dialect` so consumers can introspect provider
+    dialects without reaching into the schema module.
+- `pyproject.toml`:
+  - New `[postgres]` extra: `psycopg[binary]>=3.1`, `pgvector>=0.3.0`.
+  - `[all]` extra now includes `[postgres]`.
+  - Version `0.19.0` → `0.20.0`.
+- `src/geny_executor/__init__.py`:
+  - Version bump.
+- `tests/contract/test_memory_provider_sql_dialect.py` (NEW):
+  - 24 tests covering DSN routing, SQL translation edge cases
+    (placeholders, INSERT-OR-IGNORE rewrite, literal `?` preservation,
+    UPSERT pass-through), DDL parity (Postgres types vs SQLite types),
+    and factory wiring (DSN-based + explicit-override paths).
+  - No live Postgres connection required — translator and factory
+    code paths are exercised purely.
+
+### Tests
+
+Suite (post-2f): **935 passed, 18 skipped** (24 new tests since 2e —
+the dialect routing + translator suite). The existing SQLite contract
+suite (`test_memory_provider_sql.py`, `test_memory_provider_sql_schema.py`,
+`test_memory_provider_sql_vector.py`) passes verbatim against the
+refactored `_SQLConnection` base — confirms the boundary did not
+change SQLite behaviour.
+
+### Compatibility
+
+- **`SQLITE_TABLES` kept as alias** for `TABLES` so any external
+  importer (none in this repo, but a fixture-quarantined adapter or
+  `geny-executor-web` could reach for it) keeps working.
+- **`SQLMemoryProvider.__init__` is additive** — every existing call
+  site still works because `dialect=` is optional and defaults to
+  DSN-scheme detection (which yields SQLite for filesystem paths,
+  preserving prior behaviour).
+- **`_SQLiteConnection` import path is unchanged** — still
+  `from geny_executor.memory.providers.sql.connection import _SQLiteConnection`.
+- **No `psycopg` import at package import time.** The optional
+  dependency is only needed when a caller actually opens a Postgres
+  connection; a missing install raises a clear hint that points at
+  `pip install geny-executor[postgres]`.
+
+### What is NOT in this PR
+
+- No live Postgres CI matrix (per user directive).
+- No `pgvector`-backed vector index — the SQL vector store still
+  uses pure-Python cosine over packed float32 BYTEA blobs. A
+  Postgres-native pgvector implementation is a follow-up that
+  swaps `_SQLVectorStore` behind the same `VectorHandle` Protocol.
+- No async-native Postgres driver (psycopg sync API behind
+  `asyncio.to_thread`). Switching to `psycopg.AsyncConnection` is
+  also a follow-up.
+
+### Version bumps
+
+`0.19.0` → `0.20.0`.

@@ -26,23 +26,25 @@ from geny_executor.memory.provider import (
     ReindexPlan,
     Scope,
 )
-from geny_executor.memory.providers.sql.connection import _SQLiteConnection
+from geny_executor.memory.providers.sql.connection import _SQLConnection
 from geny_executor.stages.s02_context.types import MemoryChunk
 
 
 class _SQLVectorStore:
-    """`VectorHandle`-conformant vector store on SQLite."""
+    """`VectorHandle`-conformant vector store on SQL (SQLite or Postgres)."""
 
     def __init__(
         self,
-        conn: _SQLiteConnection,
+        conn: _SQLConnection,
         *,
         client: EmbeddingClient,
         notes_text_lookup: Any = None,
+        backend_name: str = "sqlite",
     ) -> None:
         self._conn = conn
         self._client = client
         self._notes_text_lookup = notes_text_lookup
+        self._backend_name = backend_name
 
     # ── VectorHandle contract ───────────────────────────────────────
 

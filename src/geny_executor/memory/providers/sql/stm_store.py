@@ -17,13 +17,13 @@ from typing import Any, List, Optional
 
 from geny_executor.memory.provider import Turn
 from geny_executor.memory.providers.file.timezone import now_in
-from geny_executor.memory.providers.sql.connection import _SQLiteConnection
+from geny_executor.memory.providers.sql.connection import _SQLConnection
 
 
 class _SQLSTMStore:
-    """`STMHandle`-conformant store on SQLite."""
+    """`STMHandle`-conformant store on SQL (SQLite or Postgres)."""
 
-    def __init__(self, conn: _SQLiteConnection, *, tz: tzinfo) -> None:
+    def __init__(self, conn: _SQLConnection, *, tz: tzinfo) -> None:
         self._conn = conn
         self._tz = tz
 

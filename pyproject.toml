@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "geny-executor"
-version = "0.19.0"
+version = "0.20.0"
 description = "Harness-engineered agent pipeline library with 16-stage dual-abstraction architecture, built on the Anthropic API"
 readme = "README.md"
 license = "MIT"
@@ -52,6 +52,10 @@ openai = [
 google = [
     "google-genai>=1.0.0",
 ]
+postgres = [
+    "psycopg[binary]>=3.1",
+    "pgvector>=0.3.0",
+]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.24",
@@ -59,7 +63,7 @@ dev = [
     "ruff>=0.4.0",
 ]
 all = [
-    "geny-executor[memory,openai,google]",
+    "geny-executor[memory,openai,google,postgres]",
 ]
 
 [project.urls]

@@ -1,9 +1,13 @@
 """SQLMemoryProvider — SQL-backed `MemoryProvider`.
 
-Default dialect: SQLite via stdlib `sqlite3`. The dialect choice
-flows through the `_SQLiteConnection` wrapper; replacing it with a
-Postgres + pgvector implementation is a per-PR follow-up that does
-not change the public surface.
+Two dialects ship: SQLite (default, stdlib `sqlite3`) and Postgres
+(`psycopg`, optional `[postgres]` extra). The dialect choice is
+auto-detected from the DSN scheme (``postgresql://`` / ``postgres://``
+→ Postgres; anything else → SQLite) and can be overridden via the
+``dialect=`` constructor kwarg. The dialect flows through the
+`_SQLConnection` wrapper; the per-store SQL builders are dialect-
+agnostic and the Postgres connection translates the SQLite-flavoured
+SQL on the fly.
 
 Layer mapping mirrors `FileMemoryProvider` exactly so the cross-
 provider contract suite passes against both. The Vector layer is
@@ -46,10 +50,15 @@ from geny_executor.memory.provider import (
 )
 from geny_executor.memory.providers.file.timezone import resolve_timezone
 from geny_executor.memory.providers.sql.config import sql_provider_config_schema
-from geny_executor.memory.providers.sql.connection import _SQLiteConnection
+from geny_executor.memory.providers.sql.connection import (
+    _SQLConnection,
+    detect_dialect,
+    open_connection,
+)
 from geny_executor.memory.providers.sql.index_store import _SQLIndexStore
 from geny_executor.memory.providers.sql.ltm_store import _SQLLTMStore
 from geny_executor.memory.providers.sql.notes_store import _SQLNotesStore
+from geny_executor.memory.providers.sql.schema import Dialect
 from geny_executor.memory.providers.sql.snapshot import build_snapshot, restore_snapshot
 from geny_executor.memory.providers.sql.stm_store import _SQLSTMStore
 from geny_executor.memory.providers.sql.vector_store import _SQLVectorStore
@@ -80,6 +89,7 @@ class SQLMemoryProvider(MemoryProvider):
         timezone_name: Optional[str] = None,
         embedding: Optional[EmbeddingDescriptor] = None,
         embedding_client: Optional[EmbeddingClient] = None,
+        dialect: Optional[Dialect] = None,
     ) -> None:
         self._dsn = str(dsn)
         self._scope = scope
@@ -89,10 +99,16 @@ class SQLMemoryProvider(MemoryProvider):
         self._embedding = embedding or (
             embedding_client.descriptor if embedding_client is not None else None
         )
-        self._conn = _SQLiteConnection(self._dsn)
+        self._dialect = dialect or detect_dialect(self._dsn)
+        self._backend_name = self._dialect.value
+        self._conn: _SQLConnection = open_connection(self._dsn, dialect=self._dialect)
         self._stm = _SQLSTMStore(self._conn, tz=self._tz)
-        self._ltm = _SQLLTMStore(self._conn, tz=self._tz, scope=scope)
-        self._notes = _SQLNotesStore(self._conn, tz=self._tz, scope=scope)
+        self._ltm = _SQLLTMStore(
+            self._conn, tz=self._tz, scope=scope, backend_name=self._backend_name
+        )
+        self._notes = _SQLNotesStore(
+            self._conn, tz=self._tz, scope=scope, backend_name=self._backend_name
+        )
         self._index = _SQLIndexStore(self._notes, conn=self._conn, tz=self._tz)
         self._vector = self._build_vector_store()
         self._initialized = False
@@ -105,6 +121,7 @@ class SQLMemoryProvider(MemoryProvider):
             self._conn,
             client=self._embedding_client,
             notes_text_lookup=self._lookup_note_text,
+            backend_name=self._backend_name,
         )
 
     async def _lookup_note_text(self, filename: str) -> Optional[str]:
@@ -122,6 +139,10 @@ class SQLMemoryProvider(MemoryProvider):
     @property
     def dsn(self) -> str:
         return self._dsn
+
+    @property
+    def dialect(self) -> Dialect:
+        return self._dialect
 
     async def initialize(self) -> None:
         await self._conn.open()
@@ -312,25 +333,25 @@ class SQLMemoryProvider(MemoryProvider):
         backends = [
             BackendInfo(
                 layer=Layer.STM,
-                backend="sqlite",
+                backend=self._backend_name,
                 location=self._dsn,
                 metadata={"table": "stm_turns"},
             ),
             BackendInfo(
                 layer=Layer.LTM,
-                backend="sqlite",
+                backend=self._backend_name,
                 location=self._dsn,
                 metadata={"table": "ltm_documents"},
             ),
             BackendInfo(
                 layer=Layer.NOTES,
-                backend="sqlite",
+                backend=self._backend_name,
                 location=self._dsn,
                 metadata={"tables": ["notes", "note_tags", "note_links"]},
             ),
             BackendInfo(
                 layer=Layer.INDEX,
-                backend="sqlite",
+                backend=self._backend_name,
                 location=self._dsn,
                 metadata={"derived_from": ["notes", "note_tags", "note_links"]},
             ),
@@ -366,14 +387,15 @@ class SQLMemoryProvider(MemoryProvider):
             config_schema=sql_provider_config_schema(),
             embedding=self._embedding,
             description=(
-                "SQLite-backed memory provider. Schema mirrors the file "
-                "provider: STM, LTM, Notes (with tags + links), Vector, "
-                "and an SQL-derived Index. " + vector_note
+                f"SQL-backed memory provider ({self._backend_name}). Schema "
+                "mirrors the file provider: STM, LTM, Notes (with tags + "
+                "links), Vector, and an SQL-derived Index. " + vector_note
             ),
             metadata={
                 "dsn": self._dsn,
                 "session_id": self._session_id,
                 "timezone": str(self._tz),
+                "dialect": self._dialect.value,
             },
         )
 

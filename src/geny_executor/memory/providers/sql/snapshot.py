@@ -15,14 +15,14 @@ import hashlib
 import json
 from typing import Any, Dict, Iterable, List, Tuple
 
-from geny_executor.memory.providers.sql.connection import _SQLiteConnection
-from geny_executor.memory.providers.sql.schema import SCHEMA_VERSION, SQLITE_TABLES
+from geny_executor.memory.providers.sql.connection import _SQLConnection
+from geny_executor.memory.providers.sql.schema import SCHEMA_VERSION, TABLES
 
 
 SNAPSHOT_FORMAT_VERSION = "1"
 
 
-async def build_snapshot(conn: _SQLiteConnection) -> Tuple[bytes, str]:
+async def build_snapshot(conn: _SQLConnection) -> Tuple[bytes, str]:
     """Dump every owned table into a JSON document and return
     `(payload_bytes, sha256_hex)`. Binary BLOB columns are base64-encoded.
     """
@@ -31,7 +31,7 @@ async def build_snapshot(conn: _SQLiteConnection) -> Tuple[bytes, str]:
         "schema_version": SCHEMA_VERSION,
         "tables": {},
     }
-    for table in SQLITE_TABLES:
+    for table in TABLES:
         rows = await conn.fetchall(f"SELECT * FROM {table}")
         encoded_rows: List[Dict[str, Any]] = []
         for row in rows:
@@ -43,7 +43,7 @@ async def build_snapshot(conn: _SQLiteConnection) -> Tuple[bytes, str]:
 
 
 async def restore_snapshot(
-    conn: _SQLiteConnection,
+    conn: _SQLConnection,
     payload: bytes,
     checksum: str,
 ) -> None:
@@ -62,9 +62,9 @@ async def restore_snapshot(
         raise ValueError("snapshot payload missing `tables` mapping")
 
     # Wipe everything first so partial table sets don't leave stale rows.
-    await conn.truncate_all(SQLITE_TABLES)
+    await conn.truncate_all(TABLES)
 
-    for table in SQLITE_TABLES:
+    for table in TABLES:
         rows = tables.get(table) or []
         if not rows:
             continue
@@ -72,7 +72,7 @@ async def restore_snapshot(
 
 
 async def _restore_table(
-    conn: _SQLiteConnection,
+    conn: _SQLConnection,
     table: str,
     rows: Iterable[Dict[str, Any]],
 ) -> None:

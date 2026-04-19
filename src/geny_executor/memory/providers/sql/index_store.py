@@ -17,7 +17,7 @@ from typing import Any, Dict, List
 
 from geny_executor.memory.provider import NoteGraph
 from geny_executor.memory.providers.file.timezone import now_in
-from geny_executor.memory.providers.sql.connection import _SQLiteConnection
+from geny_executor.memory.providers.sql.connection import _SQLConnection
 from geny_executor.memory.providers.sql.notes_store import _SQLNotesStore
 
 
@@ -28,7 +28,7 @@ class _SQLIndexStore:
         self,
         notes: _SQLNotesStore,
         *,
-        conn: _SQLiteConnection,
+        conn: _SQLConnection,
         tz: tzinfo,
     ) -> None:
         self._notes = notes

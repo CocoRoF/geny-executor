@@ -22,6 +22,15 @@ Config shape (per provider):
     {"provider": "sql", "dsn": "/path/to/db.sqlite",
      "embedding": {...}}
 
+    # Postgres dialect — auto-detected from DSN scheme
+    {"provider": "sql",
+     "dsn": "postgresql://user:pw@host:5432/dbname",
+     "embedding": {...}}
+
+    # Or override explicitly
+    {"provider": "sql", "dsn": "postgresql://...",
+     "dialect": "postgres"}
+
     {"provider": "composite",
      "providers": {
         "main": {"provider": "sql", "dsn": "..."},
@@ -57,6 +66,7 @@ from geny_executor.memory.provider import Layer, MemoryProvider, Scope
 from geny_executor.memory.providers.ephemeral import EphemeralMemoryProvider
 from geny_executor.memory.providers.file import FileMemoryProvider
 from geny_executor.memory.providers.sql import SQLMemoryProvider
+from geny_executor.memory.providers.sql.schema import Dialect
 
 
 Builder = Callable[["MemoryProviderFactory", Mapping[str, Any]], MemoryProvider]
@@ -135,12 +145,14 @@ def _build_sql(_: MemoryProviderFactory, config: Mapping[str, Any]) -> MemoryPro
     if dsn in (None, ""):
         raise ValueError("sql provider config requires non-empty 'dsn'")
     embedding_client = _build_embedding(config.get("embedding"))
+    dialect = _resolve_dialect(config.get("dialect"))
     return SQLMemoryProvider(
         dsn=dsn,
         scope=_resolve_scope(config),
         session_id=str(config.get("session_id", "")),
         timezone_name=_optional_str(config.get("timezone")),
         embedding_client=embedding_client,
+        dialect=dialect,
     )
 
 
@@ -213,6 +225,17 @@ def _resolve_scope(config: Mapping[str, Any]) -> Scope:
     if isinstance(raw, Scope):
         return raw
     return Scope(str(raw))
+
+
+def _resolve_dialect(raw: Any) -> Optional[Dialect]:
+    """Map config ``dialect`` value to a `Dialect` enum, or ``None``
+    so the provider falls back to DSN-scheme detection.
+    """
+    if raw is None or raw == "":
+        return None
+    if isinstance(raw, Dialect):
+        return raw
+    return Dialect(str(raw).lower())
 
 
 def _require_str(config: Mapping[str, Any], key: str) -> str:
