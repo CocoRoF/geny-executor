@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "geny-executor"
-version = "0.13.5"
+version = "0.14.0"
 description = "Harness-engineered agent pipeline library with 16-stage dual-abstraction architecture, built on the Anthropic API"
 readme = "README.md"
 license = "MIT"
@@ -84,6 +84,12 @@ include = [
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = [
+    "c_phase_1: completeness criterion activated in Phase 1 (Interface)",
+    "c_phase_2: completeness criterion activated in Phase 2 (Native Providers)",
+    "c_phase_3: completeness criterion activated in Phase 3 (Validation)",
+    "c_phase_4: completeness criterion activated in Phase 4 (Web Mirror)",
+]
 
 [tool.ruff]
 target-version = "py311"

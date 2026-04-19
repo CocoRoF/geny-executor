@@ -9,6 +9,14 @@ from geny_executor.core.schema import ConfigField, ConfigSchema
 from geny_executor.core.slot import StrategySlot
 from geny_executor.core.stage import Stage
 from geny_executor.core.state import PipelineState
+from geny_executor.memory.provider import (
+    ExecutionSummary,
+    MemoryEvent,
+    MemoryHooks,
+    MemoryProvider,
+    ReflectionContext,
+    Turn,
+)
 from geny_executor.stages.s15_memory.interface import (
     ConversationPersistence,
     MemoryUpdateStrategy,
@@ -26,6 +34,9 @@ from geny_executor.stages.s15_memory.artifact.default.strategies import (
 
 logger = logging.getLogger(__name__)
 
+_STATE_LAST_RECORDED = "memory.last_recorded_idx"
+_TERMINAL_DECISIONS = frozenset({"complete", "error", "escalate"})
+
 
 class MemoryStage(Stage[Any, Any]):
     """Stage 15: Memory.
@@ -33,6 +44,15 @@ class MemoryStage(Stage[Any, Any]):
     Dual abstraction:
       - Level 2 strategy: what to do with conversation data
       - Level 2 persistence: where to store it
+
+    Phase 1+ also accepts an optional :class:`MemoryProvider` which
+    handles the unified 4-axis memory contract. When set, the stage
+    drives `provider.record_turn` per appended message,
+    `provider.record_execution` on terminal states, and
+    `provider.reflect`/`promote` per the supplied :class:`MemoryHooks`.
+    The legacy strategy/persistence slots continue to run in parallel
+    for back-compat — they may be set to no-ops when a provider is
+    supplied.
     """
 
     def __init__(
@@ -42,6 +62,8 @@ class MemoryStage(Stage[Any, Any]):
         *,
         stateless: bool = False,
         persistence_path: str = "",
+        provider: Optional[MemoryProvider] = None,
+        hooks: Optional[MemoryHooks] = None,
     ):
         self._slots: Dict[str, StrategySlot] = {
             "strategy": StrategySlot(
@@ -67,8 +89,18 @@ class MemoryStage(Stage[Any, Any]):
         }
         self._stateless = stateless
         self._persistence_path = str(persistence_path)
+        self._provider = provider
+        self._hooks = hooks or MemoryHooks()
         if self._persistence_path and isinstance(self._persistence, NullPersistence):
             self._slots["persistence"].strategy = FilePersistence(base_dir=self._persistence_path)
+
+    @property
+    def provider(self) -> Optional[MemoryProvider]:
+        return self._provider
+
+    @provider.setter
+    def provider(self, value: Optional[MemoryProvider]) -> None:
+        self._provider = value
 
     @property
     def _strategy(self) -> MemoryUpdateStrategy:
@@ -138,6 +170,9 @@ class MemoryStage(Stage[Any, Any]):
     async def execute(self, input: Any, state: PipelineState) -> Any:
         await self._strategy.update(state)
 
+        if self._provider is not None:
+            await self._drive_provider(state)
+
         persistence = self._persistence
         persistence_active = not isinstance(persistence, NullPersistence)
 
@@ -158,3 +193,50 @@ class MemoryStage(Stage[Any, Any]):
 
         state.add_event("memory.updated", {"strategy": type(self._strategy).__name__})
         return input
+
+    async def _drive_provider(self, state: PipelineState) -> None:
+        provider = self._provider
+        if provider is None:
+            return
+
+        # Incrementally record any newly-appended messages as STM turns.
+        last_idx = int(state.metadata.get(_STATE_LAST_RECORDED, 0))
+        new_msgs = state.messages[last_idx:]
+        for msg in new_msgs:
+            turn = Turn.from_state_message(msg)
+            await provider.record_turn(turn)
+            state.add_event(
+                MemoryEvent.TURN_RECORDED.value,
+                {"role": turn.role, "bytes": turn.bytes},
+            )
+        if new_msgs:
+            state.metadata[_STATE_LAST_RECORDED] = len(state.messages)
+
+        is_terminal = state.loop_decision in _TERMINAL_DECISIONS
+        if is_terminal and self._hooks.should_record_execution(state):
+            summary = ExecutionSummary.from_state(state)
+            receipt = await provider.record_execution(summary)
+            state.add_event(MemoryEvent.EXECUTION_RECORDED.value, receipt.to_event())
+
+        if is_terminal and self._hooks.should_reflect(state):
+            ctx = ReflectionContext.from_state(state)
+            insights = await provider.reflect(ctx)
+            for insight in insights:
+                state.add_event(MemoryEvent.INSIGHT.value, insight.to_event())
+                if self._hooks.should_auto_promote(insight):
+                    if insight.ref is None:
+                        # Reflection didn't materialise the note; skip
+                        # promotion silently — providers that want
+                        # auto-write should populate `insight.ref`.
+                        continue
+                    from geny_executor.memory.provider import Scope as _Scope
+
+                    new_ref = await provider.promote(insight.ref, _Scope.USER)
+                    state.add_event(
+                        MemoryEvent.PROMOTED.value,
+                        {
+                            "ref": new_ref.to_dict(),
+                            "from_scope": insight.ref.scope.value,
+                            "to_scope": new_ref.scope.value,
+                        },
+                    )

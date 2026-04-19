@@ -8,6 +8,12 @@ from geny_executor.core.schema import ConfigField, ConfigSchema
 from geny_executor.core.slot import StrategySlot
 from geny_executor.core.stage import Stage
 from geny_executor.core.state import PipelineState
+from geny_executor.memory.provider import (
+    Layer,
+    MemoryEvent,
+    MemoryProvider,
+    RetrievalQuery,
+)
 from geny_executor.stages.s02_context.interface import (
     ContextStrategy,
     HistoryCompactor,
@@ -36,6 +42,13 @@ class ContextStage(Stage[Any, Any]):
       - Level 2 context_strategy: how to collect context
       - Level 2 compactor: how to compress when over budget
       - Level 2 retriever: how to fetch memory
+
+    Phase 1+ also accepts an optional :class:`MemoryProvider`. When
+    set, the unified `provider.retrieve(RetrievalQuery)` is invoked
+    *in addition to* the legacy retriever. Provider chunks are merged
+    after legacy retriever output, deduplicated by `key`. The result
+    is rendered into `state.metadata["memory_context"]` (string form
+    suitable for prompt injection).
     """
 
     def __init__(
@@ -45,6 +58,7 @@ class ContextStage(Stage[Any, Any]):
         retriever: Optional[MemoryRetriever] = None,
         *,
         stateless: bool = False,
+        provider: Optional[MemoryProvider] = None,
     ):
         self._slots: Dict[str, StrategySlot] = {
             "strategy": StrategySlot(
@@ -78,6 +92,15 @@ class ContextStage(Stage[Any, Any]):
             ),
         }
         self._stateless = stateless
+        self._provider = provider
+
+    @property
+    def provider(self) -> Optional[MemoryProvider]:
+        return self._provider
+
+    @provider.setter
+    def provider(self, value: Optional[MemoryProvider]) -> None:
+        self._provider = value
 
     @property
     def _strategy(self) -> ContextStrategy:
@@ -149,7 +172,20 @@ class ContextStage(Stage[Any, Any]):
             )
         query = str(query)
 
-        chunks = await self._retriever.retrieve(str(query), state)
+        chunks = list(await self._retriever.retrieve(str(query), state))
+
+        # Provider-driven retrieval (Phase 1+). Runs in addition to the
+        # legacy retriever so users mid-migration keep both paths working.
+        if self._provider is not None and query:
+            rq = RetrievalQuery(text=str(query))
+            result = await self._provider.retrieve(rq)
+            seen_keys = {c.key for c in chunks}
+            for c in result.chunks:
+                if c.key not in seen_keys:
+                    chunks.append(c)
+                    seen_keys.add(c.key)
+            state.add_event(MemoryEvent.CONTEXT_BUILT.value, result.to_event())
+
         if chunks:
             # Deduplicate by key
             seen = {ref.get("key") for ref in state.memory_refs}
