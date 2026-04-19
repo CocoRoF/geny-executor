@@ -68,7 +68,11 @@ from geny_executor.memory.embedding import (
     LocalHashEmbeddingClient,
     create_embedding_client,
 )
-from geny_executor.memory.providers import EphemeralMemoryProvider, FileMemoryProvider
+from geny_executor.memory.providers import (
+    EphemeralMemoryProvider,
+    FileMemoryProvider,
+    SQLMemoryProvider,
+)
 
 # ── Legacy adapter (Phase 3 validation only) ────────────────────────
 from geny_executor.memory.retriever import GenyMemoryRetriever
@@ -115,6 +119,7 @@ __all__ = [
     # providers
     "EphemeralMemoryProvider",
     "FileMemoryProvider",
+    "SQLMemoryProvider",
     # embedding
     "EmbeddingClient",
     "EmbeddingError",
