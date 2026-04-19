@@ -504,3 +504,179 @@ vector parity).
 - Postgres + pgvector backend — separate follow-up PR. The dialect
   abstraction keeps stores portable; the swap point is
   `_SQLiteConnection` plus the `vector_store` UPSERT statement.
+
+---
+
+## Sub-PR 2d — CompositeMemoryProvider + MemoryProviderFactory (closed 2026-04-19)
+
+**Target tag**: `v0.18.0`
+**Branch**: `feat/memory-phase-2d-composite-factory`
+
+### Summary
+
+Third `MemoryProvider` in the family, and the first that has no
+storage of its own: `CompositeMemoryProvider` fans each of the seven
+layers to a distinct underlying provider through a `LayerRouting`
+table. Ships alongside `MemoryProviderFactory`, the config-in /
+provider-out entry point that `geny-executor-web` and the pipeline
+factory will speak from. With 2d in place, a single deployment can
+route STM to one backend (e.g. ephemeral for low-latency turn state),
+LTM + Notes + Vector + Index to a second (e.g. SQL for durability),
+and scope-promotion targets (SESSION → USER → TENANT → GLOBAL) to a
+third — all from a JSON manifest, without touching code.
+
+Composite is strictly compositional: it delegates every layer call to
+the owner declared in the routing table, and takes ownership only of
+cross-cutting concerns (scope promotion across providers, snapshot
+envelope, descriptor union). Zero new core dependencies.
+
+### Changes
+
+Subpackage `src/geny_executor/memory/composite/` — 4 modules:
+
+- **`routing.py`** — `LayerRouting` frozen dataclass holding
+  `layers: Mapping[Layer, MemoryProvider]` plus an optional
+  `scope_providers: Mapping[Scope, MemoryProvider]` axis. Validates
+  at `__post_init__` that every entry in `REQUIRED_LAYERS`
+  (`STM, LTM, NOTES, INDEX`) is claimed. `distinct_providers()`
+  dedupes by `id(...)` and preserves first-declaration order across
+  `(REQUIRED_LAYERS, OPTIONAL_LAYERS, scopes)` so snapshot/restore
+  produce stable on-disk layouts. `provider_id(...)` tags each unique
+  provider as `<NAME>#<index>` so two providers of the same class
+  but different DSNs stay distinguishable through a round-trip;
+  `by_id()` is the inverse lookup used at restore time.
+- **`snapshot.py`** — `encode_snapshot(by_id)` / `decode_snapshot(
+  payload, expected_checksum)`. Envelope shape: `{format:
+  "composite", version: "1.0.0", generated_at, delegates: {id:
+  {provider, version, layers, size_bytes, checksum, payload_kind,
+  payload}}}`. `payload_kind` discriminates `"bytes"` (base64 for
+  file/sql tarballs) from `"json"` (ephemeral's dict). Checksum is
+  SHA-256 over the canonical `sort_keys=True` JSON bytes. Tampered
+  checksum raises `ValueError, match="checksum"`; non-composite
+  format raises `ValueError, match="format must be"`.
+- **`provider.py`** — `CompositeMemoryProvider(MemoryProvider)`.
+  `NAME = "composite"`, `VERSION = "1.0.0"`. Every handle method
+  (`stm, ltm, notes, vector, curated, global_, index`) resolves
+  through the routing table; the required ones raise a clear
+  `RuntimeError` if called when no delegate is wired. `initialize()`
+  / `shutdown()` / `healthcheck()` fan out to every distinct
+  delegate. `record_execution()` orchestrates the write triad — LTM
+  `write_dated`, Notes `write`, Vector `index` — against whichever
+  provider owns each layer, so a composite routing STM→ephemeral and
+  LTM→SQL still produces a single coherent receipt. `retrieve()`
+  composes STM + LTM + Notes + Vector across delegates with the
+  same char-budget shape the file and SQL providers use.
+  `snapshot()` calls each distinct delegate's `snapshot()` and
+  wraps the results in the JSON envelope; `restore()` routes
+  sub-snapshots back by provider id. **Critical design choice in
+  `promote()`**: when a cross-provider promotion copies a note from
+  one scope-bound provider to another, the returned `NoteRef` is
+  `meta.ref.with_scope(to)` — not `meta.ref` directly. The target
+  provider may tag the written row with its own configured scope
+  (file/sql providers are scope-agnostic at the row level), so the
+  composite owns the scope axis of the promoted ref.
+- **`__init__.py`** — re-exports `CompositeMemoryProvider`,
+  `LayerRouting`.
+
+New module `src/geny_executor/memory/factory.py`:
+
+- **`MemoryProviderFactory`** — name-keyed registry dispatching to
+  builder callables. `build(config)` reads `config["provider"]` and
+  routes to the registered builder; `register(name, builder)` lets
+  third parties plug in new backends (and override built-ins for
+  tests). Four built-in builders ship: `ephemeral`, `file`, `sql`,
+  `composite`. The composite builder defers to `factory.build(...)`
+  for each named sub-provider so the recursion stays
+  single-source. Config DSL for composite is named:
+  `{providers: {name: subcfg}, layers: {"stm": name, ...},
+  scope_providers: {"user": name, ...}}` — two layers pointing at
+  the same name share one underlying instance, which is how a single
+  SQL DB ends up serving STM + LTM + Notes + Vector without spinning
+  up four cursors. Error paths surface `ValueError` with actionable
+  messages (unknown provider name, missing required config key,
+  unknown sub-provider reference, non-mapping embedding spec).
+
+Also updated:
+
+- `src/geny_executor/memory/__init__.py` — re-exports
+  `CompositeMemoryProvider`, `LayerRouting`, `MemoryProviderFactory`;
+  `__all__` grows to include the composite + factory surface.
+- `pyproject.toml` / `src/geny_executor/__init__.py` — bumped to
+  `0.18.0`.
+
+### Tests
+
+Three new files under `tests/contract/`:
+
+- **`test_memory_provider_composite.py`** — single subclass
+  `TestCompositeProviderContract(MemoryProviderContract)`. The 28-
+  assertion behavioural mixin runs verbatim against a composite
+  whose every required layer routes to a single `FileMemoryProvider`;
+  this is the proof that user code doesn't have to branch on whether
+  it's holding a composite or a single-backend provider. Fixture is a
+  class method (not module-level) so it overrides the abstract one in
+  the mixin — matches the pattern at
+  `tests/contract/test_memory_provider_file.py`.
+- **`test_memory_provider_composite_routing.py`** — 15 tests
+  exercising composite-specific behaviour the contract mixin can't
+  reach: routing validation (required layers present, optional
+  layers surfaced in the descriptor, dedupe on shared providers,
+  order-preservation across declared layers); per-layer dispatch
+  (handles land on the right delegate, turns written through
+  `record_turn` hit the STM delegate only); descriptor synthesis
+  (union of delegates' layers/capabilities/backends, `PROMOTE`
+  granted when `scope_providers` populated, `REINDEX` granted when
+  VECTOR layer present); `retrieve()` composing across two backends;
+  cross-provider `promote()` copying a note from session-scoped to
+  user-scoped providers (the test that drove the `with_scope` fix);
+  snapshot round-trip with two distinct backends, tampered checksum
+  guard, non-composite payload rejection; vector wiring when the
+  routed backend exposes a vector handle.
+- **`test_memory_provider_factory.py`** — 21 tests covering built-in
+  dispatch (`ephemeral`, `file`, `sql`, `composite`), required-field
+  guards (`root` for file, `dsn` for sql), composite named-
+  sub-provider routing with shared-instance semantics, `scope_providers`
+  plumbing, every error path (unknown layer/scope provider names,
+  missing `providers`/`layers` blocks, non-mapping embedding spec),
+  and third-party builder registration + override semantics.
+
+Full suite (post-2d): **906 passed, 23 skipped** (63 new tests since
+2c — 28 from contract mixin reuse, 15 from routing-specific, 21 from
+factory dispatch, minus one optional skip).
+
+### Compatibility
+
+- **Descriptor parity with its delegates.** Composite doesn't invent
+  new layer semantics — it reports a union of what its delegates
+  support. `Capability.PROMOTE` lights up only when
+  `scope_providers` is populated (i.e. cross-scope motion has a
+  meaningful destination); `Capability.REINDEX` lights up when any
+  delegate claims `Layer.VECTOR`; `Capability.SNAPSHOT` is always on
+  because the composite envelope is self-contained.
+- **Snapshot format is provider-tagged.** `MemorySnapshot.provider =
+  "composite"`. Restore rejects non-composite envelopes; cross-
+  provider migration between a single backend and a composite is a
+  manifest-level concern, not a silent coercion.
+- **Factory config is stable across backends.** The same `embedding`
+  sub-config shape applies to both `file` and `sql`; composite's
+  `providers` block recurses through `factory.build` so there's only
+  one place to add a new backend. The config in
+  `factory.py`'s docstring is load-bearing — that's the shape
+  `geny-executor-web` will render the manifest UI against.
+- **Zero net new core dependencies.** Pure Python throughout.
+  Everything flows through the Phase 1 Protocol surface.
+
+### Version bumps
+
+`0.17.0` → `0.18.0`.
+
+### Follow-up
+
+- Sub-PR 2e — quarantined `GenyManagerAdapter` fixture + activation
+  of C1·C2·C3·C5·C6 completeness tests. With 2d closed, the
+  activation can run against any of {ephemeral, file, sql, composite}
+  via `MemoryProviderFactory` and a test-side manifest, which is how
+  C1–C6 will stay backend-agnostic.
+- Scope-promotion flow for the REST surface (Phase 4) can be
+  exercised end-to-end now, since composite is the first provider
+  with a non-trivial `promote()` path.
