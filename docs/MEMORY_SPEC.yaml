@@ -1,0 +1,347 @@
+# geny-executor — Memory Specification
+#
+# Machine-verifiable rendering of the requirements catalogue from
+# `geny-executor-web/docs/MEMORY_ARCHITECTURE.md` §1.2 (R-A through
+# R-F) and §3.6 (Completeness Criteria C1-C7).
+#
+# This is the *contract* every MemoryProvider implementation must
+# satisfy. `tests/completeness/test_spec_loads.py` guards the
+# structural invariants here. Phase 1 wires runtime providers to it.
+#
+# Keep edits backwards-compatible: only add fields, don't remove or
+# rename. If a field's semantics must change, bump `version`.
+
+version: 1
+spec_date: "2026-04-19"
+source_doc: "geny-executor-web/docs/MEMORY_ARCHITECTURE.md"
+
+# ── 1. Layers (R-A storage layers) ───────────────────────────────────
+# Each layer is a distinct memory plane with its own backend(s) and
+# retention policy. Provider may declare a subset; capability gating
+# is via `MemoryProvider.<layer>() -> Handle | None`.
+layers:
+  stm:
+    title: "Short-Term Memory"
+    description: "Append-only message + event stream for the active session."
+    storage_examples: ["JSONL transcript", "DB mirror"]
+    geny_path: "transcripts/{session_id}.jsonl"
+    required: true
+  ltm:
+    title: "Long-Term Memory"
+    description: "Markdown narrative — main, dated, topic-sliced."
+    storage_examples: ["MEMORY.md", "YYYY-MM-DD.md", "topics/{slug}.md"]
+    geny_path: "memory/"
+    required: true
+  notes:
+    title: "Structured Notes"
+    description: "Markdown + YAML frontmatter, wikilinks, importance, tags, categories."
+    storage_examples: ["memory/{category}/*.md"]
+    geny_path: "memory/{category}/"
+    required: true
+  vector:
+    title: "Vector Index"
+    description: "Embedding + ANN index; provider-pluggable model and metric."
+    storage_examples: ["FAISS IndexFlatIP + metadata.json", "pgvector", "sqlite-vss", "qdrant"]
+    geny_path: "vectordb/"
+    required: false
+  index:
+    title: "Index / Graph Cache"
+    description: "Tag map, link graph, importance index — derivable, rebuildable."
+    storage_examples: ["memory/_index.json"]
+    geny_path: "memory/_index.json"
+    required: true
+  curated:
+    title: "Curated Knowledge"
+    description: "Per-user promoted knowledge with optional vector index."
+    storage_examples: ["_curated_knowledge/{username}/"]
+    geny_path: "_curated_knowledge/{username}/"
+    required: false
+  global:
+    title: "Global Memory"
+    description: "Cross-session knowledge usable by every session."
+    storage_examples: ["_global_memory/"]
+    geny_path: "_global_memory/"
+    required: false
+
+# ── 2. Capabilities (orthogonal to layer) ────────────────────────────
+capabilities:
+  read:
+    description: "Fetch a resource by id/key without scoring."
+  write:
+    description: "Create or replace a resource."
+  search:
+    description: "Score-ordered query. Implementations: keyword, vector, hybrid."
+  link:
+    description: "Establish or read a directed wikilink between notes."
+  promote:
+    description: "Move/copy a resource to a wider scope (session→user→global)."
+  reindex:
+    description: "Rebuild a derived structure (vector index, _index.json, graph)."
+  snapshot:
+    description: "Produce a portable, byte-stable export of the layer."
+  reflect:
+    description: "Run an LLM over recent activity to synthesise Insights."
+  summarize:
+    description: "Compact a long input into a shorter representation."
+
+# ── 3. Scopes (multi-tenancy axis) ───────────────────────────────────
+scopes:
+  ephemeral:
+    description: "Lives only for the current process; never written to disk."
+  session:
+    description: "Bound to one session_id; default for new STM/LTM/notes."
+  user:
+    description: "Visible to every session of the same user (curated)."
+  tenant:
+    description: "Visible to every user of the same tenant (org)."
+  global:
+    description: "Visible everywhere, regardless of user/tenant."
+
+# ── 4. Backends (pluggable storage) ──────────────────────────────────
+backends:
+  filesystem: { kind: "files", layers: ["stm", "ltm", "notes", "vector", "index", "curated", "global"] }
+  sqlite:     { kind: "db",    layers: ["stm", "ltm", "notes", "index"] }
+  postgres:   { kind: "db",    layers: ["stm", "ltm", "notes", "index", "curated", "global"] }
+  faiss:      { kind: "ann",   layers: ["vector"] }
+  pgvector:   { kind: "ann",   layers: ["vector"] }
+  sqlite_vss: { kind: "ann",   layers: ["vector"] }
+  qdrant:     { kind: "ann",   layers: ["vector"] }
+  s3:         { kind: "blob",  layers: ["snapshot"] }
+  redis:      { kind: "kv",    layers: ["stm", "index"] }
+  http:       { kind: "rpc",   layers: ["stm", "ltm", "notes", "vector", "curated", "global", "index"] }
+
+# ── 5. Retrieval composition (R-B) ───────────────────────────────────
+# `RetrievalQuery -> RetrievalResult` must produce these layer slices
+# in this priority order, deduplicated, capped at `max_chars`.
+retrieval:
+  default_max_chars: 8000
+  default_max_per_layer: 5
+  importance_boosts:
+    critical: 2.0
+    high: 1.5
+    medium: 1.0
+    low: 0.5
+  tag_overlap_bonus: 0.3
+  layer_order:
+    - id: session_summary
+      from: stm
+      tag: "<session-summary>"
+      required: true
+    - id: long_term_memory
+      from: ltm
+      tag: "<long-term-memory>"
+      required: true
+    - id: vector_memory
+      from: vector
+      tag: "<vector-memory>"
+      required: false
+    - id: keyword_recall
+      from: notes
+      tag: "<note>"
+      scoring: "importance_boost + tag_overlap"
+      required: true
+    - id: recent_messages
+      from: stm
+      tag: "<recent-message>"
+      required: true
+    - id: curated
+      from: curated
+      tag: "<curated-knowledge>"
+      required: false
+
+# ── 6. Event schema (§3.5 — typed pipeline events) ───────────────────
+# Stage emissions. `MemoryProvider` implementations must populate
+# every required field; web `EventLog` parses by `type`.
+events:
+  context.built:
+    fields:
+      chunks: "list[{key:str, source:str, score:float}]"
+      total_chars: int
+      layer_breakdown: "dict[Layer, int]"
+  context.compacted:
+    fields:
+      before: int
+      after: int
+      strategy: str
+      saved_tokens: int
+  memory.turn_recorded:
+    fields:
+      role: str
+      bytes: int
+  memory.execution_recorded:
+    fields:
+      notes_written: int
+      vector_chunks: int
+      files_updated: "list[str]"
+  memory.insight:
+    fields:
+      title: str
+      importance: "critical|high|medium|low"
+      category: str
+      tags: "list[str]"
+  memory.promoted:
+    fields:
+      ref: "NoteRef"
+      from_scope: "Scope"
+      to_scope: "Scope"
+  memory.reindexed:
+    fields:
+      layer: "Layer"
+      duration_ms: int
+      cost: "CostEvent | null"
+  memory.cost:
+    fields:
+      kind: "embedding|reflection|summary"
+      tokens_in: int
+      tokens_out: int
+      usd: float
+  memory.snapshot:
+    fields:
+      size_bytes: int
+      layers: "list[Layer]"
+      checksum: str
+
+# ── 7. Config fields (R-F — exactly 21) ──────────────────────────────
+# Every MemoryDescriptor.config_schema must expose at minimum these 21
+# fields. Field kinds are advisory — providers may widen the type set.
+config_fields:
+  - { id: master_enabled,                kind: bool,   default: true,  group: master }
+  - { id: embedding_provider,            kind: enum,   default: openai, group: embedding }
+  - { id: embedding_model,               kind: string, default: "text-embedding-3-small", group: embedding }
+  - { id: embedding_api_key,             kind: secret, default: "",    group: embedding }
+  - { id: chunk_size,                    kind: int,    default: 800,   group: chunking }
+  - { id: chunk_overlap,                 kind: int,    default: 100,   group: chunking }
+  - { id: retrieval_top_k,               kind: int,    default: 5,     group: retrieval }
+  - { id: retrieval_threshold,           kind: float,  default: 0.5,   group: retrieval }
+  - { id: retrieval_max_inject_chars,    kind: int,    default: 8000,  group: retrieval }
+  - { id: curated_enabled,               kind: bool,   default: false, group: curated }
+  - { id: curated_vector_enabled,        kind: bool,   default: false, group: curated }
+  - { id: curated_inject_budget,         kind: int,    default: 2000,  group: curated }
+  - { id: curated_max_results,           kind: int,    default: 3,     group: curated }
+  - { id: auto_curation_enabled,         kind: bool,   default: false, group: auto_curation }
+  - { id: auto_curation_use_llm,         kind: bool,   default: true,  group: auto_curation }
+  - { id: auto_curation_quality_threshold, kind: float, default: 0.7,  group: auto_curation }
+  - { id: auto_curation_schedule,        kind: enum,   default: interval, group: auto_curation }
+  - { id: auto_curation_interval_minutes, kind: int,   default: 60,    group: auto_curation }
+  - { id: auto_curation_max_per_run,     kind: int,    default: 10,    group: auto_curation }
+  - { id: auto_curation_last_run_iso,    kind: string, default: "",    group: auto_curation }
+  - { id: user_obsidian_index_enabled,   kind: bool,   default: false, group: obsidian }
+
+# ── 8. Requirements catalogue (R-A · R-B · R-C · R-D mapping) ────────
+# Maps every Geny SessionMemoryManager surface to (layer, capability)
+# that an executor MemoryProvider must satisfy. Used by Phase 1
+# `MemoryProvider` ABC inspection and Phase 3 parity diff.
+requirements:
+  # R-A — storage operations
+  - { id: stm.append,        layer: stm,    capability: write,    geny: "record_message / record_event" }
+  - { id: stm.recent,        layer: stm,    capability: read,     geny: "get_recent" }
+  - { id: stm.search,        layer: stm,    capability: search,   geny: "search" }
+  - { id: ltm.append,        layer: ltm,    capability: write,    geny: "remember" }
+  - { id: ltm.write_dated,   layer: ltm,    capability: write,    geny: "remember_dated" }
+  - { id: ltm.write_topic,   layer: ltm,    capability: write,    geny: "remember_topic" }
+  - { id: ltm.read_main,     layer: ltm,    capability: read,     geny: "load_main" }
+  - { id: ltm.search,        layer: ltm,    capability: search,   geny: "search" }
+  - { id: notes.write,       layer: notes,  capability: write,    geny: "write_note" }
+  - { id: notes.update,      layer: notes,  capability: write,    geny: "update_note" }
+  - { id: notes.delete,      layer: notes,  capability: write,    geny: "delete_note" }
+  - { id: notes.read,        layer: notes,  capability: read,     geny: "read_note" }
+  - { id: notes.list,        layer: notes,  capability: read,     geny: "list_notes" }
+  - { id: notes.link,        layer: notes,  capability: link,     geny: "link_notes" }
+  - { id: notes.graph,       layer: notes,  capability: read,     geny: "get_memory_graph" }
+  - { id: vector.index_one,  layer: vector, capability: write,    geny: "index_text" }
+  - { id: vector.index_batch, layer: vector, capability: write,   geny: "index_memory_files" }
+  - { id: vector.search,     layer: vector, capability: search,   geny: "vector.search" }
+  - { id: index.snapshot,    layer: index,  capability: read,     geny: "get_memory_index" }
+  - { id: index.tag_counts,  layer: index,  capability: read,     geny: "get_memory_tags" }
+  - { id: index.rebuild,     layer: index,  capability: reindex,  geny: "reindex_memory" }
+  - { id: curated.write,     layer: curated, capability: write,   geny: "curated.write_note" }
+  - { id: curated.promote,   layer: curated, capability: promote, geny: "curated.promote_from_session" }
+  - { id: global.write,      layer: global, capability: write,    geny: "global.write_note" }
+  - { id: global.promote,    layer: global, capability: promote,  geny: "global.promote" }
+
+  # R-B — retrieval composition
+  - { id: retrieve.compose,  layer: stm,    capability: search,   geny: "build_memory_context_async" }
+
+  # R-C — update / reflection
+  - { id: record.execution,  layer: ltm,    capability: write,    geny: "record_execution" }
+  - { id: snapshot.flush,    layer: stm,    capability: snapshot, geny: "auto_flush" }
+  - { id: reflect.run,       layer: notes,  capability: reflect,  geny: "LLM reflection" }
+
+  # R-D — operational
+  - { id: ops.rebuild,       layer: index,  capability: reindex,  geny: "reindex_memory" }
+  - { id: ops.migrate,       layer: notes,  capability: write,    geny: "migrate(legacy→structured)" }
+
+# ── 9. Completeness criteria (C1-C7 — §3.6 acceptance gates) ─────────
+completeness_criteria:
+  - id: C1
+    title: "Six-layer retrieval round-trip"
+    acceptance: |
+      Given a fresh session and a user query, the configured
+      MemoryProvider produces a RetrievalResult composed of (at
+      minimum) STM session_summary, LTM main, vector top-k, keyword
+      recall with importance boosts, recent N messages, and optional
+      curated. After the response is generated, the user turn and
+      assistant turn are recorded as STM appends.
+    activates_in_phase: 1
+
+  - id: C2
+    title: "Execution-end recording"
+    acceptance: |
+      On terminal state, MemoryProvider.record_execution(...) writes
+      a dated LTM entry, creates the corresponding structured note,
+      and incrementally indexes any new content into the vector layer
+      (when the vector handle is present). Emits
+      memory.execution_recorded with non-zero counts.
+    activates_in_phase: 2
+
+  - id: C3
+    title: "LLM reflection and auto-promotion"
+    acceptance: |
+      MemoryProvider.reflect(...) yields an Insight sequence
+      conforming to the (title, content, category, tags, importance)
+      schema. Insights with importance >= high are auto-promoted to
+      curated scope via promote(...). Each promotion emits a
+      memory.promoted event referencing the new NoteRef.
+    activates_in_phase: 2
+
+  - id: C4
+    title: "REST coverage"
+    acceptance: |
+      The web backend exposes the §3.7 endpoint list (notes CRUD,
+      wikilink, graph, tags, importance filter, keyword search,
+      vector search, reflect, reindex, snapshot, restore, promote)
+      and each endpoint round-trips its dataclass payload through
+      the active MemoryProvider without any web-side domain logic.
+    activates_in_phase: 4
+
+  - id: C5
+    title: "Embedding migration safety"
+    acceptance: |
+      Switching embedding provider (e.g. openai→voyage) triggers
+      MemoryDescriptor.compatibility_check(...), surfaces a
+      reindex_plan(...) (chunk count, estimated cost, estimated
+      duration), and ONLY after explicit user approval performs the
+      reindex in the background while emitting memory.reindexed.
+      Silent rebuild on dimension mismatch is forbidden.
+    activates_in_phase: 2
+
+  - id: C6
+    title: "Server restart resume"
+    acceptance: |
+      With session persistence enabled, restarting the host process
+      reloads PipelineState and reattaches the same MemoryProvider
+      instance such that the prior conversation is recoverable
+      verbatim (messages, system, token_usage, cost).
+    activates_in_phase: 2
+
+  - id: C7
+    title: "Adapter parity"
+    acceptance: |
+      Running the same scenario suite through GenyManagerAdapter
+      (reference fixture) and through the native FileMemoryProvider
+      yields semantically equivalent outputs: identical chunk
+      composition (modulo floating-point tolerance), identical note
+      set, identical link graph, identical vector top-k for each
+      probe query. Adapter is then quarantined as a test fixture and
+      excluded from the runtime artifact.
+    activates_in_phase: 3
