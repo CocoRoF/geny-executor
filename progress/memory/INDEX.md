@@ -18,7 +18,7 @@
 |---|---|---|---|---|
 | 0 | Spec Freeze | [phase_0_spec_freeze.md](phase_0_spec_freeze.md) | G0 — spec YAML + red pytest exist | **closed 2026-04-19** |
 | 1 | Interface | [phase_1_interface.md](phase_1_interface.md) | G1 — provider contract + EphemeralMemoryProvider + contract suite green | **closed 2026-04-19** (v0.14.0) |
-| 2 | Native Providers | [phase_2_native_providers.md](phase_2_native_providers.md) | G2 — C1-C3·C5-C6 green, no adapter dependency | pending |
+| 2 | Native Providers | [phase_2_native_providers.md](phase_2_native_providers.md) | G2 — C1-C3·C5-C6 green, no adapter dependency | in progress (2a landed v0.15.0 on 2026-04-19) |
 | 3 | Completeness Validation | [phase_3_validation.md](phase_3_validation.md) | **G3 — C1-C7 all green + adapter parity + perf ±20%** | pending |
 | 4 | Web Mirror | [phase_4_web_mirror.md](phase_4_web_mirror.md) | G4 — endpoints + UI scenarios | pending |
 | 5 | Hardening | [phase_5_hardening.md](phase_5_hardening.md) | G5 — retention/cost/migration | pending |

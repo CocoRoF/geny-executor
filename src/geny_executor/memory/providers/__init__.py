@@ -1,11 +1,15 @@
 """Concrete `MemoryProvider` implementations.
 
-Phase 1 ships only `EphemeralMemoryProvider` — a fully in-memory
-reference implementation used by tests and by sessions that must
-not write to disk. Phase 2 adds `FileMemoryProvider`,
-`SQLMemoryProvider`, `CompositeMemoryProvider`.
+Shipped so far:
+    - `EphemeralMemoryProvider` (Phase 1) — in-memory reference.
+    - `FileMemoryProvider` (Phase 2a) — disk-persistent, Geny-compatible.
+
+Coming next:
+    - `SQLMemoryProvider` (Phase 2c) — SQLite / Postgres.
+    - `CompositeMemoryProvider` (Phase 2d) — per-layer backend routing.
 """
 
 from geny_executor.memory.providers.ephemeral import EphemeralMemoryProvider
+from geny_executor.memory.providers.file import FileMemoryProvider
 
-__all__ = ["EphemeralMemoryProvider"]
+__all__ = ["EphemeralMemoryProvider", "FileMemoryProvider"]
