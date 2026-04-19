@@ -73,6 +73,8 @@ from geny_executor.memory.providers import (
     FileMemoryProvider,
     SQLMemoryProvider,
 )
+from geny_executor.memory.composite import CompositeMemoryProvider, LayerRouting
+from geny_executor.memory.factory import MemoryProviderFactory
 
 # ── Legacy adapter (Phase 3 validation only) ────────────────────────
 from geny_executor.memory.retriever import GenyMemoryRetriever
@@ -120,6 +122,9 @@ __all__ = [
     "EphemeralMemoryProvider",
     "FileMemoryProvider",
     "SQLMemoryProvider",
+    "CompositeMemoryProvider",
+    "LayerRouting",
+    "MemoryProviderFactory",
     # embedding
     "EmbeddingClient",
     "EmbeddingError",
