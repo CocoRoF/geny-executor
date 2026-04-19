@@ -282,7 +282,11 @@ class Pipeline:
                     PipelineEvent(
                         type="pipeline.complete",
                         data={
-                            "result": state.final_text[: self.EVENT_DATA_TRUNCATE],
+                            # `result` is the canonical final text consumers
+                            # forward to the user — it must not be truncated.
+                            # EVENT_DATA_TRUNCATE only applies to preview-only
+                            # event payloads (see pipeline.start.input).
+                            "result": state.final_text,
                             "iterations": state.iteration,
                             "total_cost_usd": state.total_cost_usd,
                         },

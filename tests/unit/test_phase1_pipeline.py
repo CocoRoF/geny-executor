@@ -215,6 +215,26 @@ async def test_streaming_mode():
     assert len(deltas) > 0, f"Expected text.delta events, got: {types}"
 
 
+@pytest.mark.asyncio
+async def test_streaming_pipeline_complete_carries_full_result():
+    """Regression: pipeline.complete.result must not be truncated.
+
+    Consumers (e.g. Geny) overwrite the streamed accumulation with
+    `result` on completion. If `result` is preview-truncated, the user
+    sees the full text during streaming and a chopped version at the
+    end.
+    """
+    long_text = "x" * 1500  # exceeds the historical 500-char preview cap
+    pipeline = _make_mock_pipeline(long_text)
+    completes = [
+        e
+        async for e in pipeline.run_stream("Hi")
+        if e.type == "pipeline.complete"
+    ]
+    assert len(completes) == 1
+    assert completes[0].data["result"] == long_text
+
+
 # ── Error handling ──
 
 
