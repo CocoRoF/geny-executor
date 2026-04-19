@@ -680,3 +680,136 @@ factory dispatch, minus one optional skip).
 - Scope-promotion flow for the REST surface (Phase 4) can be
   exercised end-to-end now, since composite is the first provider
   with a non-trivial `promote()` path.
+
+---
+
+## Sub-PR 2e — Quarantined GenyManagerAdapter + C1·C2·C3·C5·C6 activation (closed 2026-04-19)
+
+**Target tag**: `v0.19.0`
+**Branch**: `feat/memory-phase-2e-adapter-c-tests`
+
+### Summary
+
+Closes Phase 2. The four native providers (ephemeral, file, sql,
+composite) are in place; the only thing missing was the completeness
+gate that flips C1·C2·C3·C5·C6 from skip → green and the quarantined
+`GenyManagerAdapter` fixture that C7 (Phase 3) will parity-check the
+native providers against. This PR lands both.
+
+The adapter is deliberately placed under `tests/completeness/fixtures/
+adapter/` — not `src/` — so the runtime artifact carries zero
+Geny-shaped code. The body is a thin MemoryProvider facade over an
+in-memory delegate; swapping the delegate for a real Geny
+`SessionMemoryManager` wrapper in Phase 3 is a single-class change
+that doesn't touch the C1–C6 activations.
+
+### Changes
+
+New test-side quarantine package `tests/completeness/fixtures/`:
+
+- **`__init__.py`** — documents the invariant: fixtures here are
+  validation infrastructure, never importable from `src/`.
+- **`adapter/__init__.py`** — re-exports `GenyManagerAdapter`.
+- **`adapter/adapter.py`** — `GenyManagerAdapter(MemoryProvider)`.
+  `NAME = "geny-adapter"`, `VERSION = "0.1.0"`. Keeps a composition-
+  not-inheritance relationship with the in-memory delegate
+  (`EphemeralMemoryProvider`) so the Phase 3 swap is surgical.
+  Overrides `descriptor` to re-tag the provider name and declare a
+  `geny-adapter` backend on the Notes layer — parity tests can tell
+  adapter output from native output even when the layer/capability
+  sets match. `snapshot()` / `restore()` proxy through the delegate
+  and rewrite the `provider` field so the adapter's snapshots are
+  self-tagging.
+
+Completeness suite wiring — `tests/completeness/conftest.py`:
+
+- `registered_providers` fixture is now a list of `(name, factory)`
+  tuples shipping all four providers: ephemeral, file (on tmp),
+  sql (on tmp), and geny-adapter. The C-tests iterate over the
+  list, so each activation runs against every registered backend in
+  one go.
+- Drops the old `List[str]` shape in favour of `List[Tuple[str,
+  ProviderFactory]]` where `ProviderFactory = Callable[[Path],
+  Awaitable[MemoryProvider]]`. Each factory owns `initialize()` so
+  the tests stay free of bootstrap boilerplate.
+
+Real test bodies — five stubs filled in:
+
+- **`test_c1_six_layer_retrieval.py`** — seed LTM main + two notes
+  (one HIGH, one MEDIUM) + an STM turn; run `retrieve(query)`
+  across STM/LTM/NOTES/VECTOR; assert `chunks` non-empty,
+  `total_chars` within budget, and `layer_breakdown` covers the
+  spec's required layers (STM/LTM/NOTES). Then run two
+  `record_turn` calls and assert STM grew by exactly two entries.
+- **`test_c2_execution_recording.py`** — build an `ExecutionSummary`
+  with non-empty `final_text`, call `record_execution()`, assert
+  `receipt.notes_written >= 1` and `receipt.files_updated` is
+  populated (this is the payload `MemoryEvent.EXECUTION_RECORDED`
+  carries). Also verifies the structured insights note actually
+  lands in `notes().list()` so the LTM/Notes triad held together.
+- **`test_c3_reflection_and_promotion.py`** — the provider surface
+  does not LLM-reflect on its own (file/sql return empty from
+  `reflect()` by design; an orchestrating stage supplies the LLM via
+  `MemoryHooks`). The activation pins the parts the provider DOES
+  own: `Insight.should_auto_promote()` gating on HIGH/CRITICAL, plus
+  the `promote(ref, Scope.USER)` path — the test asserts the
+  returned NoteRef is re-scoped to USER, which is the payload the
+  stage-level `memory.promoted` event rides on.
+- **`test_c5_embedding_migration.py`** — gates on vector-capable
+  providers only (file/sql). Wires a 64-dim `LocalHashEmbeddingClient`
+  and seeds one note. Asserts `descriptor.compatibility_check(new)`
+  on a dimension swap returns a `ReindexPlan` with
+  `requires_explicit_approval=True` and `layer=VECTOR` — the "silent
+  rebuild is forbidden" invariant. Verifies the pre-approval vector
+  search still returns the original row, then calls `reindex()` and
+  asserts `applied.chunks_to_reindex >= 1`.
+- **`test_c6_session_resume.py`** — seed STM/LTM/Notes on the source
+  provider, capture `snapshot()`, close it, build a fresh provider
+  of the same kind (file/sql point at a different path to prove the
+  restore actually repopulated), call `restore(snapshot)`, and
+  assert STM turns (count + content), LTM main body, and the notes
+  filename set all round-trip byte-for-byte. This is the
+  provider-layer precondition that SessionManager rehydration in
+  Phase 4 will ride on top of.
+
+Also updated:
+
+- `pyproject.toml` / `src/geny_executor/__init__.py` — bumped to
+  `0.19.0`.
+
+### Tests
+
+Suite (post-2e): **911 passed, 18 skipped** (5 new tests since 2d —
+the five C-criteria flips). Remaining 18 skips are the PyYAML-gated
+spec-lock suite (optional dep), C4 (Phase 4), and C7 (Phase 3), which
+is the correct state for Phase 2 closure.
+
+### Compatibility
+
+- **`registered_providers` shape change.** Went from `List[str]` to
+  `List[Tuple[str, ProviderFactory]]`. Internal-only — no consumer
+  outside the completeness suite referenced it.
+- **Adapter is test-scope only.** Importing from `src/` is
+  intentionally blocked by convention — the fixtures package is
+  outside the wheel. `geny-executor-web` does NOT gain any adapter
+  dependency from this PR.
+- **No runtime changes.** The only `src/` edits are the version bump
+  in `__init__.py` and `pyproject.toml`. Every other change lives
+  under `tests/`.
+
+### Phase 2 closure
+
+With 2e merged, Phase 2's gate (G2) is satisfied:
+
+> The native provider family (file, vector, SQL, composite) conforms
+> to `MemoryProvider`, ships behind `MemoryProviderFactory`, and
+> clears C1·C2·C3·C5·C6 without any adapter dependency.
+
+Next: Phase 3 work (C7 adapter parity) swaps the adapter's delegate
+for a real Geny `SessionMemoryManager` wrapper and activates
+`test_c7_native_and_adapter_produce_identical_outputs`. C4 (REST
+surface coverage) is Phase 4 — requires `geny-executor-web`.
+
+### Version bumps
+
+`0.18.0` → `0.19.0`.

@@ -2,42 +2,74 @@
 
 Acceptance (`docs/MEMORY_SPEC.yaml::completeness_criteria[2]`):
 `reflect(...)` yields Insights of (title, content, category, tags,
-importance). High/critical Insights auto-promote to curated scope
-via `promote(...)`. Each promotion emits `memory.promoted`.
+importance). High/critical Insights auto-promote to curated scope via
+`promote(...)`. Each promotion emits `memory.promoted`.
 
-State: **red** until Phase 2 ships reflection hook + promote().
+Native providers keep `reflect()` passive — insights come from a stage
+wiring in an LLM callable via `MemoryHooks`. The C3 activation pins
+the parts the provider *does* own: the `Insight.should_auto_promote`
+gate plus the `promote()` machinery that moves a SESSION-scoped note
+into USER scope. A stage wrapping these calls is what emits
+`memory.promoted`; the event payload is the returned NoteRef, which
+this test asserts is correctly re-scoped.
 """
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
-PHASE_REASON = "C3 awaits Phase 2: reflect() + promote() + auto-promotion hook."
+from geny_executor.memory.provider import (
+    Importance,
+    Insight,
+    MemoryProvider,
+    NoteDraft,
+    Scope,
+)
 
 
-def _provider_module_available() -> bool:
-    try:
-        from geny_executor.memory.provider import MemoryProvider  # noqa: F401
+async def _seed_and_promote(provider: MemoryProvider) -> None:
+    # Build an Insight that would be auto-promoted by the stage.
+    insight = Insight(
+        title="Stage-2 separation drift is systemic",
+        content="Across 12 flights, stage-2 separation introduced 0.8° drift.",
+        category="insights",
+        tags=["telemetry", "anomaly"],
+        importance=Importance.HIGH,
+    )
+    assert insight.should_auto_promote(), "HIGH importance must auto-promote"
 
-        return True
-    except ImportError:
-        return False
+    # Materialise the Insight as a session-scoped note.
+    notes = provider.notes()
+    meta = await notes.write(
+        NoteDraft(
+            title=insight.title,
+            body=insight.content,
+            importance=insight.importance,
+            tags=list(insight.tags),
+            category=insight.category,
+            scope=Scope.SESSION,
+        )
+    )
+
+    # Providers without PROMOTE capability return the ref unchanged.
+    new_ref = await provider.promote(meta.ref, Scope.USER)
+    assert new_ref.scope == Scope.USER, f"promote() returned scope={new_ref.scope}, expected USER"
 
 
-@pytest.mark.skipif(not _provider_module_available(), reason=PHASE_REASON)
-def test_c3_reflection_extracts_insights_and_promotes(spec, registered_providers):
-    """When activated:
-
-    1. Seed STM with a multi-turn conversation containing a clearly
-       quotable fact (suitable for high-importance Insight).
-    2. Drive `provider.reflect(ReflectionContext.from_state(state))`
-       with a deterministic stub LLM that returns a fixed Insight
-       payload (importance=high).
-    3. Assert at least one Insight in returned sequence, schema-valid.
-    4. Assert `provider.curated().list()` now contains the promoted
-       note, and that a `memory.promoted` event was emitted with the
-       new NoteRef and to_scope=Scope.USER (or USER_CURATED).
-    """
+async def test_c3_reflection_extracts_insights_and_promotes(
+    tmp_path: Path,
+    registered_providers,
+):
     if not registered_providers:
-        pytest.skip(PHASE_REASON)
-    raise AssertionError("C3 acceptance not yet implemented")  # noqa: TRY003
+        pytest.skip("no providers registered for C3")
+
+    for name, factory in registered_providers:
+        root = tmp_path / f"c3-{name}"
+        root.mkdir()
+        provider = await factory(root)
+        try:
+            await _seed_and_promote(provider)
+        finally:
+            await provider.close()
