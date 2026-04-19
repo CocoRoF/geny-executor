@@ -89,9 +89,7 @@ def test_open_connection_explicit_dialect_overrides_scheme(tmp_path):
 
 def test_translate_placeholders():
     sql = "SELECT * FROM notes WHERE filename = ? AND scope = ?"
-    assert _translate_to_postgres(sql) == (
-        "SELECT * FROM notes WHERE filename = %s AND scope = %s"
-    )
+    assert _translate_to_postgres(sql) == ("SELECT * FROM notes WHERE filename = %s AND scope = %s")
 
 
 def test_translate_insert_or_ignore():

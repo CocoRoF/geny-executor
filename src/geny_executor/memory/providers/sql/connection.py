@@ -353,9 +353,7 @@ class _PostgresConnection(_SQLConnection):
             cur.executemany(sql, rows)
         conn.commit()
 
-    async def fetchone(
-        self, sql: str, params: Sequence[Any] = ()
-    ) -> Optional[Mapping[str, Any]]:
+    async def fetchone(self, sql: str, params: Sequence[Any] = ()) -> Optional[Mapping[str, Any]]:
         translated = _translate_to_postgres(sql)
         async with self._lock:
             return await asyncio.to_thread(self._fetch_one, translated, tuple(params))
@@ -366,9 +364,7 @@ class _PostgresConnection(_SQLConnection):
             cur.execute(sql, params)
             return cur.fetchone()
 
-    async def fetchall(
-        self, sql: str, params: Sequence[Any] = ()
-    ) -> List[Mapping[str, Any]]:
+    async def fetchall(self, sql: str, params: Sequence[Any] = ()) -> List[Mapping[str, Any]]:
         translated = _translate_to_postgres(sql)
         async with self._lock:
             return await asyncio.to_thread(self._fetch_all, translated, tuple(params))
@@ -386,9 +382,7 @@ class _PostgresConnection(_SQLConnection):
         async with self._lock:
             return await asyncio.to_thread(self._exec_returning, translated, tuple(params))
 
-    def _exec_returning(
-        self, sql: str, params: Tuple[Any, ...]
-    ) -> Tuple[Optional[int], int]:
+    def _exec_returning(self, sql: str, params: Tuple[Any, ...]) -> Tuple[Optional[int], int]:
         conn = self._require()
         with conn.cursor() as cur:
             cur.execute(sql, params)
