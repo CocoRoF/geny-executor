@@ -4,6 +4,49 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.27.0] — 2026-04-21
+
+Minor release. `Pipeline.from_manifest` / `from_manifest_async` now
+auto-register the framework's shipped tool classes when the manifest
+declares them via `tools.built_in`. The field was previously read-only
+annotation; it is now a live dispatch list.
+
+Accepted values for `manifest.tools.built_in`:
+
+* `["*"]` — registers every class in
+  `geny_executor.tools.built_in.BUILT_IN_TOOL_CLASSES` (Read, Write,
+  Edit, Bash, Glob, Grep).
+* `["Write", "Read"]` — registers only the named classes.
+* `[]` or missing — no framework tools attached (preserves 0.26.x
+  behaviour).
+
+Built-ins register before external providers, so an external
+`AdhocToolProvider` declaring an equally-named tool shadows the
+built-in — host code can replace any framework default with a
+hardened variant by shipping a same-named provider entry.
+
+No breaking changes. Pipelines whose manifests carry `built_in: []`
+(the value Geny's `default_manifest` wrote prior to 0.27.0) behave
+identically to 0.26.x.
+
+### Added
+
+- **`BUILT_IN_TOOL_CLASSES`** — new public mapping in
+  `geny_executor.tools.built_in` from registry name (`"Write"`) to
+  tool class (`WriteTool`). Extensible: adding a new file-system or
+  search tool to the framework now means dropping a module under
+  `tools/built_in/` and one entry in the map.
+- **`_register_built_in_tools`** — pipeline-internal helper that
+  consumes `manifest.tools.built_in` and populates the registry via
+  the map. Runs before `_register_external_tools` so external
+  providers can still override.
+
+### Changed
+
+- `manifest.tools.built_in` graduates from annotation-only to active
+  dispatch. Manifests authored against 0.26.x continue to work — an
+  empty or missing field is a no-op.
+
 ## [0.26.0] — 2026-04-20
 
 Additive release on top of 0.25.0. Extends
