@@ -82,6 +82,54 @@ def _mcp_configs_from_manifest(manifest: "EnvironmentManifest") -> Dict[str, Any
     return configs
 
 
+def _register_built_in_tools(
+    manifest: "EnvironmentManifest",
+    registry: "ToolRegistry",
+) -> None:
+    """Register framework-shipped tools named in ``manifest.tools.built_in``.
+
+    The executor ships a baseline toolkit (:data:`~geny_executor.tools.
+    built_in.BUILT_IN_TOOL_CLASSES`) — filesystem ops, shell, and
+    search — so consumers do not have to reimplement basic tools
+    against the :class:`~geny_executor.tools.base.Tool` ABC. The
+    manifest opts into which of those ship into this pipeline.
+
+    Accepted values for ``manifest.tools.built_in``:
+      * ``["*"]`` — register every class in
+        :data:`~geny_executor.tools.built_in.BUILT_IN_TOOL_CLASSES`.
+      * ``["Read", "Write", ...]`` — register only the named classes.
+      * empty list / missing field — no framework tools attached
+        (preserves pre-v0.26.3 behaviour for manifests authored before
+        built-ins were routable).
+
+    An unknown name warns and is skipped — a manifest error worth
+    surfacing but not worth crashing the build. If a name is already
+    present in the registry (e.g. an ``AdhocToolProvider`` beat us
+    to it) the existing registration wins silently.
+    """
+    from geny_executor.tools.built_in import BUILT_IN_TOOL_CLASSES
+
+    names = list(getattr(manifest.tools, "built_in", []) or [])
+    if not names:
+        return
+
+    if names == ["*"]:
+        names = list(BUILT_IN_TOOL_CLASSES.keys())
+
+    for name in names:
+        cls = BUILT_IN_TOOL_CLASSES.get(name)
+        if cls is None:
+            logger.warning(
+                "manifest.tools.built_in contains unknown name '%s' — expected one of %s",
+                name,
+                sorted(BUILT_IN_TOOL_CLASSES.keys()),
+            )
+            continue
+        if registry.get(name) is not None:
+            continue
+        registry.register(cls())
+
+
 def _register_external_tools(
     manifest: "EnvironmentManifest",
     registry: "ToolRegistry",
@@ -314,6 +362,14 @@ class Pipeline:
                         f"{'; '.join(errors)}"
                     )
 
+        # Built-ins register first so every pipeline has a working
+        # default tool surface (Read/Write/Edit/Bash/Glob/Grep). An
+        # external provider that declares the same name then shadows
+        # the built-in — ``ToolRegistry.register`` is last-write-wins,
+        # so host code can replace any framework tool with a hardened
+        # variant by exposing an equally-named ``AdhocToolProvider``
+        # entry and listing the name in ``manifest.tools.external``.
+        _register_built_in_tools(manifest, registry)
         _register_external_tools(manifest, registry, adhoc_providers)
         pipeline._tool_registry = registry
 
