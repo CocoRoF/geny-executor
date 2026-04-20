@@ -242,6 +242,32 @@ class TestFromManifestExternalProviders:
         assert system_stage._tool_registry is pipeline.tool_registry
         assert system_stage._tool_registry.get("alpha") is not None
 
+    def test_tool_stage_sees_populated_registry_after_from_manifest(self):
+        """Regression: a manifest with s10_tool + external tools must
+        leave ToolStage._registry pointing at the same populated
+        registry the pipeline exposes. ToolStage's __init__ defaults
+        to a freshly-allocated empty ToolRegistry(); without post-hoc
+        rebinding, the router's lookup returns `unknown_tool` for
+        every LLM-emitted tool_use block — the call fails instantly
+        (0 ms) even though the schema was delivered to the model."""
+        from geny_executor.core.environment import StageManifestEntry
+
+        entries = [
+            StageManifestEntry(order=3, name="system"),
+            StageManifestEntry(order=10, name="tool"),
+        ]
+        manifest = EnvironmentManifest(
+            stages=[e.to_dict() for e in entries],
+            tools=ToolsSnapshot(external=["alpha"]),
+        )
+        provider = _DictProvider({"alpha": _NamedTool("alpha")})
+        pipeline = Pipeline.from_manifest(manifest, adhoc_providers=[provider])
+
+        tool_stage = pipeline.get_stage(10)
+        assert tool_stage is not None
+        assert tool_stage._registry is pipeline.tool_registry
+        assert tool_stage._registry.get("alpha") is not None
+
 
 # ══════════════════════════════════════════════════════════
 # Pipeline.from_manifest_async — external + MCP coexist
