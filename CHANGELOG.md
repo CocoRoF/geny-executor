@@ -4,6 +4,70 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.24.0] — 2026-04-20
+
+Additive release on top of 0.23.0. Introduces `Pipeline.attach_runtime(...)`,
+a single explicit injection point for the session-scoped runtime objects
+(memory retriever, memory strategy, conversation persistence) that cannot
+be encoded in an `EnvironmentManifest`. Manifests express declarative
+shape — stages, artifacts, strategy choices, configs — but not the
+per-session objects a host needs to wire in after construction. Before
+this release, hosts reached into stage internals to set those; now they
+call one helper.
+
+No breaking changes. Pipelines that never call `attach_runtime` behave
+identically to 0.23.0 — stages still carry whatever retriever / strategy /
+persistence was supplied at construction (or their defaults:
+`NullRetriever`, `AppendOnlyStrategy`, `NullPersistence`). The 0.22.x-style
+`GenyPresets.worker_adaptive(...)` / `GenyPresets.vtuber(...)` builders
+remain available and unchanged; `attach_runtime` is an additional path for
+manifest-first hosts.
+
+### Added
+
+- **`Pipeline.attach_runtime(*, memory_retriever=None, memory_strategy=None,
+  memory_persistence=None)`** in `geny_executor.core.pipeline`. Walks the
+  registered stages and replaces the relevant slot strategies:
+  - `memory_retriever` → Stage 2 (Context), slot `retriever`.
+  - `memory_strategy` → Stage 15 (Memory), slot `strategy`.
+  - `memory_persistence` → Stage 15 (Memory), slot `persistence`.
+  Kwargs are keyword-only. Omitted kwargs leave the corresponding slot
+  untouched. Missing stages are silently skipped — a pipeline without a
+  Memory stage simply has nowhere to attach memory runtime.
+- **`Pipeline._has_started`** flag, flipped by `_init_state` on the first
+  `run()` / `run_stream()` invocation. `attach_runtime` raises
+  `RuntimeError` after this flip — prior stage state has already captured
+  references to the pre-attach slot values, so swapping them would yield a
+  mixed-runtime pipeline whose behavior is hard to reason about. Build a
+  fresh pipeline and attach before running.
+
+### Why
+
+Plan/02 of the 20260420_3 Geny cycle moves session creation from
+hardcoded `GenyPresets.*` branches to `Pipeline.from_manifest_async(...)`.
+Manifests are declarative, so they cannot carry runtime objects
+(`SessionMemoryManager`, `llm_reflect` callback, `CuratedKnowledgeManager`).
+`attach_runtime` provides the missing post-manifest wiring step without
+forcing hosts to reach into `_slots["retriever"].strategy` directly.
+
+See `Geny/dev_docs/20260420_3/plan/02_default_env_per_role.md` for the
+full cutover context.
+
+### Tests
+
+`tests/unit/test_pipeline_attach_runtime.py` (new, 8 tests):
+
+- Replaces Context.retriever slot identity.
+- Replaces Memory.strategy + Memory.persistence slots.
+- Accepts all three kwargs together.
+- Idempotent before first run — last call wins per kwarg.
+- Omitting a kwarg preserves the prior value (partial attach).
+- Missing target stage is a silent no-op.
+- Raises `RuntimeError` after `_init_state` flips `_has_started`.
+- Calling with no kwargs is a valid no-op.
+
+Full suite: 1023 passed, 18 skipped. Ruff + format clean.
+
 ## [0.23.0] — 2026-04-20
 
 Additive release on top of 0.22.1. Extends the Stage 10 tool event
