@@ -35,7 +35,6 @@ from geny_executor.core.environment import EnvironmentManifest, ToolsSnapshot
 from geny_executor.core.pipeline import Pipeline
 from geny_executor.tools.base import Tool, ToolContext, ToolResult
 from geny_executor.tools.built_in import BUILT_IN_TOOL_CLASSES
-from geny_executor.tools.providers import AdhocToolProvider
 
 
 # ─────────────────────────────────────────────────────────────────
