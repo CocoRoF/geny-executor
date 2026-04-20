@@ -4,6 +4,66 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.25.0] — 2026-04-20
+
+Additive release on top of 0.24.0. Makes the adaptive
+`binary_classify` evaluation strategy resolvable from
+`EnvironmentManifest` without import-time plumbing. Previously
+manifest-restore silently fell back to `signal_based` because
+`binary_classify` lived only in the `adaptive` artifact and was not
+registered in the default `EvaluateStage`'s slot registry.
+
+No breaking changes. Pipelines that don't reference
+`binary_classify` from a manifest are byte-identical to 0.24.0.
+The `adaptive` artifact remains strategy-only and its Python-level
+import path (`from geny_executor.stages.s12_evaluate.artifact.adaptive.strategy import BinaryClassifyEvaluation`)
+is unchanged — the 0.25.0 change is purely additive inside the
+default stage's strategy slot.
+
+### Added
+
+- **`binary_classify`** entry in the default Stage 12
+  (`EvaluateStage`) strategy slot registry — `StrategySlot.registry`
+  now includes `{"signal_based", "criteria_based",
+  "agent_evaluation", "binary_classify"}`. Manifests with
+  `artifact="default"` and `strategies={"strategy":
+  "binary_classify"}` now restore to a real
+  `BinaryClassifyEvaluation` instance instead of silently falling
+  back to `SignalBasedEvaluation`.
+- **`BinaryClassifyEvaluation.configure(config: dict)`** — applies
+  `easy_max_turns` and `not_easy_max_turns` from the manifest's
+  `strategy_configs`. Unknown keys are ignored so newer manifests
+  don't break older strategies.
+
+### Why
+
+Geny's manifest-first cutover
+(`Geny/dev_docs/20260420_3/plan/02_default_env_per_role.md` →
+`build_default_manifest.stages`) needs to serialize the
+`worker_adaptive` preset faithfully. That preset pipes a
+`BinaryClassifyEvaluation` into Stage 12 via the builder's
+`.with_evaluate(strategy=...)` kwarg. A manifest-built pipeline
+with `strategies.strategy = "binary_classify"` must produce the
+same runtime behavior — otherwise the adaptive preset loses its
+identity the moment it passes through an `EnvironmentManifest`.
+
+### Tests
+
+`tests/unit/test_binary_classify_manifest.py` (new, 6 tests):
+
+- Manifest with `binary_classify` resolves to a real
+  `BinaryClassifyEvaluation` (not `SignalBasedEvaluation`).
+- `strategy_configs` flow through — `easy_max_turns` and
+  `not_easy_max_turns` land on `strategy._config`.
+- Absent `strategy_configs` preserves `BinaryClassifyConfig()`
+  defaults.
+- `configure(...)` ignores unknown keys.
+- `configure({})` is a no-op on a pre-configured strategy.
+- The default registry still exposes the three pre-existing
+  strategies (regression guard against accidental replacement).
+
+Full suite: 1029 passed, 18 skipped. Ruff + format clean.
+
 ## [0.24.0] — 2026-04-20
 
 Additive release on top of 0.23.0. Introduces `Pipeline.attach_runtime(...)`,
