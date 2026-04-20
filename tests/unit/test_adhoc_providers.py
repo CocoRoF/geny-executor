@@ -221,6 +221,27 @@ class TestFromManifestExternalProviders:
         Pipeline.from_manifest(manifest, adhoc_providers=[provider], tool_registry=registry)
         assert set(registry.list_names()) == {"builtin", "alpha"}
 
+    def test_system_stage_sees_populated_registry_after_from_manifest(self):
+        """Regression: a manifest with s03_system + external tools must
+        leave SystemStage._tool_registry pointing at the populated
+        registry, not at None. Otherwise state.tools stays empty, the
+        LLM never learns about the tools, and the model falls back to
+        emitting XML-style tool calls as plain text."""
+        from geny_executor.core.environment import StageManifestEntry
+
+        entries = [StageManifestEntry(order=3, name="system")]
+        manifest = EnvironmentManifest(
+            stages=[e.to_dict() for e in entries],
+            tools=ToolsSnapshot(external=["alpha"]),
+        )
+        provider = _DictProvider({"alpha": _NamedTool("alpha")})
+        pipeline = Pipeline.from_manifest(manifest, adhoc_providers=[provider])
+
+        system_stage = pipeline.get_stage(3)
+        assert system_stage is not None
+        assert system_stage._tool_registry is pipeline.tool_registry
+        assert system_stage._tool_registry.get("alpha") is not None
+
 
 # ══════════════════════════════════════════════════════════
 # Pipeline.from_manifest_async — external + MCP coexist

@@ -317,6 +317,18 @@ class Pipeline:
         _register_external_tools(manifest, registry, adhoc_providers)
         pipeline._tool_registry = registry
 
+        # Stages that opt into a tool registry reference (SystemStage today)
+        # are instantiated *before* `_register_external_tools` populates the
+        # shared registry — construction-time kwargs therefore arrive as
+        # `tool_registry=None` and the stage has no way to publish
+        # `state.tools` at execute time. Inject the now-populated registry
+        # into any stage that still holds a None reference. Stages that
+        # already received a registry (tests, callers wiring manually)
+        # keep theirs unchanged.
+        for stage in pipeline._stages.values():
+            if hasattr(stage, "_tool_registry") and getattr(stage, "_tool_registry", None) is None:
+                stage._tool_registry = registry
+
         return pipeline
 
     @classmethod
