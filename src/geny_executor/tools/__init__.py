@@ -13,6 +13,7 @@ from geny_executor.tools.adhoc import (
     CompositeStep,
 )
 from geny_executor.tools.composer import ToolComposer, ToolInfo, ToolPreset
+from geny_executor.tools.providers import AdhocToolProvider
 from geny_executor.tools.scope import ToolScope, ToolScopeRule, ToolScopeManager
 from geny_executor.tools.sandbox import ToolSandbox, SandboxConfig, SandboxPolicy
 
@@ -35,6 +36,8 @@ __all__ = [
     "ToolComposer",
     "ToolInfo",
     "ToolPreset",
+    # Providers
+    "AdhocToolProvider",
     # Scope
     "ToolScope",
     "ToolScopeRule",

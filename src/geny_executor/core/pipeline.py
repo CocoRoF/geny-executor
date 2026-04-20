@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import uuid
-from typing import TYPE_CHECKING, Any, AsyncIterator, Callable, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, AsyncIterator, Callable, Dict, List, Optional, Sequence
 
 from geny_executor.core.config import PipelineConfig
 from geny_executor.core.errors import StageError
@@ -16,6 +17,11 @@ from geny_executor.events.types import PipelineEvent
 
 if TYPE_CHECKING:
     from geny_executor.core.environment import EnvironmentManifest, StageManifestEntry
+    from geny_executor.tools.providers import AdhocToolProvider
+    from geny_executor.tools.registry import ToolRegistry
+
+
+logger = logging.getLogger(__name__)
 
 
 # Stages whose default/openai/google artifacts require an ``api_key`` kwarg.
@@ -74,6 +80,47 @@ def _mcp_configs_from_manifest(manifest: "EnvironmentManifest") -> Dict[str, Any
             headers=dict(raw.get("headers", {})),
         )
     return configs
+
+
+def _register_external_tools(
+    manifest: "EnvironmentManifest",
+    registry: "ToolRegistry",
+    providers: Sequence["AdhocToolProvider"],
+) -> None:
+    """Register every ``manifest.tools.external`` name against *providers*.
+
+    Walks ``manifest.tools.external`` in declared order. For each name,
+    queries the providers left-to-right and registers the first
+    non-``None`` :class:`Tool` they return. Names that no provider
+    claims are skipped with a warning — the manifest may legitimately
+    reference a tool that a given deployment chose not to wire, and the
+    pipeline should remain constructible in that case.
+    """
+    external_names = list(getattr(manifest.tools, "external", []) or [])
+    if not external_names or not providers:
+        if external_names and not providers:
+            logger.warning(
+                "manifest declares %d external tool(s) but no AdhocToolProvider "
+                "was supplied: %s",
+                len(external_names),
+                external_names,
+            )
+        return
+
+    for name in external_names:
+        tool = None
+        for provider in providers:
+            tool = provider.get(name)
+            if tool is not None:
+                break
+        if tool is None:
+            logger.warning(
+                "external tool '%s' was declared in manifest but no "
+                "AdhocToolProvider supplied it — skipping",
+                name,
+            )
+            continue
+        registry.register(tool)
 
 
 def _stage_kwargs_for_entry(entry: "StageManifestEntry", *, api_key: str) -> Dict[str, Any]:
@@ -174,6 +221,8 @@ class Pipeline:
         *,
         api_key: Optional[str] = None,
         strict: bool = True,
+        adhoc_providers: Sequence["AdhocToolProvider"] = (),
+        tool_registry: Optional["ToolRegistry"] = None,
     ) -> "Pipeline":
         """Construct a ready-to-run Pipeline from an :class:`EnvironmentManifest`.
 
@@ -202,6 +251,19 @@ class Pipeline:
                 ``manifest.pipeline`` is used instead.
             strict: Fail on stage instantiation / schema errors versus
                 dropping the offending stage.
+            adhoc_providers: Host-supplied
+                :class:`~geny_executor.tools.providers.AdhocToolProvider`
+                implementations. The pipeline walks
+                ``manifest.tools.external`` and registers the first
+                provider that claims each name into ``tool_registry``.
+                Names that no provider claims are skipped with a
+                warning. Pass an empty sequence (default) to disable the
+                external-provider path.
+            tool_registry: Existing registry to populate with
+                provider-backed tools. When omitted a fresh empty
+                registry is created. Attached to the returned pipeline
+                as ``pipeline.tool_registry`` so callers can reach it
+                without re-plumbing.
 
         Returns:
             A :class:`Pipeline` with every registered stage reflecting the
@@ -210,9 +272,12 @@ class Pipeline:
         """
         from geny_executor.core.artifact import create_stage
         from geny_executor.core.mutation import PipelineMutator
+        from geny_executor.tools.registry import ToolRegistry
 
         pipeline_config = _pipeline_config_from_manifest(manifest, api_key=api_key)
         pipeline = cls(pipeline_config)
+
+        registry = tool_registry if tool_registry is not None else ToolRegistry()
 
         entries = sorted(manifest.stage_entries(), key=lambda e: e.order)
         effective_key = api_key if api_key is not None else pipeline_config.api_key
@@ -247,6 +312,9 @@ class Pipeline:
                         f"{'; '.join(errors)}"
                     )
 
+        _register_external_tools(manifest, registry, adhoc_providers)
+        pipeline._tool_registry = registry
+
         return pipeline
 
     @classmethod
@@ -256,12 +324,13 @@ class Pipeline:
         *,
         api_key: Optional[str] = None,
         strict: bool = True,
-        tool_registry: Optional[Any] = None,
+        adhoc_providers: Sequence["AdhocToolProvider"] = (),
+        tool_registry: Optional["ToolRegistry"] = None,
     ) -> "Pipeline":
         """Async sibling of :meth:`from_manifest` that also wires MCP.
 
-        In addition to the stage assembly :meth:`from_manifest` performs,
-        this variant:
+        In addition to the stage assembly and external-provider
+        registration :meth:`from_manifest` performs, this variant:
 
         1. Reads ``manifest.tools.mcp_servers`` and builds an
            :class:`MCPManager`.
@@ -277,22 +346,35 @@ class Pipeline:
            pipeline so downstream callers can reach them via
            ``pipeline.mcp_manager`` / ``pipeline.tool_registry``.
 
+        The ``adhoc_providers`` kwarg is forwarded to the inner
+        :meth:`from_manifest` call, so ``manifest.tools.external`` names
+        get registered into the same registry the MCP adapters land in —
+        a single unified tool surface.
+
         Manifests with no MCP servers skip the connect pass entirely —
         ``pipeline.mcp_manager`` is an empty :class:`MCPManager` in that
-        case and ``pipeline.tool_registry`` is whatever the caller
-        passed in (or a fresh empty registry).
+        case and ``pipeline.tool_registry`` is the registry populated
+        with whatever external providers claimed from
+        ``manifest.tools.external``.
 
         Raises:
             MCPConnectionError: If any declared MCP server fails to
                 connect, initialize, or announce its tools. No partial
                 state is retained.
         """
-        from geny_executor.tools.mcp.manager import MCPManager, MCPServerConfig
+        from geny_executor.tools.mcp.manager import MCPManager
         from geny_executor.tools.registry import ToolRegistry
 
-        pipeline = cls.from_manifest(manifest, api_key=api_key, strict=strict)
-
         registry = tool_registry if tool_registry is not None else ToolRegistry()
+
+        pipeline = cls.from_manifest(
+            manifest,
+            api_key=api_key,
+            strict=strict,
+            adhoc_providers=adhoc_providers,
+            tool_registry=registry,
+        )
+
         manager = MCPManager()
 
         configs = _mcp_configs_from_manifest(manifest)
