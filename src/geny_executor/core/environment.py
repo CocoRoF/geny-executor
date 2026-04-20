@@ -67,11 +67,21 @@ class EnvironmentMetadata:
 
 @dataclass
 class ToolsSnapshot:
-    """Snapshot of the tool configuration."""
+    """Snapshot of the tool configuration.
+
+    ``external`` is a whitelist of names supplied by host-side
+    :class:`~geny_executor.tools.providers.AdhocToolProvider`
+    implementations. Unlike ``built_in`` / ``adhoc`` / ``mcp_servers``,
+    these tools are not serializable into the manifest body — the
+    manifest only records *which provider-backed names are active* for
+    this environment. The pipeline resolves each name against the
+    ``adhoc_providers`` passed to :meth:`Pipeline.from_manifest`.
+    """
 
     built_in: List[str] = field(default_factory=list)
     adhoc: List[Dict[str, Any]] = field(default_factory=list)
     mcp_servers: List[Dict[str, Any]] = field(default_factory=list)
+    external: List[str] = field(default_factory=list)
     scope: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -79,6 +89,7 @@ class ToolsSnapshot:
             "built_in": list(self.built_in),
             "adhoc": list(self.adhoc),
             "mcp_servers": list(self.mcp_servers),
+            "external": list(self.external),
             "scope": dict(self.scope),
         }
 
@@ -88,6 +99,7 @@ class ToolsSnapshot:
             built_in=data.get("built_in", []),
             adhoc=data.get("adhoc", []),
             mcp_servers=data.get("mcp_servers", []),
+            external=data.get("external", []),
             scope=data.get("scope", {}),
         )
 
