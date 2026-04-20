@@ -190,6 +190,9 @@ class Pipeline:
         self._event_bus = EventBus()
         self._mcp_manager: Any = None  # MCPManager | None — set by from_manifest_async
         self._tool_registry: Any = None  # ToolRegistry | None — set by from_manifest_async
+        self._has_started: bool = (
+            False  # flips once run()/run_stream() begins; gates attach_runtime
+        )
 
     @property
     def mcp_manager(self) -> Any:
@@ -417,6 +420,107 @@ class Pipeline:
         """All registered stages, sorted by order."""
         return sorted(self._stages.values(), key=lambda s: s.order)
 
+    # ── Runtime injection (for manifest-built pipelines) ──
+
+    def attach_runtime(
+        self,
+        *,
+        memory_retriever: Optional[Any] = None,
+        memory_strategy: Optional[Any] = None,
+        memory_persistence: Optional[Any] = None,
+    ) -> None:
+        """Inject session-scoped runtime objects into a manifest-built pipeline.
+
+        Manifests carry declarative stage layout (stage order, artifact name,
+        strategy choices, configs). They intentionally cannot encode runtime
+        objects like memory managers or LLM callbacks — those are per-session
+        and not serializable. After constructing a pipeline via
+        :meth:`from_manifest_async`, hosts call this helper to plug those
+        objects in before :meth:`run` / :meth:`run_stream`.
+
+        For each kwarg that is not ``None`` this helper finds the relevant
+        stage and replaces the corresponding slot's ``.strategy`` with the
+        provided instance:
+
+        - ``memory_retriever`` → Stage 2 (Context), slot ``retriever``.
+        - ``memory_strategy`` → Stage 15 (Memory), slot ``strategy``.
+        - ``memory_persistence`` → Stage 15 (Memory), slot ``persistence``.
+
+        If a target stage is absent (manifest excluded it) the kwarg for
+        that stage is silently ignored — a pipeline without a Memory stage
+        simply has nowhere to attach memory runtime.
+
+        Args:
+            memory_retriever: A :class:`MemoryRetriever` subclass instance
+                (e.g. :class:`GenyMemoryRetriever`). Host is responsible for
+                constructing it with any ``llm_gate`` or
+                ``curated_knowledge_manager`` callbacks it needs.
+            memory_strategy: A :class:`MemoryUpdateStrategy` subclass
+                instance (e.g. :class:`GenyMemoryStrategy`). Host wires any
+                ``llm_reflect`` callback at construction time.
+            memory_persistence: A :class:`ConversationPersistence` subclass
+                instance (e.g. :class:`GenyPersistence`).
+
+        Raises:
+            RuntimeError: If the pipeline has already started a run. State
+                from the prior run has already captured references to the
+                pre-attach slot values; swapping them now would produce
+                a mixed-runtime pipeline whose behavior is hard to reason
+                about. Build a fresh pipeline and attach before running.
+
+        Notes:
+            Idempotent when called multiple times *before* the first run —
+            the last call wins for each kwarg. After a run has started,
+            this method is a hard error rather than a quiet no-op so hosts
+            notice construction-order bugs immediately.
+        """
+        if self._has_started:
+            raise RuntimeError(
+                "Pipeline.attach_runtime() called after the pipeline has "
+                "started running. Runtime objects must be attached before "
+                "the first run() / run_stream() invocation; otherwise prior "
+                "stage state has already captured references to the old "
+                "values. Construct a fresh pipeline via from_manifest_async "
+                "and attach before running."
+            )
+
+        if memory_retriever is not None:
+            self._set_stage_slot_strategy(
+                stage_name="context", slot_name="retriever", strategy=memory_retriever
+            )
+
+        if memory_strategy is not None:
+            self._set_stage_slot_strategy(
+                stage_name="memory", slot_name="strategy", strategy=memory_strategy
+            )
+
+        if memory_persistence is not None:
+            self._set_stage_slot_strategy(
+                stage_name="memory", slot_name="persistence", strategy=memory_persistence
+            )
+
+    def _set_stage_slot_strategy(self, *, stage_name: str, slot_name: str, strategy: Any) -> None:
+        """Replace a named slot's strategy on the stage registered under *stage_name*.
+
+        Silent no-op when the stage is absent — callers inspect the manifest
+        to know whether a stage is present; attach_runtime should tolerate
+        manifests that omit Context or Memory.
+        """
+        for stage in self._stages.values():
+            if stage.name != stage_name:
+                continue
+            slots = stage.get_strategy_slots() if hasattr(stage, "get_strategy_slots") else {}
+            slot = slots.get(slot_name)
+            if slot is None:
+                logger.debug(
+                    "attach_runtime: stage '%s' has no slot '%s' (skipping)",
+                    stage_name,
+                    slot_name,
+                )
+                return
+            slot.strategy = strategy
+            return
+
     # ── Execution ──
 
     async def run(self, input: Any, state: Optional[PipelineState] = None) -> PipelineResult:
@@ -624,6 +728,7 @@ class Pipeline:
         if not state.pipeline_id:
             state.pipeline_id = uuid.uuid4().hex[:12]
         self._config.apply_to_state(state)
+        self._has_started = True
         return state
 
     async def _try_run_stage(self, order: int, current: Any, state: PipelineState) -> Any:
