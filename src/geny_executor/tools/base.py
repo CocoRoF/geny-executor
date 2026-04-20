@@ -43,17 +43,42 @@ class ToolResult:
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     def to_api_format(self, tool_use_id: str) -> Dict[str, Any]:
-        """Convert to Anthropic API tool_result format."""
+        """Convert to Anthropic API tool_result format.
+
+        Structured-error payloads (``content`` is a dict with a top-level
+        ``"error"`` object containing ``code`` and ``message``) are
+        rendered with a leading ``ERROR <code>: <message>`` header line so
+        the model has a predictable affordance to detect failure without
+        parsing the JSON body.
+        """
         result: Dict[str, Any] = {
             "type": "tool_result",
             "tool_use_id": tool_use_id,
         }
-        if isinstance(self.content, str):
-            result["content"] = self.content
-        elif isinstance(self.content, list):
-            result["content"] = self.content
+
+        content = self.content
+        if isinstance(content, str):
+            result["content"] = content
+        elif isinstance(content, list):
+            result["content"] = content
+        elif isinstance(content, dict):
+            import json as _json
+
+            err_block = content.get("error")
+            if (
+                isinstance(err_block, dict)
+                and isinstance(err_block.get("code"), str)
+                and isinstance(err_block.get("message"), str)
+            ):
+                header = f"ERROR {err_block['code']}: {err_block['message']}"
+                body = _json.dumps(content, ensure_ascii=False, default=str)
+                result["content"] = f"{header}\n{body}"
+            else:
+                result["content"] = _json.dumps(
+                    content, ensure_ascii=False, default=str
+                )
         else:
-            result["content"] = str(self.content)
+            result["content"] = str(content)
 
         if self.is_error:
             result["is_error"] = True
