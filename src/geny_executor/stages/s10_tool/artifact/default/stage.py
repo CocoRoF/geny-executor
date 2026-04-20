@@ -120,7 +120,9 @@ class ToolStage(Stage[Any, Any]):
         if isinstance(router, RegistryRouter):
             router.bind_registry(self._registry)
 
-        results = await self._executor.execute_all(tool_calls, router, ctx)
+        results = await self._executor.execute_all(
+            tool_calls, router, ctx, on_event=state.add_event
+        )
 
         state.add_message("user", results)
         state.tool_results = results
