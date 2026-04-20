@@ -4,6 +4,22 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.22.1] — 2026-04-20
+
+CI hygiene patch on top of 0.22.0. No runtime behavior change — same
+public API, same import surface, identical test outcomes (1003 passed,
+5 skipped).
+
+### Fixed
+
+- `ruff check` now passes on `main`: dropped two unused imports that
+  slipped through the 0.22.0 PRs (`ToolError` in
+  `tools/mcp/adapter.py`, `MCPServerConfig` in
+  `tests/unit/test_adhoc_providers.py`). (#27)
+- `ruff format --check` now passes on `main`: eleven files that the
+  0.22.0 PRs touched diverged from the project's default ruff
+  formatter; applied `ruff format` so CI stays green. (#28)
+
 ## [0.22.0] — 2026-04-20
 
 Tool / MCP integration hardening release. Bundles four breaking

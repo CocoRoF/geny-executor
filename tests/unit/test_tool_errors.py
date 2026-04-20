@@ -119,9 +119,7 @@ class TestToolErrorPayload:
 
     def test_payload_copies_details(self):
         details = {"key": "value"}
-        err = ToolError(
-            code=ToolErrorCode.TOOL_CRASHED, message="m", details=details
-        )
+        err = ToolError(code=ToolErrorCode.TOOL_CRASHED, message="m", details=details)
         payload = err.to_payload()
         payload["error"]["details"]["mutated"] = True
         assert "mutated" not in details

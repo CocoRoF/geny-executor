@@ -74,9 +74,7 @@ class ToolResult:
                 body = _json.dumps(content, ensure_ascii=False, default=str)
                 result["content"] = f"{header}\n{body}"
             else:
-                result["content"] = _json.dumps(
-                    content, ensure_ascii=False, default=str
-                )
+                result["content"] = _json.dumps(content, ensure_ascii=False, default=str)
         else:
             result["content"] = str(content)
 

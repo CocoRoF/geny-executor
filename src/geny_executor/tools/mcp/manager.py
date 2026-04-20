@@ -158,27 +158,19 @@ class MCPServerConnection:
             await self._client_session.__aenter__()
         except BaseException as exc:
             await self._safe_cleanup()
-            raise MCPConnectionError(
-                self.config.name, "connect", cause=exc
-            ) from exc
+            raise MCPConnectionError(self.config.name, "connect", cause=exc) from exc
 
         try:
             await asyncio.wait_for(self._client_session.initialize(), timeout=10.0)
         except BaseException as exc:
             await self._safe_cleanup()
-            raise MCPConnectionError(
-                self.config.name, "initialize", cause=exc
-            ) from exc
+            raise MCPConnectionError(self.config.name, "initialize", cause=exc) from exc
 
         try:
-            result = await asyncio.wait_for(
-                self._client_session.list_tools(), timeout=10.0
-            )
+            result = await asyncio.wait_for(self._client_session.list_tools(), timeout=10.0)
         except BaseException as exc:
             await self._safe_cleanup()
-            raise MCPConnectionError(
-                self.config.name, "list_tools", cause=exc
-            ) from exc
+            raise MCPConnectionError(self.config.name, "list_tools", cause=exc) from exc
 
         self._tools = [
             {
@@ -246,8 +238,7 @@ class MCPServerConnection:
         """
         if not self._connected:
             raise RuntimeError(
-                f"MCP server '{self.config.name}' is not connected. "
-                f"Cannot call tool '{tool_name}'."
+                f"MCP server '{self.config.name}' is not connected. Cannot call tool '{tool_name}'."
             )
         if self._client_session is None:
             raise RuntimeError(
@@ -342,9 +333,7 @@ class MCPManager:
         async def _connect_one(name: str, cfg: MCPServerConfig) -> None:
             await self.connect(name, cfg)
 
-        tasks = [
-            asyncio.create_task(_connect_one(name, cfg)) for name, cfg in configs.items()
-        ]
+        tasks = [asyncio.create_task(_connect_one(name, cfg)) for name, cfg in configs.items()]
         try:
             await asyncio.gather(*tasks)
         except BaseException:

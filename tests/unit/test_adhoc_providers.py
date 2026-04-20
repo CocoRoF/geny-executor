@@ -69,7 +69,9 @@ class _DictProvider:
         return self._tools.get(name)
 
 
-def _manifest_with(*, external: List[str] = (), mcp: List[Dict[str, Any]] = ()) -> EnvironmentManifest:
+def _manifest_with(
+    *, external: List[str] = (), mcp: List[Dict[str, Any]] = ()
+) -> EnvironmentManifest:
     return EnvironmentManifest(
         stages=[],
         tools=ToolsSnapshot(
@@ -93,6 +95,7 @@ class TestAdhocToolProviderProtocol:
         class _Incomplete:
             def list_names(self) -> List[str]:
                 return []
+
             # no .get
 
         assert not isinstance(_Incomplete(), AdhocToolProvider)
@@ -115,9 +118,7 @@ class TestExternalFieldRoundTrip:
         assert data["external"] == ["news_search", "search_engine"]
 
     def test_from_dict_reads_external(self):
-        snap = ToolsSnapshot.from_dict(
-            {"built_in": [], "external": ["x"], "scope": {}}
-        )
+        snap = ToolsSnapshot.from_dict({"built_in": [], "external": ["x"], "scope": {}})
         assert snap.external == ["x"]
 
     def test_from_dict_missing_external_defaults_empty(self):
@@ -143,9 +144,7 @@ class TestFromManifestExternalProviders:
     def test_external_name_in_manifest_registers_provider_tool(self):
         manifest = _manifest_with(external=["news_search"])
         provider = _DictProvider({"news_search": _NamedTool("news_search")})
-        pipeline = Pipeline.from_manifest(
-            manifest, adhoc_providers=[provider]
-        )
+        pipeline = Pipeline.from_manifest(manifest, adhoc_providers=[provider])
         assert pipeline.tool_registry.get("news_search") is not None
 
     def test_provider_tool_not_in_external_is_ignored(self):
@@ -159,18 +158,14 @@ class TestFromManifestExternalProviders:
                 "extra_tool": _NamedTool("extra_tool"),
             }
         )
-        pipeline = Pipeline.from_manifest(
-            manifest, adhoc_providers=[provider]
-        )
+        pipeline = Pipeline.from_manifest(manifest, adhoc_providers=[provider])
         assert pipeline.tool_registry.list_names() == ["news_search"]
 
     def test_missing_provider_for_external_name_is_skipped(self, caplog):
         manifest = _manifest_with(external=["not_supplied"])
         provider = _DictProvider({"something_else": _NamedTool("something_else")})
         with caplog.at_level("WARNING"):
-            pipeline = Pipeline.from_manifest(
-                manifest, adhoc_providers=[provider]
-            )
+            pipeline = Pipeline.from_manifest(manifest, adhoc_providers=[provider])
         assert pipeline.tool_registry.list_names() == []
         assert any("not_supplied" in rec.message for rec in caplog.records)
 
@@ -190,9 +185,7 @@ class TestFromManifestExternalProviders:
         prov_a = _DictProvider({"alpha": winner})
         prov_b = _DictProvider({"alpha": loser})
         manifest = _manifest_with(external=["alpha"])
-        pipeline = Pipeline.from_manifest(
-            manifest, adhoc_providers=[prov_a, prov_b]
-        )
+        pipeline = Pipeline.from_manifest(manifest, adhoc_providers=[prov_a, prov_b])
         assert pipeline.tool_registry.get("alpha") is winner
 
     def test_second_provider_fills_gap_when_first_returns_none(self):
@@ -201,17 +194,13 @@ class TestFromManifestExternalProviders:
         prov_a = _DictProvider({})  # supplies nothing
         prov_b = _DictProvider({"beta": _NamedTool("beta")})
         manifest = _manifest_with(external=["beta"])
-        pipeline = Pipeline.from_manifest(
-            manifest, adhoc_providers=[prov_a, prov_b]
-        )
+        pipeline = Pipeline.from_manifest(manifest, adhoc_providers=[prov_a, prov_b])
         assert pipeline.tool_registry.get("beta") is not None
 
     def test_empty_external_skips_providers(self):
         manifest = _manifest_with(external=[])
         provider = _DictProvider({"unused": _NamedTool("unused")})
-        pipeline = Pipeline.from_manifest(
-            manifest, adhoc_providers=[provider]
-        )
+        pipeline = Pipeline.from_manifest(manifest, adhoc_providers=[provider])
         assert pipeline.tool_registry.list_names() == []
 
     def test_caller_supplied_registry_is_populated(self):
@@ -229,9 +218,7 @@ class TestFromManifestExternalProviders:
         registry = ToolRegistry().register(preexisting)
         manifest = _manifest_with(external=["alpha"])
         provider = _DictProvider({"alpha": _NamedTool("alpha")})
-        Pipeline.from_manifest(
-            manifest, adhoc_providers=[provider], tool_registry=registry
-        )
+        Pipeline.from_manifest(manifest, adhoc_providers=[provider], tool_registry=registry)
         assert set(registry.list_names()) == {"builtin", "alpha"}
 
 
@@ -245,9 +232,7 @@ class TestFromManifestAsyncExternalAndMcp:
     async def test_external_only_registers_provider_tools(self):
         manifest = _manifest_with(external=["alpha"])
         provider = _DictProvider({"alpha": _NamedTool("alpha")})
-        pipeline = await Pipeline.from_manifest_async(
-            manifest, adhoc_providers=[provider]
-        )
+        pipeline = await Pipeline.from_manifest_async(manifest, adhoc_providers=[provider])
         assert pipeline.tool_registry.list_names() == ["alpha"]
         assert pipeline.mcp_manager.list_servers() == []
 
@@ -257,9 +242,7 @@ class TestFromManifestAsyncExternalAndMcp:
             for name, cfg in configs.items():
                 conn = MCPServerConnection(cfg)
                 conn._connected = True
-                conn._tools = [
-                    {"name": "ping", "description": "", "input_schema": {}}
-                ]
+                conn._tools = [{"name": "ping", "description": "", "input_schema": {}}]
                 self._servers[name] = conn
                 self._configs[name] = cfg
 
@@ -270,18 +253,14 @@ class TestFromManifestAsyncExternalAndMcp:
             mcp=[{"name": "srv", "command": "noop"}],
         )
         provider = _DictProvider({"alpha": _NamedTool("alpha")})
-        pipeline = await Pipeline.from_manifest_async(
-            manifest, adhoc_providers=[provider]
-        )
+        pipeline = await Pipeline.from_manifest_async(manifest, adhoc_providers=[provider])
         assert set(pipeline.tool_registry.list_names()) == {
             "alpha",
             "mcp__srv__ping",
         }
 
     @pytest.mark.asyncio
-    async def test_mcp_failure_does_not_hide_external_wiring_flow(
-        self, monkeypatch
-    ):
+    async def test_mcp_failure_does_not_hide_external_wiring_flow(self, monkeypatch):
         """Even if external tools were registered before MCP blew up,
         the caller should see :class:`MCPConnectionError` surface —
         the failure path takes precedence over partial success."""
@@ -301,6 +280,4 @@ class TestFromManifestAsyncExternalAndMcp:
         )
         provider = _DictProvider({"alpha": _NamedTool("alpha")})
         with pytest.raises(MCPConnectionError):
-            await Pipeline.from_manifest_async(
-                manifest, adhoc_providers=[provider]
-            )
+            await Pipeline.from_manifest_async(manifest, adhoc_providers=[provider])

@@ -98,9 +98,7 @@ class _FakeSession:
         return self._call_result
 
 
-def _install_fake_connect(
-    conn: MCPServerConnection, *, session: _FakeSession
-) -> None:
+def _install_fake_connect(conn: MCPServerConnection, *, session: _FakeSession) -> None:
     """Bypass the real transport layer and attach *session* directly.
 
     Avoids needing a real MCP subprocess — the plumbing under test
@@ -126,19 +124,13 @@ def _install_fake_connect(
             await _asyncio.wait_for(conn._client_session.initialize(), timeout=10.0)
         except BaseException as exc:
             await conn._safe_cleanup()
-            raise MCPConnectionError(
-                conn.config.name, "initialize", cause=exc
-            ) from exc
+            raise MCPConnectionError(conn.config.name, "initialize", cause=exc) from exc
 
         try:
-            result = await _asyncio.wait_for(
-                conn._client_session.list_tools(), timeout=10.0
-            )
+            result = await _asyncio.wait_for(conn._client_session.list_tools(), timeout=10.0)
         except BaseException as exc:
             await conn._safe_cleanup()
-            raise MCPConnectionError(
-                conn.config.name, "list_tools", cause=exc
-            ) from exc
+            raise MCPConnectionError(conn.config.name, "list_tools", cause=exc) from exc
 
         conn._tools = [
             {
@@ -171,9 +163,7 @@ class TestConnectionLifecycleErrors:
 
     @pytest.mark.asyncio
     async def test_missing_url_for_http_raises(self):
-        conn = MCPServerConnection(
-            MCPServerConfig(name="web", transport="http", url="")
-        )
+        conn = MCPServerConnection(MCPServerConfig(name="web", transport="http", url=""))
         with pytest.raises(MCPConnectionError) as excinfo:
             await conn.connect()
         assert excinfo.value.phase == "connect"
@@ -303,12 +293,8 @@ class TestServerRegistryIntegration:
 
         monkeypatch.setattr(MCPManager, "connect", fake_connect)
 
-        await manager.add_server(
-            MCPServerConfig(name="fs", command="noop"), registry=registry
-        )
-        await manager.add_server(
-            MCPServerConfig(name="git", command="noop"), registry=registry
-        )
+        await manager.add_server(MCPServerConfig(name="fs", command="noop"), registry=registry)
+        await manager.add_server(MCPServerConfig(name="git", command="noop"), registry=registry)
 
         assert {t for t in registry.list_names()} == {"mcp__fs__ls", "mcp__git__ls"}
 
@@ -334,9 +320,7 @@ class TestNormalizeMcpResult:
         assert _normalize_mcp_result(result) == "hello"
 
     def test_multiple_blocks_return_list(self):
-        result = _FakeCallToolResult(
-            [_FakeBlock(text="one"), _FakeBlock(text="two")]
-        )
+        result = _FakeCallToolResult([_FakeBlock(text="one"), _FakeBlock(text="two")])
         normalized = _normalize_mcp_result(result)
         assert isinstance(normalized, list)
         assert [b["text"] for b in normalized] == ["one", "two"]
@@ -409,17 +393,13 @@ class TestFromManifestAsync:
             for name, cfg in configs.items():
                 conn = MCPServerConnection(cfg)
                 conn._connected = True
-                conn._tools = [
-                    {"name": "ping", "description": "", "input_schema": {}}
-                ]
+                conn._tools = [{"name": "ping", "description": "", "input_schema": {}}]
                 self._servers[name] = conn
                 self._configs[name] = cfg
 
         monkeypatch.setattr(MCPManager, "connect_all", fake_connect_all)
 
-        manifest = _blank_manifest_with_servers(
-            [{"name": "alpha", "command": "noop"}]
-        )
+        manifest = _blank_manifest_with_servers([{"name": "alpha", "command": "noop"}])
         pipeline = await Pipeline.from_manifest_async(manifest)
 
         assert pipeline.mcp_manager.list_servers() == ["alpha"]
@@ -438,9 +418,7 @@ class TestFromManifestAsync:
         monkeypatch.setattr(MCPManager, "connect_all", fake_connect_all)
         monkeypatch.setattr(MCPManager, "disconnect_all", fake_disconnect_all)
 
-        manifest = _blank_manifest_with_servers(
-            [{"name": "alpha", "command": "noop"}]
-        )
+        manifest = _blank_manifest_with_servers([{"name": "alpha", "command": "noop"}])
         with pytest.raises(MCPConnectionError):
             await Pipeline.from_manifest_async(manifest)
         assert disconnected == [True]
@@ -459,24 +437,23 @@ class TestFromManifestAsync:
 
         class _Dummy(Tool):
             @property
-            def name(self): return "builtin"
+            def name(self):
+                return "builtin"
 
             @property
-            def description(self): return ""
+            def description(self):
+                return ""
 
             @property
-            def input_schema(self): return {"type": "object"}
+            def input_schema(self):
+                return {"type": "object"}
 
             async def execute(self, input, context):
                 raise NotImplementedError
 
         registry = ToolRegistry().register(_Dummy())
-        manifest = _blank_manifest_with_servers(
-            [{"name": "alpha", "command": "noop"}]
-        )
-        pipeline = await Pipeline.from_manifest_async(
-            manifest, tool_registry=registry
-        )
+        manifest = _blank_manifest_with_servers([{"name": "alpha", "command": "noop"}])
+        pipeline = await Pipeline.from_manifest_async(manifest, tool_registry=registry)
         # Both the built-in tool and the discovered MCP adapter land in
         # the same registry the caller passed in.
         assert set(registry.list_names()) == {"builtin", "mcp__alpha__ping"}

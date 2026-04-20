@@ -84,7 +84,7 @@ from geny_executor.memory import (
     GenyPresets,
 )
 
-__version__ = "0.22.0"
+__version__ = "0.22.1"
 
 __all__ = [
     # Core
