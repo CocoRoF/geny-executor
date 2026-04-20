@@ -120,8 +120,7 @@ def _register_built_in_tools(
         cls = BUILT_IN_TOOL_CLASSES.get(name)
         if cls is None:
             logger.warning(
-                "manifest.tools.built_in contains unknown name '%s' "
-                "— expected one of %s",
+                "manifest.tools.built_in contains unknown name '%s' — expected one of %s",
                 name,
                 sorted(BUILT_IN_TOOL_CLASSES.keys()),
             )

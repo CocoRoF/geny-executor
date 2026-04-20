@@ -58,9 +58,7 @@ class _NamedTool(Tool):
     def input_schema(self) -> Dict[str, Any]:
         return {"type": "object", "properties": {}}
 
-    async def execute(
-        self, input: Dict[str, Any], context: ToolContext
-    ) -> ToolResult:
+    async def execute(self, input: Dict[str, Any], context: ToolContext) -> ToolResult:
         return ToolResult(content=self._name)
 
 
@@ -191,9 +189,7 @@ def test_built_in_and_external_coexist_under_different_names() -> None:
     provider = _DictProvider({"news_search": _NamedTool("news_search")})
     pipeline = Pipeline.from_manifest(manifest, adhoc_providers=[provider])
 
-    assert isinstance(
-        pipeline.tool_registry.get("Write"), BUILT_IN_TOOL_CLASSES["Write"]
-    )
+    assert isinstance(pipeline.tool_registry.get("Write"), BUILT_IN_TOOL_CLASSES["Write"])
     assert pipeline.tool_registry.get("news_search") is not None
 
 
@@ -243,7 +239,5 @@ async def test_write_tool_refuses_path_outside_working_dir(tmp_path) -> None:
         {"file_path": str(outside), "content": "should fail"},
         ctx,
     )
-    assert result.is_error is True, (
-        "Write must reject paths outside working_dir"
-    )
+    assert result.is_error is True, "Write must reject paths outside working_dir"
     assert not outside.exists()
