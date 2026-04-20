@@ -317,17 +317,32 @@ class Pipeline:
         _register_external_tools(manifest, registry, adhoc_providers)
         pipeline._tool_registry = registry
 
-        # Stages that opt into a tool registry reference (SystemStage today)
-        # are instantiated *before* `_register_external_tools` populates the
-        # shared registry — construction-time kwargs therefore arrive as
-        # `tool_registry=None` and the stage has no way to publish
-        # `state.tools` at execute time. Inject the now-populated registry
-        # into any stage that still holds a None reference. Stages that
-        # already received a registry (tests, callers wiring manually)
-        # keep theirs unchanged.
+        # Stages that hold a tool-registry reference are instantiated at
+        # line 287 *before* `_register_external_tools` populates the
+        # shared registry. Unless we rebind post-hoc, those stages keep
+        # their construction-time references (None for SystemStage; a
+        # freshly-allocated empty `ToolRegistry()` for ToolStage) and
+        # never see the populated tools at execute time.
+        #
+        # SystemStage (``_tool_registry``): builds ``state.tools`` from
+        # the registry; a stale reference leaves ``state.tools`` empty
+        # so the API stage sends ``tools=None`` to Anthropic.
+        # ToolStage (``_registry``): the router looks up tool instances
+        # here; a stale empty reference makes every tool call resolve
+        # to ``unknown_tool`` even though the LLM was shown the schema.
+        #
+        # Both are rebound to the shared ``registry``. Callers that
+        # wired their own registry explicitly are left alone: for
+        # SystemStage, a non-None existing reference wins; for
+        # ToolStage, if the stage already holds the same object as
+        # ``registry`` (as happens when the caller passed it via the
+        # outer ``tool_registry`` kwarg), no rebind is needed.
         for stage in pipeline._stages.values():
             if hasattr(stage, "_tool_registry") and getattr(stage, "_tool_registry", None) is None:
                 stage._tool_registry = registry
+            if getattr(stage, "name", None) == "tool" and hasattr(stage, "_registry"):
+                if getattr(stage, "_registry") is not registry:
+                    stage._registry = registry
 
         return pipeline
 
