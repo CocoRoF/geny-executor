@@ -16,11 +16,15 @@ from geny_executor import Pipeline, PipelineConfig
 from geny_executor.stages.s02_context import ContextStage
 from geny_executor.stages.s02_context.interface import MemoryRetriever
 from geny_executor.stages.s02_context.types import MemoryChunk
+from geny_executor.stages.s03_system import SystemStage
+from geny_executor.stages.s03_system.interface import PromptBuilder
+from geny_executor.stages.s10_tool import ToolStage
 from geny_executor.stages.s15_memory import MemoryStage
 from geny_executor.stages.s15_memory.interface import (
     ConversationPersistence,
     MemoryUpdateStrategy,
 )
+from geny_executor.tools.base import ToolContext
 
 
 # ─── Test doubles ───
@@ -211,3 +215,130 @@ def test_attach_runtime_no_args_is_valid_noop():
 
     assert pipeline.get_stage(2)._retriever is baseline_retriever
     assert pipeline.get_stage(15)._strategy is baseline_strategy
+
+
+# ─── v0.26.0: system_builder / tool_context ───
+
+
+class _TrackedSystemBuilder(PromptBuilder):
+    """PromptBuilder stub that records invocation."""
+
+    def __init__(self, label: str):
+        self._label = label
+        self.built = False
+
+    @property
+    def name(self) -> str:
+        return f"tracked_builder:{self._label}"
+
+    @property
+    def description(self) -> str:
+        return "test system builder"
+
+    def build(self, state: Any) -> str:
+        self.built = True
+        return f"built by {self._label}"
+
+
+def _make_pipeline_with_system_and_tool() -> Pipeline:
+    pipeline = Pipeline(PipelineConfig(name="attach-runtime-v26-test"))
+    pipeline.register_stage(SystemStage())
+    pipeline.register_stage(ToolStage())
+    return pipeline
+
+
+def test_attach_runtime_replaces_system_builder():
+    pipeline = _make_pipeline_with_system_and_tool()
+    system_stage = pipeline.get_stage(3)
+
+    baseline = system_stage.get_strategy_slots()["builder"].strategy
+    assert baseline.name == "static"
+
+    builder = _TrackedSystemBuilder("sys")
+    pipeline.attach_runtime(system_builder=builder)
+
+    slot_strategy = system_stage.get_strategy_slots()["builder"].strategy
+    assert slot_strategy is builder
+    assert system_stage._builder is builder
+
+
+def test_attach_runtime_replaces_tool_context():
+    pipeline = _make_pipeline_with_system_and_tool()
+    tool_stage = pipeline.get_stage(10)
+
+    baseline_ctx = tool_stage._context
+    assert isinstance(baseline_ctx, ToolContext)
+
+    new_ctx = ToolContext(
+        working_dir="/tmp/session-foo",
+        storage_path="/tmp/session-foo/storage",
+        metadata={"session_label": "sys-test"},
+    )
+    pipeline.attach_runtime(tool_context=new_ctx)
+
+    assert tool_stage._context is new_ctx
+    assert tool_stage._context.working_dir == "/tmp/session-foo"
+    assert tool_stage._context.storage_path == "/tmp/session-foo/storage"
+    assert tool_stage._context.metadata == {"session_label": "sys-test"}
+
+
+def test_attach_runtime_system_builder_missing_stage_noop():
+    """system_builder silently skipped when no SystemStage is registered."""
+    pipeline = Pipeline(PipelineConfig(name="no-system"))
+    pipeline.register_stage(ContextStage())  # no SystemStage
+
+    pipeline.attach_runtime(system_builder=_TrackedSystemBuilder("nope"))
+
+    assert pipeline.get_stage(3) is None
+
+
+def test_attach_runtime_tool_context_missing_stage_noop():
+    """tool_context silently skipped when no ToolStage is registered."""
+    pipeline = Pipeline(PipelineConfig(name="no-tool"))
+    pipeline.register_stage(ContextStage())  # no ToolStage
+
+    pipeline.attach_runtime(tool_context=ToolContext(working_dir="/tmp/x"))
+
+    assert pipeline.get_stage(10) is None
+
+
+def test_attach_runtime_all_five_kwargs_together():
+    """Attaching memory + system + tool runtime in one call wires them all."""
+    pipeline = Pipeline(PipelineConfig(name="attach-runtime-full"))
+    pipeline.register_stage(ContextStage())
+    pipeline.register_stage(SystemStage())
+    pipeline.register_stage(ToolStage())
+    pipeline.register_stage(MemoryStage())
+
+    retriever = _TrackedRetriever("full")
+    strategy = _TrackedStrategy("full")
+    persistence = _TrackedPersistence("full")
+    builder = _TrackedSystemBuilder("full")
+    ctx = ToolContext(working_dir="/tmp/full", storage_path="/tmp/full/store")
+
+    pipeline.attach_runtime(
+        memory_retriever=retriever,
+        memory_strategy=strategy,
+        memory_persistence=persistence,
+        system_builder=builder,
+        tool_context=ctx,
+    )
+
+    assert pipeline.get_stage(2)._retriever is retriever
+    assert pipeline.get_stage(3)._builder is builder
+    assert pipeline.get_stage(10)._context is ctx
+    assert pipeline.get_stage(15)._strategy is strategy
+    assert pipeline.get_stage(15)._persistence is persistence
+
+
+@pytest.mark.asyncio
+async def test_attach_runtime_after_run_raises_for_v26_kwargs():
+    """system_builder / tool_context attach is also refused once pipeline has started."""
+    pipeline = _make_pipeline_with_system_and_tool()
+    pipeline._init_state(None)
+
+    with pytest.raises(RuntimeError, match="attach_runtime"):
+        pipeline.attach_runtime(system_builder=_TrackedSystemBuilder("late"))
+
+    with pytest.raises(RuntimeError, match="attach_runtime"):
+        pipeline.attach_runtime(tool_context=ToolContext(working_dir="/tmp/late"))

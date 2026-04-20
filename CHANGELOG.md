@@ -4,6 +4,94 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.26.0] — 2026-04-20
+
+Additive release on top of 0.25.0. Extends
+`Pipeline.attach_runtime(...)` with two new kwargs — `system_builder`
+and `tool_context` — so manifest-built pipelines can be fully wired
+for session-scoped behavior without reaching into stage internals.
+Before this release the host had to mutate `SystemStage._slots["builder"].strategy`
+and `ToolStage._context` by hand after `from_manifest_async`; now
+one call does it all.
+
+No breaking changes. Pipelines that don't pass the new kwargs behave
+identically to 0.25.0. The existing `memory_retriever` /
+`memory_strategy` / `memory_persistence` kwargs are untouched.
+
+### Added
+
+- **`attach_runtime(system_builder=...)`** — swaps Stage 3 (System)
+  slot `builder` with the supplied `PromptBuilder`. Hosts that
+  compose multi-block builders at session build time (e.g.
+  `ComposablePromptBuilder([PersonaBlock(...), DateTimeBlock(),
+  MemoryContextBlock()])`) can now attach them instead of baking
+  them into a manifest (manifests can only serialize a static
+  prompt string — block composition is runtime behavior).
+- **`attach_runtime(tool_context=...)`** — overwrites Stage 10
+  (Tool) `_context` with the supplied `ToolContext`. The attached
+  context supplies host-level session fields (`working_dir`,
+  `storage_path`, `env_vars`, `allowed_paths`, `metadata`). Note
+  that `session_id` is still overwritten inside Stage 10's
+  `execute` from the pipeline's per-run state — the attached
+  context carries values that persist across runs.
+- **Helper:** `Pipeline._set_tool_stage_context(...)` — internal
+  helper for the `tool_context` kwarg. `ToolContext` is not a
+  pluggable strategy slot (it is a data carrier), so it gets its
+  own narrow setter rather than piggy-backing on
+  `_set_stage_slot_strategy`.
+
+### Why
+
+Geny's manifest-first cutover
+(`Geny/dev_docs/20260420_3/plan/02_default_env_per_role.md` → PR 17)
+needs every session to flow through
+`from_manifest_async → attach_runtime → run`. Two things blocked a
+clean PR 17:
+
+1. **Composable system prompt.** Geny builds a
+   `ComposablePromptBuilder` per session that weaves `PersonaBlock`
+   (role-specific system prompt) + `DateTimeBlock` (current-time
+   injection) + `MemoryContextBlock` (active memory). A manifest's
+   `system.prompt` string cannot encode block composition. Before
+   this release, Geny reached into the stage's slot to swap the
+   builder by hand.
+2. **Session-scoped ToolContext.** Stage 10 builds per-call
+   `ToolContext` from `self._context.working_dir` /
+   `.storage_path`. Those paths live under a session's scratch
+   directory, which is allocated at session-creation time and is
+   not expressible in a static manifest.
+
+Both are classic "runtime state that cannot live in a manifest" —
+the same category `attach_runtime` was introduced for in v0.24.0.
+Extending the existing helper keeps the host's wiring flow flat:
+"build from manifest, attach runtime, run."
+
+### Tests
+
+`tests/unit/test_pipeline_attach_runtime.py` — 6 new tests
+(14 total, all passing):
+
+- `test_attach_runtime_replaces_system_builder` — passing
+  `system_builder=<builder>` swaps Stage 3 slot `builder`; the
+  `SystemStage._builder` property reflects the new strategy.
+- `test_attach_runtime_replaces_tool_context` — passing
+  `tool_context=<ctx>` overwrites `ToolStage._context` with the
+  supplied instance; `working_dir` / `storage_path` / `metadata`
+  survive.
+- `test_attach_runtime_system_builder_missing_stage_noop` — a
+  pipeline without a SystemStage silently ignores
+  `system_builder`.
+- `test_attach_runtime_tool_context_missing_stage_noop` — a
+  pipeline without a ToolStage silently ignores `tool_context`.
+- `test_attach_runtime_all_five_kwargs_together` — one call
+  attaching all five (three memory + system_builder +
+  tool_context) wires every target stage correctly.
+- `test_attach_runtime_after_run_raises_for_v26_kwargs` — the
+  post-run guard applies to the new kwargs too; each raises
+  `RuntimeError` if the pipeline has already started.
+
+Full suite: 1035 passed, 18 skipped.
+
 ## [0.25.0] — 2026-04-20
 
 Additive release on top of 0.24.0. Makes the adaptive

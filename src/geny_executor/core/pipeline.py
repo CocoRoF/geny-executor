@@ -428,23 +428,30 @@ class Pipeline:
         memory_retriever: Optional[Any] = None,
         memory_strategy: Optional[Any] = None,
         memory_persistence: Optional[Any] = None,
+        system_builder: Optional[Any] = None,
+        tool_context: Optional[Any] = None,
     ) -> None:
         """Inject session-scoped runtime objects into a manifest-built pipeline.
 
         Manifests carry declarative stage layout (stage order, artifact name,
         strategy choices, configs). They intentionally cannot encode runtime
-        objects like memory managers or LLM callbacks — those are per-session
-        and not serializable. After constructing a pipeline via
+        objects like memory managers, LLM callbacks, or per-session paths
+        (working directory, session id) — those are per-session and not
+        serializable. After constructing a pipeline via
         :meth:`from_manifest_async`, hosts call this helper to plug those
         objects in before :meth:`run` / :meth:`run_stream`.
 
         For each kwarg that is not ``None`` this helper finds the relevant
         stage and replaces the corresponding slot's ``.strategy`` with the
-        provided instance:
+        provided instance — except ``tool_context``, which overwrites the
+        Tool stage's ``_context`` attribute (a :class:`ToolContext` carrier,
+        not a pluggable strategy):
 
         - ``memory_retriever`` → Stage 2 (Context), slot ``retriever``.
         - ``memory_strategy`` → Stage 15 (Memory), slot ``strategy``.
         - ``memory_persistence`` → Stage 15 (Memory), slot ``persistence``.
+        - ``system_builder`` → Stage 3 (System), slot ``builder``.
+        - ``tool_context`` → Stage 10 (Tool), ``_context`` attribute.
 
         If a target stage is absent (manifest excluded it) the kwarg for
         that stage is silently ignored — a pipeline without a Memory stage
@@ -460,6 +467,20 @@ class Pipeline:
                 ``llm_reflect`` callback at construction time.
             memory_persistence: A :class:`ConversationPersistence` subclass
                 instance (e.g. :class:`GenyPersistence`).
+            system_builder: A :class:`PromptBuilder` subclass instance
+                (e.g. :class:`ComposablePromptBuilder` with
+                :class:`PersonaBlock` + :class:`DateTimeBlock` +
+                :class:`MemoryContextBlock`). Manifests can only serialize
+                a static prompt string; host-composed multi-block builders
+                with runtime behavior (date injection, memory weaving) must
+                attach here.
+            tool_context: A :class:`ToolContext` carrying session-scoped
+                path and id info (``session_id``, ``working_dir``,
+                ``storage_path``, ``env_vars``, ``allowed_paths``,
+                ``metadata``). Note: ``session_id`` is still overwritten
+                from the pipeline's per-run state inside Stage 10's
+                ``execute`` — the attached context supplies the *host-level*
+                fields that persist across runs.
 
         Raises:
             RuntimeError: If the pipeline has already started a run. State
@@ -499,6 +520,14 @@ class Pipeline:
                 stage_name="memory", slot_name="persistence", strategy=memory_persistence
             )
 
+        if system_builder is not None:
+            self._set_stage_slot_strategy(
+                stage_name="system", slot_name="builder", strategy=system_builder
+            )
+
+        if tool_context is not None:
+            self._set_tool_stage_context(tool_context)
+
     def _set_stage_slot_strategy(self, *, stage_name: str, slot_name: str, strategy: Any) -> None:
         """Replace a named slot's strategy on the stage registered under *stage_name*.
 
@@ -520,6 +549,27 @@ class Pipeline:
                 return
             slot.strategy = strategy
             return
+
+    def _set_tool_stage_context(self, tool_context: Any) -> None:
+        """Overwrite the Tool stage's ``_context`` attribute with the
+        supplied :class:`ToolContext`.
+
+        Unlike memory / system injections, ``ToolContext`` is not a
+        strategy slot — it is a carrier of session-scoped path and id
+        data used by Stage 10's ``execute`` to build per-call
+        :class:`ToolContext` instances. Hosts supply it via
+        ``attach_runtime`` because values like ``working_dir`` and
+        ``storage_path`` depend on the session's on-disk scratch
+        directory, which is allocated at session creation time and
+        cannot live in a static manifest.
+
+        Silent no-op when no Tool stage is registered.
+        """
+        for stage in self._stages.values():
+            if stage.name == "tool":
+                stage._context = tool_context
+                return
+        logger.debug("attach_runtime: no 'tool' stage registered (tool_context skipped)")
 
     # ── Execution ──
 
