@@ -89,7 +89,9 @@ class MCPToolAdapter(Tool):
                 },
             ) from exc
 
-        return ToolResult(
-            content=result if isinstance(result, str) else str(result),
-            is_error=False,
-        )
+        # call_tool returns str for a single text block and list[dict] for
+        # multi-block / non-text content. ToolResult.content is Any and
+        # ToolResult.to_api_format(...) already handles both — pass through.
+        if isinstance(result, (str, list)):
+            return ToolResult(content=result, is_error=False)
+        return ToolResult(content=str(result), is_error=False)
