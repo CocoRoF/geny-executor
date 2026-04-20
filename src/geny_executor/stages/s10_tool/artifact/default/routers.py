@@ -50,18 +50,14 @@ class RegistryRouter(ToolRouter):
         tool = self._registry.get(tool_name)
         if tool is None:
             return make_error_result(
-                ToolError.unknown_tool(
-                    tool_name, known=self._registry.list_names()
-                )
+                ToolError.unknown_tool(tool_name, known=self._registry.list_names())
             )
 
         try:
             validate_input(tool.input_schema, tool_input)
         except jsonschema.ValidationError as exc:
             path = ".".join(str(p) for p in exc.absolute_path) or "<root>"
-            return make_error_result(
-                ToolError.invalid_input(tool_name, exc.message, path=path)
-            )
+            return make_error_result(ToolError.invalid_input(tool_name, exc.message, path=path))
 
         try:
             return await tool.execute(tool_input, context)

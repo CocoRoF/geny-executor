@@ -100,8 +100,7 @@ def _register_external_tools(
     if not external_names or not providers:
         if external_names and not providers:
             logger.warning(
-                "manifest declares %d external tool(s) but no AdhocToolProvider "
-                "was supplied: %s",
+                "manifest declares %d external tool(s) but no AdhocToolProvider was supplied: %s",
                 len(external_names),
                 external_names,
             )

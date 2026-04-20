@@ -55,9 +55,7 @@ class ToolError:
         }
 
     @classmethod
-    def unknown_tool(
-        cls, name: str, *, known: Optional[Iterable[str]] = None
-    ) -> "ToolError":
+    def unknown_tool(cls, name: str, *, known: Optional[Iterable[str]] = None) -> "ToolError":
         details: Dict[str, Any] = {"tool_name": name}
         if known is not None:
             details["known_tools"] = sorted(known)

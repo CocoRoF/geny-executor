@@ -37,9 +37,7 @@ class MCPConnectionError(RuntimeError):
         super().__init__(msg)
 
     @staticmethod
-    def _default_message(
-        name: str, phase: str, cause: Optional[BaseException]
-    ) -> str:
+    def _default_message(name: str, phase: str, cause: Optional[BaseException]) -> str:
         base = f"MCP server '{name}' failed during {phase}"
         if cause is not None:
             return f"{base}: {type(cause).__name__}: {cause}"

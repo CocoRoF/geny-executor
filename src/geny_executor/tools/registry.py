@@ -35,8 +35,7 @@ class ToolRegistry:
         existing = self._tools.get(tool.name)
         if existing is not None and existing is not tool:
             logger.warning(
-                "tool name collision: '%s' re-registered "
-                "(old=%s, new=%s) — the new entry wins",
+                "tool name collision: '%s' re-registered (old=%s, new=%s) — the new entry wins",
                 tool.name,
                 type(existing).__name__,
                 type(tool).__name__,

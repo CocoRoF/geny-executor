@@ -34,9 +34,7 @@ class MCPToolAdapter(Tool):
         self._definition = definition
         raw_name = definition.get("name", "unknown_mcp_tool")
         self._raw_name = raw_name
-        self._display_name = MCP_TOOL_PREFIX_FORMAT.format(
-            server=server.config.name, tool=raw_name
-        )
+        self._display_name = MCP_TOOL_PREFIX_FORMAT.format(server=server.config.name, tool=raw_name)
 
     @property
     def raw_name(self) -> str:
