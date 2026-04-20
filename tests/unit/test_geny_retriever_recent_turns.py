@@ -134,9 +134,7 @@ async def test_recent_turns_precedes_session_summary_in_chunks() -> None:
     """Ordering contract: L0 recent_turns chunk must come before L1
     session_summary chunk — downstream prompt assembly relies on this."""
     msgs = [_STMEntry(content="hi", metadata={"role": "user"})]
-    mgr = _MemoryManager(
-        short_term=_STMWithRecent(messages=msgs, summary="a summary line")
-    )
+    mgr = _MemoryManager(short_term=_STMWithRecent(messages=msgs, summary="a summary line"))
     retriever = GenyMemoryRetriever(mgr, recent_turns=6, enable_vector_search=False)
 
     chunks = await retriever.retrieve("q", PipelineState())
