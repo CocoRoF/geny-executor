@@ -49,6 +49,12 @@ class GenyMemoryRetriever(MemoryRetriever):
             When None, memory is always retrieved.
         curated_knowledge_manager: Optional CuratedKnowledgeManager for
             curated knowledge injection.
+        recent_turns: Size of the L0 tail (STM transcript window) that
+            is always injected before semantic/keyword layers run. Set
+            to 0 to disable. Useful for trigger-style turns (idle
+            reflection, sub-worker auto-reports) whose query text has
+            no lexical overlap with the prior conversation — they would
+            otherwise miss the last few turns entirely.
     """
 
     def __init__(
@@ -61,6 +67,7 @@ class GenyMemoryRetriever(MemoryRetriever):
         search_chars: int = 500,
         llm_gate: Optional[Callable[[str], Awaitable[bool]]] = None,
         curated_knowledge_manager: Any = None,
+        recent_turns: int = 6,
     ):
         self._mgr = memory_manager
         self._enable_vector = enable_vector_search
@@ -69,6 +76,7 @@ class GenyMemoryRetriever(MemoryRetriever):
         self._search_chars = search_chars
         self._llm_gate = llm_gate
         self._curated = curated_knowledge_manager
+        self._recent_turns = recent_turns
 
     @property
     def name(self) -> str:
@@ -98,6 +106,14 @@ class GenyMemoryRetriever(MemoryRetriever):
         total_chars = 0
         budget = self._max_inject
 
+        # 0. Recent turns (tail of the STM transcript). Always injected
+        #    before semantic/keyword layers run so trigger-style queries
+        #    (idle reflection, sub-worker auto-reports) still see the
+        #    last few conversation turns even when the query text has
+        #    zero lexical overlap with the prior dialogue.
+        if self._recent_turns > 0:
+            total_chars = self._load_recent_turns(chunks, total_chars, budget)
+
         # 1. Session summary (short-term latest state)
         total_chars = self._load_session_summary(chunks, total_chars, budget)
 
@@ -125,6 +141,85 @@ class GenyMemoryRetriever(MemoryRetriever):
             state.session_id,
         )
         return chunks
+
+    # ── Layer 0: Recent STM turns (tail) ─────────────────────────────
+
+    def _load_recent_turns(
+        self,
+        chunks: List[MemoryChunk],
+        total: int,
+        budget: int,
+    ) -> int:
+        """Inject the last N STM messages verbatim as a L0 chunk.
+
+        Bypasses semantic/keyword matching entirely — the goal is to
+        make sure trigger-driven turns (idle reflection, sub-worker
+        auto-reports) can always see the most recent conversation
+        regardless of lexical overlap with their query text.
+
+        Duck-typed: the memory manager must expose
+        ``short_term.get_recent(n)`` returning an iterable of entries
+        with ``.content`` and (optionally) ``.metadata["role"]``. Any
+        missing attribute quietly disables this layer.
+
+        Budget policy: capped at 40% of total so other layers still fit.
+        Messages are kept tail-first — we want the most recent turns.
+        """
+        try:
+            stm = getattr(self._mgr, "short_term", None)
+            if stm is None:
+                return total
+            get_recent = getattr(stm, "get_recent", None)
+            if get_recent is None:
+                return total
+
+            recent = get_recent(self._recent_turns)
+            if not recent:
+                return total
+
+            lines: List[str] = []
+            for entry in recent:
+                role = "user"
+                meta = getattr(entry, "metadata", None)
+                if meta and isinstance(meta, dict):
+                    role = meta.get("role", role) or role
+                # Some implementations expose role directly on the entry.
+                role = getattr(entry, "role", role) or role
+
+                content = getattr(entry, "content", "") or ""
+                if not content.strip():
+                    continue
+                lines.append(f"[{role}] {content.strip()}")
+
+            if not lines:
+                return total
+
+            body = "\n".join(lines)
+            max_body = min(len(body), int(budget * 0.4))
+            if max_body < len(body):
+                body = body[-max_body:]  # keep the most recent tail
+
+            chunk_len = len(body)
+            if (total + chunk_len) > budget:
+                return total
+
+            chunks.append(
+                MemoryChunk(
+                    key="recent_turns",
+                    content=body,
+                    source="short_term",
+                    relevance_score=1.0,
+                    metadata={
+                        "layer": "recent_turns",
+                        "turns": len(lines),
+                    },
+                )
+            )
+            return total + chunk_len
+
+        except Exception:
+            logger.debug("geny_retriever: recent turns load failed", exc_info=True)
+            return total
 
     # ── Layer 1: Session Summary ─────────────────────────────────────
 

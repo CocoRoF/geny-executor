@@ -4,6 +4,29 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.28.0] — 2026-04-21
+
+Minor release. `GenyMemoryRetriever` gains a new L0 "recent turns"
+layer that injects the tail of the short-term-memory transcript before
+any semantic/keyword matching runs. The goal is to restore
+conversational continuity on trigger-style turns — idle reflection,
+sub-worker auto-reports, and inter-agent DMs — whose query text has no
+lexical overlap with the prior dialogue and would otherwise miss the
+last few turns entirely.
+
+The new constructor argument `recent_turns: int = 6` controls the tail
+size; pass `0` to disable. Layer budget is capped at 40% of
+`max_inject_chars` so downstream layers (session summary, MEMORY.md,
+vector, keyword, backlink, curated) still fit. Entries are injected
+verbatim as `[<role>] <content>` lines, where `<role>` is read from
+each STM entry's `metadata["role"]` (falling back to `"user"`), so new
+roles such as `internal_trigger` and `assistant_dm` — added by Geny's
+agent_session in the same cycle — flow through unmodified.
+
+Duck-typed: if the injected memory manager exposes no
+`short_term.get_recent(n)`, the layer quietly skips and the remaining
+layers behave exactly as in 0.27.x. No breaking changes.
+
 ## [0.27.0] — 2026-04-21
 
 Minor release. `Pipeline.from_manifest` / `from_manifest_async` now
