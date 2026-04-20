@@ -8,6 +8,9 @@ from geny_executor.core.slot import StrategySlot
 from geny_executor.core.stage import Stage
 from geny_executor.core.state import PipelineState
 from geny_executor.stages.s12_evaluate.interface import EvaluationStrategy, QualityScorer
+from geny_executor.stages.s12_evaluate.artifact.adaptive.strategy import (
+    BinaryClassifyEvaluation,
+)
 from geny_executor.stages.s12_evaluate.artifact.default.strategies import (
     AgentEvaluation,
     CriteriaBasedEvaluation,
@@ -38,6 +41,7 @@ class EvaluateStage(Stage[Any, Any]):
                     "signal_based": SignalBasedEvaluation,
                     "criteria_based": CriteriaBasedEvaluation,
                     "agent_evaluation": AgentEvaluation,
+                    "binary_classify": BinaryClassifyEvaluation,
                 },
                 description="Evaluation strategy",
             ),

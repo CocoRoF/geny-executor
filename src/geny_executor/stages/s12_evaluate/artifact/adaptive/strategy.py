@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Dict, Optional
 
 from geny_executor.core.state import PipelineState
 from geny_executor.stages.s12_evaluate.interface import EvaluationStrategy
@@ -60,6 +60,18 @@ class BinaryClassifyEvaluation(EvaluationStrategy):
 
     def __init__(self, config: Optional[BinaryClassifyConfig] = None):
         self._config = config or BinaryClassifyConfig()
+
+    def configure(self, config: Dict[str, Any]) -> None:
+        """Apply ``{easy_max_turns, not_easy_max_turns}`` from a manifest.
+
+        Manifest-restore calls this with the ``strategy_configs`` dict after
+        the slot swaps to an instance built via ``cls()``. Unknown keys are
+        ignored so the manifest can evolve without breaking older strategies.
+        """
+        if "easy_max_turns" in config:
+            self._config.easy_max_turns = int(config["easy_max_turns"])
+        if "not_easy_max_turns" in config:
+            self._config.not_easy_max_turns = int(config["not_easy_max_turns"])
 
     @property
     def name(self) -> str:
