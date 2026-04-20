@@ -4,6 +4,75 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.23.0] — 2026-04-20
+
+Additive release on top of 0.22.1. Extends the Stage 10 tool event
+vocabulary with per-call events so downstream log consumers can
+render the input, outcome, and latency of individual tool calls.
+Prior to 0.23.0 only summary events (`tool.execute_start` /
+`tool.execute_complete`) were emitted, forcing hosts like Geny to
+either read pipeline-internal state or re-parse the Anthropic
+response — both brittle. The 0.23.0 contract is event-level and
+stable.
+
+No breaking changes. Existing summary events are preserved
+byte-for-byte; consumers that listen only to `tool.execute_*` see
+no behavior change. The new `on_event` kwarg on
+`ToolExecutor.execute_all` is keyword-only and optional — default
+`None` matches 0.22.1 semantics exactly. Third-party executors
+implementing `ToolExecutor` continue to work without modification
+(they simply don't emit the new events, which was their existing
+reality).
+
+### Added
+
+- **`tool.call_start`** event, fired by the default Stage 10
+  executors (`SequentialExecutor`, `ParallelExecutor`) immediately
+  before each individual dispatch. Payload:
+  `{tool_use_id, name, input}` — the full Anthropic-supplied call
+  id, tool name, and input dict. Paired with `tool.call_complete`
+  via `tool_use_id`.
+- **`tool.call_complete`** event, fired immediately after each
+  dispatch. Payload: `{tool_use_id, name, is_error, duration_ms}`.
+  Does not carry the output payload — full results remain on the
+  message bus (state) to keep the event stream bounded.
+- **`on_event` keyword-only kwarg** on
+  `ToolExecutor.execute_all(...)` (interface + both default
+  implementations). Shape: `Callable[[str, dict], None]`. The
+  default `ToolStage` wires it to `state.add_event`, preserving
+  the existing event-listener path (`state._event_listener`).
+- **`ToolEventCallback` type alias** in
+  `geny_executor.stages.s10_tool.interface`, exported alongside
+  `ToolExecutor` / `ToolRouter`.
+
+### Why
+
+Host-side log UIs (e.g., Geny's `tool_detail_formatter`) need the
+per-call input dict to render a call-by-call detail pane. The
+0.22.1 summary events omit this, and the pipeline-internal
+`pending_tool_calls` field is not a stable event contract. This
+release upgrades the contract so hosts can stop reaching into
+pipeline state. See
+`Geny/dev_docs/20260420_3/plan/01_immediate_fixes.md` (PR II) for
+the design rationale and the full event-vocabulary audit.
+
+### Tests
+
+`tests/unit/test_tool_call_events.py` (new, 6 tests):
+
+- Sequential executor emits `call_start` / `call_complete` per call,
+  in order, carrying the correct payload.
+- `is_error=True` propagates into `call_complete`.
+- `on_event=None` (omitted) is a no-op — matches 0.22.1.
+- Parallel executor emits paired `call_start` / `call_complete`
+  events keyed by `tool_use_id`; inter-pair ordering is not
+  asserted (parallelism).
+- `ToolStage` nests per-call events *inside*
+  `tool.execute_start` / `tool.execute_complete`, preserving the
+  outer bracket contract.
+
+Full suite: 1015 passed, 18 skipped.
+
 ## [0.22.1] — 2026-04-20
 
 CI hygiene patch on top of 0.22.0. No runtime behavior change — same
