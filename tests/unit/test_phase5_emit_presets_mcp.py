@@ -279,8 +279,11 @@ async def test_mcp_tool_adapter():
         },
     )
 
-    assert adapter.name == "read_file"
+    # v0.22.0: MCP tools are always namespaced as mcp__{server}__{tool}
+    assert adapter.name == "mcp__test__read_file"
+    assert adapter.raw_name == "read_file"
+    assert adapter.server_name == "test"
     assert adapter.description == "Read a file"
     api_format = adapter.to_api_format()
-    assert api_format["name"] == "read_file"
+    assert api_format["name"] == "mcp__test__read_file"
     assert "properties" in api_format["input_schema"]

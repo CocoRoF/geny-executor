@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Dict, List, Optional, Set
 
 from geny_executor.tools.base import Tool
+
+logger = logging.getLogger(__name__)
 
 
 class ToolRegistry:
@@ -20,7 +23,24 @@ class ToolRegistry:
         self._tools: Dict[str, Tool] = {}
 
     def register(self, tool: Tool) -> ToolRegistry:
-        """Register a tool. Chaining supported."""
+        """Register a tool. Chaining supported.
+
+        Registering a tool under a name that already exists overrides the
+        previous entry *and* emits a warning — this is almost always a
+        bug (two providers claiming the same slot). MCP-sourced tools
+        get their own ``mcp__{server}__{tool}`` namespace, so collisions
+        here indicate a built-in / adhoc conflict or a duplicate
+        registration pass.
+        """
+        existing = self._tools.get(tool.name)
+        if existing is not None and existing is not tool:
+            logger.warning(
+                "tool name collision: '%s' re-registered "
+                "(old=%s, new=%s) — the new entry wins",
+                tool.name,
+                type(existing).__name__,
+                type(tool).__name__,
+            )
         self._tools[tool.name] = tool
         return self
 
