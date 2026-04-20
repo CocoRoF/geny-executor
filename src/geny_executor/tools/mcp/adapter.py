@@ -5,15 +5,24 @@ from __future__ import annotations
 from typing import Any, Dict, TYPE_CHECKING
 
 from geny_executor.tools.base import Tool, ToolResult, ToolContext
+from geny_executor.tools.errors import ToolError, ToolFailure, ToolErrorCode
 
 if TYPE_CHECKING:
     from geny_executor.tools.mcp.manager import MCPServerConnection
 
 
+MCP_TOOL_PREFIX_FORMAT = "mcp__{server}__{tool}"
+MCP_TOOL_PREFIX = "mcp__"
+
+
 class MCPToolAdapter(Tool):
     """Wraps an MCP server tool as a geny-executor Tool.
 
-    Bridges the MCP protocol to our Tool interface.
+    Bridges the MCP protocol to our Tool interface. The adapter exposes
+    the tool to the registry under a namespaced display name —
+    ``mcp__{server}__{original}`` — so no two servers (and no built-in
+    or adhoc tool) can ever collide. The original, unprefixed name is
+    preserved internally and used when calling the MCP server.
     """
 
     def __init__(
@@ -23,10 +32,24 @@ class MCPToolAdapter(Tool):
     ):
         self._server = server
         self._definition = definition
+        raw_name = definition.get("name", "unknown_mcp_tool")
+        self._raw_name = raw_name
+        self._display_name = MCP_TOOL_PREFIX_FORMAT.format(
+            server=server.config.name, tool=raw_name
+        )
+
+    @property
+    def raw_name(self) -> str:
+        """Unprefixed name as announced by the MCP server."""
+        return self._raw_name
+
+    @property
+    def server_name(self) -> str:
+        return self._server.config.name
 
     @property
     def name(self) -> str:
-        return self._definition.get("name", "unknown_mcp_tool")
+        return self._display_name
 
     @property
     def description(self) -> str:
@@ -46,15 +69,27 @@ class MCPToolAdapter(Tool):
         )
 
     async def execute(self, input: Dict[str, Any], context: ToolContext) -> ToolResult:
-        """Execute the tool via MCP server."""
+        """Execute the tool via the MCP server.
+
+        MCP-side failures surface as ``ToolFailure`` (transport code) so
+        the router converts them into a structured ``ToolError`` rather
+        than leaking raw exception strings into the model context.
+        """
         try:
-            result = await self._server.call_tool(self.name, input)
-            return ToolResult(
-                content=result if isinstance(result, str) else str(result),
-                is_error=False,
-            )
-        except Exception as e:
-            return ToolResult(
-                content=str(e),
-                is_error=True,
-            )
+            result = await self._server.call_tool(self._raw_name, input)
+        except Exception as exc:
+            raise ToolFailure(
+                f"MCP call failed on '{self.server_name}.{self._raw_name}': {exc}",
+                code=ToolErrorCode.TRANSPORT,
+                details={
+                    "server": self.server_name,
+                    "tool": self._raw_name,
+                    "exception_type": type(exc).__name__,
+                    "exception_message": str(exc),
+                },
+            ) from exc
+
+        return ToolResult(
+            content=result if isinstance(result, str) else str(result),
+            is_error=False,
+        )
