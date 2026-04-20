@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any, Dict, TYPE_CHECKING
 
 from geny_executor.tools.base import Tool, ToolResult, ToolContext
-from geny_executor.tools.errors import ToolError, ToolFailure, ToolErrorCode
+from geny_executor.tools.errors import ToolFailure, ToolErrorCode
 
 if TYPE_CHECKING:
     from geny_executor.tools.mcp.manager import MCPServerConnection

@@ -27,7 +27,6 @@ from geny_executor.tools.base import Tool, ToolContext, ToolResult
 from geny_executor.tools.mcp.errors import MCPConnectionError
 from geny_executor.tools.mcp.manager import (
     MCPManager,
-    MCPServerConfig,
     MCPServerConnection,
 )
 from geny_executor.tools.providers import AdhocToolProvider
