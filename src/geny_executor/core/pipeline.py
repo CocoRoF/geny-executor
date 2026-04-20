@@ -47,6 +47,35 @@ def _pipeline_config_from_manifest(
     return PipelineConfig.from_dict(raw)
 
 
+def _mcp_configs_from_manifest(manifest: "EnvironmentManifest") -> Dict[str, Any]:
+    """Extract ``MCPServerConfig`` instances from ``manifest.tools.mcp_servers``.
+
+    Manifests store MCP server definitions as plain dicts; the manager
+    expects :class:`MCPServerConfig` dataclasses keyed by name. Entries
+    missing a ``name`` are skipped silently (they cannot be routed to
+    anyway).
+    """
+    from geny_executor.tools.mcp.manager import MCPServerConfig
+
+    configs: Dict[str, MCPServerConfig] = {}
+    for raw in manifest.tools.mcp_servers or []:
+        if not isinstance(raw, dict):
+            continue
+        name = raw.get("name")
+        if not name:
+            continue
+        configs[name] = MCPServerConfig(
+            name=name,
+            command=raw.get("command", ""),
+            args=list(raw.get("args", [])),
+            env=dict(raw.get("env", {})),
+            transport=raw.get("transport", "stdio"),
+            url=raw.get("url", ""),
+            headers=dict(raw.get("headers", {})),
+        )
+    return configs
+
+
 def _stage_kwargs_for_entry(entry: "StageManifestEntry", *, api_key: str) -> Dict[str, Any]:
     """Minimum kwargs required to instantiate *entry* via ``create_stage``.
 
@@ -74,6 +103,12 @@ class Pipeline:
       Phase A: Input (Stage 1, once)
       Phase B: Agent Loop (Stage 2~13, repeats)
       Phase C: Finalize (Stage 14~16, once)
+
+    Pipelines built via :meth:`from_manifest_async` also carry their
+    associated :class:`~geny_executor.tools.mcp.manager.MCPManager` and
+    :class:`~geny_executor.tools.registry.ToolRegistry` on
+    ``pipeline.mcp_manager`` / ``pipeline.tool_registry`` so callers
+    can reach either without re-plumbing.
     """
 
     # Loop boundary constants
@@ -107,6 +142,28 @@ class Pipeline:
         self._config = config or PipelineConfig()
         self._stages: Dict[int, Stage] = {}
         self._event_bus = EventBus()
+        self._mcp_manager: Any = None  # MCPManager | None — set by from_manifest_async
+        self._tool_registry: Any = None  # ToolRegistry | None — set by from_manifest_async
+
+    @property
+    def mcp_manager(self) -> Any:
+        """The :class:`MCPManager` this pipeline owns (if any).
+
+        Set by :meth:`from_manifest_async` when the manifest declared any
+        ``tools.mcp_servers``; ``None`` otherwise. Callers that need to
+        dynamically add/remove servers at runtime reach for this.
+        """
+        return self._mcp_manager
+
+    @property
+    def tool_registry(self) -> Any:
+        """The :class:`ToolRegistry` populated during async manifest load.
+
+        Holds the MCP adapters discovered at session start. Returns
+        ``None`` when the pipeline was built via the sync
+        :meth:`from_manifest` path.
+        """
+        return self._tool_registry
 
     # ── Construction from serialized state ──
 
@@ -190,6 +247,67 @@ class Pipeline:
                         f"{'; '.join(errors)}"
                     )
 
+        return pipeline
+
+    @classmethod
+    async def from_manifest_async(
+        cls,
+        manifest: "EnvironmentManifest",
+        *,
+        api_key: Optional[str] = None,
+        strict: bool = True,
+        tool_registry: Optional[Any] = None,
+    ) -> "Pipeline":
+        """Async sibling of :meth:`from_manifest` that also wires MCP.
+
+        In addition to the stage assembly :meth:`from_manifest` performs,
+        this variant:
+
+        1. Reads ``manifest.tools.mcp_servers`` and builds an
+           :class:`MCPManager`.
+        2. Calls ``manager.connect_all(...)`` — every server connects,
+           initializes, and announces its tools *before* the pipeline
+           returns. Any failure propagates as
+           :class:`MCPConnectionError` and leaves no half-connected
+           state behind.
+        3. Registers each discovered adapter into ``tool_registry``
+           (created fresh when the caller omits it) using the
+           ``mcp__{server}__{tool}`` namespace set in PR2.
+        4. Attaches both the manager and the registry to the returned
+           pipeline so downstream callers can reach them via
+           ``pipeline.mcp_manager`` / ``pipeline.tool_registry``.
+
+        Manifests with no MCP servers skip the connect pass entirely —
+        ``pipeline.mcp_manager`` is an empty :class:`MCPManager` in that
+        case and ``pipeline.tool_registry`` is whatever the caller
+        passed in (or a fresh empty registry).
+
+        Raises:
+            MCPConnectionError: If any declared MCP server fails to
+                connect, initialize, or announce its tools. No partial
+                state is retained.
+        """
+        from geny_executor.tools.mcp.manager import MCPManager, MCPServerConfig
+        from geny_executor.tools.registry import ToolRegistry
+
+        pipeline = cls.from_manifest(manifest, api_key=api_key, strict=strict)
+
+        registry = tool_registry if tool_registry is not None else ToolRegistry()
+        manager = MCPManager()
+
+        configs = _mcp_configs_from_manifest(manifest)
+        if configs:
+            try:
+                await manager.connect_all(configs)
+                adapters = await manager.discover_all()
+                for adapter in adapters:
+                    registry.register(adapter)
+            except BaseException:
+                await manager.disconnect_all()
+                raise
+
+        pipeline._mcp_manager = manager
+        pipeline._tool_registry = registry
         return pipeline
 
     # ── Stage management ──

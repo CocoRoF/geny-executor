@@ -244,26 +244,29 @@ def test_mcp_manager_list_servers():
 
 
 @pytest.mark.asyncio
-async def test_mcp_manager_connect_disconnect():
-    """MCPManager connect/disconnect lifecycle."""
+async def test_mcp_manager_connect_fails_fast_for_bogus_command():
+    """MCPManager surfaces a structured MCPConnectionError when the
+    target server doesn't speak MCP (v0.22.0 fail-fast lifecycle)."""
+    from geny_executor.tools.mcp.errors import MCPConnectionError
+
     manager = MCPManager()
     config = MCPServerConfig(name="test", command="echo")
 
-    await manager.connect("test", config)
-    assert manager.is_connected("test")
-
-    await manager.disconnect("test")
+    with pytest.raises(MCPConnectionError) as excinfo:
+        await manager.connect("test", config)
+    assert excinfo.value.server_name == "test"
     assert not manager.is_connected("test")
+    # Failed connections do not leak into the server list.
+    assert "test" not in manager.list_servers()
 
 
 @pytest.mark.asyncio
 async def test_mcp_tool_adapter():
-    """MCPToolAdapter wraps MCP tool definition."""
+    """MCPToolAdapter wraps MCP tool definition (no live connection needed)."""
     from geny_executor.tools.mcp.manager import MCPServerConnection
 
     config = MCPServerConfig(name="test", command="echo")
     conn = MCPServerConnection(config)
-    await conn.connect()
 
     adapter = MCPToolAdapter(
         server=conn,
