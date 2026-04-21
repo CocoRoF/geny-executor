@@ -4,6 +4,119 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.29.0] — 2026-04-21
+
+Minor release bundling cycle `20260421_4`: stage state interface,
+unified LLM client package, and per-stage model routing for memory
+stages. Five interlocking additive changes, one public interface
+deletion. No silent behaviour change for pre-cycle pipelines — the
+new paths are reachable only when a host opts in by setting a stage
+override or attaching an `llm_client`.
+
+### Added
+
+- **`PipelineState.shared: Dict[str, Any]`** — pipeline-lifetime
+  global scratchpad, cleared per run. Separate from
+  `state.metadata` so stages that want a "global context" slot
+  don't have to fight for dict keys.
+- **`Stage.local_state(state) -> Dict[str, Any]`** — ergonomic
+  per-stage scratchpad convention returning
+  `state.metadata.setdefault(self.name, {})`. Two stages can now
+  keep their own bookkeeping without collisions.
+- **`Stage.resolve_model_config(state) -> ModelConfig`** — upgrades
+  the prior `resolve_model` helper from "string model name" to the
+  full `ModelConfig` bundle (model + sampling + thinking settings).
+  Reads `self._model_override` first; otherwise builds from state
+  defaults. `resolve_model` kept as a thin alias for back-compat.
+- **`geny_executor.llm_client`** — new top-level package with
+  `BaseClient` + `ClientCapabilities`, per-vendor
+  `AnthropicClient` / `OpenAIClient` / `GoogleClient` / `VLLMClient`,
+  and a provider-name `ClientRegistry`. Each client speaks the
+  canonical `APIRequest` / `APIResponse` shape and silently drops
+  unsupported fields, emitting `llm_client.feature_unsupported`
+  events instead of raising.
+- **`state.llm_client`** — optional `BaseClient` slot populated via
+  `Pipeline.attach_runtime(llm_client=…)`. Any stage reaches for it
+  when it needs an LLM; s06_api, s02 compaction, and s15
+  reflection all consume it in this release.
+- **`PipelineMutator.set_stage_model(order, cfg)`** — public entry
+  point for installing per-stage `ModelConfig` overrides from host
+  code. Raises `MutationError` (not `LookupError`) when the stage
+  order is absent, matching the rest of the mutator's error
+  surface.
+- **`LLMSummaryCompactor`** (s02_context) — real summarizer that
+  replaces the prior placeholder stub. Reads the resolved
+  `ModelConfig` via a closure bound at stage init so per-run
+  overrides take effect, and calls `state.llm_client.create_message`
+  with `purpose="s02.summarize"`. Falls back to the static
+  placeholder path when no override or client is present, preserving
+  the pre-release no-cost guarantee.
+- **`ReflectionResolver`** (s15_memory) — native reflection path for
+  `GenyMemoryStrategy`. Dataclass carrying three closures
+  (`resolve_cfg`, `has_override`, `client_getter`) that the strategy
+  consults at reflect time instead of invoking a pre-baked
+  `llm_reflect` callback. When both are provided, the legacy
+  callback wins — hosts migrate by dropping the callback, not by
+  toggling a flag. Calls through `state.llm_client` with
+  `purpose="s15.reflect"`.
+
+### Changed
+
+- **s06_api (APIStage)** migrated onto the unified client. The per-
+  vendor `APIProvider` artifact system
+  (`stages/s06_api/artifact/{default,openai,google}/providers.py`)
+  is **deleted**. `APIStage` now resolves a client via
+  `state.llm_client` → stage-local `ClientRegistry.get(provider)`
+  fallback → error, and calls `client.create_message(...)` directly.
+  The stage's `provider: str` config field (new) replaces the
+  `APIProvider` strategy slot.
+- **`LLMSummaryCompactor` / `ReflectionResolver`** use closures
+  bound to the owning stage handle so model/client resolution
+  happens at call time, not pipeline-build time. Host code that
+  installs overrides after `from_manifest_async` sees them honoured
+  on the very next request.
+- **`APIRequest` / `APIResponse` / `ContentBlock`** canonical types
+  move from `stages.s06_api.types` into the top-level
+  `geny_executor.llm_client.types` module. The old module re-exports
+  from the new location; imports keep working without change.
+
+### Removed
+
+- `stages/s06_api/artifact/default/providers.py`
+- `stages/s06_api/artifact/openai/providers.py`
+- `stages/s06_api/artifact/google/providers.py`
+- The `APIProvider` strategy slot on `APIStage`. Manifest-v2
+  migration: artifacts named `"anthropic"` / `"openai"` / `"google"`
+  on s06_api keep working via a migration shim that maps them to
+  provider names consumed by the new `provider: str` config field.
+
+### Upgrade notes
+
+- Hosts that previously constructed `AnthropicProvider` /
+  `OpenAIProvider` / `GoogleProvider` directly must switch to
+  `ClientRegistry.get(provider)(api_key=…, base_url=…)` and inject
+  via `attach_runtime(llm_client=…)`. The geny host does this in
+  cycle-4 PR-6 (Geny `16690d7`).
+- Pipelines that relied on the per-stage model override going
+  ignored (pre-0.29.0 behaviour outside s06_api) will, if a host
+  starts calling `set_stage_model(2, …)` or `set_stage_model(15, …)`,
+  pick up a real LLM call on those stages. The override-absent
+  branch still dials zero LLMs — the new work is gated by the
+  host explicitly installing a `ModelConfig`.
+- No breaking changes to public imports that did not live under
+  `stages/s06_api/artifact/`. Hosts importing `Pipeline`,
+  `PipelineMutator`, `ModelConfig`, `GenyMemoryStrategy` etc.
+  continue unchanged.
+
+### Cycle references
+
+- Plan: `dev_docs/20260421_4/plan/01_pipeline_state_shared_and_local.md`
+  → `plan/06_geny_memory_model_routing.md` (Geny side)
+- Analysis: `dev_docs/20260421_4/analysis/02_memory_llm_inventory.md`
+  (site-by-site justification)
+- Progress: `progress/pr1_pipeline_state_shared_and_local.md`
+  → `progress/pr5_memory_stages_use_model_override.md`
+
 ## [0.28.0] — 2026-04-21
 
 Minor release. `GenyMemoryRetriever` gains a new L0 "recent turns"
