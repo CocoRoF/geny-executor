@@ -52,7 +52,22 @@ class CacheMetrics:
 class PipelineState:
     """Pipeline execution state — readable/writable by all stages.
 
-    Accumulates across loop iterations.
+    Accumulates across loop iterations within a single run. Two free-form
+    buckets are available for stage-authored data:
+
+    - ``shared`` — cross-stage communication. Any stage may read and write.
+      Resets to ``{}`` at the start of each run. Keys are free-form strings;
+      writers and readers cooperate by convention. Not an event channel —
+      use :meth:`add_event` for that.
+    - ``metadata`` — general per-run scratch. Historically used for pipeline
+      signals (``needs_reflection``, ``L0_tail``, ``cost_breakdown``) and
+      backs :meth:`Stage.local_state`. New cross-stage data should prefer
+      ``shared``; ``metadata`` remains for per-stage bookkeeping and legacy
+      signals.
+
+    Within a single loop turn, stages run sequentially, so ``shared`` has one
+    writer at a time. If a future cycle introduces parallel sub-stages,
+    readers/writers of the same key will need to add explicit coordination.
     """
 
     # ── Identity ──
@@ -127,10 +142,13 @@ class PipelineState:
     # ── Raw API response (for debugging/passthrough) ──
     last_api_response: Optional[Any] = None
 
-    # ── Metadata ──
+    # ── Metadata (free-form per-run scratch; legacy signals + stage-local storage) ──
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     metadata: Dict[str, Any] = field(default_factory=dict)
+
+    # ── Shared (cross-stage communication for one run) ──
+    shared: Dict[str, Any] = field(default_factory=dict)
 
     # ── Event log ──
     events: List[Dict[str, Any]] = field(default_factory=list)

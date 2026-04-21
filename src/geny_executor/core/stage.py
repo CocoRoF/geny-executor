@@ -318,3 +318,21 @@ class Stage(ABC, Generic[T_In, T_Out]):
         if self._model_override is not None:
             return getattr(self._model_override, "model", state.model)
         return state.model
+
+    def local_state(self, state: PipelineState) -> Dict[str, Any]:
+        """Return this stage's private scratchpad, creating it on first access.
+
+        Per-stage state lives under ``state.metadata[self.name]``. The helper
+        ensures the dict exists and returns it; callers read and write the
+        dict directly.
+
+        Use this when a stage needs to remember something across iterations
+        of the same run (e.g. a summarizer tracking which message indices
+        have already been compacted). For values shared between stages, use
+        :attr:`PipelineState.shared` instead.
+
+        By convention, each stage owns its own bucket — do not reach into
+        another stage's ``local_state``. If stages need to exchange data,
+        publish to ``state.shared``.
+        """
+        return state.metadata.setdefault(self.name, {})
