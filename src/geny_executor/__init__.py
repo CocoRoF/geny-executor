@@ -77,6 +77,15 @@ from geny_executor.core.introspection import (
     introspect_stage,
 )
 from geny_executor.events import EventBus, PipelineEvent
+from geny_executor.llm_client import (
+    APIRequest,
+    APIResponse,
+    BaseClient,
+    ClientCapabilities,
+    ClientRegistry,
+    ContentBlock,
+    ProviderBackedClient,
+)
 from geny_executor.memory import (
     GenyMemoryRetriever,
     GenyMemoryStrategy,
@@ -135,6 +144,14 @@ __all__ = [
     # Events
     "EventBus",
     "PipelineEvent",
+    # LLM clients (unified)
+    "APIRequest",
+    "APIResponse",
+    "BaseClient",
+    "ClientCapabilities",
+    "ClientRegistry",
+    "ContentBlock",
+    "ProviderBackedClient",
     # Errors
     "GenyExecutorError",
     "PipelineError",

@@ -156,6 +156,9 @@ class PipelineState:
     # ── Event listener (set by pipeline for streaming) ──
     _event_listener: Optional[Any] = field(default=None, repr=False)
 
+    # ── LLM client (injected by Pipeline.attach_runtime; None for non-LLM pipelines) ──
+    llm_client: Optional[Any] = field(default=None, repr=False)
+
     def add_event(self, event_type: str, data: Optional[Dict[str, Any]] = None) -> None:
         """Append an event to the log. If a listener is set, also notify it."""
         event_dict = {

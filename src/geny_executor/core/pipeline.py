@@ -241,6 +241,7 @@ class Pipeline:
         self._has_started: bool = (
             False  # flips once run()/run_stream() begins; gates attach_runtime
         )
+        self._attached_llm_client: Any = None  # set by attach_runtime; propagated in _init_state
 
     @property
     def mcp_manager(self) -> Any:
@@ -513,6 +514,7 @@ class Pipeline:
         memory_persistence: Optional[Any] = None,
         system_builder: Optional[Any] = None,
         tool_context: Optional[Any] = None,
+        llm_client: Optional[Any] = None,
     ) -> None:
         """Inject session-scoped runtime objects into a manifest-built pipeline.
 
@@ -610,6 +612,9 @@ class Pipeline:
 
         if tool_context is not None:
             self._set_tool_stage_context(tool_context)
+
+        if llm_client is not None:
+            self._attached_llm_client = llm_client
 
     def _set_stage_slot_strategy(self, *, stage_name: str, slot_name: str, strategy: Any) -> None:
         """Replace a named slot's strategy on the stage registered under *stage_name*.
@@ -861,8 +866,40 @@ class Pipeline:
         if not state.pipeline_id:
             state.pipeline_id = uuid.uuid4().hex[:12]
         self._config.apply_to_state(state)
+        if state.llm_client is None:
+            state.llm_client = self._resolve_llm_client()
         self._has_started = True
         return state
+
+    def _resolve_llm_client(self) -> Any:
+        """Choose the LLM client to attach to fresh state.
+
+        Preference order:
+        1. An ``llm_client`` explicitly passed to :meth:`attach_runtime`.
+        2. During the PR-3→PR-4 bridge: wrap the ``APIProvider`` already
+           held by an ``s06_api`` stage so ``state.llm_client`` is non-None
+           for callers that rely on it (memory-side prototypes, Geny's
+           integration path).
+        3. ``None`` — pipelines without an LLM leg simply report a
+           ``None`` client; stages that need one assert at execute time.
+        """
+        if self._attached_llm_client is not None:
+            return self._attached_llm_client
+        for stage in self._stages.values():
+            if stage.name != "api":
+                continue
+            provider = getattr(stage, "_provider", None) or getattr(stage, "provider", None)
+            if provider is None:
+                slots = stage.get_strategy_slots() if hasattr(stage, "get_strategy_slots") else {}
+                provider_slot = slots.get("provider")
+                if provider_slot is not None:
+                    provider = provider_slot.strategy
+            if provider is None:
+                continue
+            from geny_executor.llm_client.bridge import ProviderBackedClient
+
+            return ProviderBackedClient(provider)
+        return None
 
     async def _try_run_stage(self, order: int, current: Any, state: PipelineState) -> Any:
         """Run a stage if it exists and should not be bypassed."""
