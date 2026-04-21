@@ -1,15 +1,30 @@
-"""Stage 6: API — calls Anthropic Messages API."""
+"""Stage 6: API — LLM call routed through ``state.llm_client``.
+
+The stage no longer owns a vendor-provider strategy. It exposes a single
+``provider`` config field (``anthropic`` / ``openai`` / ``google`` /
+``vllm``) and delegates to the unified :class:`BaseClient` that lives on
+``state.llm_client``. When no shared client is attached, the stage lazily
+builds a local one via :class:`ClientRegistry` from its own
+``provider`` / ``api_key`` / ``base_url`` fields.
+
+For backward compatibility, ``provider=`` also accepts an
+``APIProvider`` instance (the pre-PR-4 construction). In that case the
+provider is wrapped once and stored; the PR-3 auto-bridge in
+``Pipeline._resolve_llm_client`` produces an equivalent ``state.llm_client``
+value and the execute path flows through the same unified surface.
+"""
 
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Dict, List, Optional
+from typing import Any, AsyncIterator, Dict, List, Optional, Union
 
 from geny_executor.core.errors import APIError, ErrorCategory
 from geny_executor.core.schema import ConfigField, ConfigSchema
 from geny_executor.core.slot import StrategySlot
 from geny_executor.core.stage import Stage
 from geny_executor.core.state import PipelineState
+from geny_executor.llm_client import BaseClient, ClientRegistry, ProviderBackedClient
 from geny_executor.stages.s06_api.interface import APIProvider, RetryStrategy
 from geny_executor.stages.s06_api.artifact.default.providers import (
     AnthropicProvider,
@@ -23,46 +38,58 @@ from geny_executor.stages.s06_api.artifact.default.retry import (
 from geny_executor.stages.s06_api.types import APIRequest, APIResponse
 
 
+_BUILTIN_PROVIDER_NAMES = {"anthropic", "openai", "google", "vllm", "mock"}
+
+
 class APIStage(Stage[Any, APIResponse]):
     """Stage 6: API.
 
-    Dual abstraction:
-      - Level 2 provider: actual API call implementation
-      - Level 2 retry: error recovery strategy
-
-    Streaming is controlled by PipelineState.stream (set from PipelineConfig).
-    Falls back to the constructor parameter when state does not specify.
-
-    Both streaming and non-streaming paths share the same retry strategy:
-    same model, up to max_retries attempts, then fail.
+    Routes through ``state.llm_client`` when present. Retains the retry
+    slot because retry is about error recovery, not vendor selection.
     """
 
     def __init__(
         self,
-        provider: Optional[APIProvider] = None,
+        provider: Union[str, APIProvider, None] = None,
         retry: Optional[RetryStrategy] = None,
         *,
         api_key: str = "",
         base_url: Optional[str] = None,
+        default_headers: Optional[Dict[str, str]] = None,
         stream: bool = True,
         timeout_ms: Optional[int] = None,
     ):
-        if provider is not None:
-            initial_provider: APIProvider = provider
+        self._api_key = api_key
+        self._base_url = base_url
+        self._default_headers = default_headers or {}
+        self._stream_default = stream
+        self._timeout_ms = timeout_ms
+        self._local_client: Optional[BaseClient] = None
+
+        provider_strategy: APIProvider
+        if isinstance(provider, str):
+            self._provider_name = provider or "anthropic"
+            provider_strategy = self._build_legacy_provider(self._provider_name)
+        elif provider is not None:
+            provider_strategy = provider
+            self._provider_name = getattr(provider, "name", "") or "anthropic"
         elif api_key:
-            initial_provider = AnthropicProvider(api_key=api_key, base_url=base_url)
+            self._provider_name = "anthropic"
+            provider_strategy = AnthropicProvider(
+                api_key=api_key, base_url=base_url, default_headers=default_headers
+            )
         else:
             raise ValueError("Either 'provider' or 'api_key' must be provided")
 
         self._slots: Dict[str, StrategySlot] = {
             "provider": StrategySlot(
                 name="provider",
-                strategy=initial_provider,
+                strategy=provider_strategy,
                 registry={
                     "anthropic": AnthropicProvider,
                     "mock": MockProvider,
                 },
-                description="API provider (actual LLM endpoint)",
+                description="API provider (legacy slot — execution now routes through state.llm_client)",
             ),
             "retry": StrategySlot(
                 name="retry",
@@ -75,9 +102,44 @@ class APIStage(Stage[Any, APIResponse]):
                 description="Retry strategy on API errors",
             ),
         }
-        self._stream_default = stream
-        self._base_url = base_url
-        self._timeout_ms = timeout_ms
+
+    def _build_legacy_provider(self, name: str) -> APIProvider:
+        """Build a legacy ``APIProvider`` for the named vendor.
+
+        Only used when a bare string is passed; wraps the credentials the
+        stage already has. ``mock`` builds a :class:`MockProvider` for tests.
+        Other names defer to ``ClientRegistry`` on first use (via
+        ``_resolve_client``) and keep a trivial placeholder here.
+        """
+        if name == "mock":
+            return MockProvider()
+        if name == "anthropic":
+            return AnthropicProvider(
+                api_key=self._api_key,
+                base_url=self._base_url,
+                default_headers=self._default_headers,
+            )
+        try:
+            from geny_executor.stages.s06_api.artifact.openai.providers import OpenAIProvider
+        except Exception:
+            OpenAIProvider = None
+        try:
+            from geny_executor.stages.s06_api.artifact.google.providers import GoogleProvider
+        except Exception:
+            GoogleProvider = None
+        if name == "openai" and OpenAIProvider is not None:
+            return OpenAIProvider(
+                api_key=self._api_key,
+                base_url=self._base_url,
+                default_headers=self._default_headers,
+            )
+        if name == "google" and GoogleProvider is not None:
+            return GoogleProvider(api_key=self._api_key)
+        return AnthropicProvider(
+            api_key=self._api_key,
+            base_url=self._base_url,
+            default_headers=self._default_headers,
+        )
 
     @property
     def _provider(self) -> APIProvider:
@@ -103,14 +165,23 @@ class APIStage(Stage[Any, APIResponse]):
         return self._slots
 
     def get_config_schema(self) -> ConfigSchema:
+        available = sorted(set(ClientRegistry.available()) | _BUILTIN_PROVIDER_NAMES)
         return ConfigSchema(
             name="api",
             fields=[
                 ConfigField(
+                    name="provider",
+                    type="select",
+                    label="Provider",
+                    description="LLM provider to use for this stage.",
+                    default="anthropic",
+                    options=[{"value": p, "label": p} for p in available],
+                ),
+                ConfigField(
                     name="base_url",
                     type="string",
                     label="Base URL",
-                    description="Override API endpoint (useful for proxies or mocks).",
+                    description="Override API endpoint (vLLM / proxy / mock server).",
                     default="",
                 ),
                 ConfigField(
@@ -134,14 +205,27 @@ class APIStage(Stage[Any, APIResponse]):
 
     def get_config(self) -> Dict[str, Any]:
         return {
+            "provider": self._provider_name,
             "base_url": self._base_url or "",
             "stream": self._stream_default,
             "timeout_ms": self._timeout_ms or 0,
         }
 
     def update_config(self, config: Dict[str, Any]) -> None:
+        if "provider" in config:
+            new_name = str(config["provider"]) or "anthropic"
+            if new_name != self._provider_name:
+                self._provider_name = new_name
+                self._local_client = None
+                self._slots["provider"] = StrategySlot(
+                    name="provider",
+                    strategy=self._build_legacy_provider(new_name),
+                    registry=self._slots["provider"].registry,
+                    description=self._slots["provider"].description,
+                )
         if "base_url" in config:
             self._base_url = str(config["base_url"]) or None
+            self._local_client = None
         if "stream" in config:
             self._stream_default = bool(config["stream"])
         if "timeout_ms" in config:
@@ -149,36 +233,60 @@ class APIStage(Stage[Any, APIResponse]):
             self._timeout_ms = value if value > 0 else None
 
     def _resolve_stream(self, state: PipelineState) -> bool:
-        """Resolve streaming mode: state (from PipelineConfig) takes precedence."""
         state_stream = getattr(state, "stream", None)
         if state_stream is not None:
             return state_stream
         return self._stream_default
 
+    def _resolve_client(self, state: PipelineState) -> BaseClient:
+        """Return the effective :class:`BaseClient`.
+
+        Preference:
+          1. ``state.llm_client`` when set — the host's shared client wins.
+          2. A stage-local fallback, built lazily from the stage's own
+             ``provider`` / ``api_key`` / ``base_url``. For legacy
+             ``APIProvider`` instances, wrap in :class:`ProviderBackedClient`.
+             For known string providers, build via :class:`ClientRegistry`.
+        """
+        if state.llm_client is not None:
+            return state.llm_client
+        if self._local_client is None:
+            if self._provider_name in ClientRegistry.available():
+                client_cls = ClientRegistry.get(self._provider_name)
+                kwargs: Dict[str, Any] = {"api_key": self._api_key}
+                if self._base_url:
+                    kwargs["base_url"] = self._base_url
+                if self._default_headers:
+                    kwargs["default_headers"] = self._default_headers
+                self._local_client = client_cls(**kwargs)
+            else:
+                self._local_client = ProviderBackedClient(self._provider)
+        return self._local_client
+
     async def execute(self, input: Any, state: PipelineState) -> APIResponse:
-        request = self._build_request(state)
+        cfg = self.resolve_model_config(state)
+        client = self._resolve_client(state)
         use_stream = self._resolve_stream(state)
 
         state.add_event(
             "api.request",
             {
-                "model": request.model,
-                "message_count": len(request.messages),
-                "has_tools": bool(request.tools),
-                "has_thinking": bool(request.thinking),
+                "model": cfg.model,
+                "provider": getattr(client, "provider", ""),
+                "message_count": len(state.messages),
+                "has_tools": bool(state.tools),
+                "has_thinking": cfg.thinking_enabled,
                 "stream": use_stream,
             },
         )
 
         if use_stream:
-            response = await self._call_streaming_with_retry(request, state)
+            response = await self._call_streaming_with_retry(client, cfg, state)
         else:
-            response = await self._call_with_retry(request, state)
+            response = await self._call_with_retry(client, cfg, state)
 
-        # Store raw response for downstream stages
         state.last_api_response = response
 
-        # Add assistant message to conversation (always List[Dict])
         assistant_content = self._build_assistant_content(response)
         state.add_message("assistant", assistant_content)
 
@@ -196,15 +304,11 @@ class APIStage(Stage[Any, APIResponse]):
         return response
 
     def _build_request(self, state: PipelineState) -> APIRequest:
-        """Build APIRequest from pipeline state.
+        """Assemble a canonical :class:`APIRequest` from state.
 
-        Follows Anthropic API constraints:
-          - Use EITHER temperature OR top_p, not both.
-          - thinking.budget_tokens must be < max_tokens when type="enabled".
-
-        Honors per-stage overrides via :meth:`Stage.resolve_model_config` so
-        all sampling + thinking fields are resolved together (override wins
-        verbatim when set; otherwise falls back to ``state``).
+        Kept for introspection and legacy test fixtures; execute() no
+        longer routes through this method (it calls ``client.create_message``
+        which builds the request internally with capability filtering).
         """
         cfg = self.resolve_model_config(state)
         request = APIRequest(
@@ -217,40 +321,84 @@ class APIStage(Stage[Any, APIResponse]):
             top_k=cfg.top_k,
             stop_sequences=cfg.stop_sequences,
         )
-
         if state.tools:
             request.tools = state.tools
         if state.tool_choice:
             request.tool_choice = state.tool_choice
-
         if cfg.thinking_enabled:
-            thinking_type = cfg.thinking_type
-            thinking: dict = {"type": thinking_type}
-            if thinking_type == "enabled":
+            thinking: Dict[str, Any] = {"type": cfg.thinking_type}
+            if cfg.thinking_type == "enabled":
                 thinking["budget_tokens"] = cfg.thinking_budget_tokens
             if cfg.thinking_display:
                 thinking["display"] = cfg.thinking_display
             request.thinking = thinking
-
         return request
 
-    # ── API call methods (both paths use the same retry strategy) ──
+    # ── Retry wrappers ──
+
+    def _call_kwargs(self, cfg: Any, state: PipelineState) -> Dict[str, Any]:
+        kwargs: Dict[str, Any] = {
+            "model_config": cfg,
+            "messages": list(state.messages),
+            "purpose": "api",
+        }
+        if state.system:
+            kwargs["system"] = state.system
+        if state.tools:
+            kwargs["tools"] = state.tools
+        if state.tool_choice:
+            kwargs["tool_choice"] = state.tool_choice
+        return kwargs
+
+    async def _call_with_retry(
+        self, client: BaseClient, cfg: Any, state: PipelineState
+    ) -> APIResponse:
+        last_error: Optional[Exception] = None
+        kwargs = self._call_kwargs(cfg, state)
+
+        for attempt in range(self._retry.max_retries + 1):
+            try:
+                return await client.create_message(**kwargs)
+            except APIError as e:
+                last_error = e
+                if not self._retry.should_retry(e.category, attempt):
+                    raise
+                delay = self._retry.get_delay(attempt)
+                state.add_event(
+                    "api.retry",
+                    {
+                        "attempt": attempt + 1,
+                        "category": e.category.value,
+                        "delay": delay,
+                    },
+                )
+                await asyncio.sleep(delay)
+            except Exception as e:
+                last_error = e
+                category = ErrorCategory.UNKNOWN
+                if not self._retry.should_retry(category, attempt):
+                    raise APIError(str(e), category=category, cause=e) from e
+                delay = self._retry.get_delay(attempt)
+                state.add_event(
+                    "api.retry",
+                    {
+                        "attempt": attempt + 1,
+                        "category": category.value,
+                        "delay": delay,
+                    },
+                )
+                await asyncio.sleep(delay)
+
+        raise last_error or APIError("Max retries exceeded", category=ErrorCategory.UNKNOWN)
 
     async def _call_streaming_with_retry(
-        self, request: APIRequest, state: PipelineState
+        self, client: BaseClient, cfg: Any, state: PipelineState
     ) -> APIResponse:
-        """Execute streaming API call with retry on recoverable errors.
-
-        Same model, up to max_retries attempts. No model switching.
-        On retry, previously streamed text.delta events are already emitted
-        but the final response is discarded — only the successful attempt's
-        response is returned.
-        """
         last_error: Optional[Exception] = None
 
         for attempt in range(self._retry.max_retries + 1):
             try:
-                return await self._call_streaming(request, state)
+                return await self._call_streaming(client, cfg, state)
             except APIError as e:
                 last_error = e
                 if not self._retry.should_retry(e.category, attempt):
@@ -285,11 +433,14 @@ class APIStage(Stage[Any, APIResponse]):
 
         raise last_error or APIError("Max retries exceeded", category=ErrorCategory.UNKNOWN)
 
-    async def _call_streaming(self, request: APIRequest, state: PipelineState) -> APIResponse:
-        """Single streaming attempt — emits text.delta events."""
+    async def _call_streaming(
+        self, client: BaseClient, cfg: Any, state: PipelineState
+    ) -> APIResponse:
         response: Optional[APIResponse] = None
+        kwargs = self._call_kwargs(cfg, state)
 
-        async for chunk in self._provider.create_message_stream(request):
+        stream: AsyncIterator[Dict[str, Any]] = client.create_message_stream(**kwargs)
+        async for chunk in stream:
             chunk_type = chunk.get("type")
             if chunk_type == "message_complete":
                 response = chunk["response"]
@@ -303,54 +454,10 @@ class APIStage(Stage[Any, APIResponse]):
             )
         return response
 
-    async def _call_with_retry(self, request: APIRequest, state: PipelineState) -> APIResponse:
-        """Execute non-streaming API call with retry logic."""
-        last_error: Optional[Exception] = None
-
-        for attempt in range(self._retry.max_retries + 1):
-            try:
-                response = await self._provider.create_message(request)
-                return response
-            except APIError as e:
-                last_error = e
-                if not self._retry.should_retry(e.category, attempt):
-                    raise
-                delay = self._retry.get_delay(attempt)
-                state.add_event(
-                    "api.retry",
-                    {
-                        "attempt": attempt + 1,
-                        "category": e.category.value,
-                        "delay": delay,
-                    },
-                )
-                await asyncio.sleep(delay)
-            except Exception as e:
-                last_error = e
-                category = ErrorCategory.UNKNOWN
-                if not self._retry.should_retry(category, attempt):
-                    raise APIError(str(e), category=category, cause=e) from e
-                delay = self._retry.get_delay(attempt)
-                state.add_event(
-                    "api.retry",
-                    {
-                        "attempt": attempt + 1,
-                        "category": category.value,
-                        "delay": delay,
-                    },
-                )
-                await asyncio.sleep(delay)
-
-        raise last_error or APIError("Max retries exceeded", category=ErrorCategory.UNKNOWN)
-
     # ── Response formatting ──
 
     def _build_assistant_content(self, response: APIResponse) -> List[Dict[str, Any]]:
-        """Build assistant content for message history.
-
-        Always returns List[Dict] (Anthropic content blocks format)
-        for consistent downstream processing.
-        """
+        """Build assistant content for message history."""
         blocks: List[Dict[str, Any]] = []
         for block in response.content:
             if block.raw:
