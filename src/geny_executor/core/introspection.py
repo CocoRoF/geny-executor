@@ -77,10 +77,16 @@ def _introspection_kwargs(stage_module: str, artifact: str) -> Dict[str, Any]:
 # The truth, verified by grepping ``self.tool_binding`` / ``self.model_override``
 # reads across ``src/geny_executor``:
 #
-#   - ``s06_api`` reads ``self.model_override`` in ``_build_request`` (only LLM-
-#     calling stage — overrides model / max_tokens / sampling / thinking).
-#   - ``s10_tool`` reads ``self.tool_binding`` in ``execute`` (only tool-calling
-#     stage — enforces the per-stage allow/block list).
+#   - ``s02_context`` consumes ``model_override`` via ``LLMSummaryCompactor``
+#     (gates the LLM-backed summarization path).
+#   - ``s06_api`` reads ``self.model_override`` in ``_build_request`` — the
+#     primary LLM-calling stage (overrides model / max_tokens / sampling /
+#     thinking).
+#   - ``s10_tool`` reads ``self.tool_binding`` in ``execute`` (only tool-
+#     calling stage — enforces the per-stage allow/block list).
+#   - ``s15_memory`` consumes ``model_override`` via
+#     ``GenyMemoryStrategy._reflect`` native path (gates reflective
+#     insight extraction).
 #   - Every other stage reads neither.
 #
 # Alternative artifacts for these stages (e.g. ``s06_api/openai``) inherit the
@@ -93,8 +99,10 @@ def _introspection_kwargs(stage_module: str, artifact: str) -> Dict[str, Any]:
 _StageCapabilities = Dict[str, bool]
 
 _STAGE_CAPABILITIES: Dict[str, _StageCapabilities] = {
+    "s02_context": {"tool_binding": False, "model_override": True},
     "s06_api": {"tool_binding": False, "model_override": True},
     "s10_tool": {"tool_binding": True, "model_override": False},
+    "s15_memory": {"tool_binding": False, "model_override": True},
 }
 
 
