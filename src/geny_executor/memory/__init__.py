@@ -78,7 +78,7 @@ from geny_executor.memory.factory import MemoryProviderFactory
 
 # ── Legacy adapter (Phase 3 validation only) ────────────────────────
 from geny_executor.memory.retriever import GenyMemoryRetriever
-from geny_executor.memory.strategy import GenyMemoryStrategy
+from geny_executor.memory.strategy import GenyMemoryStrategy, ReflectionResolver
 from geny_executor.memory.persistence import GenyPersistence
 from geny_executor.memory.presets import GenyPresets
 
@@ -133,6 +133,7 @@ __all__ = [
     # legacy adapter (validation fixture)
     "GenyMemoryRetriever",
     "GenyMemoryStrategy",
+    "ReflectionResolver",
     "GenyPersistence",
     "GenyPresets",
 ]

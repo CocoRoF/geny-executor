@@ -9,6 +9,7 @@ from geny_executor.stages.s02_context.artifact.default.strategies import (
 from geny_executor.stages.s02_context.artifact.default.compactors import (
     TruncateCompactor,
     SummaryCompactor,
+    LLMSummaryCompactor,
     SlidingWindowCompactor,
 )
 from geny_executor.stages.s02_context.artifact.default.retrievers import (
@@ -26,6 +27,7 @@ __all__ = [
     "ProgressiveDisclosureStrategy",
     "TruncateCompactor",
     "SummaryCompactor",
+    "LLMSummaryCompactor",
     "SlidingWindowCompactor",
     "NullRetriever",
     "StaticRetriever",
