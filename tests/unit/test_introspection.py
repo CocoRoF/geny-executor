@@ -60,6 +60,10 @@ def test_introspect_stage_default_every_stage(order: int, module_name: str):
 # These tests pin the contract so regressions can't quietly return.
 
 
+_MODEL_OVERRIDE_STAGES = {"s02_context", "s06_api", "s15_memory"}
+_TOOL_BINDING_STAGES = {"s10_tool"}
+
+
 def test_capability_flags_api_stage_only_allows_model_override():
     insp = introspect_stage("s06_api", "default")
     assert insp.model_override_supported is True
@@ -72,9 +76,27 @@ def test_capability_flags_tool_stage_only_allows_tool_binding():
     assert insp.model_override_supported is False
 
 
+def test_capability_flags_context_stage_allows_model_override():
+    """s02 consumes the override via LLMSummaryCompactor."""
+    insp = introspect_stage("s02_context", "default")
+    assert insp.model_override_supported is True
+    assert insp.tool_binding_supported is False
+
+
+def test_capability_flags_memory_stage_allows_model_override():
+    """s15 consumes the override via GenyMemoryStrategy native reflection."""
+    insp = introspect_stage("s15_memory", "default")
+    assert insp.model_override_supported is True
+    assert insp.tool_binding_supported is False
+
+
 @pytest.mark.parametrize(
     "order,module_name",
-    [(o, m) for o, m in sorted(STAGE_MODULES.items()) if m not in {"s06_api", "s10_tool"}],
+    [
+        (o, m)
+        for o, m in sorted(STAGE_MODULES.items())
+        if m not in _MODEL_OVERRIDE_STAGES and m not in _TOOL_BINDING_STAGES
+    ],
 )
 def test_capability_flags_default_false_elsewhere(order: int, module_name: str):
     insp = introspect_stage(module_name, "default")
