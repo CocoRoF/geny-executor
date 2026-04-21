@@ -6,6 +6,8 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Dict, Generic, List, Optional, TypeVar
 
+from geny_executor.core.config import ModelConfig
+
 if TYPE_CHECKING:
     from geny_executor.core.state import PipelineState
 
@@ -306,18 +308,49 @@ class Stage(ABC, Generic[T_In, T_Out]):
             return self._stage_module
         return f"s{self.order:02d}_{self.name}"
 
-    def resolve_model(self, state: PipelineState) -> Any:
-        """Return the effective model identifier for this stage.
+    def resolve_model_config(self, state: PipelineState) -> ModelConfig:
+        """Return the effective :class:`ModelConfig` for this stage.
 
-        When :attr:`model_override` is set, its ``model`` attribute wins; otherwise
-        falls back to the pipeline-wide ``state.model``. Model-using stages
-        (API, agent sub-pipelines, evaluators, memory summarizers) should call
-        this helper instead of reading ``state.model`` directly so the override
-        is honored uniformly.
+        When :attr:`model_override` is set, returns the override verbatim —
+        it IS the effective config. Otherwise builds a fresh bundle from
+        the pipeline-wide fields on ``state`` (the pre-override defaults
+        from :meth:`PipelineConfig.apply_to_state`).
+
+        Model-using stages (API, agent sub-pipelines, evaluators, memory
+        summarizers, memory reflectors) should call this helper instead of
+        reading ``state.model`` or reading ``self.model_override``
+        field-by-field so the override is honored uniformly and so stages
+        receive the full sampling + thinking bundle together.
+
+        Returns:
+            ModelConfig: Always a non-None bundle. When no override is set,
+            the returned config reflects the pipeline defaults currently on
+            ``state``; mutations to the returned object do not back-propagate.
         """
-        if self._model_override is not None:
-            return getattr(self._model_override, "model", state.model)
-        return state.model
+        override = self._model_override
+        if override is not None:
+            return override
+        return ModelConfig(
+            model=state.model,
+            max_tokens=state.max_tokens,
+            temperature=state.temperature,
+            top_p=state.top_p,
+            top_k=state.top_k,
+            stop_sequences=list(state.stop_sequences) if state.stop_sequences else None,
+            thinking_enabled=state.thinking_enabled,
+            thinking_budget_tokens=state.thinking_budget_tokens,
+            thinking_type=getattr(state, "thinking_type", "enabled"),
+            thinking_display=getattr(state, "thinking_display", None),
+        )
+
+    def resolve_model(self, state: PipelineState) -> str:
+        """Legacy shim — returns the effective model identifier.
+
+        Equivalent to ``self.resolve_model_config(state).model``. Retained
+        for downstream callers that only need the model string; new code
+        should call :meth:`resolve_model_config` to get the full bundle.
+        """
+        return self.resolve_model_config(state).model
 
     def local_state(self, state: PipelineState) -> Dict[str, Any]:
         """Return this stage's private scratchpad, creating it on first access.

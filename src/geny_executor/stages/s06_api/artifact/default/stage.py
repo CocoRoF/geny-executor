@@ -202,19 +202,20 @@ class APIStage(Stage[Any, APIResponse]):
           - Use EITHER temperature OR top_p, not both.
           - thinking.budget_tokens must be < max_tokens when type="enabled".
 
-        Honors ``self.model_override`` (set via :meth:`PipelineMutator.set_stage_model`)
-        when present — each field falls back to *state* otherwise.
+        Honors per-stage overrides via :meth:`Stage.resolve_model_config` so
+        all sampling + thinking fields are resolved together (override wins
+        verbatim when set; otherwise falls back to ``state``).
         """
-        override = self.model_override
+        cfg = self.resolve_model_config(state)
         request = APIRequest(
-            model=override.model if override else state.model,
+            model=cfg.model,
             messages=list(state.messages),
-            max_tokens=override.max_tokens if override else state.max_tokens,
+            max_tokens=cfg.max_tokens,
             system=state.system,
-            temperature=override.temperature if override else state.temperature,
-            top_p=override.top_p if override else state.top_p,
-            top_k=override.top_k if override else state.top_k,
-            stop_sequences=(override.stop_sequences if override else state.stop_sequences),
+            temperature=cfg.temperature,
+            top_p=cfg.top_p,
+            top_k=cfg.top_k,
+            stop_sequences=cfg.stop_sequences,
         )
 
         if state.tools:
@@ -222,25 +223,13 @@ class APIStage(Stage[Any, APIResponse]):
         if state.tool_choice:
             request.tool_choice = state.tool_choice
 
-        # Extended thinking — override can force enable/disable per-stage.
-        thinking_enabled = override.thinking_enabled if override else state.thinking_enabled
-        if thinking_enabled:
-            thinking_type = (
-                override.thinking_type if override else getattr(state, "thinking_type", "enabled")
-            )
+        if cfg.thinking_enabled:
+            thinking_type = cfg.thinking_type
             thinking: dict = {"type": thinking_type}
-
             if thinking_type == "enabled":
-                thinking["budget_tokens"] = (
-                    override.thinking_budget_tokens if override else state.thinking_budget_tokens
-                )
-
-            thinking_display = (
-                override.thinking_display if override else getattr(state, "thinking_display", None)
-            )
-            if thinking_display:
-                thinking["display"] = thinking_display
-
+                thinking["budget_tokens"] = cfg.thinking_budget_tokens
+            if cfg.thinking_display:
+                thinking["display"] = cfg.thinking_display
             request.thinking = thinking
 
         return request
