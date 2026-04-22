@@ -159,6 +159,15 @@ class PipelineState:
     # ── LLM client (injected by Pipeline.attach_runtime; None for non-LLM pipelines) ──
     llm_client: Optional[Any] = field(default=None, repr=False)
 
+    # ── Plugin-supplied session runtime container (v0.30.0) ──
+    # Free-shape carrier for host-side session-scoped objects (e.g.
+    # creature state, persona providers, emitter chains). The executor
+    # does not constrain its type — the host (or third-party plugin)
+    # decides what attributes live on it. Stages that read from it
+    # should duck-type and tolerate ``None`` for hosts that never
+    # attach one. See ``Pipeline.attach_runtime(session_runtime=...)``.
+    session_runtime: Optional[Any] = field(default=None, repr=False)
+
     def add_event(self, event_type: str, data: Optional[Dict[str, Any]] = None) -> None:
         """Append an event to the log. If a listener is set, also notify it."""
         event_dict = {

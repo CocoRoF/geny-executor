@@ -242,6 +242,7 @@ class Pipeline:
             False  # flips once run()/run_stream() begins; gates attach_runtime
         )
         self._attached_llm_client: Any = None  # set by attach_runtime; propagated in _init_state
+        self._attached_session_runtime: Any = None  # v0.30.0 plugin slot; propagated in _init_state
 
     @property
     def mcp_manager(self) -> Any:
@@ -515,6 +516,7 @@ class Pipeline:
         system_builder: Optional[Any] = None,
         tool_context: Optional[Any] = None,
         llm_client: Optional[Any] = None,
+        session_runtime: Optional[Any] = None,
     ) -> None:
         """Inject session-scoped runtime objects into a manifest-built pipeline.
 
@@ -537,6 +539,8 @@ class Pipeline:
         - ``memory_persistence`` → Stage 15 (Memory), slot ``persistence``.
         - ``system_builder`` → Stage 3 (System), slot ``builder``.
         - ``tool_context`` → Stage 10 (Tool), ``_context`` attribute.
+        - ``session_runtime`` → ``state.session_runtime`` (free-shape
+          plugin container; see dedicated arg docs below).
 
         If a target stage is absent (manifest excluded it) the kwarg for
         that stage is silently ignored — a pipeline without a Memory stage
@@ -566,6 +570,20 @@ class Pipeline:
                 from the pipeline's per-run state inside Stage 10's
                 ``execute`` — the attached context supplies the *host-level*
                 fields that persist across runs.
+            session_runtime: Free-shape carrier for host-side
+                session-scoped objects (e.g. game state, persona
+                providers, emitter chains). The executor is intentionally
+                ignorant of its type — when supplied, it is propagated
+                into ``state.session_runtime`` at run start so any stage
+                or plugin can reach it via ``state.session_runtime``.
+
+                **Plugin compatibility guideline (non-binding):** plugins
+                that share a pipeline should agree on attribute names
+                and treat missing attributes as opt-out (use
+                ``getattr(state.session_runtime, "creature_state", None)``
+                rather than direct attribute access). The executor does
+                not enforce a Protocol — schema collisions between
+                competing plugins are a host-policy concern.
 
         Raises:
             RuntimeError: If the pipeline has already started a run. State
@@ -615,6 +633,9 @@ class Pipeline:
 
         if llm_client is not None:
             self._attached_llm_client = llm_client
+
+        if session_runtime is not None:
+            self._attached_session_runtime = session_runtime
 
     def _set_stage_slot_strategy(self, *, stage_name: str, slot_name: str, strategy: Any) -> None:
         """Replace a named slot's strategy on the stage registered under *stage_name*.
@@ -868,6 +889,8 @@ class Pipeline:
         self._config.apply_to_state(state)
         if state.llm_client is None:
             state.llm_client = self._resolve_llm_client()
+        if state.session_runtime is None and self._attached_session_runtime is not None:
+            state.session_runtime = self._attached_session_runtime
         self._has_started = True
         return state
 
