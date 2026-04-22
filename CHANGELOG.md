@@ -4,6 +4,48 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.30.0] — 2026-04-22
+
+Minor release adding a single plugin-oriented primitive: the
+`session_runtime` attach slot. Hosts can now thread session-scoped
+non-stage objects (creature state, persona providers, emitter chains)
+through the pipeline via a typed attribute carrier rather than
+abusing `state.shared` as a stringly-typed bag — important for
+third-party plugin coexistence where key-namespacing is otherwise
+the host's problem.
+
+Pure additive — every existing host and test passes unchanged. The
+new slot defaults to `None`; behavior is only reachable when a host
+opts in by passing `session_runtime=` to `attach_runtime`.
+
+### Added
+
+- **`Pipeline.attach_runtime(session_runtime=...)`** — seventh kwarg
+  alongside `memory_retriever`, `memory_strategy`,
+  `memory_persistence`, `system_builder`, `tool_context`,
+  `llm_client`. Post-run re-attach refused (same discipline as the
+  other kwargs).
+- **`PipelineState.session_runtime: Optional[Any]`** — field on the
+  run state, propagated from the attached value via `_init_state`.
+  Explicit caller-supplied state wins over the attached default
+  (matches `llm_client` semantics).
+
+### Intentionally not added
+
+- **No Protocol / ABC.** The executor does not inspect or constrain
+  the attached object's shape — it is `Any`. Docstring includes a
+  non-binding compatibility guideline (`getattr(..., "foo", None)`;
+  missing attrs treated as opt-out) so competing plugins sharing a
+  pipeline have a coordination hint without executor-enforced policy.
+- **No automatic lifecycle hooks.** Host is responsible for any
+  per-turn mutation or persistence; the slot is a plain reference.
+
+### Host upgrade note
+
+Existing hosts require no change. Hosts wanting to migrate
+stringly-typed `state.shared["foo"]` bags onto a typed carrier can do
+so incrementally — the two paths coexist.
+
 ## [0.29.0] — 2026-04-21
 
 Minor release bundling cycle `20260421_4`: stage state interface,
