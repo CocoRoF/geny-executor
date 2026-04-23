@@ -17,6 +17,10 @@ from geny_executor.memory.provider import (
     ReflectionContext,
     Turn,
 )
+from geny_executor.stages.s15_memory._dehydrate import (
+    dehydrate_message,
+    dehydrate_messages,
+)
 from geny_executor.stages.s15_memory.interface import (
     ConversationPersistence,
     MemoryUpdateStrategy,
@@ -181,7 +185,11 @@ class MemoryStage(Stage[Any, Any]):
                 "Memory persistence configured but session_id is empty — skipping persist"
             )
         if persistence_active and state.session_id:
-            await persistence.save(state.session_id, state.messages)
+            # Strip multimodal raw payloads (base64 image bytes etc.) before
+            # writing to disk — see ``_dehydrate`` for the schema.
+            await persistence.save(
+                state.session_id, dehydrate_messages(state.messages)
+            )
             state.add_event(
                 "memory.persisted",
                 {
@@ -203,7 +211,9 @@ class MemoryStage(Stage[Any, Any]):
         last_idx = int(state.metadata.get(_STATE_LAST_RECORDED, 0))
         new_msgs = state.messages[last_idx:]
         for msg in new_msgs:
-            turn = Turn.from_state_message(msg)
+            # STM also stores dehydrated copies — base64 payloads stay only
+            # in the live ``state.messages`` for the current pipeline run.
+            turn = Turn.from_state_message(dehydrate_message(msg))
             await provider.record_turn(turn)
             state.add_event(
                 MemoryEvent.TURN_RECORDED.value,

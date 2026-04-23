@@ -160,6 +160,181 @@ def blocks_to_text(content: Any) -> str:
     return str(content)
 
 
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Multimodal Block Translation
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+def _image_block_to_openai_part(block: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Canonical image content block → OpenAI ``image_url`` content part.
+
+    Canonical (Anthropic):
+        {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "..."}}
+        {"type": "image", "source": {"type": "url", "url": "https://..."}}
+
+    OpenAI:
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,..." | "https://...",
+                                            "detail": "auto"}}
+    """
+    source = block.get("source") or {}
+    src_type = source.get("type")
+    if src_type == "base64":
+        media_type = source.get("media_type") or "image/png"
+        data = source.get("data") or ""
+        if not data:
+            return None
+        url = f"data:{media_type};base64,{data}"
+    elif src_type == "url":
+        url = source.get("url")
+        if not url:
+            return None
+    else:
+        return None
+
+    image_url: Dict[str, Any] = {"url": url}
+    detail = block.get("detail") or (block.get("_meta", {}) if isinstance(block.get("_meta"), dict) else {}).get("detail")
+    if detail:
+        image_url["detail"] = detail
+    return {"type": "image_url", "image_url": image_url}
+
+
+def _image_block_to_google_part(block: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Canonical image content block → Google Gemini ``inlineData`` / ``fileData`` part."""
+    source = block.get("source") or {}
+    src_type = source.get("type")
+    if src_type == "base64":
+        media_type = source.get("media_type") or "image/png"
+        data = source.get("data") or ""
+        if not data:
+            return None
+        return {"inlineData": {"mimeType": media_type, "data": data}}
+    if src_type == "url":
+        url = source.get("url")
+        if not url:
+            return None
+        # Gemini ``fileData`` requires a Files API URI; raw https URLs are
+        # not directly fetched by the model. Best-effort mapping.
+        media_type = source.get("media_type") or "image/png"
+        return {"fileData": {"mimeType": media_type, "fileUri": url}}
+    return None
+
+
+def _file_block_to_text_fallback(block: Dict[str, Any]) -> str:
+    """Lossy fallback: render a file attachment as plain text metadata."""
+    name = block.get("name") or "unnamed"
+    mime = block.get("mime_type") or "application/octet-stream"
+    return f"[attached file: {name} ({mime})]"
+
+
+def _user_content_to_openai_parts(content: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Build OpenAI multimodal user content parts from canonical blocks.
+
+    Note: ``tool_result`` blocks are *not* handled here — caller must split
+    them out via :func:`split_tool_results` first.
+    """
+    parts: List[Dict[str, Any]] = []
+    for block in content:
+        if not isinstance(block, dict):
+            parts.append({"type": "text", "text": str(block)})
+            continue
+        btype = block.get("type")
+        if btype == "text":
+            text = block.get("text", "")
+            if text:
+                parts.append({"type": "text", "text": text})
+        elif btype == "image":
+            part = _image_block_to_openai_part(block)
+            if part is not None:
+                parts.append(part)
+        elif btype == "file":
+            # TODO: PDF 등 OpenAI 의 ``file`` content part (Assistants API
+            # 또는 Responses API ``input_file``) 로 매핑. 지금은 text fallback.
+            parts.append({"type": "text", "text": _file_block_to_text_fallback(block)})
+    return parts
+
+
+def _user_content_to_google_parts(content: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    parts: List[Dict[str, Any]] = []
+    for block in content:
+        if not isinstance(block, dict):
+            parts.append({"text": str(block)})
+            continue
+        btype = block.get("type")
+        if btype == "text":
+            text = block.get("text", "")
+            if text:
+                parts.append({"text": text})
+        elif btype == "image":
+            part = _image_block_to_google_part(block)
+            if part is not None:
+                parts.append(part)
+        elif btype == "file":
+            # TODO: PDF 등 Gemini 의 fileData 또는 inlineData (PDF 직접 지원)
+            # 로 매핑. 지금은 text fallback.
+            parts.append({"text": _file_block_to_text_fallback(block)})
+    return parts
+
+
+def _content_has_media(content: Any) -> bool:
+    if not isinstance(content, list):
+        return False
+    return any(
+        isinstance(b, dict) and b.get("type") in ("image", "file")
+        for b in content
+    )
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Anthropic Sanitization
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+_ANTHROPIC_INTERNAL_KEYS = ("_meta",)
+
+
+def _sanitize_anthropic_block(block: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Strip executor-internal keys and lower unsupported block types."""
+    btype = block.get("type")
+    if btype == "file":
+        # TODO: Anthropic ``document`` block 으로 매핑 (PDF/text 직접 지원).
+        # 지금은 metadata 텍스트로 fallback.
+        name = block.get("name") or "unnamed"
+        mime = block.get("mime_type") or "application/octet-stream"
+        return {"type": "text", "text": f"[attached file: {name} ({mime})]"}
+
+    sanitized = {k: v for k, v in block.items() if k not in _ANTHROPIC_INTERNAL_KEYS}
+    return sanitized
+
+
+def canonical_messages_to_anthropic(
+    messages: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Sanitize canonical messages for the Anthropic SDK.
+
+    Canonical content blocks already match Anthropic's wire format, but we
+    must (1) drop executor-internal keys like ``_meta`` and (2) replace
+    block types Anthropic does not understand (``file``) with safe
+    fallbacks. Returns a deep-enough copy that mutating the result does
+    not bleed back into ``state.messages``.
+    """
+    sanitized: List[Dict[str, Any]] = []
+    for msg in messages:
+        content = msg.get("content")
+        if isinstance(content, list):
+            new_blocks: List[Dict[str, Any]] = []
+            for block in content:
+                if not isinstance(block, dict):
+                    new_blocks.append(block)
+                    continue
+                cleaned = _sanitize_anthropic_block(block)
+                if cleaned is not None:
+                    new_blocks.append(cleaned)
+            sanitized.append({**msg, "content": new_blocks})
+        else:
+            sanitized.append(msg)
+    return sanitized
+
+
 def split_tool_results(
     content: List[Dict[str, Any]],
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
@@ -230,7 +405,13 @@ def canonical_messages_to_openai(
                     )
                 # remaining blocks → user message
                 if other:
-                    result.append({"role": "user", "content": blocks_to_text(other)})
+                    if _content_has_media(other):
+                        # Multimodal — emit OpenAI ``content parts`` array.
+                        parts = _user_content_to_openai_parts(other)
+                        if parts:
+                            result.append({"role": "user", "content": parts})
+                    else:
+                        result.append({"role": "user", "content": blocks_to_text(other)})
             else:
                 result.append({"role": "user", "content": str(content)})
 
@@ -300,6 +481,13 @@ def canonical_messages_to_google(
                     text = block.get("text", "")
                     if text:
                         parts.append({"text": text})
+                elif btype == "image":
+                    part = _image_block_to_google_part(block)
+                    if part is not None:
+                        parts.append(part)
+                elif btype == "file":
+                    # TODO: PDF 등 Gemini fileData 직접 매핑. 지금은 text fallback.
+                    parts.append({"text": _file_block_to_text_fallback(block)})
                 elif btype == "tool_use":
                     parts.append(
                         {

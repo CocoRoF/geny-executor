@@ -10,6 +10,7 @@ from geny_executor.core.errors import APIError, ErrorCategory
 from geny_executor.core.state import TokenUsage
 from geny_executor.stages.s06_api.interface import APIProvider
 from geny_executor.stages.s06_api.types import APIRequest, APIResponse, ContentBlock
+from geny_executor.stages.s06_api._translate import canonical_messages_to_anthropic
 
 
 class AnthropicProvider(APIProvider):
@@ -106,7 +107,7 @@ class AnthropicProvider(APIProvider):
     def _build_kwargs(self, request: APIRequest) -> Dict[str, Any]:
         kwargs: Dict[str, Any] = {
             "model": request.model,
-            "messages": request.messages,
+            "messages": canonical_messages_to_anthropic(request.messages),
             "max_tokens": request.max_tokens,
         }
 
