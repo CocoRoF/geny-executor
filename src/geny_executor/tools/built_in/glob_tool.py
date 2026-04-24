@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict
 
-from geny_executor.tools.base import Tool, ToolContext, ToolResult
+from geny_executor.tools.base import Tool, ToolCapabilities, ToolContext, ToolResult
 
 _MAX_RESULTS = 500
 
@@ -44,6 +44,14 @@ class GlobTool(Tool):
             },
             "required": ["pattern"],
         }
+
+    def capabilities(self, input: Dict[str, Any]) -> ToolCapabilities:
+        # Directory-walk glob — no side effects, safe to fan out.
+        return ToolCapabilities(
+            concurrency_safe=True,
+            read_only=True,
+            idempotent=True,
+        )
 
     async def execute(self, input: Dict[str, Any], context: ToolContext) -> ToolResult:
         pattern = input.get("pattern", "")
