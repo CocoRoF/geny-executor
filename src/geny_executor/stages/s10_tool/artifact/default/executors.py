@@ -13,6 +13,33 @@ from geny_executor.stages.s10_tool.interface import (
     ToolExecutor,
     ToolRouter,
 )
+from geny_executor.stages.s10_tool.persistence import maybe_persist_large_result
+
+
+def _resolve_capabilities(registry: Optional[ToolRegistry], tc: Dict[str, Any]) -> ToolCapabilities:
+    """Look up ``capabilities`` for this call; fail-closed on any error.
+
+    The default ``ToolCapabilities()`` has ``max_result_chars=100_000`` — a
+    conservative cap that engages the persistence path for genuinely
+    oversized payloads without touching small results. Executors that don't
+    have a registry handle (e.g. Sequential/Parallel in legacy callers) can
+    still benefit from the default cap.
+    """
+    if registry is None:
+        return ToolCapabilities()
+    tool = registry.get(tc.get("tool_name", ""))
+    if tool is None:
+        return ToolCapabilities()
+    try:
+        return tool.capabilities(tc.get("tool_input", {}))
+    except Exception:
+        return ToolCapabilities()
+
+
+def _router_registry(router: ToolRouter) -> Optional[ToolRegistry]:
+    """Fish the registry out of a router when one isn't explicitly held."""
+    reg = getattr(router, "_registry", None)
+    return reg if isinstance(reg, ToolRegistry) else None
 
 
 def _emit_call_start(on_event: Optional[ToolEventCallback], tc: Dict[str, Any]) -> None:
@@ -66,6 +93,7 @@ class SequentialExecutor(ToolExecutor):
         *,
         on_event: Optional[ToolEventCallback] = None,
     ) -> List[Dict[str, Any]]:
+        registry = _router_registry(router)
         results = []
         for tc in tool_calls:
             _emit_call_start(on_event, tc)
@@ -76,6 +104,14 @@ class SequentialExecutor(ToolExecutor):
                 context,
             )
             duration_ms = int((time.monotonic() - t0) * 1000)
+            caps = _resolve_capabilities(registry, tc)
+            result = maybe_persist_large_result(
+                result,
+                tool_use_id=tc["tool_use_id"],
+                tool_name=tc["tool_name"],
+                capabilities=caps,
+                context=context,
+            )
             result_dict = result.to_api_format(tc["tool_use_id"])
             _emit_call_complete(on_event, tc, result_dict, duration_ms)
             results.append(result_dict)
@@ -105,6 +141,7 @@ class ParallelExecutor(ToolExecutor):
         on_event: Optional[ToolEventCallback] = None,
     ) -> List[Dict[str, Any]]:
         semaphore = asyncio.Semaphore(self._max_concurrency)
+        registry = _router_registry(router)
 
         async def _execute_one(tc: Dict[str, Any]) -> Dict[str, Any]:
             async with semaphore:
@@ -116,6 +153,14 @@ class ParallelExecutor(ToolExecutor):
                     context,
                 )
                 duration_ms = int((time.monotonic() - t0) * 1000)
+                caps = _resolve_capabilities(registry, tc)
+                result = maybe_persist_large_result(
+                    result,
+                    tool_use_id=tc["tool_use_id"],
+                    tool_name=tc["tool_name"],
+                    capabilities=caps,
+                    context=context,
+                )
                 result_dict = result.to_api_format(tc["tool_use_id"])
                 _emit_call_complete(on_event, tc, result_dict, duration_ms)
                 return result_dict
@@ -224,6 +269,14 @@ class PartitionExecutor(ToolExecutor):
                 context,
             )
             duration_ms = int((time.monotonic() - t0) * 1000)
+            caps = self._lookup_capabilities(tc)
+            result = maybe_persist_large_result(
+                result,
+                tool_use_id=tc["tool_use_id"],
+                tool_name=tc["tool_name"],
+                capabilities=caps,
+                context=context,
+            )
             result_dict = result.to_api_format(tc["tool_use_id"])
             _emit_call_complete(on_event, tc, result_dict, duration_ms)
             return result_dict
