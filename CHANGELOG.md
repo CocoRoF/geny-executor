@@ -4,6 +4,62 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.33.0] — 2026-04-24
+
+Phase 2 Orchestration release — completes Week 4 checkpoints on top of
+the 0.32.x Phase 1 foundation. Stage 10 (Tool) gains streaming
+execution, automatic result persistence, lifecycle hooks around every
+tool dispatch, and a stage-level concurrency budget knob.
+
+### Added
+
+- **StreamingToolExecutor** (PR #59, `stages/s10_tool/streaming.py`) —
+  online variant of `PartitionExecutor`. Exposes an `add()` / `drain()`
+  interface so hosts integrating with streaming LLM responses can kick
+  off concurrency-safe tools as `tool_use` blocks arrive, then collect
+  results in receive order on drain. Unsafe calls raise a chain barrier
+  the moment they queue so subsequent safe calls wait. 14 new unit
+  tests cover ordering, bounded parallelism, fail-closed metadata
+  lookup, event emission, and the safe/unsafe/safe interleave pattern.
+
+- **Tool result persistence** (PR #60, `stages/s10_tool/persistence.py`)
+  — `maybe_persist_large_result` inspects each `ToolResult.content`
+  against the tool's resolved `ToolCapabilities.max_result_chars`. When
+  exceeded, writes a JSON envelope to
+  `{storage_path}/tool-results/{tool_use_id}.json` and returns a new
+  `ToolResult` with a short `display_text` + the path in `persist_full`.
+  Wired into all four Stage 10 executors. Fail-open: missing
+  `storage_path` / `OSError` → original payload returned with a warning
+  log. 16 new tests including integration through each executor.
+
+- **Tool lifecycle hook wiring** (PR #61,
+  `stages/s10_tool/artifact/default/routers.py`) — `RegistryRouter` now
+  fires `on_enter` → execute → `on_exit` (or `on_error` on raise). A
+  `ToolResult` with `is_error=True` is still a normal return, so
+  `on_exit` fires and observes the flag. All hook failures are logged
+  and swallowed so a misbehaving hook never masks a successful tool
+  call or blocks the next lifecycle event. 9 new tests.
+
+- **Stage-level `max_concurrency` knob** (PR #62,
+  `stages/s10_tool/artifact/default/stage.py`) — `ToolStage(max_concurrency=N)`
+  ctor arg + ConfigSchema integer field (min 1, max 64). `update_config`
+  propagates the value onto the active executor; re-applied on every
+  `execute()` call so swapped-in executors inherit the budget instead
+  of reverting to their class default. 12 new tests.
+
+### Changed
+
+- `ToolContext.storage_path` is now used by Stage 10 executors for
+  tool-result persistence. When absent, behaviour is identical to
+  0.32.x (inline full payload, warn on oversize).
+
+### Notes
+
+Full unit suite: 844 passed, 2 skipped. Functionally additive — hosts
+upgrading from 0.32.x without consuming any of the new surfaces see
+no behaviour change. Phase 3 (built-in tool catalog) begins in the
+next minor.
+
 ## [0.32.3] — 2026-04-24
 
 Patch release — applies `ruff format` to bring Phase 1 additions onto
