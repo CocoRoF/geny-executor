@@ -4,6 +4,29 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.32.3] — 2026-04-24
+
+Patch release — applies `ruff format` to bring Phase 1 additions onto
+the repo's canonical style. No semantic changes. `ruff check` +
+`ruff format --check` now both pass on CI. This is the first Phase 1
+release that is green across all three supported Python versions
+(3.11 / 3.12 / 3.13) AND both lint jobs.
+
+### Fixed
+
+- 9 files reformatted (PR #57): whitespace / wrapping / trailing
+  comma adjustments only. Affected the Phase 1 uplift additions
+  (`tools/base.py`, `permission/*`, `hooks/events.py`, Stage 10
+  executors) plus three pre-existing files that had drifted from the
+  canonical format prior to this release.
+
+### Notes
+
+Consolidates 0.32.0 → 0.32.3 into a single publishable line. 0.32.0
+/ 0.32.1 / 0.32.2 tags exist but were never published to PyPI due to
+progressively discovered CI issues. Functionally identical to 0.32.0
+for anyone consuming the library.
+
 ## [0.32.2] — 2026-04-24
 
 Patch release — removes a ruff F401 (unused import) that blocked
