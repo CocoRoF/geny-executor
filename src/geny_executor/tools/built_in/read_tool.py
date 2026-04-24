@@ -5,7 +5,7 @@ from __future__ import annotations
 import mimetypes
 from typing import Any, Dict
 
-from geny_executor.tools.base import Tool, ToolContext, ToolResult
+from geny_executor.tools.base import Tool, ToolCapabilities, ToolContext, ToolResult
 from geny_executor.tools.built_in._path_guard import resolve_and_validate
 
 _DEFAULT_LIMIT = 2000
@@ -51,6 +51,14 @@ class ReadTool(Tool):
             },
             "required": ["file_path"],
         }
+
+    def capabilities(self, input: Dict[str, Any]) -> ToolCapabilities:
+        # Pure filesystem read — no side effects, safe to parallelise.
+        return ToolCapabilities(
+            concurrency_safe=True,
+            read_only=True,
+            idempotent=True,
+        )
 
     async def execute(self, input: Dict[str, Any], context: ToolContext) -> ToolResult:
         file_path = input.get("file_path", "")

@@ -6,7 +6,7 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List
 
-from geny_executor.tools.base import Tool, ToolContext, ToolResult
+from geny_executor.tools.base import Tool, ToolCapabilities, ToolContext, ToolResult
 
 _MAX_FILES = 200
 _MAX_MATCHES = 300
@@ -65,6 +65,15 @@ class GrepTool(Tool):
             },
             "required": ["pattern"],
         }
+
+    def capabilities(self, input: Dict[str, Any]) -> ToolCapabilities:
+        # Read-only ripgrep — safe to fan out when the LLM issues
+        # several grep calls in a single turn.
+        return ToolCapabilities(
+            concurrency_safe=True,
+            read_only=True,
+            idempotent=True,
+        )
 
     async def execute(self, input: Dict[str, Any], context: ToolContext) -> ToolResult:
         pattern_str = input.get("pattern", "")
