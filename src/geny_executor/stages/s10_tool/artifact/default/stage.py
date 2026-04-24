@@ -207,6 +207,10 @@ class ToolStage(Stage[Any, Any]):
             stage_order=self.order,
             stage_name=self.name,
             state_apply=_state_apply,
+            # Read-only handle so introspection tools (e.g. ToolSearch)
+            # can see the live tool descriptors + shared state. Tools
+            # MUST NOT mutate — use state_mutations / state_apply instead.
+            state_view=state,
         )
 
         router = self._router
