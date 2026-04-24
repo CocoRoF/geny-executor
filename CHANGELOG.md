@@ -4,6 +4,24 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.32.2] — 2026-04-24
+
+Patch release — removes a ruff F401 (unused import) that blocked
+0.32.1 CI from passing lint. No runtime behaviour changes.
+
+### Fixed
+
+- **`src/geny_executor/permission/matrix.py`** — removed an unused
+  top-level `PermissionBehavior` import. The symbol is only reached
+  at runtime via `rule.behavior` (already imported transitively), so
+  dropping the top-level name does not affect behaviour.
+
+### Notes
+
+Both 0.32.0 and 0.32.1 tags exist on the repo with no published
+wheels — this release is the first green-CI version. Phase 1 scope
+is unchanged from the 0.32.0 design.
+
 ## [0.32.1] — 2026-04-24
 
 Patch release — fixes Python 3.13 CI failure that blocked 0.32.0 from
