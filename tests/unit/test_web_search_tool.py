@@ -37,6 +37,21 @@ def _stub_search(results: List[Dict[str, Any]]):
     return _fake
 
 
+@pytest.fixture
+def ddgs_available(monkeypatch):
+    """Pretend ddgs is installed so tests don't depend on the [web] extra.
+
+    The real ``_load_ddgs`` returns the actual DDGS class when the
+    package is installed. Our tests monkey-patch ``_search_sync`` to
+    return canned data, so we only need a non-None sentinel here —
+    the sentinel never has any methods called on it.
+    """
+    monkeypatch.setattr(
+        "geny_executor.tools.built_in.web_search_tool._load_ddgs",
+        lambda: object,
+    )
+
+
 class TestSchemaAndCapabilities:
     def test_capabilities(self):
         caps = WebSearchTool().capabilities({"query": "x"})
@@ -54,7 +69,7 @@ class TestSchemaAndCapabilities:
 
 class TestHappyPath:
     @pytest.mark.asyncio
-    async def test_returns_formatted_hits(self, monkeypatch):
+    async def test_returns_formatted_hits(self, monkeypatch, ddgs_available):
         monkeypatch.setattr(
             WebSearchTool,
             "_search_sync",
@@ -87,7 +102,7 @@ class TestHappyPath:
         assert "2. PEP 8" in result.content
 
     @pytest.mark.asyncio
-    async def test_respects_max_results(self, monkeypatch):
+    async def test_respects_max_results(self, monkeypatch, ddgs_available):
         many = [
             {"title": f"T{i}", "href": f"https://x/{i}", "body": f"B{i}"}
             for i in range(20)
@@ -104,7 +119,7 @@ class TestHappyPath:
         assert "T3" not in result.content
 
     @pytest.mark.asyncio
-    async def test_hard_cap_enforced(self, monkeypatch):
+    async def test_hard_cap_enforced(self, monkeypatch, ddgs_available):
         # Ask for more than the hard cap — should silently clamp.
         many = [
             {"title": f"T{i}", "href": f"https://x/{i}", "body": ""}
@@ -124,7 +139,9 @@ class TestHappyPath:
         assert result.metadata["results_count"] == _HARD_MAX_RESULTS
 
     @pytest.mark.asyncio
-    async def test_empty_results_produces_no_results_message(self, monkeypatch):
+    async def test_empty_results_produces_no_results_message(
+        self, monkeypatch, ddgs_available
+    ):
         monkeypatch.setattr(
             WebSearchTool, "_search_sync", staticmethod(_stub_search([]))
         )
@@ -134,7 +151,7 @@ class TestHappyPath:
         assert result.metadata["results_count"] == 0
 
     @pytest.mark.asyncio
-    async def test_default_max_results_applied(self, monkeypatch):
+    async def test_default_max_results_applied(self, monkeypatch, ddgs_available):
         captured: Dict[str, int] = {}
 
         def _spy(ddgs_cls, query, max_results, region, safesearch):
@@ -146,7 +163,7 @@ class TestHappyPath:
         assert captured["max_results"] == _DEFAULT_MAX_RESULTS
 
     @pytest.mark.asyncio
-    async def test_region_and_safesearch_forwarded(self, monkeypatch):
+    async def test_region_and_safesearch_forwarded(self, monkeypatch, ddgs_available):
         captured: Dict[str, Any] = {}
 
         def _spy(ddgs_cls, query, max_results, region, safesearch):
@@ -185,7 +202,9 @@ class TestErrorPaths:
         assert "geny-executor[web]" in result.content
 
     @pytest.mark.asyncio
-    async def test_ddg_exception_surfaces_as_error_result(self, monkeypatch):
+    async def test_ddg_exception_surfaces_as_error_result(
+        self, monkeypatch, ddgs_available
+    ):
         def _boom(ddgs_cls, query, max_results, region, safesearch):
             raise RuntimeError("rate limited")
 
