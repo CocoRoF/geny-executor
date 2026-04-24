@@ -46,7 +46,14 @@ class TestGetBuiltinTools:
 
     def test_features_filesystem(self):
         tools = get_builtin_tools(features=["filesystem"])
-        assert set(tools.keys()) == {"Read", "Write", "Edit", "Glob", "Grep"}
+        assert set(tools.keys()) == {
+            "Read",
+            "Write",
+            "Edit",
+            "Glob",
+            "Grep",
+            "NotebookEdit",
+        }
 
     def test_features_web(self):
         tools = get_builtin_tools(features=["web"])
@@ -58,7 +65,16 @@ class TestGetBuiltinTools:
 
     def test_multiple_features_union(self):
         tools = get_builtin_tools(features=["filesystem", "web"])
-        expected = {"Read", "Write", "Edit", "Glob", "Grep", "WebFetch", "WebSearch"}
+        expected = {
+            "Read",
+            "Write",
+            "Edit",
+            "Glob",
+            "Grep",
+            "NotebookEdit",
+            "WebFetch",
+            "WebSearch",
+        }
         assert set(tools.keys()) == expected
 
     def test_unknown_feature_raises(self):
@@ -93,7 +109,14 @@ class TestGetBuiltinTools:
         # Even if the caller passes the same feature twice, the result
         # should still be a clean set.
         tools = get_builtin_tools(features=["filesystem", "filesystem"])
-        assert set(tools.keys()) == {"Read", "Write", "Edit", "Glob", "Grep"}
+        assert set(tools.keys()) == {
+            "Read",
+            "Write",
+            "Edit",
+            "Glob",
+            "Grep",
+            "NotebookEdit",
+        }
 
     def test_returned_values_are_tool_classes(self):
         tools = get_builtin_tools(features=["filesystem"])
