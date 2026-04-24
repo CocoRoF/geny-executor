@@ -211,6 +211,11 @@ class ToolStage(Stage[Any, Any]):
             # can see the live tool descriptors + shared state. Tools
             # MUST NOT mutate — use state_mutations / state_apply instead.
             state_view=state,
+            # Phase 5: propagate the host-attached HookRunner so the
+            # router can fire PRE_TOOL_USE / POST_TOOL_USE / POST_TOOL_
+            # FAILURE around dispatch. ``None`` is the default no-op.
+            hook_runner=getattr(self._context, "hook_runner", None),
+            permission_mode=getattr(self._context, "permission_mode", "default") or "default",
         )
 
         router = self._router

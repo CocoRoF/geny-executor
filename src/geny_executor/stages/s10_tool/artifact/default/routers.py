@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import datetime as _dt
 import logging
 from typing import Any, Dict, Optional
 
 import jsonschema
 
+from geny_executor.hooks.events import HookEvent, HookEventPayload
 from geny_executor.tools.base import Tool, ToolContext, ToolResult
 from geny_executor.tools.errors import (
     ToolError,
@@ -18,6 +20,39 @@ from geny_executor.tools.registry import ToolRegistry
 from geny_executor.stages.s10_tool.interface import ToolRouter
 
 logger = logging.getLogger(__name__)
+
+
+def _now_iso() -> str:
+    """UTC timestamp in ISO-8601 form for hook payloads."""
+    return _dt.datetime.now(_dt.timezone.utc).isoformat()
+
+
+def _build_hook_payload(
+    event: HookEvent,
+    tool_name: str,
+    tool_input: Dict[str, Any],
+    context: ToolContext,
+    *,
+    tool_output: Optional[str] = None,
+    extra_details: Optional[Dict[str, Any]] = None,
+) -> HookEventPayload:
+    """Assemble a :class:`HookEventPayload` from the dispatch context.
+
+    Kept as a helper so the router stays declarative and tests can
+    construct identical payloads when needed.
+    """
+    return HookEventPayload(
+        event=event,
+        session_id=context.session_id or "",
+        timestamp=_now_iso(),
+        permission_mode=getattr(context, "permission_mode", "default") or "default",
+        stage_order=getattr(context, "stage_order", 0) or 0,
+        stage_name=getattr(context, "stage_name", "") or "",
+        tool_name=tool_name,
+        tool_input=dict(tool_input),
+        tool_output=tool_output,
+        details=dict(extra_details or {}),
+    )
 
 
 async def _fire_hook(
@@ -124,23 +159,54 @@ class RegistryRouter(ToolRouter):
     async def _dispatch_with_lifecycle(
         self, tool: Tool, tool_input: Dict[str, Any], context: ToolContext
     ) -> ToolResult:
-        """Execute ``tool`` with lifecycle hooks wrapped around it.
+        """Execute ``tool`` with subprocess hooks + tool lifecycle hooks
+        wrapped around it.
 
         Ordering:
-            1. ``on_enter(input, ctx)`` — fired if present.
-            2. ``tool.execute(...)`` — the actual body.
-            3. On normal return → ``on_exit(result, ctx)`` if present.
-            4. On ``ToolFailure`` or any other ``Exception`` →
-               ``on_error(error, ctx)`` if present, then the error is
-               mapped to a structured ``ToolError`` as before.
+            1. Fire ``PRE_TOOL_USE`` subprocess hook (Phase 5). If the
+               combined outcome is blocked, return an ``ACCESS_DENIED``
+               error result without invoking ``execute``. If the
+               outcome carries ``modified_input``, the rest of the
+               pipeline uses it as the effective input.
+            2. ``on_enter(input, ctx)`` — Tool ABC lifecycle hook,
+               fired if present.
+            3. ``tool.execute(...)`` — the actual body.
+            4. On normal return → ``on_exit(result, ctx)`` then
+               ``POST_TOOL_USE`` (or ``POST_TOOL_FAILURE`` when the
+               tool returned a soft-error result with ``is_error=True``).
+            5. On ``ToolFailure`` or any other ``Exception`` →
+               ``on_error(error, ctx)`` then ``POST_TOOL_FAILURE``,
+               then the error is mapped to a structured ``ToolError``
+               as before.
 
-        Lifecycle hooks are optional: a tool that doesn't expose
-        ``on_enter`` / ``on_exit`` / ``on_error`` attributes (e.g. a
-        duck-typed host adapter that wasn't built against the ``Tool``
-        ABC) simply skips that stage. All hook *failures* are logged
-        and swallowed; the tool call's own success/failure drives the
-        returned ``ToolResult``.
+        Both layers of hooks are optional and fail-open. A tool without
+        ``on_enter`` / ``on_exit`` / ``on_error`` simply skips those.
+        Without a ``context.hook_runner`` bound, the subprocess hook
+        layer is a complete no-op. Subprocess hook failures are
+        already absorbed inside ``HookRunner``; nothing here can leak.
         """
+        runner = getattr(context, "hook_runner", None)
+
+        if runner is not None:
+            pre_payload = _build_hook_payload(
+                HookEvent.PRE_TOOL_USE, tool.name, tool_input, context
+            )
+            pre_outcome = await runner.fire(HookEvent.PRE_TOOL_USE, pre_payload)
+            if pre_outcome.blocked:
+                reason = pre_outcome.stop_reason or "blocked by pre_tool_use hook"
+                return make_error_result(ToolError.access_denied(tool.name, reason))
+            if pre_outcome.modified_input is not None:
+                tool_input = dict(pre_outcome.modified_input)
+                # Re-validate after a hook rewrite so a misbehaving
+                # hook can't bypass the tool's input schema.
+                try:
+                    validate_input(tool.input_schema, tool_input)
+                except jsonschema.ValidationError as exc:
+                    path = ".".join(str(p) for p in exc.absolute_path) or "<root>"
+                    return make_error_result(
+                        ToolError.invalid_input(tool.name, exc.message, path=path)
+                    )
+
         await _fire_hook("on_enter", tool.name, tool, tool_input, context)
 
         try:
@@ -153,11 +219,79 @@ class RegistryRouter(ToolRouter):
                 failure.error.message,
             )
             await _fire_hook("on_error", tool.name, tool, failure, context)
+            await _fire_post_tool_hook(
+                runner,
+                event=HookEvent.POST_TOOL_FAILURE,
+                tool_name=tool.name,
+                tool_input=tool_input,
+                context=context,
+                output_preview=f"ToolFailure: {failure.error.message}",
+            )
             return make_error_result(failure.error)
         except Exception as exc:
             logger.exception("tool %s crashed unexpectedly", tool.name)
             await _fire_hook("on_error", tool.name, tool, exc, context)
+            await _fire_post_tool_hook(
+                runner,
+                event=HookEvent.POST_TOOL_FAILURE,
+                tool_name=tool.name,
+                tool_input=tool_input,
+                context=context,
+                output_preview=f"crash: {exc}",
+            )
             return make_error_result(ToolError.tool_crashed(tool.name, exc))
 
         await _fire_hook("on_exit", tool.name, tool, result, context)
+
+        # Soft errors (tool returned ``is_error=True`` without raising)
+        # also count as failures from the hook subsystem's POV — gives
+        # post-failure auditors a unified observation point.
+        post_event = HookEvent.POST_TOOL_FAILURE if result.is_error else HookEvent.POST_TOOL_USE
+        await _fire_post_tool_hook(
+            runner,
+            event=post_event,
+            tool_name=tool.name,
+            tool_input=tool_input,
+            context=context,
+            output_preview=_preview_result(result),
+        )
         return result
+
+
+def _preview_result(result: ToolResult, *, max_chars: int = 500) -> str:
+    """Compact preview of a tool result for hook payloads."""
+    body = result.display_text if result.display_text is not None else result.content
+    if isinstance(body, str):
+        text = body
+    else:
+        text = str(body)
+    if len(text) > max_chars:
+        return text[:max_chars] + f"… ({len(text)} chars total)"
+    return text
+
+
+async def _fire_post_tool_hook(
+    runner: Any,
+    *,
+    event: HookEvent,
+    tool_name: str,
+    tool_input: Dict[str, Any],
+    context: ToolContext,
+    output_preview: str,
+) -> None:
+    """Fire ``POST_TOOL_USE`` / ``POST_TOOL_FAILURE`` if a runner is bound.
+
+    Post-tool hooks are observational only — their outcomes do not
+    feed back into the pipeline (the tool result is already final).
+    Logged failures inside ``HookRunner`` are sufficient.
+    """
+    if runner is None:
+        return
+    payload = _build_hook_payload(event, tool_name, tool_input, context, tool_output=output_preview)
+    try:
+        await runner.fire(event, payload)
+    except Exception:  # pragma: no cover - defensive
+        logger.warning(
+            "post-tool hook fire raised; ignored",
+            exc_info=True,
+        )
