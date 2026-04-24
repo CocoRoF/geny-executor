@@ -562,6 +562,7 @@ class Pipeline:
         llm_client: Optional[Any] = None,
         session_runtime: Optional[Any] = None,
         hook_runner: Optional[Any] = None,
+        mcp_manager: Optional[Any] = None,
     ) -> None:
         """Inject session-scoped runtime objects into a manifest-built pipeline.
 
@@ -688,6 +689,54 @@ class Pipeline:
             # constructs a HookRunner once (per session typically) and
             # attaches it before the first run.
             self._set_tool_stage_hook_runner(hook_runner)
+
+        if mcp_manager is not None:
+            # Late-bind a host-managed :class:`MCPManager`. Replaces any
+            # manager the manifest pass built (typical for hosts that
+            # want to add / disable / enable servers at runtime). The
+            # manager owns its servers — the pipeline just keeps a
+            # handle for ``pipeline.mcp_manager`` lookup.
+            self._mcp_manager = mcp_manager
+            # Re-register the manager's currently-discovered tools into
+            # the ``tool_registry`` so the next turn sees them. The
+            # registry is the source of truth for the tool roster
+            # (Stage 10 reads off it); reassigning the manager without
+            # populating the registry would leave the new tools
+            # invisible until the host added them itself.
+            registry = self._tool_registry
+            if registry is not None:
+                self._reseed_registry_from_mcp(mcp_manager, registry)
+
+    def _reseed_registry_from_mcp(self, manager: Any, registry: Any) -> None:
+        """Register a freshly attached MCP manager's tools into ``registry``.
+
+        Called from :meth:`attach_runtime` when the host swaps in a
+        live ``MCPManager``. Walks every CONNECTED server, discovers
+        its tools, and registers each :class:`MCPToolAdapter` under the
+        ``mcp__{server}__{tool}`` namespace. Already-registered names
+        are kept in place — re-registering would clobber adhoc /
+        built-in tools that share the manager-prefixed naming.
+
+        Skipped silently when the manager has no live connections —
+        the host can connect after attaching and the tools land via
+        ``manager.add_server`` / ``manager.discover_tools`` later.
+        """
+        from geny_executor.tools.mcp.adapter import MCPToolAdapter
+
+        # MCPManager keeps a private ``_servers`` dict — read in
+        # read-only mode here so we don't depend on the public
+        # ``discover_tools`` (which is async). Adapter construction is
+        # cheap; deferring the discovery is purely about avoiding an
+        # async-from-sync hop in attach_runtime's signature.
+        servers = getattr(manager, "_servers", {})
+        for conn in servers.values():
+            if not getattr(conn, "is_connected", False):
+                continue
+            for defn in getattr(conn, "_tools", []):
+                adapter = MCPToolAdapter(server=conn, definition=defn)
+                if registry.get(adapter.name) is not None:
+                    continue
+                registry.register(adapter)
 
     def _set_tool_stage_hook_runner(self, hook_runner: Any) -> None:
         """Attach ``hook_runner`` to the Tool stage's ``ToolContext``.

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, TYPE_CHECKING
 
-from geny_executor.tools.base import Tool, ToolResult, ToolContext
+from geny_executor.tools.base import Tool, ToolCapabilities, ToolResult, ToolContext
 from geny_executor.tools.errors import ToolFailure, ToolErrorCode
 
 if TYPE_CHECKING:
@@ -13,6 +13,48 @@ if TYPE_CHECKING:
 
 MCP_TOOL_PREFIX_FORMAT = "mcp__{server}__{tool}"
 MCP_TOOL_PREFIX = "mcp__"
+
+
+def _annotations_to_capabilities(annotations: Dict[str, Any]) -> ToolCapabilities:
+    """Translate MCP tool annotations into :class:`ToolCapabilities`.
+
+    The MCP spec defines four optional behavioural hints on each tool's
+    ``annotations`` block. Mapping into the executor's capability
+    surface:
+
+    * ``readOnlyHint=True``  → ``read_only=True`` + ``concurrency_safe=True``.
+      Read-only tools have no observable state effects; safe to fan
+      out under PartitionExecutor / StreamingToolExecutor.
+    * ``destructiveHint=True`` → ``destructive=True`` and
+      ``concurrency_safe=False`` (overrides). Destructive tools serialise
+      regardless of any other hint.
+    * ``idempotentHint=True`` → ``idempotent=True``. Repeat-safe.
+    * ``openWorldHint=True``  → ``network_egress=True``. Tool reaches
+      out to external systems.
+
+    Missing or absent annotations fall back to the fail-closed default
+    (``concurrency_safe=False``) — same behaviour as 0.37.x and
+    earlier, no regression.
+    """
+    if not annotations:
+        return ToolCapabilities()
+
+    read_only = bool(annotations.get("readOnlyHint", False))
+    destructive = bool(annotations.get("destructiveHint", False))
+    idempotent = bool(annotations.get("idempotentHint", False))
+    network_egress = bool(annotations.get("openWorldHint", False))
+
+    # Destructive overrides concurrency_safe even when the server also
+    # set readOnlyHint by mistake — better safe than sorry.
+    concurrency_safe = read_only and not destructive
+
+    return ToolCapabilities(
+        concurrency_safe=concurrency_safe,
+        read_only=read_only,
+        destructive=destructive,
+        idempotent=idempotent,
+        network_egress=network_egress,
+    )
 
 
 class MCPToolAdapter(Tool):
@@ -65,6 +107,17 @@ class MCPToolAdapter(Tool):
                 },
             ),
         )
+
+    def capabilities(self, input: Dict[str, Any]) -> ToolCapabilities:
+        """Translate the server-supplied annotations into capabilities.
+
+        Lets PartitionExecutor / StreamingToolExecutor parallelise
+        read-only MCP tools instead of treating every external tool
+        as fail-closed unsafe. See ``_annotations_to_capabilities``
+        for the mapping.
+        """
+        annotations = self._definition.get("annotations") or {}
+        return _annotations_to_capabilities(annotations)
 
     async def execute(self, input: Dict[str, Any], context: ToolContext) -> ToolResult:
         """Execute the tool via the MCP server.
