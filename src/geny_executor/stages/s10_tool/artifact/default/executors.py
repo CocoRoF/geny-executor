@@ -16,6 +16,33 @@ from geny_executor.stages.s10_tool.interface import (
 from geny_executor.stages.s10_tool.persistence import maybe_persist_large_result
 
 
+def _apply_state_mutations_via_ctx(result, tc: Dict[str, Any], context: ToolContext) -> None:
+    """Push ``result.state_mutations`` through the context's state sink.
+
+    Skips on ``is_error=True`` results — a failing tool must not leave
+    its half-written state behind. When ``context.state_apply`` is None
+    (e.g. a test harness using an executor without ToolStage), mutations
+    are silently discarded — the sink is optional.
+    """
+    if getattr(result, "is_error", False):
+        return
+    if not getattr(result, "state_mutations", None):
+        return
+    if context.state_apply is None:
+        return
+    try:
+        context.state_apply(result.state_mutations, tc.get("tool_name", "?"))
+    except Exception:  # pragma: no cover - defensive
+        # A broken state sink must not take down the tool call.
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "state_apply for tool %s raised; skipping mutation",
+            tc.get("tool_name", "?"),
+            exc_info=True,
+        )
+
+
 def _resolve_capabilities(registry: Optional[ToolRegistry], tc: Dict[str, Any]) -> ToolCapabilities:
     """Look up ``capabilities`` for this call; fail-closed on any error.
 
@@ -112,6 +139,7 @@ class SequentialExecutor(ToolExecutor):
                 capabilities=caps,
                 context=context,
             )
+            _apply_state_mutations_via_ctx(result, tc, context)
             result_dict = result.to_api_format(tc["tool_use_id"])
             _emit_call_complete(on_event, tc, result_dict, duration_ms)
             results.append(result_dict)
@@ -161,6 +189,7 @@ class ParallelExecutor(ToolExecutor):
                     capabilities=caps,
                     context=context,
                 )
+                _apply_state_mutations_via_ctx(result, tc, context)
                 result_dict = result.to_api_format(tc["tool_use_id"])
                 _emit_call_complete(on_event, tc, result_dict, duration_ms)
                 return result_dict
@@ -277,6 +306,7 @@ class PartitionExecutor(ToolExecutor):
                 capabilities=caps,
                 context=context,
             )
+            _apply_state_mutations_via_ctx(result, tc, context)
             result_dict = result.to_api_format(tc["tool_use_id"])
             _emit_call_complete(on_event, tc, result_dict, duration_ms)
             return result_dict

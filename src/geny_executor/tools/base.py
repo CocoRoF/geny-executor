@@ -125,6 +125,11 @@ class ToolContext:
     state_view: Optional[Any] = None
     event_emit: Optional[Callable[[str, Dict[str, Any]], None]] = None
     parent_tool_use_id: Optional[str] = None
+    # Phase 3 addition: applies ``ToolResult.state_mutations`` onto the
+    # owning pipeline's ``state.shared``. Set by Stage 10 before
+    # dispatch; ``None`` means no state sink is bound and mutations
+    # are dropped with a debug log. Signature: ``(mutations, tool_name)``.
+    state_apply: Optional[Callable[[Dict[str, Any], str], Dict[str, Any]]] = None
     extras: Dict[str, Any] = field(default_factory=dict)
 
 

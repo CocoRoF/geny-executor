@@ -178,6 +178,25 @@ class ToolStage(Stage[Any, Any]):
             },
         )
 
+        # Bind a state-mutation sink onto the context so tools /
+        # executors can apply ``ToolResult.state_mutations`` into
+        # ``state.shared`` without plumbing PipelineState down through
+        # every layer. The callback closes over the live ``state.shared``
+        # dict, so mutations take effect immediately.
+        from geny_executor.stages.s10_tool.state_mutation import (
+            apply_state_mutations as _apply_raw,
+        )
+        from geny_executor.tools.base import ToolResult as _TR
+
+        def _state_apply(mutations: Dict[str, Any], tool_name: str) -> Dict[str, Any]:
+            if not mutations:
+                return {}
+            return _apply_raw(
+                _TR(content=None, state_mutations=mutations),
+                state.shared,
+                tool_name=tool_name,
+            )
+
         ctx = ToolContext(
             session_id=state.session_id,
             working_dir=self._context.working_dir,
@@ -187,6 +206,7 @@ class ToolStage(Stage[Any, Any]):
             metadata=self._context.metadata,
             stage_order=self.order,
             stage_name=self.name,
+            state_apply=_state_apply,
         )
 
         router = self._router

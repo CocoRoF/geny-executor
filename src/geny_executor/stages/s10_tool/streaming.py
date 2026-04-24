@@ -308,6 +308,19 @@ class StreamingToolExecutor:
             capabilities=self._caps.get(tuid, ToolCapabilities()),
             context=context,
         )
+        # Apply any state_mutations proposed by the tool — skipped on
+        # error results so a failed tool doesn't pollute state.shared.
+        if not result.is_error and result.state_mutations and context.state_apply is not None:
+            try:
+                context.state_apply(result.state_mutations, call["tool_name"])
+            except Exception:  # pragma: no cover - defensive
+                import logging as _logging
+
+                _logging.getLogger(__name__).warning(
+                    "state_apply for tool %s raised; skipping mutation",
+                    call["tool_name"],
+                    exc_info=True,
+                )
         result_dict = result.to_api_format(tuid)
         _emit_call_complete(on_event, call, result_dict, duration_ms)
         self._results[tuid] = result_dict
