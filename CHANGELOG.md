@@ -4,6 +4,38 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.39.0] — 2026-04-24
+
+Phase 7 Sprint S7.4 — Permission matrix lands in dispatch. The
+``PermissionRule`` + ``evaluate_permission`` substrate has been part
+of the codebase since 0.32.0 (Phase 1) but no consumer fired it.
+Stage 10's ``RegistryRouter`` now consults the matrix on every tool
+call before any subprocess hooks run, so a DENY decision short-
+circuits the entire pipeline.
+
+### Added (PR #86)
+
+- ``ToolContext.permission_rules`` — new optional list field.
+- ``Pipeline.attach_runtime(permission_rules=..., permission_mode=...)``
+  — both kwargs, independently updatable.
+- ``ToolStage.execute`` propagates rules + mode into the per-call
+  ``ToolContext``.
+- ``RegistryRouter._dispatch_with_lifecycle`` calls
+  ``evaluate_permission`` between input validation and
+  ``PRE_TOOL_USE`` hook firing. ``DENY`` returns ``ACCESS_DENIED``;
+  ``ASK`` is treated as ``DENY`` for safety until the Phase 9 HITL
+  stage lands. ``ALLOW`` proceeds (re-validating
+  ``decision.updated_input`` if the matrix rewrote it). ``BYPASS``
+  mode short-circuits even ``DENY`` rules (developer escape hatch).
+
+### Compatibility
+
+Without ``permission_rules`` attached, dispatch is byte-identical to
+0.38.x. Mode coercion (``str`` → ``PermissionMode``) is forgiving:
+unknown values fall back to ``DEFAULT`` rather than raising.
+
+Full unit suite: 1183 passed, 1 skipped.
+
 ## [0.38.0] — 2026-04-24
 
 Phase 6 — MCP uplift. Replaces the per-server boolean
