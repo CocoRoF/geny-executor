@@ -12,7 +12,7 @@ class; it is the single source of truth consumed by
 ``manifest.tools.built_in`` entries.
 
 :data:`BUILT_IN_TOOL_FEATURES` groups those same tools by capability
-family (``filesystem`` / ``shell`` / ``web``). Use
+family (``filesystem`` / ``shell`` / ``web`` / ``workflow``). Use
 :func:`get_builtin_tools` with the ``features=`` kwarg to select a
 subset without hardcoding tool names.
 """
@@ -28,6 +28,7 @@ from geny_executor.tools.built_in.glob_tool import GlobTool
 from geny_executor.tools.built_in.grep_tool import GrepTool
 from geny_executor.tools.built_in.web_fetch_tool import WebFetchTool
 from geny_executor.tools.built_in.web_search_tool import WebSearchTool
+from geny_executor.tools.built_in.todo_write_tool import TodoWriteTool
 
 
 BUILT_IN_TOOL_CLASSES: Dict[str, Type[Tool]] = {
@@ -39,6 +40,7 @@ BUILT_IN_TOOL_CLASSES: Dict[str, Type[Tool]] = {
     "Grep": GrepTool,
     "WebFetch": WebFetchTool,
     "WebSearch": WebSearchTool,
+    "TodoWrite": TodoWriteTool,
 }
 
 
@@ -51,6 +53,7 @@ BUILT_IN_TOOL_FEATURES: Dict[str, List[str]] = {
     "filesystem": ["Read", "Write", "Edit", "Glob", "Grep"],
     "shell": ["Bash"],
     "web": ["WebFetch", "WebSearch"],
+    "workflow": ["TodoWrite"],
 }
 
 
@@ -116,6 +119,7 @@ __all__ = [
     "GrepTool",
     "WebFetchTool",
     "WebSearchTool",
+    "TodoWriteTool",
     "BUILT_IN_TOOL_CLASSES",
     "BUILT_IN_TOOL_FEATURES",
     "get_builtin_tools",
