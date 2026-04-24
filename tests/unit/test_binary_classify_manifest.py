@@ -110,8 +110,8 @@ def test_binary_classify_configure_empty_dict_is_noop():
 
 def test_default_evaluate_registry_still_has_other_strategies():
     """Adding binary_classify to the default registry must not displace the
-    three pre-existing strategies. Manifest-first consumers rely on every
-    strategy being spellable by name."""
+    other strategies. Manifest-first consumers rely on every strategy
+    being spellable by name. Phase 7 S7.6 added ``evaluation_chain``."""
     from geny_executor.stages.s12_evaluate.artifact.default.stage import EvaluateStage
 
     stage = EvaluateStage()
@@ -121,4 +121,5 @@ def test_default_evaluate_registry_still_has_other_strategies():
         "criteria_based",
         "agent_evaluation",
         "binary_classify",
+        "evaluation_chain",
     }
