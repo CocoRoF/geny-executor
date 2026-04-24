@@ -12,6 +12,7 @@ Verifies that the capability-aware partition executor:
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import Any, Dict, List
 
 import pytest
@@ -78,9 +79,9 @@ class _TimedTool(Tool):
         )
 
     async def execute(self, input, context):
-        self.started_at.append(asyncio.get_event_loop().time())
+        self.started_at.append(time.monotonic())
         await asyncio.sleep(self._sleep)
-        self.finished_at.append(asyncio.get_event_loop().time())
+        self.finished_at.append(time.monotonic())
         return ToolResult(content=f"{self._name}:done")
 
 
@@ -145,15 +146,11 @@ class TestPartitionExecutor:
 
         tool_calls = _make_tool_calls(["A", "B", "C"])
 
-        loop = asyncio.new_event_loop()
-        try:
-            t0 = loop.time()
-            results = loop.run_until_complete(
+        t0 = time.monotonic()
+        results = asyncio.run(
                 executor.execute_all(tool_calls, router, ToolContext())
-            )
-            elapsed = loop.time() - t0
-        finally:
-            loop.close()
+        )
+        elapsed = time.monotonic() - t0
 
         assert len(results) == 3
         # Parallel: elapsed < sum (0.18) ; allow a little slack
@@ -172,15 +169,11 @@ class TestPartitionExecutor:
 
         tool_calls = _make_tool_calls(["X", "Y"])
 
-        loop = asyncio.new_event_loop()
-        try:
-            t0 = loop.time()
-            results = loop.run_until_complete(
+        t0 = time.monotonic()
+        results = asyncio.run(
                 executor.execute_all(tool_calls, router, ToolContext())
-            )
-            elapsed = loop.time() - t0
-        finally:
-            loop.close()
+        )
+        elapsed = time.monotonic() - t0
 
         assert len(results) == 2
         # Sequential: elapsed >= sum (0.08) — allow loose bound
@@ -199,13 +192,9 @@ class TestPartitionExecutor:
         # Mixed order: A(safe), W(unsafe), B(safe)
         tool_calls = _make_tool_calls(["A", "W", "B"])
 
-        loop = asyncio.new_event_loop()
-        try:
-            results = loop.run_until_complete(
+        results = asyncio.run(
                 executor.execute_all(tool_calls, router, ToolContext())
-            )
-        finally:
-            loop.close()
+        )
 
         # Order preserved even though safe batch ran first
         names = [r["content"] for r in results]
@@ -226,13 +215,9 @@ class TestPartitionExecutor:
         # But: executor auto-binds from router — so it DOES get the registry.
         # Exercise the auto-bind path here (this test doubles as integration).
         tool_calls = _make_tool_calls(["S", "S"])
-        loop = asyncio.new_event_loop()
-        try:
-            results = loop.run_until_complete(
+        results = asyncio.run(
                 executor.execute_all(tool_calls, router, ToolContext())
-            )
-        finally:
-            loop.close()
+        )
 
         assert len(results) == 2
 
@@ -244,13 +229,9 @@ class TestPartitionExecutor:
 
         tool_calls = _make_tool_calls(["Broken"])
 
-        loop = asyncio.new_event_loop()
-        try:
-            results = loop.run_until_complete(
+        results = asyncio.run(
                 executor.execute_all(tool_calls, router, ToolContext())
-            )
-        finally:
-            loop.close()
+        )
 
         assert len(results) == 1
         # Tool still ran even though capabilities() blew up.
@@ -268,13 +249,9 @@ class TestPartitionExecutor:
 
         tool_calls = _make_tool_calls(["A", "Unknown"])
 
-        loop = asyncio.new_event_loop()
-        try:
-            results = loop.run_until_complete(
+        results = asyncio.run(
                 executor.execute_all(tool_calls, router, ToolContext())
-            )
-        finally:
-            loop.close()
+        )
 
         # A ran successfully, Unknown returned an error via router
         assert len(results) == 2
@@ -295,15 +272,11 @@ class TestPartitionExecutor:
         executor = PartitionExecutor(registry=reg, max_concurrency=2)
 
         tool_calls = _make_tool_calls([t.name for t in tools])
-        loop = asyncio.new_event_loop()
-        try:
-            t0 = loop.time()
-            results = loop.run_until_complete(
+        t0 = time.monotonic()
+        results = asyncio.run(
                 executor.execute_all(tool_calls, router, ToolContext())
-            )
-            elapsed = loop.time() - t0
-        finally:
-            loop.close()
+        )
+        elapsed = time.monotonic() - t0
 
         assert len(results) == 4
         # With concurrency=2 and 4 tasks of 0.08s each, elapsed ≈ 0.16s
@@ -323,15 +296,11 @@ class TestPartitionExecutor:
             events.append((event_type, payload))
 
         tool_calls = _make_tool_calls(["A", "B"])
-        loop = asyncio.new_event_loop()
-        try:
-            loop.run_until_complete(
+        asyncio.run(
                 executor.execute_all(
                     tool_calls, router, ToolContext(), on_event=_on
                 )
-            )
-        finally:
-            loop.close()
+        )
 
         starts = [e for e in events if e[0] == "tool.call_start"]
         completes = [e for e in events if e[0] == "tool.call_complete"]
@@ -373,11 +342,7 @@ class TestToolStageSwapToPartition:
         state = PipelineState(session_id="s1")
         state.pending_tool_calls = _make_tool_calls(["A", "B"])
 
-        loop = asyncio.new_event_loop()
-        try:
-            loop.run_until_complete(stage.execute({}, state))
-        finally:
-            loop.close()
+        asyncio.run(stage.execute({}, state))
 
         # Both tools produced results; loop directive set
         assert len(state.tool_results) == 2
@@ -408,13 +373,9 @@ class TestExistingExecutorsStillWork:
         executor = SequentialExecutor()
         tool_calls = _make_tool_calls(["A"])
 
-        loop = asyncio.new_event_loop()
-        try:
-            results = loop.run_until_complete(
+        results = asyncio.run(
                 executor.execute_all(tool_calls, router, ToolContext())
-            )
-        finally:
-            loop.close()
+        )
 
         assert len(results) == 1
         assert results[0]["tool_use_id"] == "tu_0"
@@ -427,12 +388,8 @@ class TestExistingExecutorsStillWork:
         executor = ParallelExecutor(max_concurrency=5)
         tool_calls = _make_tool_calls(["A", "B"])
 
-        loop = asyncio.new_event_loop()
-        try:
-            results = loop.run_until_complete(
+        results = asyncio.run(
                 executor.execute_all(tool_calls, router, ToolContext())
-            )
-        finally:
-            loop.close()
+        )
 
         assert len(results) == 2
