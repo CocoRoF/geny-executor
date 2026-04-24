@@ -26,6 +26,11 @@ from geny_executor.skills.loader import (
     parse_skill_file,
 )
 from geny_executor.skills.registry import SkillRegistry
+from geny_executor.skills.skill_tool import (
+    SkillTool,
+    SkillToolProvider,
+    build_skill_tool,
+)
 from geny_executor.skills.types import (
     Skill,
     SkillContext,
@@ -38,6 +43,8 @@ __all__ = [
     "SkillContext",
     "SkillMetadata",
     "SkillRegistry",
+    "SkillTool",
+    "SkillToolProvider",
     "SkillLoadError",
     "SkillLoadReport",
     "SKILL_FILENAME",
@@ -45,4 +52,5 @@ __all__ = [
     "parse_skill_file",
     "parse_frontmatter",
     "validate_execution_mode",
+    "build_skill_tool",
 ]
