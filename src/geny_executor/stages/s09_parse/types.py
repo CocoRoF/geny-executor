@@ -40,6 +40,13 @@ class ParsedResponse:
     # Structured output (if parsed)
     structured_output: Optional[Any] = None
 
+    # Phase 7 S7.3: surfaces JSON-parse OR JSON-Schema validation
+    # failures so downstream stages (Stage 11 Agent, Stage 13 Loop)
+    # can branch on a structured contract failure without re-parsing.
+    # ``None`` when the structured output was either absent (no
+    # ``StructuredOutputParser`` configured) or validated cleanly.
+    structured_output_error: Optional[str] = None
+
     # Original response ref
     api_response: Optional[APIResponse] = None
 
