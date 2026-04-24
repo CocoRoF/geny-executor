@@ -30,6 +30,7 @@ from geny_executor.tools.built_in.web_fetch_tool import WebFetchTool
 from geny_executor.tools.built_in.web_search_tool import WebSearchTool
 from geny_executor.tools.built_in.todo_write_tool import TodoWriteTool
 from geny_executor.tools.built_in.notebook_edit_tool import NotebookEditTool
+from geny_executor.tools.built_in.tool_search_tool import ToolSearchTool
 
 
 BUILT_IN_TOOL_CLASSES: Dict[str, Type[Tool]] = {
@@ -43,6 +44,7 @@ BUILT_IN_TOOL_CLASSES: Dict[str, Type[Tool]] = {
     "WebSearch": WebSearchTool,
     "TodoWrite": TodoWriteTool,
     "NotebookEdit": NotebookEditTool,
+    "ToolSearch": ToolSearchTool,
 }
 
 
@@ -56,6 +58,7 @@ BUILT_IN_TOOL_FEATURES: Dict[str, List[str]] = {
     "shell": ["Bash"],
     "web": ["WebFetch", "WebSearch"],
     "workflow": ["TodoWrite"],
+    "meta": ["ToolSearch"],
 }
 
 
@@ -123,6 +126,7 @@ __all__ = [
     "WebSearchTool",
     "TodoWriteTool",
     "NotebookEditTool",
+    "ToolSearchTool",
     "BUILT_IN_TOOL_CLASSES",
     "BUILT_IN_TOOL_FEATURES",
     "get_builtin_tools",
