@@ -259,3 +259,131 @@ class TestShortCircuits:
         assert result.content["error"]["code"] == "invalid_input"
         # Hooks must NOT have been fired — input was rejected upstream
         assert trace == []
+
+
+# ─────────────────────────────────────────────────────────────────
+# Duck-typed tools — don't inherit from Tool ABC
+# ─────────────────────────────────────────────────────────────────
+
+
+class _DuckTypedTool:
+    """Structural Tool — no ABC inheritance, no lifecycle hook attrs.
+
+    Mirrors Geny's ``_GenyToolAdapter`` pattern: a host-supplied
+    adapter that implements ``name`` / ``description`` /
+    ``input_schema`` / ``execute`` but was never updated for the
+    lifecycle-hook contract added in the 0.33.0 line. The router must
+    treat missing hooks as "skip", not "crash".
+    """
+
+    def __init__(self, name: str = "duck"):
+        self._name = name
+
+    @property
+    def name(self):
+        return self._name
+
+    @property
+    def description(self):
+        return "duck-typed"
+
+    @property
+    def input_schema(self):
+        return {"type": "object"}
+
+    async def execute(self, input, context):
+        return ToolResult(content="duck-ok")
+
+
+class _DuckWithBrokenHook:
+    """Duck-typed tool that defines ``on_enter`` as a non-callable.
+
+    Belt-and-braces: the router should treat non-callable ``on_enter``
+    attributes the same as absent ones.
+    """
+
+    name = "broken-hook"
+    description = "hook-isnt-callable"
+    input_schema = {"type": "object"}
+
+    on_enter = None  # not a callable — must be skipped, not invoked
+
+    async def execute(self, input, context):
+        return ToolResult(content="still-ran")
+
+
+class _DuckWithSyncHook:
+    """Duck-typed tool whose ``on_exit`` is sync (returns ``None`` directly).
+
+    The ABC's default hooks are ``async def ... return None``. Hosts
+    that write plain ``def on_exit(...): ...`` should still work —
+    the router must detect awaitability per call instead of blindly
+    awaiting every return.
+    """
+
+    name = "sync-hook"
+    description = "sync on_exit"
+    input_schema = {"type": "object"}
+
+    def __init__(self, trace: List[str]):
+        self._trace = trace
+
+    def on_exit(self, result, context):
+        self._trace.append("sync-on_exit")
+        return None  # sync, no coroutine
+
+    async def execute(self, input, context):
+        return ToolResult(content="sync-hook-ok")
+
+
+class TestDuckTypedTools:
+    """Regression coverage for host adapters that pre-date the lifecycle
+    hook contract (e.g. Geny's ``_GenyToolAdapter`` as of 0.36.0)."""
+
+    @pytest.mark.asyncio
+    async def test_tool_without_hook_attrs_still_runs(self):
+        router = RegistryRouter(ToolRegistry().register(_DuckTypedTool("duck")))
+        result = await router.route("duck", {}, _ctx())
+        assert not result.is_error
+        assert result.content == "duck-ok"
+
+    @pytest.mark.asyncio
+    async def test_tool_without_hook_attrs_handles_tool_failure(self):
+        """Even when ``execute`` raises ``ToolFailure``, the absent
+        ``on_error`` must not crash the router."""
+
+        class _DuckFailure(_DuckTypedTool):
+            async def execute(self, input, context):
+                raise ToolFailure("boom", code=ToolErrorCode.TRANSPORT)
+
+        router = RegistryRouter(ToolRegistry().register(_DuckFailure("duck-fail")))
+        result = await router.route("duck-fail", {}, _ctx())
+        assert result.is_error
+        assert result.content["error"]["code"] == "transport_error"
+
+    @pytest.mark.asyncio
+    async def test_tool_without_hook_attrs_handles_unexpected_exception(self):
+        class _DuckCrash(_DuckTypedTool):
+            async def execute(self, input, context):
+                raise RuntimeError("crash")
+
+        router = RegistryRouter(ToolRegistry().register(_DuckCrash("duck-crash")))
+        result = await router.route("duck-crash", {}, _ctx())
+        assert result.is_error
+        assert result.content["error"]["code"] == "tool_crashed"
+
+    @pytest.mark.asyncio
+    async def test_non_callable_hook_attr_skipped(self):
+        router = RegistryRouter(ToolRegistry().register(_DuckWithBrokenHook()))
+        result = await router.route("broken-hook", {}, _ctx())
+        assert not result.is_error
+        assert result.content == "still-ran"
+
+    @pytest.mark.asyncio
+    async def test_sync_hook_return_value_handled(self):
+        trace: List[str] = []
+        router = RegistryRouter(ToolRegistry().register(_DuckWithSyncHook(trace)))
+        result = await router.route("sync-hook", {}, _ctx())
+        assert not result.is_error
+        # Sync hook fired once
+        assert trace == ["sync-on_exit"]
