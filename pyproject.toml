@@ -41,6 +41,9 @@ dependencies = [
     "mcp>=1.0.0",
     "pydantic>=2.0",
     "jsonschema>=4.0",
+    # httpx is already a transitive dep via anthropic; declared
+    # explicitly because WebFetch imports it directly.
+    "httpx>=0.27",
 ]
 
 [project.optional-dependencies]

@@ -18,6 +18,7 @@ from geny_executor.tools.built_in.edit_tool import EditTool
 from geny_executor.tools.built_in.bash_tool import BashTool
 from geny_executor.tools.built_in.glob_tool import GlobTool
 from geny_executor.tools.built_in.grep_tool import GrepTool
+from geny_executor.tools.built_in.web_fetch_tool import WebFetchTool
 
 
 BUILT_IN_TOOL_CLASSES: dict[str, type] = {
@@ -27,6 +28,7 @@ BUILT_IN_TOOL_CLASSES: dict[str, type] = {
     "Bash": BashTool,
     "Glob": GlobTool,
     "Grep": GrepTool,
+    "WebFetch": WebFetchTool,
 }
 
 
@@ -37,5 +39,6 @@ __all__ = [
     "BashTool",
     "GlobTool",
     "GrepTool",
+    "WebFetchTool",
     "BUILT_IN_TOOL_CLASSES",
 ]
