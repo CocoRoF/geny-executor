@@ -14,6 +14,7 @@ from geny_executor.stages.s11_agent.artifact.default.orchestrators import (
     EvaluatorOrchestrator,
     SingleAgentOrchestrator,
 )
+from geny_executor.stages.s11_agent.subagent_type import SubagentTypeOrchestrator
 
 
 class AgentStage(Stage[Any, Any]):
@@ -37,6 +38,12 @@ class AgentStage(Stage[Any, Any]):
                     "single_agent": SingleAgentOrchestrator,
                     "delegate": DelegateOrchestrator,
                     "evaluator": EvaluatorOrchestrator,
+                    # Phase 7 S7.5 — typed subagent dispatch via
+                    # SubagentTypeRegistry. Manifests can name the
+                    # strategy; the registry instance arrives via
+                    # ``Pipeline.attach_runtime`` (orchestrator
+                    # construction needs the registry arg).
+                    "subagent_type": SubagentTypeOrchestrator,
                 },
                 description="Agent orchestration strategy",
             ),
