@@ -4,6 +4,49 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.35.0] — 2026-04-24
+
+Phase 3 Week 7 release — closes Phase 3 with the ``ToolProvider``
+Protocol, the architectural cornerstone for pluggable tool sources.
+
+### Added
+
+- **`ToolProvider` ABC** (`geny_executor.tools.provider`) —
+  self-contained, lifecycle-aware tool bundles. Where
+  `AdhocToolProvider` is name-keyed lookup, `ToolProvider` is a full
+  feature pack: the provider owns its name, its tool roster, and
+  optional ``startup`` / ``shutdown`` hooks.
+- **`BuiltInToolProvider(features=..., names=...)`** — first concrete
+  provider, wraps the executor's built-in catalogue via
+  `get_builtin_tools`. Hosts can opt into the whole catalogue or a
+  feature-gated subset.
+- **`register_providers` / `shutdown_providers`** — the registration
+  helpers. Duplicate provider names raise; tool name collisions
+  within the registry log + skip (first provider wins); startup
+  failures unwind every previously started provider before re-raising.
+- **`Pipeline.from_manifest_async(tool_providers=[...])`** — new
+  kwarg accepts the provider list. Registration happens after
+  manifest-declared built-ins + adhoc providers, before MCP adapter
+  discovery, so manifest authority wins on conflicts. MCP bring-up
+  failure now also unwinds any started providers (atomic).
+- **`pipeline.tool_providers`** property + **`pipeline.shutdown_tool_providers()`**
+  for host-driven teardown.
+
+### Why this matters
+
+Hosts that bundle their own tools (Geny's creature / feed / knowledge
+suite, third-party plugins, MCP facades) no longer need to enumerate
+tool names in every manifest. They ship a single `XToolProvider`
+class, the host imports and configures it, the pipeline does the rest.
+This is the "geny-executor first" principle made concrete at the
+plugin boundary.
+
+### Notes
+
+Full unit suite: 1008 passed, 2 skipped. Purely additive — existing
+`from_manifest_async` callers that don't pass `tool_providers=` see
+no behaviour change.
+
 ## [0.34.0] — 2026-04-24
 
 Phase 3 release — built-in tool catalog expands from 6 → 13 tools and
