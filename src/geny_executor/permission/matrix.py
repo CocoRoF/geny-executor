@@ -17,7 +17,6 @@ from __future__ import annotations
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Protocol
 
 from geny_executor.permission.types import (
-    PermissionBehavior,
     PermissionDecision,
     PermissionMode,
     PermissionRule,
