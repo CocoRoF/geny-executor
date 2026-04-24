@@ -137,6 +137,13 @@ class ToolContext:
     # Typed as ``Any`` to avoid a hard import dependency on the hooks
     # subsystem from this base module.
     hook_runner: Optional[Any] = None
+    # Phase 7 (S7.4): permission matrix bound at session start. Stage
+    # 10's RegistryRouter consults the rule list against the tool's
+    # name + post-validation input before firing PRE_TOOL_USE. Empty
+    # list (the default) means no matrix is configured and dispatch
+    # behaves exactly as it did pre-Phase-7. Typed as ``Any`` to avoid
+    # a hard import dependency on the permission subsystem.
+    permission_rules: List[Any] = field(default_factory=list)
     extras: Dict[str, Any] = field(default_factory=dict)
 
 
