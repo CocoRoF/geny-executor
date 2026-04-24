@@ -13,6 +13,7 @@ from geny_executor.tools.stage_binding import ToolAccessDenied
 from geny_executor.stages.s10_tool.interface import ToolExecutor, ToolRouter
 from geny_executor.stages.s10_tool.artifact.default.executors import (
     ParallelExecutor,
+    PartitionExecutor,
     SequentialExecutor,
 )
 from geny_executor.stages.s10_tool.artifact.default.routers import RegistryRouter
@@ -41,6 +42,11 @@ class ToolStage(Stage[Any, Any]):
                 registry={
                     "sequential": SequentialExecutor,
                     "parallel": ParallelExecutor,
+                    # Phase 1 W3 Checkpoint 4 — capability-aware partition
+                    # executor. Opt-in: set via `mutator.swap_strategy(
+                    # stage_order=10, slot_name="executor",
+                    # impl_name="partition")`.
+                    "partition": PartitionExecutor,
                 },
                 description="Tool execution strategy",
             ),
@@ -120,7 +126,15 @@ class ToolStage(Stage[Any, Any]):
         if isinstance(router, RegistryRouter):
             router.bind_registry(self._registry)
 
-        results = await self._executor.execute_all(
+        # PartitionExecutor needs direct registry access to peek at each
+        # tool's ``capabilities(input)`` before deciding parallel vs
+        # serial. Other executors ignore the bind call.
+        executor_strategy = self._executor
+        bind_registry = getattr(executor_strategy, "bind_registry", None)
+        if callable(bind_registry):
+            bind_registry(self._registry)
+
+        results = await executor_strategy.execute_all(
             tool_calls, router, ctx, on_event=state.add_event
         )
 
