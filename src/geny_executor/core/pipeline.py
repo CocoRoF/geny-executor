@@ -17,6 +17,7 @@ from geny_executor.events.types import PipelineEvent
 
 if TYPE_CHECKING:
     from geny_executor.core.environment import EnvironmentManifest, StageManifestEntry
+    from geny_executor.tools.provider import ToolProvider
     from geny_executor.tools.providers import AdhocToolProvider
     from geny_executor.tools.registry import ToolRegistry
 
@@ -238,6 +239,9 @@ class Pipeline:
         self._event_bus = EventBus()
         self._mcp_manager: Any = None  # MCPManager | None — set by from_manifest_async
         self._tool_registry: Any = None  # ToolRegistry | None — set by from_manifest_async
+        self._tool_providers: List[
+            Any
+        ] = []  # started ToolProvider list — set by from_manifest_async
         self._has_started: bool = (
             False  # flips once run()/run_stream() begins; gates attach_runtime
         )
@@ -263,6 +267,29 @@ class Pipeline:
         :meth:`from_manifest` path.
         """
         return self._tool_registry
+
+    @property
+    def tool_providers(self) -> List[Any]:
+        """Started :class:`ToolProvider` bundles owned by this pipeline.
+
+        Populated by :meth:`from_manifest_async` when ``tool_providers=``
+        was passed. Callers can introspect names / inspect roster, but
+        lifecycle (startup/shutdown) is owned by the pipeline.
+        """
+        return list(self._tool_providers)
+
+    async def shutdown_tool_providers(self) -> None:
+        """Tear down any started :class:`ToolProvider` bundles.
+
+        Hosts that long-live a pipeline across multiple sessions should
+        call this during teardown. Safe to call when no providers were
+        ever started.
+        """
+        from geny_executor.tools.provider import shutdown_providers
+
+        if self._tool_providers:
+            await shutdown_providers(self._tool_providers)
+            self._tool_providers = []
 
     # ── Construction from serialized state ──
 
@@ -413,6 +440,7 @@ class Pipeline:
         strict: bool = True,
         adhoc_providers: Sequence["AdhocToolProvider"] = (),
         tool_registry: Optional["ToolRegistry"] = None,
+        tool_providers: Optional[Sequence["ToolProvider"]] = None,
     ) -> "Pipeline":
         """Async sibling of :meth:`from_manifest` that also wires MCP.
 
@@ -450,6 +478,7 @@ class Pipeline:
                 state is retained.
         """
         from geny_executor.tools.mcp.manager import MCPManager
+        from geny_executor.tools.provider import register_providers
         from geny_executor.tools.registry import ToolRegistry
 
         registry = tool_registry if tool_registry is not None else ToolRegistry()
@@ -462,6 +491,15 @@ class Pipeline:
             tool_registry=registry,
         )
 
+        # Register self-contained ToolProvider bundles before MCP so
+        # manifest-declared + provider-shipped tools are present when
+        # MCP adapters arrive. Name collisions at this layer are logged
+        # by ``register_providers``; MCP registrations would still fail
+        # cleanly via the registry's own dedupe if they conflicted.
+        started_providers: List["ToolProvider"] = []
+        if tool_providers:
+            started_providers = await register_providers(list(tool_providers), registry)
+
         manager = MCPManager()
 
         configs = _mcp_configs_from_manifest(manifest)
@@ -472,11 +510,17 @@ class Pipeline:
                 for adapter in adapters:
                     registry.register(adapter)
             except BaseException:
+                # Unwind providers if MCP bring-up fails mid-flight so no
+                # half-started resources leak out.
+                from geny_executor.tools.provider import shutdown_providers
+
+                await shutdown_providers(started_providers)
                 await manager.disconnect_all()
                 raise
 
         pipeline._mcp_manager = manager
         pipeline._tool_registry = registry
+        pipeline._tool_providers = started_providers
         return pipeline
 
     # ── Stage management ──
