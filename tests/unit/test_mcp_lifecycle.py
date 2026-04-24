@@ -21,6 +21,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "src"))
 from geny_executor.core.environment import EnvironmentManifest, ToolsSnapshot
 from geny_executor.core.pipeline import Pipeline
 from geny_executor.tools.base import Tool, ToolContext
+from geny_executor.tools.mcp.state import MCPConnectionState
 from geny_executor.tools.mcp.adapter import MCPToolAdapter
 from geny_executor.tools.mcp.errors import MCPConnectionError
 from geny_executor.tools.mcp.manager import (
@@ -140,7 +141,7 @@ def _install_fake_connect(conn: MCPServerConnection, *, session: _FakeSession) -
             }
             for t in result.tools
         ]
-        conn._connected = True
+        conn._state = MCPConnectionState.CONNECTED
 
     conn._attach_session = _attach  # type: ignore[attr-defined]
 
@@ -231,7 +232,7 @@ class TestManagerConnectAll:
                 raise MCPConnectionError(name, "connect")
             # success path: stash a fake connection
             conn = MCPServerConnection(config)
-            conn._connected = True
+            conn._state = MCPConnectionState.CONNECTED
             conn._tools = []
             manager._servers[name] = conn
             manager._configs[name] = config
@@ -262,7 +263,7 @@ class TestServerRegistryIntegration:
 
         async def fake_connect(self, name, config):
             conn = MCPServerConnection(config)
-            conn._connected = True
+            conn._state = MCPConnectionState.CONNECTED
             conn._tools = [
                 {"name": "ls", "description": "list", "input_schema": {"type": "object"}},
                 {"name": "cat", "description": "show", "input_schema": {"type": "object"}},
@@ -286,7 +287,7 @@ class TestServerRegistryIntegration:
 
         async def fake_connect(self, name, config):
             conn = MCPServerConnection(config)
-            conn._connected = True
+            conn._state = MCPConnectionState.CONNECTED
             conn._tools = [{"name": "ls", "description": "", "input_schema": {}}]
             manager._servers[name] = conn
             manager._configs[name] = config
@@ -392,7 +393,7 @@ class TestFromManifestAsync:
         async def fake_connect_all(self, configs):
             for name, cfg in configs.items():
                 conn = MCPServerConnection(cfg)
-                conn._connected = True
+                conn._state = MCPConnectionState.CONNECTED
                 conn._tools = [{"name": "ping", "description": "", "input_schema": {}}]
                 self._servers[name] = conn
                 self._configs[name] = cfg
@@ -428,7 +429,7 @@ class TestFromManifestAsync:
         async def fake_connect_all(self, configs):
             for name, cfg in configs.items():
                 conn = MCPServerConnection(cfg)
-                conn._connected = True
+                conn._state = MCPConnectionState.CONNECTED
                 conn._tools = [{"name": "ping", "description": "", "input_schema": {}}]
                 self._servers[name] = conn
                 self._configs[name] = cfg

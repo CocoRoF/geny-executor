@@ -13,6 +13,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "src"))
 
 from geny_executor.tools.base import Tool, ToolContext, ToolResult
 from geny_executor.tools.errors import ToolErrorCode, ToolFailure
+from geny_executor.tools.mcp.state import MCPConnectionState
 from geny_executor.tools.mcp.adapter import MCPToolAdapter
 from geny_executor.tools.mcp.manager import MCPServerConfig, MCPServerConnection
 from geny_executor.tools.registry import ToolRegistry
@@ -51,7 +52,7 @@ def _make_connection(
     conn = MCPServerConnection(MCPServerConfig(name=server_name, command="noop"))
     if session is not None:
         conn._client_session = session
-        conn._connected = True
+        conn._state = MCPConnectionState.CONNECTED
     return conn
 
 

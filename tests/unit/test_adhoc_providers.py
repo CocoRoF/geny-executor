@@ -24,6 +24,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "src"))
 from geny_executor.core.environment import EnvironmentManifest, ToolsSnapshot
 from geny_executor.core.pipeline import Pipeline
 from geny_executor.tools.base import Tool, ToolContext, ToolResult
+from geny_executor.tools.mcp.state import MCPConnectionState
 from geny_executor.tools.mcp.errors import MCPConnectionError
 from geny_executor.tools.mcp.manager import (
     MCPManager,
@@ -288,7 +289,7 @@ class TestFromManifestAsyncExternalAndMcp:
         async def fake_connect_all(self, configs):
             for name, cfg in configs.items():
                 conn = MCPServerConnection(cfg)
-                conn._connected = True
+                conn._state = MCPConnectionState.CONNECTED
                 conn._tools = [{"name": "ping", "description": "", "input_schema": {}}]
                 self._servers[name] = conn
                 self._configs[name] = cfg

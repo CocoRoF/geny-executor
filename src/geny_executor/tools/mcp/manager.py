@@ -22,9 +22,34 @@ from typing import Any, Dict, List, Optional
 
 from geny_executor.tools.base import Tool
 from geny_executor.tools.mcp.errors import MCPConnectionError
+from geny_executor.tools.mcp.state import MCPConnectionState
 from geny_executor.tools.registry import ToolRegistry
 
 logger = logging.getLogger(__name__)
+
+
+# Substring patterns that, when present in a connection error message,
+# indicate an authentication problem rather than a transient network
+# issue. Matched case-insensitively. Conservative on purpose — false
+# positives would push the user to fix credentials they don't actually
+# need to fix, but false negatives just mean the host treats it as a
+# generic FAILED (still recoverable).
+_AUTH_ERROR_HINTS = (
+    "401",
+    "403",
+    "unauthorized",
+    "forbidden",
+    "authentication",
+    "invalid token",
+    "missing token",
+    "needs_auth",
+)
+
+
+def _looks_like_auth_failure(exc: BaseException) -> bool:
+    """True when ``exc`` reads like an MCP authentication challenge."""
+    text = str(exc).lower()
+    return any(hint in text for hint in _AUTH_ERROR_HINTS)
 
 
 @dataclass
@@ -50,37 +75,96 @@ class MCPServerConnection:
 
     def __init__(self, config: MCPServerConfig):
         self.config = config
-        self._connected = False
         self._tools: List[Dict[str, Any]] = []
         self._client_session: Any = None  # mcp.ClientSession
         self._transport_ctx: Any = None  # context manager for transport
         self._process: Optional[asyncio.subprocess.Process] = None
+        # 5-state FSM (Phase 6). PENDING is the canonical start: we
+        # haven't tried connecting yet.
+        self._state: MCPConnectionState = MCPConnectionState.PENDING
+        self._last_error: Optional[BaseException] = None
+
+    @property
+    def state(self) -> MCPConnectionState:
+        """Current FSM state. See :class:`MCPConnectionState`."""
+        return self._state
+
+    @property
+    def last_error(self) -> Optional[BaseException]:
+        """The exception from the last failed connect attempt, if any.
+
+        Cleared on successful connect or admin disable. Useful for
+        admin UIs ("why is the github server in FAILED?").
+        """
+        return self._last_error
 
     @property
     def is_connected(self) -> bool:
-        return self._connected
+        """Backward-compat shortcut for ``state == CONNECTED``."""
+        return self._state is MCPConnectionState.CONNECTED
+
+    def mark_disabled(self) -> None:
+        """Move into ``DISABLED`` regardless of current state.
+
+        Idempotent. After cleanup-completes the manager calls this so
+        a re-enable later starts fresh from ``PENDING``.
+        """
+        self._state = MCPConnectionState.DISABLED
+        self._last_error = None
+
+    def mark_pending(self) -> None:
+        """Move back into ``PENDING`` — admin re-enable / retry path."""
+        self._state = MCPConnectionState.PENDING
+        self._last_error = None
 
     async def connect(self) -> None:
         """Connect to the MCP server.
 
+        Drives the FSM:
+
+        * On entry, refuses to reconnect from ``DISABLED`` (admins must
+          ``enable_server`` first).
+        * On success: ``CONNECTED``.
+        * On auth-shaped failure: ``NEEDS_AUTH`` + ``last_error``.
+        * On generic failure: ``FAILED`` + ``last_error``.
+
         Raises:
             MCPConnectionError: For unknown transport, missing SDK, or
-                any transport/initialize/list_tools failure.
+                any transport / initialize / list_tools failure. The
+                state has already been transitioned to FAILED /
+                NEEDS_AUTH before the exception propagates.
+            RuntimeError: When called on a ``DISABLED`` connection.
         """
-        if self.config.transport == "stdio":
-            await self._connect_stdio()
-        elif self.config.transport in ("http", "sse"):
-            await self._connect_http()
-        else:
-            raise MCPConnectionError(
-                self.config.name,
-                "connect",
-                message=(
-                    f"MCP server '{self.config.name}' has unsupported "
-                    f"transport '{self.config.transport}' (expected "
-                    "stdio | http | sse)"
-                ),
+        if self._state is MCPConnectionState.DISABLED:
+            raise RuntimeError(
+                f"MCP server '{self.config.name}' is DISABLED; call "
+                f"enable_server() before reconnecting"
             )
+        try:
+            if self.config.transport == "stdio":
+                await self._connect_stdio()
+            elif self.config.transport in ("http", "sse"):
+                await self._connect_http()
+            else:
+                raise MCPConnectionError(
+                    self.config.name,
+                    "connect",
+                    message=(
+                        f"MCP server '{self.config.name}' has unsupported "
+                        f"transport '{self.config.transport}' (expected "
+                        "stdio | http | sse)"
+                    ),
+                )
+        except BaseException as exc:
+            # Classify into NEEDS_AUTH vs generic FAILED so admin UIs
+            # can prompt the user differently. Auth-classification is
+            # best-effort — false negatives just produce FAILED.
+            if _looks_like_auth_failure(exc):
+                self._state = MCPConnectionState.NEEDS_AUTH
+            else:
+                self._state = MCPConnectionState.FAILED
+            self._last_error = exc
+            raise
 
     async def _connect_stdio(self) -> None:
         """Connect via stdio transport (local subprocess)."""
@@ -180,7 +264,8 @@ class MCPServerConnection:
             }
             for t in result.tools
         ]
-        self._connected = True
+        self._state = MCPConnectionState.CONNECTED
+        self._last_error = None
         logger.info(
             "MCP %s connected: %s (%d tools)",
             self.config.transport,
@@ -195,10 +280,17 @@ class MCPServerConnection:
             pass
 
     async def disconnect(self) -> None:
-        """Disconnect from the MCP server."""
+        """Disconnect from the MCP server.
+
+        Transitions ``CONNECTED`` → ``PENDING`` (idle ready for
+        reconnect). Does not change ``DISABLED`` / ``FAILED`` /
+        ``NEEDS_AUTH`` — those are admin-driven states and shouldn't
+        flip just because cleanup ran.
+        """
         await self._cleanup()
-        self._connected = False
         self._tools = []
+        if self._state is MCPConnectionState.CONNECTED:
+            self._state = MCPConnectionState.PENDING
 
     async def _cleanup(self) -> None:
         """Clean up client session and transport."""
@@ -236,9 +328,10 @@ class MCPServerConnection:
         Raises:
             RuntimeError: If the server is not connected.
         """
-        if not self._connected:
+        if not self.is_connected:
             raise RuntimeError(
-                f"MCP server '{self.config.name}' is not connected. Cannot call tool '{tool_name}'."
+                f"MCP server '{self.config.name}' is not connected (state={self._state.value!r}). "
+                f"Cannot call tool '{tool_name}'."
             )
         if self._client_session is None:
             raise RuntimeError(
@@ -356,6 +449,56 @@ class MCPManager:
         """Disconnect all servers."""
         for name in list(self._servers.keys()):
             await self.disconnect(name)
+
+    async def disable_server(self, name: str) -> None:
+        """Mute a server without losing its configuration.
+
+        Closes any active connection, marks the connection ``DISABLED``,
+        and retains both the connection object AND its config so a
+        future :meth:`enable_server` is one call away.
+
+        Idempotent — calling on an already-disabled server is a no-op
+        (no exception). Calling on an unknown server is also a no-op,
+        matching the conservative ergonomics of admin APIs.
+
+        Distinct from :meth:`disconnect`, which evicts the server
+        entirely (no in-memory record after the call).
+        """
+        conn = self._servers.get(name)
+        if conn is None:
+            return
+        if conn.state is MCPConnectionState.DISABLED:
+            return
+        try:
+            await conn.disconnect()
+        except Exception:
+            logger.warning(
+                "MCP server %r disconnect during disable raised; continuing",
+                name,
+                exc_info=True,
+            )
+        conn.mark_disabled()
+
+    async def enable_server(self, name: str) -> None:
+        """Re-enable a previously disabled server and attempt reconnect.
+
+        Transitions the connection's state from ``DISABLED`` to
+        ``PENDING`` and immediately tries to reconnect. On reconnect
+        failure, the connection lands in ``FAILED`` / ``NEEDS_AUTH``
+        as usual — the exception propagates so the caller can surface
+        the reason.
+
+        No-op when the server is unknown OR already in a non-DISABLED
+        state (the latter so accidental double-enables don't bounce
+        live connections).
+        """
+        conn = self._servers.get(name)
+        if conn is None:
+            return
+        if conn.state is not MCPConnectionState.DISABLED:
+            return
+        conn.mark_pending()
+        await conn.connect()
 
     async def discover_tools(self) -> List[Tool]:
         """Discover and wrap all tools from all connected servers."""
@@ -496,16 +639,25 @@ class MCPManager:
         return True
 
     def list_server_status(self) -> List[Dict[str, Any]]:
-        """Return status for all servers."""
+        """Return status for all servers, including the FSM ``state``.
+
+        Phase 6: each entry now carries ``state`` (``pending`` /
+        ``connected`` / ``failed`` / ``needs_auth`` / ``disabled``)
+        plus ``last_error`` when one is recorded. The legacy
+        ``connected`` boolean stays for back-compat — admin UIs that
+        already render it keep working.
+        """
         statuses = []
         for name, conn in self._servers.items():
             statuses.append(
                 {
                     "name": name,
+                    "state": conn.state.value,
                     "connected": conn.is_connected,
                     "transport": conn.config.transport,
                     "tool_count": len(conn._tools),
                     "has_session": conn._client_session is not None,
+                    "last_error": (str(conn.last_error) if conn.last_error is not None else None),
                 }
             )
         return statuses
