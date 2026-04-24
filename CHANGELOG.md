@@ -4,6 +4,46 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.36.1] — 2026-04-24
+
+Hotfix patch. The lifecycle-hook dispatcher shipped in 0.33.0 (PR #61)
+called ``tool.on_enter(...)`` / ``on_exit(...)`` / ``on_error(...)``
+directly — fine for every proper ``Tool`` ABC subclass (which inherits
+no-op defaults) but it crashed for host-supplied adapters that
+implement the structural Tool interface without inheriting from the
+ABC. Geny's ``_GenyToolAdapter`` is the canonical example: it exposes
+``name`` / ``description`` / ``input_schema`` / ``execute`` but has
+never declared lifecycle methods.
+
+Observed error in the field:
+
+    '_GenyToolAdapter' object has no attribute 'on_enter'
+
+### Fixed
+
+- ``stages/s10_tool/artifact/default/routers.py`` — ``_fire_hook`` now
+  looks up lifecycle methods via ``getattr`` with a safe fallback.
+  Hooks that are absent, ``None``, or otherwise non-callable are
+  silently skipped; synchronous hook bodies are detected and awaited
+  only when the return value is awaitable. Callers (``RegistryRouter.
+  _dispatch_with_lifecycle``) pass the tool + hook name + args instead
+  of materialising the coroutine at the call site, so an attribute
+  miss can't escape the router's try/except boundary.
+
+### Tests
+
+Five new regression tests in ``test_tool_lifecycle_hooks.py`` covering
+duck-typed tools without hook attrs (happy path, ``ToolFailure``
+exception path, unexpected ``Exception`` path), a non-callable
+``on_enter`` attribute, and a synchronous ``on_exit`` hook. Full unit
+suite: 1075 passed, 1 skipped.
+
+### Compatibility
+
+Zero API surface change. Any tool previously working continues to
+work. Host adapters that lacked lifecycle methods but were crashing
+on 0.33.x–0.36.0 now run cleanly.
+
 ## [0.36.0] — 2026-04-24
 
 Phase 4 Weeks 7-8 — Skills system ships in inline-execution form.

@@ -23,16 +23,36 @@ logger = logging.getLogger(__name__)
 async def _fire_hook(
     hook_name: str,
     tool_name: str,
-    coro: Any,
+    tool: Any,
+    *hook_args: Any,
 ) -> None:
-    """Call a tool lifecycle hook, swallow and log any failure.
+    """Call ``tool.<hook_name>(*hook_args)`` defensively.
 
-    Lifecycle hooks are observers (``on_enter`` / ``on_exit`` / ``on_error``) —
-    a misbehaving hook must never escalate into a failed tool call. We
-    log at WARNING so ops can spot misbehaving tools, and continue.
+    Lifecycle hooks are observers (``on_enter`` / ``on_exit`` / ``on_error``):
+
+    * A tool that doesn't declare the hook at all (duck-typed adapters
+      that implement the structural Tool interface without inheriting
+      from the :class:`Tool` ABC) simply skips the hook. The ABC's
+      default no-op implementations make this a non-issue for proper
+      subclasses; structural implementations just lack the attribute.
+    * A hook that raises is logged at WARNING and swallowed — a
+      misbehaving hook must never escalate into a failed tool call.
+    * A hook that isn't callable (``on_enter = None``) is treated the
+      same as missing.
+
+    Previously this helper received the already-constructed coroutine,
+    which forced the caller to do ``tool.on_enter(...)`` at the call
+    site — blowing up on duck-typed tools before the try/except could
+    catch it. Taking the tool + hook name here lets us look up the
+    bound method with ``getattr`` first.
     """
+    hook = getattr(tool, hook_name, None)
+    if hook is None or not callable(hook):
+        return
     try:
-        await coro
+        result = hook(*hook_args)
+        if _is_awaitable(result):
+            await result
     except Exception:
         logger.warning(
             "tool %s lifecycle hook %s raised; ignored",
@@ -40,6 +60,18 @@ async def _fire_hook(
             hook_name,
             exc_info=True,
         )
+
+
+def _is_awaitable(obj: Any) -> bool:
+    """True if ``obj`` is an awaitable we should ``await`` on.
+
+    Hosts may declare sync lifecycle hooks (return ``None`` directly)
+    or async hooks (return a coroutine). Both shapes are valid; only
+    async return values need awaiting.
+    """
+    import inspect as _inspect
+
+    return _inspect.isawaitable(obj)
 
 
 class RegistryRouter(ToolRouter):
@@ -95,17 +127,21 @@ class RegistryRouter(ToolRouter):
         """Execute ``tool`` with lifecycle hooks wrapped around it.
 
         Ordering:
-            1. ``on_enter(input, ctx)`` — always fired before ``execute``.
+            1. ``on_enter(input, ctx)`` — fired if present.
             2. ``tool.execute(...)`` — the actual body.
-            3. On normal return → ``on_exit(result, ctx)``.
+            3. On normal return → ``on_exit(result, ctx)`` if present.
             4. On ``ToolFailure`` or any other ``Exception`` →
-               ``on_error(error, ctx)``, then the error is mapped to a
-               structured ``ToolError`` as before.
+               ``on_error(error, ctx)`` if present, then the error is
+               mapped to a structured ``ToolError`` as before.
 
-        All hook failures are swallowed + logged; the tool call's own
-        success/failure drives the returned ``ToolResult``.
+        Lifecycle hooks are optional: a tool that doesn't expose
+        ``on_enter`` / ``on_exit`` / ``on_error`` attributes (e.g. a
+        duck-typed host adapter that wasn't built against the ``Tool``
+        ABC) simply skips that stage. All hook *failures* are logged
+        and swallowed; the tool call's own success/failure drives the
+        returned ``ToolResult``.
         """
-        await _fire_hook("on_enter", tool.name, tool.on_enter(tool_input, context))
+        await _fire_hook("on_enter", tool.name, tool, tool_input, context)
 
         try:
             result = await tool.execute(tool_input, context)
@@ -116,12 +152,12 @@ class RegistryRouter(ToolRouter):
                 failure.error.code.value,
                 failure.error.message,
             )
-            await _fire_hook("on_error", tool.name, tool.on_error(failure, context))
+            await _fire_hook("on_error", tool.name, tool, failure, context)
             return make_error_result(failure.error)
         except Exception as exc:
             logger.exception("tool %s crashed unexpectedly", tool.name)
-            await _fire_hook("on_error", tool.name, tool.on_error(exc, context))
+            await _fire_hook("on_error", tool.name, tool, exc, context)
             return make_error_result(ToolError.tool_crashed(tool.name, exc))
 
-        await _fire_hook("on_exit", tool.name, tool.on_exit(result, context))
+        await _fire_hook("on_exit", tool.name, tool, result, context)
         return result
