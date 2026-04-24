@@ -563,6 +563,8 @@ class Pipeline:
         session_runtime: Optional[Any] = None,
         hook_runner: Optional[Any] = None,
         mcp_manager: Optional[Any] = None,
+        permission_rules: Optional[Any] = None,
+        permission_mode: Optional[str] = None,
     ) -> None:
         """Inject session-scoped runtime objects into a manifest-built pipeline.
 
@@ -690,6 +692,16 @@ class Pipeline:
             # attaches it before the first run.
             self._set_tool_stage_hook_runner(hook_runner)
 
+        if permission_rules is not None or permission_mode is not None:
+            # Phase 7 (S7.4): bind the permission matrix on the Tool
+            # stage's context. Either / both kwargs are honoured —
+            # passing only mode toggles the policy without changing
+            # the rule set; passing only rules adopts the existing mode.
+            self._set_tool_stage_permission_matrix(
+                permission_rules=permission_rules,
+                permission_mode=permission_mode,
+            )
+
         if mcp_manager is not None:
             # Late-bind a host-managed :class:`MCPManager`. Replaces any
             # manager the manifest pass built (typical for hosts that
@@ -737,6 +749,34 @@ class Pipeline:
                 if registry.get(adapter.name) is not None:
                     continue
                 registry.register(adapter)
+
+    def _set_tool_stage_permission_matrix(
+        self,
+        *,
+        permission_rules: Optional[Any] = None,
+        permission_mode: Optional[str] = None,
+    ) -> None:
+        """Attach permission rules / mode to the Tool stage's ``ToolContext``.
+
+        ``permission_rules=None`` leaves the existing rule list intact;
+        ``permission_mode=None`` likewise leaves the mode. Pass either
+        to update independently. Silently a no-op when there is no Tool
+        stage in the pipeline.
+        """
+        for stage in self._stages.values():
+            if getattr(stage, "name", "") != "tool":
+                continue
+            ctx = getattr(stage, "_context", None)
+            if ctx is None:
+                from geny_executor.tools.base import ToolContext
+
+                ctx = ToolContext()
+                stage._context = ctx
+            if permission_rules is not None:
+                ctx.permission_rules = list(permission_rules)
+            if permission_mode is not None:
+                ctx.permission_mode = permission_mode
+            return
 
     def _set_tool_stage_hook_runner(self, hook_runner: Any) -> None:
         """Attach ``hook_runner`` to the Tool stage's ``ToolContext``.

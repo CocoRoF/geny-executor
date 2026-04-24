@@ -9,6 +9,11 @@ from typing import Any, Dict, Optional
 import jsonschema
 
 from geny_executor.hooks.events import HookEvent, HookEventPayload
+from geny_executor.permission.matrix import evaluate_permission
+from geny_executor.permission.types import (
+    PermissionBehavior,
+    PermissionMode,
+)
 from geny_executor.tools.base import Tool, ToolContext, ToolResult
 from geny_executor.tools.errors import (
     ToolError,
@@ -20,6 +25,22 @@ from geny_executor.tools.registry import ToolRegistry
 from geny_executor.stages.s10_tool.interface import ToolRouter
 
 logger = logging.getLogger(__name__)
+
+
+def _coerce_permission_mode(raw: Any) -> PermissionMode:
+    """Best-effort coercion of ``ToolContext.permission_mode`` (str) to enum.
+
+    The context field stays ``str`` for ergonomics; the matrix wants
+    the enum. Unknown values fall back to ``DEFAULT`` rather than
+    raising — mode is a soft policy hint, not a hard contract.
+    """
+    if isinstance(raw, PermissionMode):
+        return raw
+    try:
+        return PermissionMode(raw or "default")
+    except (ValueError, TypeError):
+        logger.debug("unknown permission_mode %r — falling back to DEFAULT", raw)
+        return PermissionMode.DEFAULT
 
 
 def _now_iso() -> str:
@@ -186,6 +207,53 @@ class RegistryRouter(ToolRouter):
         already absorbed inside ``HookRunner``; nothing here can leak.
         """
         runner = getattr(context, "hook_runner", None)
+
+        # Phase 7 (S7.4): permission matrix consult. Fired before any
+        # hooks so a DENY/ASK rule short-circuits the entire pipeline
+        # — including the audit-side POST_TOOL_USE hook — and never
+        # spawns a subprocess for a call we already know is blocked.
+        permission_rules = getattr(context, "permission_rules", None) or []
+        if permission_rules:
+            mode = _coerce_permission_mode(getattr(context, "permission_mode", None))
+            try:
+                # Capabilities for the in-flight input — destructive
+                # tools auto-escalate under PLAN mode.
+                caps = tool.capabilities(tool_input)
+                destructive = bool(getattr(caps, "destructive", False))
+            except Exception:
+                destructive = False
+            decision = await evaluate_permission(
+                tool=tool,
+                tool_input=tool_input,
+                rules=list(permission_rules),
+                mode=mode,
+                capabilities_destructive=destructive,
+            )
+            if decision.behavior is PermissionBehavior.DENY:
+                reason = decision.reason or "denied by permission matrix"
+                return make_error_result(ToolError.access_denied(tool.name, reason))
+            if decision.behavior is PermissionBehavior.ASK:
+                # No HITL stage in the 16-stage layout yet (Phase 9
+                # adds Stage 15 HITL). Until that lands, ASK without
+                # an explicit handler treats as DENY with a clear
+                # reason — safer than silently allowing.
+                reason = decision.reason or "permission matrix returned ASK; no handler bound"
+                logger.info(
+                    "tool %s permission ASK with no HITL handler — denying for safety",
+                    tool.name,
+                )
+                return make_error_result(ToolError.access_denied(tool.name, reason))
+            # ALLOW path may carry a rewritten input (rare today, future
+            # rules might normalise paths or strip secrets).
+            if decision.updated_input is not None:
+                tool_input = dict(decision.updated_input)
+                try:
+                    validate_input(tool.input_schema, tool_input)
+                except jsonschema.ValidationError as exc:
+                    path = ".".join(str(p) for p in exc.absolute_path) or "<root>"
+                    return make_error_result(
+                        ToolError.invalid_input(tool.name, exc.message, path=path)
+                    )
 
         if runner is not None:
             pre_payload = _build_hook_payload(

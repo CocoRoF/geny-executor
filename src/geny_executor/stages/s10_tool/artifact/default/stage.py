@@ -216,6 +216,11 @@ class ToolStage(Stage[Any, Any]):
             # FAILURE around dispatch. ``None`` is the default no-op.
             hook_runner=getattr(self._context, "hook_runner", None),
             permission_mode=getattr(self._context, "permission_mode", "default") or "default",
+            # Phase 7 (S7.4): host-attached permission matrix evaluated
+            # by ``RegistryRouter`` before any hooks fire. Empty list
+            # (the default) means no matrix is configured and dispatch
+            # behaves exactly as it did pre-Phase-7.
+            permission_rules=list(getattr(self._context, "permission_rules", None) or []),
         )
 
         router = self._router
