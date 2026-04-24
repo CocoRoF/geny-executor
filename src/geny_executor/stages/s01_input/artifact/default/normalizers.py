@@ -2,11 +2,46 @@
 
 from __future__ import annotations
 
+import base64
+import logging
 import unicodedata
-from typing import Any, Dict, List
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import unquote, urlparse
 
 from geny_executor.stages.s01_input.interface import InputNormalizer
 from geny_executor.stages.s01_input.types import NormalizedInput
+
+logger = logging.getLogger(__name__)
+
+
+def _resolve_local_image_source(url: str) -> Optional[Tuple[bytes, Path]]:
+    """Try to read a local image referenced by ``url``.
+
+    Accepted forms:
+      * ``file://`` URI (``file:///abs/path/img.png``)
+      * Absolute filesystem path (``/abs/path/img.png``)
+
+    Anything else returns ``None`` (caller falls back to a URL source
+    and lets the vendor SDK validate / reject the URL).
+    """
+    if not url:
+        return None
+    candidate: Optional[Path] = None
+    if url.startswith("file://"):
+        parsed = urlparse(url)
+        candidate = Path(unquote(parsed.path))
+    elif url.startswith("/"):
+        candidate = Path(url)
+    else:
+        return None
+    try:
+        if not candidate.is_file():
+            return None
+        return candidate.read_bytes(), candidate
+    except OSError as e:
+        logger.warning("image source read failed (%s): %s", candidate, e)
+        return None
 
 
 def _normalize_text(text: str) -> str:
@@ -139,6 +174,19 @@ class MultimodalNormalizer(InputNormalizer):
         )
         data = image.get("data") or image.get("base64") or image.get("b64")
         url = image.get("url")
+
+        # Local-file source (``file://`` URI or absolute path) — inline as
+        # base64 here so vendor translators never see a non-HTTPS URL
+        # (Anthropic in particular rejects them with
+        # ``Only HTTPS URLs are supported.``). This keeps the
+        # ``llm_client.translators`` layer provider-agnostic and avoids
+        # leaking host-specific filesystem assumptions outward.
+        if not data and isinstance(url, str):
+            local = _resolve_local_image_source(url)
+            if local is not None:
+                raw_bytes, _ = local
+                data = base64.b64encode(raw_bytes).decode("ascii")
+                url = None  # consumed
 
         block: Dict[str, Any] = {"type": "image"}
         if data:
