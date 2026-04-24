@@ -17,6 +17,7 @@ from geny_executor.stages.s02_context.artifact.default import (
     SlidingWindowCompactor,
     NullRetriever,
     StaticRetriever,
+    MCPResourceRetriever,
 )
 
 __all__ = [
@@ -34,4 +35,5 @@ __all__ = [
     "MemoryRetriever",
     "NullRetriever",
     "StaticRetriever",
+    "MCPResourceRetriever",
 ]

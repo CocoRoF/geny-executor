@@ -13,6 +13,7 @@ from geny_executor.stages.s02_context.artifact.default.compactors import (
     SlidingWindowCompactor,
 )
 from geny_executor.stages.s02_context.artifact.default.retrievers import (
+    MCPResourceRetriever,
     NullRetriever,
     StaticRetriever,
 )
@@ -31,4 +32,5 @@ __all__ = [
     "SlidingWindowCompactor",
     "NullRetriever",
     "StaticRetriever",
+    "MCPResourceRetriever",
 ]

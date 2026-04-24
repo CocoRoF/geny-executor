@@ -337,6 +337,62 @@ class MCPServerConnection:
         """Return tool definitions discovered at connect time."""
         return list(self._tools)
 
+    async def list_resources(self) -> List[Dict[str, Any]]:
+        """List the MCP resources this server exposes.
+
+        Returns a list of dicts with shape ``{"uri", "name",
+        "description", "mimeType"}`` — only the keys present on the
+        server are populated; missing fields default to empty strings.
+        Returns ``[]`` when the server isn't CONNECTED, when it
+        doesn't implement resource listing, or when the call raises
+        (logged at WARNING; resources are advisory, not authoritative).
+        """
+        if not self.is_connected or self._client_session is None:
+            return []
+        try:
+            result = await asyncio.wait_for(self._client_session.list_resources(), timeout=10.0)
+        except Exception as exc:
+            logger.warning("MCP %s list_resources failed: %s", self.config.name, exc)
+            return []
+        out: List[Dict[str, Any]] = []
+        for r in getattr(result, "resources", []) or []:
+            out.append(
+                {
+                    "uri": str(getattr(r, "uri", "")),
+                    "name": str(getattr(r, "name", "") or ""),
+                    "description": str(getattr(r, "description", "") or ""),
+                    "mimeType": str(getattr(r, "mimeType", "") or ""),
+                }
+            )
+        return out
+
+    async def read_resource(self, uri: str) -> Optional[str]:
+        """Read one resource's content by URI.
+
+        Returns the text body of the first text-shaped block, or
+        ``None`` when the server isn't connected, the resource is
+        missing, the body is non-text (image / binary), or the call
+        raises. Logged at WARNING on failure — the retriever falls
+        back gracefully.
+        """
+        if not self.is_connected or self._client_session is None:
+            return None
+        try:
+            result = await asyncio.wait_for(self._client_session.read_resource(uri), timeout=10.0)
+        except Exception as exc:
+            logger.warning(
+                "MCP %s read_resource(%s) failed: %s",
+                self.config.name,
+                uri,
+                exc,
+            )
+            return None
+        for block in getattr(result, "contents", []) or []:
+            text = getattr(block, "text", None)
+            if isinstance(text, str):
+                return text
+        return None
+
     async def call_tool(self, tool_name: str, arguments: Dict[str, Any]) -> Any:
         """Call a tool on the MCP server.
 
