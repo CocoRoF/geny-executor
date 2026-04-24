@@ -4,6 +4,56 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.41.0] — 2026-04-24
+
+Phase 7 sprint batch — three more stage enhancements bundled into
+one minor release. Each is independently opt-in; without consuming
+the new surfaces, behaviour is identical to 0.40.x.
+
+### Added — S7.5 Stage 11 Agent (PR #92)
+
+- ``geny_executor.stages.s11_agent.subagent_type`` subpackage:
+    * ``SubagentTypeDescriptor`` — frozen dataclass: ``agent_type``,
+      ``factory`` (sync or async, zero-arg), ``description``,
+      ``allowed_tools``, ``model_override``, ``extras``.
+    * ``SubagentTypeRegistry`` — id→descriptor map mirroring
+      ``ToolRegistry`` (register / unregister / get / list_types /
+      contains / len).
+    * ``SubagentTypeOrchestrator`` — :class:`AgentOrchestrator`
+      subclass that walks ``state.delegate_requests`` against the
+      registry, dispatches each, surfaces descriptor metadata on
+      every ``sub_result``. Failure-isolated.
+- ``AgentStage`` registry now exposes ``"subagent_type"``.
+
+### Added — S7.6 Stage 12 Evaluate (PR #93)
+
+- ``EvaluationChain([ev1, ev2, ...])`` — sequential evaluator
+  composition. Runs evaluators in declared order; first
+  ``decision != "continue"`` wins (short-circuit). Empty chain →
+  benign ``complete`` no-op. Failure-isolated.
+- ``EvaluateStage`` registry now exposes ``"evaluation_chain"``.
+
+### Added — S7.7 Stage 13 Loop (PR #94)
+
+- ``BudgetDimension`` ABC + five built-in dimensions:
+  ``IterationBudget``, ``CostBudget``, ``TokenBudget``,
+  ``WallClockBudget``, ``ToolCallBudget``.
+- ``MultiDimensionalBudgetController([dims...])`` — replaces the
+  fixed-two-dimension ``BudgetAwareLoopController`` with a
+  pluggable registry. First exceeded dimension wins;
+  ``last_exceeded_dimension`` exposed for observability.
+- ``LoopStage`` registry now exposes ``"multi_dim_budget"``.
+
+### Compatibility
+
+Additive only. ``DelegateOrchestrator`` /
+``BudgetAwareLoopController`` and the existing single-evaluator
+strategy slot all keep working. Hosts opt into the new surfaces by
+constructing them and swapping into the relevant Stage's strategy
+slot.
+
+Full unit suite: 1317 passed, 1 skipped.
+
 ## [0.40.0] — 2026-04-24
 
 Phase 7 sprint batch — three stage enhancements bundled into one
