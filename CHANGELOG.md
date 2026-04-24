@@ -4,6 +4,50 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.36.0] — 2026-04-24
+
+Phase 4 Weeks 7-8 — Skills system ships in inline-execution form.
+
+### Added — Skills foundation (PR #76)
+
+- New `geny_executor.skills` subpackage:
+  - `Skill` / `SkillMetadata` / `SkillContext` dataclasses.
+  - `parse_frontmatter(text) → (dict, body)` — stdlib + pyyaml
+    `safe_load`. Handles missing delimiters, non-dict top-level
+    values, and invalid YAML with explicit "no frontmatter"
+    semantics so malformed skills surface at the loader layer.
+  - `parse_skill_file(path)` / `load_skills_dir(root)` — one-SKILL.md
+    and bulk loaders. Bulk load returns `SkillLoadReport(loaded,
+    errors)`; `strict=True` re-raises the first error.
+  - `SkillRegistry` — flat id→Skill map, duplicate rejected with
+    `ValueError`, explicit `unregister` for override semantics.
+- New core dependency: **pyyaml>=6.0**.
+
+### Added — SkillTool integration (PR #77)
+
+- `SkillTool(skill)` — exposes one Skill as a callable Tool. Tool
+  name = skill id; description = skill description + `[skill, mode]`
+  tag. Uniform `{args: object}` input schema across every skill.
+- `SkillToolProvider(registry, name=...)` — subclass of the Phase 3
+  `ToolProvider` Protocol. Plug into
+  `Pipeline.from_manifest_async(tool_providers=[...])` to expose
+  every registered skill as a tool.
+- Inline execution mode: the tool returns the rendered skill body
+  with a compact header (skill name, version, allowed_tools,
+  model_override). The LLM reads the body as instructions and
+  executes the steps using its existing tool roster.
+- Fork execution mode stubbed: skills marked `execution_mode: fork`
+  fail fast with a clean "not yet available in this release" error,
+  pending the Phase 7 AgentTool runtime.
+- `{placeholder}` template interpolation over `invoke_args` with a
+  safe-fallback dict — unknown placeholders and malformed format
+  specs pass through unchanged.
+
+### Notes
+
+Full unit suite: 1070 passed, 1 skipped. Additive — existing hosts
+don't need to consume the Skills subsystem unless they want to.
+
 ## [0.35.0] — 2026-04-24
 
 Phase 3 Week 7 release — closes Phase 3 with the ``ToolProvider``
