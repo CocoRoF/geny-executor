@@ -4,6 +4,63 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.37.0] — 2026-04-24
+
+Phase 5 — subprocess hooks land. The Phase 1 hook event taxonomy
+(``HookEvent`` / ``HookEventPayload`` / ``HookOutcome``) was always
+the half of the contract sitting in core; this release adds the
+runtime + Stage 10 wiring that actually fires user-configured hook
+scripts around tool dispatch.
+
+### Added — hook runner (PR #80)
+
+- ``geny_executor.hooks.runner.HookRunner`` — spawns subprocess
+  hooks via ``asyncio.create_subprocess_exec`` (never
+  ``shell=True``), serialises ``HookEventPayload`` to stdin as
+  JSON, parses stdout into a ``HookOutcome``. Multiple matching
+  hooks combine via ``HookOutcome.combine`` (most-restrictive
+  wins) and short-circuit once blocked.
+- ``geny_executor.hooks.config`` — ``HookConfigEntry`` /
+  ``HookConfig`` / ``parse_hook_config`` / ``load_hooks_config``.
+  YAML loader with location-suffixed validation errors and
+  forward-compat skip for unknown event names.
+- Two-switch opt-in: both ``HookConfig.enabled = True`` AND
+  ``GENY_ALLOW_HOOKS=1`` env required to invoke any subprocess.
+- Per-entry ``timeout_ms`` (default 5000ms) enforced via
+  ``asyncio.wait_for`` — overruns kill the process and fail-open
+  passthrough so a slow hook never blocks the agent.
+- Every failure mode (command not found, non-zero exit, non-JSON
+  stdout, permission denied, generic spawn error) → fail-open
+  passthrough + WARNING log. Pipeline never dies on a broken hook.
+- Optional JSONL audit log (``audit_log_path``) + per-invocation
+  async callback (``HookRunner.set_audit_callback``).
+
+### Added — Stage 10 wiring (PR #81)
+
+- ``ToolContext.hook_runner`` field — typed ``Any`` to keep
+  ``tools/base.py`` import-cycle-free.
+- ``Pipeline.attach_runtime(hook_runner=...)`` — hosts construct
+  one ``HookRunner`` (per session typically) and attach it before
+  the first run. Threaded through the Tool stage's context to the
+  per-call ctx Stage 10 builds.
+- ``RegistryRouter._dispatch_with_lifecycle`` now fires
+  ``PRE_TOOL_USE`` before ``execute``, honouring ``blocked``
+  (returns ``ACCESS_DENIED`` short-circuit) and ``modified_input``
+  (re-validated against the tool's input schema, then used as the
+  payload). On the way out it fires ``POST_TOOL_USE`` for clean
+  results and ``POST_TOOL_FAILURE`` for both soft errors
+  (``is_error=True``) and unexpected exceptions — unified
+  observation channel for hooks that audit failures.
+
+### Compatibility
+
+Without a ``hook_runner`` bound, dispatch is byte-identical to
+0.36.x. With a runner attached but neither switch flipped (``enabled``
+or env), the runner short-circuits to passthrough — nothing actually
+spawns. So even an accidentally-attached runner is safe.
+
+Full unit suite: 1122 passed, 1 skipped.
+
 ## [0.36.1] — 2026-04-24
 
 Hotfix patch. The lifecycle-hook dispatcher shipped in 0.33.0 (PR #61)
