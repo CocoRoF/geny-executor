@@ -43,6 +43,7 @@ from geny_executor.stages.s10_tool.artifact.default.executors import (
     _emit_call_start,
 )
 from geny_executor.stages.s10_tool.interface import ToolEventCallback, ToolRouter
+from geny_executor.stages.s10_tool.persistence import maybe_persist_large_result
 from geny_executor.tools.base import ToolCapabilities, ToolContext
 from geny_executor.tools.registry import ToolRegistry
 
@@ -300,6 +301,13 @@ class StreamingToolExecutor:
             context,
         )
         duration_ms = int((time.monotonic() - t0) * 1000)
+        result = maybe_persist_large_result(
+            result,
+            tool_use_id=tuid,
+            tool_name=call["tool_name"],
+            capabilities=self._caps.get(tuid, ToolCapabilities()),
+            context=context,
+        )
         result_dict = result.to_api_format(tuid)
         _emit_call_complete(on_event, call, result_dict, duration_ms)
         self._results[tuid] = result_dict
