@@ -10,8 +10,16 @@ access against the :class:`~geny_executor.tools.base.Tool` ABC.
 class; it is the single source of truth consumed by
 ``Pipeline.from_manifest_async`` when resolving
 ``manifest.tools.built_in`` entries.
+
+:data:`BUILT_IN_TOOL_FEATURES` groups those same tools by capability
+family (``filesystem`` / ``shell`` / ``web``). Use
+:func:`get_builtin_tools` with the ``features=`` kwarg to select a
+subset without hardcoding tool names.
 """
 
+from typing import Dict, Iterable, List, Optional, Type
+
+from geny_executor.tools.base import Tool
 from geny_executor.tools.built_in.read_tool import ReadTool
 from geny_executor.tools.built_in.write_tool import WriteTool
 from geny_executor.tools.built_in.edit_tool import EditTool
@@ -22,7 +30,7 @@ from geny_executor.tools.built_in.web_fetch_tool import WebFetchTool
 from geny_executor.tools.built_in.web_search_tool import WebSearchTool
 
 
-BUILT_IN_TOOL_CLASSES: dict[str, type] = {
+BUILT_IN_TOOL_CLASSES: Dict[str, Type[Tool]] = {
     "Read": ReadTool,
     "Write": WriteTool,
     "Edit": EditTool,
@@ -32,6 +40,71 @@ BUILT_IN_TOOL_CLASSES: dict[str, type] = {
     "WebFetch": WebFetchTool,
     "WebSearch": WebSearchTool,
 }
+
+
+# Feature groupings keep the catalog navigable as it grows. A tool may
+# belong to exactly one family — the boundary is "which capability bucket
+# does this power?", not "which source directory does it live in?" Hosts
+# selecting by feature get a stable API even as we add, rename, or split
+# individual tools.
+BUILT_IN_TOOL_FEATURES: Dict[str, List[str]] = {
+    "filesystem": ["Read", "Write", "Edit", "Glob", "Grep"],
+    "shell": ["Bash"],
+    "web": ["WebFetch", "WebSearch"],
+}
+
+
+def get_builtin_tools(
+    *,
+    features: Optional[Iterable[str]] = None,
+    names: Optional[Iterable[str]] = None,
+) -> Dict[str, Type[Tool]]:
+    """Return a ``{tool_name: tool_class}`` mapping.
+
+    Selection:
+        * No args → every tool in :data:`BUILT_IN_TOOL_CLASSES`.
+        * ``features=[...]`` → the union of every tool in those
+          feature families (see :data:`BUILT_IN_TOOL_FEATURES`). An
+          unknown feature name raises ``KeyError`` so typos surface
+          at the call site rather than silently dropping tools.
+        * ``names=[...]`` → exactly those tool names. An unknown name
+          raises ``KeyError``. Can be combined with ``features`` to
+          subtract or add specific entries from the feature union.
+
+    The returned dict is fresh — callers may mutate it without
+    affecting the registry constants.
+
+    Examples:
+        >>> sorted(get_builtin_tools(features=["filesystem"]).keys())
+        ['Edit', 'Glob', 'Grep', 'Read', 'Write']
+
+        >>> sorted(get_builtin_tools(features=["web"], names=["Read"]).keys())
+        ['Read', 'WebFetch', 'WebSearch']
+    """
+    selected: Dict[str, Type[Tool]] = {}
+
+    if features is None and names is None:
+        return dict(BUILT_IN_TOOL_CLASSES)
+
+    if features is not None:
+        for feat in features:
+            if feat not in BUILT_IN_TOOL_FEATURES:
+                raise KeyError(
+                    f"unknown built-in feature {feat!r}; "
+                    f"known: {sorted(BUILT_IN_TOOL_FEATURES.keys())}"
+                )
+            for tool_name in BUILT_IN_TOOL_FEATURES[feat]:
+                selected[tool_name] = BUILT_IN_TOOL_CLASSES[tool_name]
+
+    if names is not None:
+        for name in names:
+            if name not in BUILT_IN_TOOL_CLASSES:
+                raise KeyError(
+                    f"unknown built-in tool {name!r}; known: {sorted(BUILT_IN_TOOL_CLASSES.keys())}"
+                )
+            selected[name] = BUILT_IN_TOOL_CLASSES[name]
+
+    return selected
 
 
 __all__ = [
@@ -44,4 +117,6 @@ __all__ = [
     "WebFetchTool",
     "WebSearchTool",
     "BUILT_IN_TOOL_CLASSES",
+    "BUILT_IN_TOOL_FEATURES",
+    "get_builtin_tools",
 ]
