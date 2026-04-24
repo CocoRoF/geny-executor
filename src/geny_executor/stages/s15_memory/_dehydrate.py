@@ -48,10 +48,7 @@ def dehydrate_content(content: Any) -> Any:
     """Return a dehydrated copy of canonical message content."""
     if not isinstance(content, list):
         return content
-    return [
-        _dehydrate_block(b) if isinstance(b, dict) else b
-        for b in content
-    ]
+    return [_dehydrate_block(b) if isinstance(b, dict) else b for b in content]
 
 
 def dehydrate_message(msg: Dict[str, Any]) -> Dict[str, Any]:

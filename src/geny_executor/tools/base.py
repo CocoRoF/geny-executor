@@ -313,9 +313,7 @@ class Tool(ABC):
         """
         return PermissionDecision(behavior="allow")
 
-    async def prepare_permission_matcher(
-        self, input: Dict[str, Any]
-    ) -> Callable[[str], bool]:
+    async def prepare_permission_matcher(self, input: Dict[str, Any]) -> Callable[[str], bool]:
         """Build a closure that tests permission rule patterns.
 
         Rule patterns look like ``"Bash(git *)"`` — the matcher decides

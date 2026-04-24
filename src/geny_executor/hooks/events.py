@@ -172,9 +172,15 @@ class HookOutcome:
             continue_=bool(resp.get("continue", True)),
             suppress_output=bool(resp.get("suppress_output", False)),
             decision=resp.get("decision") if isinstance(resp.get("decision"), str) else None,
-            stop_reason=resp.get("stop_reason") if isinstance(resp.get("stop_reason"), str) else None,
-            modified_input=resp.get("modified_input") if isinstance(resp.get("modified_input"), dict) else None,
-            hook_specific_output=resp.get("hook_specific_output") if isinstance(resp.get("hook_specific_output"), dict) else None,
+            stop_reason=resp.get("stop_reason")
+            if isinstance(resp.get("stop_reason"), str)
+            else None,
+            modified_input=resp.get("modified_input")
+            if isinstance(resp.get("modified_input"), dict)
+            else None,
+            hook_specific_output=resp.get("hook_specific_output")
+            if isinstance(resp.get("hook_specific_output"), dict)
+            else None,
         )
 
     def combine(self, other: "HookOutcome") -> "HookOutcome":
@@ -204,7 +210,9 @@ class HookOutcome:
             suppress_output=self.suppress_output or other.suppress_output,
             decision=decision,
             stop_reason=self.stop_reason or other.stop_reason,
-            modified_input=other.modified_input if other.modified_input is not None else self.modified_input,
+            modified_input=other.modified_input
+            if other.modified_input is not None
+            else self.modified_input,
             hook_specific_output=merged_hso,
         )
 

@@ -192,7 +192,9 @@ def _image_block_to_openai_part(block: Dict[str, Any]) -> Optional[Dict[str, Any
         return None
 
     image_url: Dict[str, Any] = {"url": url}
-    detail = block.get("detail") or (block.get("_meta", {}) if isinstance(block.get("_meta"), dict) else {}).get("detail")
+    detail = block.get("detail") or (
+        block.get("_meta", {}) if isinstance(block.get("_meta"), dict) else {}
+    ).get("detail")
     if detail:
         image_url["detail"] = detail
     return {"type": "image_url", "image_url": image_url}
@@ -278,10 +280,7 @@ def _user_content_to_google_parts(content: List[Dict[str, Any]]) -> List[Dict[st
 def _content_has_media(content: Any) -> bool:
     if not isinstance(content, list):
         return False
-    return any(
-        isinstance(b, dict) and b.get("type") in ("image", "file")
-        for b in content
-    )
+    return any(isinstance(b, dict) and b.get("type") in ("image", "file") for b in content)
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

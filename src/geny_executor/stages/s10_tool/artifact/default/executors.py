@@ -234,9 +234,7 @@ class PartitionExecutor(ToolExecutor):
 
         # 1) Parallel batch — concurrency_safe tools
         if safe_indexed:
-            parallel_results = await asyncio.gather(
-                *(_run_bounded(tc) for _, tc in safe_indexed)
-            )
+            parallel_results = await asyncio.gather(*(_run_bounded(tc) for _, tc in safe_indexed))
             for (pos, _), res in zip(safe_indexed, parallel_results):
                 results[pos] = res
 
