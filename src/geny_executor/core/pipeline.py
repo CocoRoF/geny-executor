@@ -561,6 +561,7 @@ class Pipeline:
         tool_context: Optional[Any] = None,
         llm_client: Optional[Any] = None,
         session_runtime: Optional[Any] = None,
+        hook_runner: Optional[Any] = None,
     ) -> None:
         """Inject session-scoped runtime objects into a manifest-built pipeline.
 
@@ -680,6 +681,31 @@ class Pipeline:
 
         if session_runtime is not None:
             self._attached_session_runtime = session_runtime
+
+        if hook_runner is not None:
+            # Stash on the Tool stage's context so Stage 10's
+            # RegistryRouter sees it on every dispatch. The host
+            # constructs a HookRunner once (per session typically) and
+            # attaches it before the first run.
+            self._set_tool_stage_hook_runner(hook_runner)
+
+    def _set_tool_stage_hook_runner(self, hook_runner: Any) -> None:
+        """Attach ``hook_runner`` to the Tool stage's ``ToolContext``.
+
+        Idempotent — calling twice replaces the runner. Silently a
+        no-op if no Tool stage is registered (manifest excluded it).
+        """
+        for stage in self._stages.values():
+            if getattr(stage, "name", "") != "tool":
+                continue
+            ctx = getattr(stage, "_context", None)
+            if ctx is None:
+                from geny_executor.tools.base import ToolContext
+
+                ctx = ToolContext()
+                stage._context = ctx
+            ctx.hook_runner = hook_runner
+            return
 
     def _set_stage_slot_strategy(self, *, stage_name: str, slot_name: str, strategy: Any) -> None:
         """Replace a named slot's strategy on the stage registered under *stage_name*.

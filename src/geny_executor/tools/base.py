@@ -130,6 +130,13 @@ class ToolContext:
     # dispatch; ``None`` means no state sink is bound and mutations
     # are dropped with a debug log. Signature: ``(mutations, tool_name)``.
     state_apply: Optional[Callable[[Dict[str, Any], str], Dict[str, Any]]] = None
+    # Phase 5 addition: subprocess hook runner that fires
+    # ``PRE_TOOL_USE`` / ``POST_TOOL_USE`` / ``POST_TOOL_FAILURE`` around
+    # ``execute``. ``None`` (the default) means no hook subsystem is
+    # bound and the dispatcher behaves exactly as it did pre-Phase-5.
+    # Typed as ``Any`` to avoid a hard import dependency on the hooks
+    # subsystem from this base module.
+    hook_runner: Optional[Any] = None
     extras: Dict[str, Any] = field(default_factory=dict)
 
 
