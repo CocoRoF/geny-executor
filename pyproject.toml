@@ -50,6 +50,12 @@ dependencies = [
 memory = [
     "numpy>=1.24",
 ]
+web = [
+    # ddgs powers WebSearch (DuckDuckGo text search backend). Pulled in
+    # only when hosts actually want web search — keeps the core install
+    # lean for pipelines that don't need it.
+    "ddgs>=9.11",
+]
 openai = [
     "openai>=1.50.0",
 ]
@@ -65,9 +71,11 @@ dev = [
     "pytest-asyncio>=0.24",
     "pytest-cov>=5.0",
     "ruff>=0.4.0",
+    # Optional tool backends needed by the full test suite
+    "ddgs>=9.11",
 ]
 all = [
-    "geny-executor[memory,openai,google,postgres]",
+    "geny-executor[memory,openai,google,postgres,web]",
 ]
 
 [project.urls]
