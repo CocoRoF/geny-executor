@@ -12,6 +12,11 @@ from geny_executor.stages.s03_system.artifact.default import (
     ToolInstructionsBlock,
     CustomBlock,
 )
+from geny_executor.stages.s03_system.persona import (
+    DynamicPersonaPromptBuilder,
+    PersonaProvider,
+    PersonaResolution,
+)
 
 __all__ = [
     "SystemStage",
@@ -25,4 +30,7 @@ __all__ = [
     "MemoryContextBlock",
     "ToolInstructionsBlock",
     "CustomBlock",
+    "DynamicPersonaPromptBuilder",
+    "PersonaProvider",
+    "PersonaResolution",
 ]

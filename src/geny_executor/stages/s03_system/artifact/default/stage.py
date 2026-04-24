@@ -13,6 +13,7 @@ from geny_executor.stages.s03_system.artifact.default.builders import (
     ComposablePromptBuilder,
     StaticPromptBuilder,
 )
+from geny_executor.stages.s03_system.persona import DynamicPersonaPromptBuilder
 from geny_executor.tools.registry import ToolRegistry
 
 
@@ -41,6 +42,11 @@ class SystemStage(Stage[Any, Any]):
                 registry={
                     "static": StaticPromptBuilder,
                     "composable": ComposablePromptBuilder,
+                    # Phase 7 S7.1 — host-attached PersonaProvider
+                    # drives this. Manifests can name it; the actual
+                    # provider instance must arrive via
+                    # ``Pipeline.attach_runtime(system_builder=...)``.
+                    "dynamic_persona": DynamicPersonaPromptBuilder,
                 },
                 description="System prompt builder strategy",
             ),
