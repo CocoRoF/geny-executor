@@ -4,6 +4,127 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.32.0] — 2026-04-24
+
+**Executor uplift Phase 1 — Foundation.** First release of a multi-phase
+cycle toward 1.0 (see `Geny/executor_uplift/` in the Geny repo for the
+full design, 12-part detailed plan, and migration roadmap). This
+release lays down four primitive layers that subsequent releases build
+on: extended Tool ABC metadata, permission rule matrix, subprocess hook
+event taxonomy, and capability-aware Stage 10 orchestration. Every
+change is additive — existing pipelines behave identically until they
+opt in to the new surfaces.
+
+### Added — Tool ABC metadata (PR #49)
+
+- **`ToolCapabilities(frozen)`** — `concurrency_safe` · `read_only` ·
+  `destructive` · `idempotent` · `network_egress` · `interrupt` ·
+  `max_result_chars`. Fail-closed defaults. Runtime traits consumed by
+  Stage 10 orchestrator, Permission matrix, and the upcoming Tool
+  Review stage (Phase 9).
+- **`PermissionDecision(frozen)`** — `behavior` (allow/deny/ask) +
+  optional `updated_input` + `reason`.
+- **`ToolContext`** new optional fields: `permission_mode`,
+  `state_view`, `event_emit`, `parent_tool_use_id`, `extras`.
+- **`ToolResult`** new optional fields: `display_text` (preferred by
+  `to_api_format`), `persist_full`, `state_mutations`, `artifacts`,
+  `new_messages`, `mcp_meta`.
+- **`Tool`** ABC optional overrides with defaults: `output_schema`,
+  `validate_input`, `capabilities(input)`,
+  `check_permissions(input, ctx)`, `prepare_permission_matcher(input)`,
+  `on_enter / on_exit / on_error` lifecycle hooks, `user_facing_name`,
+  `activity_description`, `is_enabled`, plus `aliases`, `is_mcp`,
+  `mcp_info` class attributes.
+- **`build_tool()`** factory — construct a Tool instance without
+  subclassing. Clears `__abstractmethods__` after property injection.
+
+### Added — Permission rule matrix (PR #50)
+
+New `geny_executor.permission` package.
+
+- **`PermissionBehavior`** (`ALLOW / DENY / ASK`),
+  **`PermissionMode`** (`DEFAULT / PLAN / AUTO / BYPASS`),
+  **`PermissionSource`** + `SOURCE_PRIORITY` (CLI > LOCAL > PROJECT >
+  USER > PRESET_DEFAULT).
+- **`PermissionRule(frozen)`** — `tool_name` (`"*"` wildcard) + optional
+  `pattern` + `behavior` + `source` + `reason`.
+- **`evaluate_permission()`** — single entry point. Resolution order:
+  (1) BYPASS short-circuit, (2) walk rules in source-priority order
+  first-match-wins, (3) PLAN-mode destructive escalation to ASK,
+  (4) optional fallback to the tool's own `check_permissions`,
+  (5) default ALLOW. `_ToolLike` Protocol avoids circular imports.
+- **`parse_permission_rules()` / `load_permission_rules()` /
+  `load_hierarchical_rules()`** — YAML or JSON file loader with
+  graceful PyYAML fallback to JSON.
+
+### Added — Hook taxonomy + SharedKeys namespace (PR #51)
+
+New `geny_executor.hooks` package and `geny_executor.core.shared_keys`
+module.
+
+- **`HookEvent`** enum — 16 kinds (SESSION_START/END,
+  PIPELINE_START/END, STAGE_ENTER/EXIT, USER_PROMPT_SUBMIT,
+  PRE/POST_TOOL_USE, POST_TOOL_FAILURE, PERMISSION_REQUEST/DENIED,
+  LOOP_ITERATION_END, CWD_CHANGED, MCP_SERVER_STATE, NOTIFICATION).
+- **`HookEventPayload`** — stable top-level schema; event-specific
+  fields in `details` bag for forward compat.
+- **`HookOutcome(frozen)`** — `continue_` / `suppress_output` /
+  `decision` / `stop_reason` / `modified_input` /
+  `hook_specific_output`. `passthrough` / `block` / `approve` /
+  `from_response` helpers. `combine()` merges multiple outcomes with
+  "most restrictive wins" semantics.
+- **`SharedKeys`** — canonical string constants for well-known
+  `state.shared` entries across three namespaces: `executor.*` (incl.
+  pre-declared keys for Phase-9 stages), `memory.*`, `geny.*`.
+- **`SharedKeys.plugin_key(namespace, key)`** — builder that returns
+  `"plugin.{namespace}.{key}"` with identifier validation.
+
+Hook **runner** (subprocess dispatch with timeout + stdout parsing)
+lands in Phase 5 — this release ships only the taxonomy so dependent
+checkpoints can import the types.
+
+### Added — Stage 10 PartitionExecutor (PR #52)
+
+First consumer of the Tool ABC metadata.
+
+- **`PartitionExecutor`** registered as a third implementation in
+  Stage 10's `executor` slot alongside `SequentialExecutor` and
+  `ParallelExecutor`. Inspects each pending tool call's
+  `Tool.capabilities(input).concurrency_safe` to run safe tools in a
+  bounded parallel batch (`max_concurrency` default 10) and unsafe
+  tools serially after. Result list preserves input order.
+- **`PartitionExecutor.bind_registry`** — late-bind pattern mirroring
+  `RegistryRouter`. `ToolStage.execute` now binds the registry into
+  both the router and the executor when each exposes this method.
+- **Fail-closed** — missing registry, unknown tool name, or
+  `capabilities()` raising all degrade to unsafe (serial).
+
+Opt-in: existing pipelines still default to `SequentialExecutor`.
+Swap via `slot.swap("partition")` or
+`PipelineMutator.swap_strategy(stage_order=10, slot_name="executor",
+impl_name="partition")`.
+
+### Compatibility
+
+- **All additions are additive.** Existing Tool subclasses implementing
+  only the 4 required members continue to work without modification.
+- **No manifest / preset migration required.** Existing manifests load
+  and run exactly as on 0.31.x.
+- **Regression tests green.** 511 pre-existing unit tests continue to
+  pass; this release adds 95 new tests (36 + 21 + 25 + 13) for a
+  total of **606 passing + 189 skipped**.
+
+### Cycle pointer
+
+This release is Phase 1 of 10 in the executor uplift cycle.
+Subsequent milestones: 0.33.0 (Orchestration) → 0.34.0 (Built-in tool
+catalog) → 0.35.0 (Skills) → 0.36.0 (Hooks runner) → 0.37.0 (MCP
+uplift) → 0.38.x (Stage enhancements) → 0.39.0 (MCP advanced) →
+**1.0.0 (21-stage re-composition + v2→v3 manifest migration)**. See
+`executor_uplift/11_migration_roadmap.md` and
+`executor_uplift/12_detailed_plan.md` in the Geny repository for the
+full plan.
+
 ## [0.30.0] — 2026-04-22
 
 Minor release adding a single plugin-oriented primitive: the
