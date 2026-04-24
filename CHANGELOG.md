@@ -4,6 +4,59 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.38.0] — 2026-04-24
+
+Phase 6 — MCP uplift. Replaces the per-server boolean
+``is_connected`` with a five-state finite-state machine, adds an
+admin disable / enable lifecycle, maps MCP tool annotations onto
+``ToolCapabilities`` so PartitionExecutor can fan read-only MCP
+tools out in parallel, and lets hosts swap a live ``MCPManager``
+into a built pipeline via ``attach_runtime``.
+
+### Added — connection FSM (PR #83)
+
+- ``MCPConnectionState`` (``geny_executor.tools.mcp.state``) — five
+  states: ``PENDING`` / ``CONNECTED`` / ``FAILED`` / ``NEEDS_AUTH``
+  / ``DISABLED``.
+- ``MCPServerConnection.state`` + ``last_error`` properties.
+  ``is_connected`` is now derived (``state == CONNECTED``).
+- Auth-shaped failures classified into ``NEEDS_AUTH`` so admin UIs
+  can prompt for credentials instead of retrying blindly.
+- ``MCPManager.disable_server(name)`` + ``enable_server(name)`` —
+  admin lifecycle that retains config across the toggle. Distinct
+  from ``disconnect`` (which evicts).
+- ``list_server_status()`` includes ``state`` + ``last_error``;
+  ``connected`` boolean retained for back-compat.
+
+### Added — annotation → ToolCapabilities mapping (PR #84)
+
+- ``MCPToolAdapter.capabilities(input)`` reads MCP annotations and
+  returns a populated ``ToolCapabilities``. Mapping:
+  ``readOnlyHint=True`` → ``read_only`` + ``concurrency_safe``;
+  ``destructiveHint=True`` → ``destructive`` (overrides
+  ``concurrency_safe``); ``idempotentHint=True`` → ``idempotent``;
+  ``openWorldHint=True`` → ``network_egress``.
+- ``manager._serialise_mcp_tool`` captures ``annotations`` from each
+  SDK tool object (object-attr OR dict form supported).
+
+### Added — pipeline integration (PR #84)
+
+- ``Pipeline.attach_runtime(mcp_manager=...)`` — kwarg accepts a
+  pre-built ``MCPManager``. Replaces any manifest-built manager and
+  re-seeds the pipeline's ``tool_registry`` from the manager's
+  CONNECTED servers. Skips DISABLED / FAILED / NEEDS_AUTH; never
+  clobbers existing entries with the same prefixed name.
+
+### Compatibility
+
+Without using any of the new surfaces, dispatch is byte-identical to
+0.37.x — all changes are additive. Hosts that hand-set
+``conn._connected = True`` in tests need to migrate to
+``conn._state = MCPConnectionState.CONNECTED`` (the new field is the
+backing for ``is_connected``).
+
+Full unit suite: 1171 passed, 1 skipped.
+
 ## [0.37.0] — 2026-04-24
 
 Phase 5 — subprocess hooks land. The Phase 1 hook event taxonomy
