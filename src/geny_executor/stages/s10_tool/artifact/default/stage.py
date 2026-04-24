@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional
 
+from geny_executor.core.schema import ConfigField, ConfigSchema
 from geny_executor.core.slot import StrategySlot
 from geny_executor.core.stage import Stage
 from geny_executor.core.state import PipelineState
@@ -19,12 +20,23 @@ from geny_executor.stages.s10_tool.artifact.default.executors import (
 from geny_executor.stages.s10_tool.artifact.default.routers import RegistryRouter
 
 
+# Default parallel budget when a host doesn't specify one. Matches the
+# ParallelExecutor default and the PartitionExecutor / StreamingToolExecutor
+# defaults — keep these in sync when changing.
+_DEFAULT_MAX_CONCURRENCY = 10
+
+
 class ToolStage(Stage[Any, Any]):
     """Stage 10: Tool.
 
     Dual abstraction:
-      - Level 2 executor: execution pattern (sequential/parallel)
+      - Level 2 executor: execution pattern (sequential/parallel/partition)
       - Level 2 router: dispatches tool calls to implementations
+
+    Cycle 20260424 (Phase 2 Week 4 Checkpoint 4): exposes
+    ``max_concurrency`` through the stage ConfigSchema so hosts can tune
+    the parallel budget without swapping executors. Applied to the
+    currently-active executor each time ``update_config`` runs.
     """
 
     def __init__(
@@ -33,12 +45,20 @@ class ToolStage(Stage[Any, Any]):
         executor: Optional[ToolExecutor] = None,
         router: Optional[ToolRouter] = None,
         context: Optional[ToolContext] = None,
+        *,
+        max_concurrency: int = _DEFAULT_MAX_CONCURRENCY,
     ):
         self._registry = registry or ToolRegistry()
+        self._max_concurrency = max(1, int(max_concurrency))
+        default_executor = executor or SequentialExecutor()
+        # Propagate onto the already-constructed executor if one was
+        # passed in — callers may build a ParallelExecutor(5) directly
+        # but still want the stage's knob to govern later updates.
+        self._apply_max_concurrency(default_executor)
         self._slots: Dict[str, StrategySlot] = {
             "executor": StrategySlot(
                 name="executor",
-                strategy=executor or SequentialExecutor(),
+                strategy=default_executor,
                 registry={
                     "sequential": SequentialExecutor,
                     "parallel": ParallelExecutor,
@@ -60,6 +80,22 @@ class ToolStage(Stage[Any, Any]):
             ),
         }
         self._context = context or ToolContext()
+
+    def _apply_max_concurrency(self, executor: ToolExecutor) -> None:
+        """Push the current budget onto an executor that accepts one.
+
+        SequentialExecutor ignores the knob. ParallelExecutor,
+        PartitionExecutor, and StreamingToolExecutor all track
+        ``_max_concurrency`` — we set the attribute directly so hosts can
+        tune mid-session without reconstructing the executor.
+        """
+        if hasattr(executor, "_max_concurrency"):
+            try:
+                executor._max_concurrency = self._max_concurrency  # type: ignore[attr-defined]
+            except AttributeError:
+                # Some executors may expose the attribute as a
+                # read-only descriptor — silently ignore.
+                pass
 
     @property
     def _executor(self) -> ToolExecutor:
@@ -87,6 +123,37 @@ class ToolStage(Stage[Any, Any]):
 
     def get_strategy_slots(self) -> Dict[str, StrategySlot]:
         return self._slots
+
+    def get_config_schema(self) -> ConfigSchema:
+        return ConfigSchema(
+            name="tool",
+            fields=[
+                ConfigField(
+                    name="max_concurrency",
+                    type="integer",
+                    label="Max Concurrency",
+                    description=(
+                        "Maximum number of tool calls that may execute in "
+                        "parallel. Applies to ParallelExecutor, "
+                        "PartitionExecutor, and StreamingToolExecutor. "
+                        "SequentialExecutor ignores this knob."
+                    ),
+                    default=_DEFAULT_MAX_CONCURRENCY,
+                    min_value=1,
+                    max_value=64,
+                    ui_widget="slider",
+                ),
+            ],
+        )
+
+    def get_config(self) -> Dict[str, Any]:
+        return {"max_concurrency": self._max_concurrency}
+
+    def update_config(self, config: Dict[str, Any]) -> None:
+        if "max_concurrency" in config:
+            value = int(config["max_concurrency"])
+            self._max_concurrency = max(1, value)
+            self._apply_max_concurrency(self._executor)
 
     def should_bypass(self, state: PipelineState) -> bool:
         return not state.pending_tool_calls
@@ -133,6 +200,12 @@ class ToolStage(Stage[Any, Any]):
         bind_registry = getattr(executor_strategy, "bind_registry", None)
         if callable(bind_registry):
             bind_registry(self._registry)
+
+        # Re-apply the stage-level concurrency budget each turn — this
+        # handles the case where an executor was swapped in via
+        # ``StrategySlot.swap`` (which rebuilds with no args) and would
+        # otherwise default to its class-level budget.
+        self._apply_max_concurrency(executor_strategy)
 
         results = await executor_strategy.execute_all(
             tool_calls, router, ctx, on_event=state.add_event
