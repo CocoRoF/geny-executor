@@ -4,6 +4,69 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.40.0] — 2026-04-24
+
+Phase 7 sprint batch — three stage enhancements bundled into one
+minor release. Each is independently opt-in; without consuming the
+new surfaces, dispatch + prompt assembly + parsing all behave
+identically to 0.39.x.
+
+### Added — S7.1 Stage 3 System (PR #88)
+
+- ``geny_executor.stages.s03_system.persona`` subpackage:
+    * ``PersonaResolution`` (frozen dataclass) — single-turn snapshot
+      of ``persona_blocks`` + ``system_tail`` + ``cache_key``.
+    * ``PersonaProvider`` — ``@runtime_checkable`` Protocol; sync
+      ``resolve(state, *, session_meta) → PersonaResolution``.
+    * ``DynamicPersonaPromptBuilder`` — calls the provider on every
+      build and composes through the inner
+      ``ComposablePromptBuilder``. Holds no persona state itself, so
+      provider mutations are visible on the next turn without
+      rebuilding the pipeline.
+- ``SystemStage`` strategy registry now includes ``"dynamic_persona"``
+  alongside ``"static"`` / ``"composable"``. Hosts attach the
+  builder via ``Pipeline.attach_runtime(system_builder=...)``.
+
+### Added — S7.2 Stage 2 Context (PR #89)
+
+- ``MCPServerConnection.list_resources()`` + ``read_resource(uri)``
+  — async wrappers around the SDK's resource API. Fail-open with
+  WARNING logs on transport / protocol failures.
+- ``geny_executor.stages.s02_context.MCPResourceRetriever`` —
+  ``MemoryRetriever`` subclass that lists / filters / reads MCP
+  resources (the second MCP primitive after tools) and wraps each
+  match as a ``MemoryChunk(source="mcp_resource")``. Global
+  ``max_resources`` cap (default 5) shared across all servers;
+  per-server / per-URI failures isolated.
+
+### Added — S7.3 Stage 9 Parse (PR #90)
+
+- ``ParsedResponse.structured_output_error: Optional[str]`` — new
+  field that disambiguates the three structured-output outcomes:
+  ``None`` (clean / absent), ``"JSON parse failed: ..."`` (text
+  wasn't JSON), or ``"schema mismatch at <path>: ..."`` (JSON
+  parsed but didn't match the bound schema).
+- ``StructuredOutputParser(schema=...)`` — validates the schema at
+  construction time (bad schema → ``ValueError``) and the parsed
+  payload at parse time. Validation failure clears
+  ``structured_output`` to ``None`` so downstream stages don't see
+  partially-trusted data.
+
+### Compatibility
+
+Additive only:
+
+* Hosts that don't construct ``DynamicPersonaPromptBuilder`` get
+  the same ``StaticPromptBuilder`` / ``ComposablePromptBuilder``
+  default they had at 0.39.x.
+* Hosts that don't attach an ``MCPResourceRetriever`` see no
+  Stage 2 behaviour change.
+* ``StructuredOutputParser`` without a schema preserves the legacy
+  best-effort parse — only the new ``structured_output_error``
+  field carries extra disambiguation.
+
+Full unit suite: 1247 passed, 1 skipped.
+
 ## [0.39.0] — 2026-04-24
 
 Phase 7 Sprint S7.4 — Permission matrix lands in dispatch. The
