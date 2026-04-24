@@ -4,6 +4,89 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.34.0] — 2026-04-24
+
+Phase 3 release — built-in tool catalog expands from 6 → 13 tools and
+the Phase 1 `state_mutations` contract finally lands in state. Scope
+is deliberately additive: hosts upgrading from 0.33.x that don't
+consume any of the new tools see no behaviour change.
+
+### Added — built-in tool catalog (now 13 tools)
+
+- **`WebFetch`** (PR #65) — HTTP(S) fetcher with stdlib HTML → text
+  extraction. `concurrency_safe=True` + `read_only=True` +
+  `network_egress=True`. Body cap (1 MiB default), text cap (80 000
+  chars default), 5-hop redirect limit, 30 s default timeout. Scheme
+  allowlist rejects `file://` / `ftp://` / data URIs.
+- **`WebSearch`** (PR #66) — DuckDuckGo text search via the new
+  `[web]` optional extra (`ddgs>=9.11`). Missing dep → clean
+  "pip install 'geny-executor[web]'" hint; never crashes at import.
+  Hard cap 30 results, region + safesearch forwarded.
+- **`TodoWrite`** (PR #68) — Claude Code-style task list updates.
+  Full-list rewrite semantics, stable IDs derived from position +
+  content, Markdown checklist rendering. Introduces the `workflow`
+  feature family.
+- **`NotebookEdit`** (PR #70) — `.ipynb` cell editing (replace /
+  insert / delete) via stdlib JSON. Atomic writes (temp file →
+  fsync → os.replace), `save=false` dry-run mode, code-cell outputs
+  cleared on replace.
+- **`ToolSearch`** (PR #71) — keyword discovery over the live tool
+  catalogue. Reads `state_view.tools` (set by `ToolStage`), falls
+  back to `BUILT_IN_TOOL_CLASSES`. Ranked matches (exact name > name
+  substring > description > schema). Introduces the `meta` feature
+  family.
+- **`EnterPlanMode` / `ExitPlanMode`** (PR #72) — toggle the public
+  `executor.plan_mode` flag on `state.shared` via the state_mutations
+  contract. Stage 4 Guard can consult the flag to block destructive
+  tools during planning.
+
+### Added — selection + typing
+
+- **`BUILT_IN_TOOL_FEATURES`** + **`get_builtin_tools(features=...,
+  names=...)`** (PR #67) — programmatic feature-gated selection API
+  complementing the declarative `manifest.tools.built_in` path. Every
+  built-in tool belongs to exactly one feature family
+  (`filesystem` / `shell` / `web` / `workflow` / `meta`), enforced by
+  a structural test.
+
+### Added — capability flags on existing built-ins (PR #64)
+
+- `Read` / `Grep` / `Glob` now advertise `concurrency_safe=True` +
+  `read_only=True` + `idempotent=True`. Under `PartitionExecutor` /
+  `StreamingToolExecutor` these fan out in parallel instead of
+  serialising.
+- `Write` / `Edit` / `Bash` keep the fail-closed default (unsafe) —
+  they mutate state or run arbitrary commands.
+
+### Added — state_mutations wiring (PR #69)
+
+- `ToolResult.state_mutations` — the dict of proposed updates to
+  `state.shared` that tools return — now actually flows into state
+  across all four Stage 10 executors.
+- New `ToolContext.state_apply` callback (set by `ToolStage` from a
+  closure over `state.shared`) + `state_view` handle (for read-only
+  introspection, wired for `ToolSearch`).
+- Namespace allowlist: `executor.` / `memory.` / `geny.` /
+  `plugin.<ns>.` only; unknown prefixes logged and dropped. Skipped
+  on `is_error=True` results so failing tools don't leak half-written
+  state.
+
+### Dependencies
+
+- `httpx>=0.27` declared as a core dependency (was already transitive
+  via `anthropic`; now explicit because `WebFetch` imports it).
+- New `[web]` optional extra pulls `ddgs>=9.11` for `WebSearch`.
+- Added to `[dev]` too so the full test suite runs without the extra.
+
+### Notes
+
+Full unit suite: 990 passed, 2 skipped (up from 844 at 0.33.0).
+
+Carried over from the 0.33.x line without change. No call-site
+migrations required. Hosts on 0.33.x that set
+`ToolContext(storage_path=...)` (as Geny does) automatically get the
+persistence + state_mutations behaviour for any tool that returns them.
+
 ## [0.33.0] — 2026-04-24
 
 Phase 2 Orchestration release — completes Week 4 checkpoints on top of
