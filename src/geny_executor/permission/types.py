@@ -107,13 +107,19 @@ class PermissionDecision:
     updated_input: Optional[Dict] = None
 
     @classmethod
-    def allow(cls, reason: Optional[str] = None, matched_rule: Optional[PermissionRule] = None) -> "PermissionDecision":
+    def allow(
+        cls, reason: Optional[str] = None, matched_rule: Optional[PermissionRule] = None
+    ) -> "PermissionDecision":
         return cls(behavior=PermissionBehavior.ALLOW, reason=reason, matched_rule=matched_rule)
 
     @classmethod
-    def deny(cls, reason: str, matched_rule: Optional[PermissionRule] = None) -> "PermissionDecision":
+    def deny(
+        cls, reason: str, matched_rule: Optional[PermissionRule] = None
+    ) -> "PermissionDecision":
         return cls(behavior=PermissionBehavior.DENY, reason=reason, matched_rule=matched_rule)
 
     @classmethod
-    def ask(cls, reason: str, matched_rule: Optional[PermissionRule] = None) -> "PermissionDecision":
+    def ask(
+        cls, reason: str, matched_rule: Optional[PermissionRule] = None
+    ) -> "PermissionDecision":
         return cls(behavior=PermissionBehavior.ASK, reason=reason, matched_rule=matched_rule)

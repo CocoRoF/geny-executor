@@ -38,8 +38,7 @@ def _load_document(path: Path) -> Dict[str, Any]:
             import yaml  # type: ignore
         except ImportError as e:
             raise ImportError(
-                "PyYAML is required to load .yaml permission files. "
-                "Install it or switch to JSON."
+                "PyYAML is required to load .yaml permission files. Install it or switch to JSON."
             ) from e
         data = yaml.safe_load(text) or {}
     else:
@@ -63,10 +62,14 @@ def parse_permission_rules(
     ):
         section = data.get(section_key) or []
         if not isinstance(section, list):
-            raise ValueError(f"'{section_key}' section must be a list, got {type(section).__name__}")
+            raise ValueError(
+                f"'{section_key}' section must be a list, got {type(section).__name__}"
+            )
         for entry in section:
             if not isinstance(entry, dict):
-                raise ValueError(f"rule entry must be a mapping, got {type(entry).__name__}: {entry!r}")
+                raise ValueError(
+                    f"rule entry must be a mapping, got {type(entry).__name__}: {entry!r}"
+                )
             tool = entry.get("tool")
             if not isinstance(tool, str) or not tool:
                 raise ValueError(f"rule entry missing/invalid 'tool': {entry!r}")
@@ -86,9 +89,7 @@ def parse_permission_rules(
     return out
 
 
-def load_permission_rules(
-    path: Path, *, source: PermissionSource
-) -> List[PermissionRule]:
+def load_permission_rules(path: Path, *, source: PermissionSource) -> List[PermissionRule]:
     """Load and parse a permission file.
 
     Returns an empty list when the file doesn't exist (absence is not an

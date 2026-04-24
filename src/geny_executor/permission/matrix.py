@@ -30,9 +30,7 @@ class _ToolLike(Protocol):
     @property
     def name(self) -> str: ...
 
-    async def prepare_permission_matcher(
-        self, input: Dict[str, Any]
-    ) -> Callable[[str], bool]: ...
+    async def prepare_permission_matcher(self, input: Dict[str, Any]) -> Callable[[str], bool]: ...
 
 
 def _sort_by_source_priority(rules: List[PermissionRule]) -> List[PermissionRule]:
@@ -51,9 +49,7 @@ async def evaluate_permission(
     rules: List[PermissionRule],
     mode: PermissionMode = PermissionMode.DEFAULT,
     capabilities_destructive: bool = False,
-    fallback: Optional[
-        Callable[[Dict[str, Any]], Awaitable[PermissionDecision]]
-    ] = None,
+    fallback: Optional[Callable[[Dict[str, Any]], Awaitable[PermissionDecision]]] = None,
 ) -> PermissionDecision:
     """Evaluate whether a tool invocation is permitted.
 
@@ -96,7 +92,9 @@ async def evaluate_permission(
         if rule.pattern is not None and not matcher(rule.pattern):
             continue
         # First match wins
-        reason = rule.reason or f"matched {rule.source.value}: {rule.tool_name}({rule.pattern or '*'})"
+        reason = (
+            rule.reason or f"matched {rule.source.value}: {rule.tool_name}({rule.pattern or '*'})"
+        )
         return PermissionDecision(
             behavior=rule.behavior,
             reason=reason,
@@ -106,9 +104,7 @@ async def evaluate_permission(
     # 2. PLAN mode auto-escalation (runs after rule walk so an explicit
     #    ALLOW at any source-priority still wins).
     if mode is PermissionMode.PLAN and capabilities_destructive:
-        return PermissionDecision.ask(
-            reason="plan mode — destructive operation needs approval"
-        )
+        return PermissionDecision.ask(reason="plan mode — destructive operation needs approval")
 
     # AUTO mode allows even without an explicit rule, but we still want
     # tool-specific logic a chance (e.g. secret scanners).

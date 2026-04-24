@@ -187,9 +187,7 @@ class MemoryStage(Stage[Any, Any]):
         if persistence_active and state.session_id:
             # Strip multimodal raw payloads (base64 image bytes etc.) before
             # writing to disk — see ``_dehydrate`` for the schema.
-            await persistence.save(
-                state.session_id, dehydrate_messages(state.messages)
-            )
+            await persistence.save(state.session_id, dehydrate_messages(state.messages))
             state.add_event(
                 "memory.persisted",
                 {
