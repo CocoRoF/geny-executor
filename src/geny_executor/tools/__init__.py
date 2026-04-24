@@ -1,6 +1,13 @@
 """Tool system — registration, routing, execution, composition."""
 
-from geny_executor.tools.base import Tool, ToolResult, ToolContext
+from geny_executor.tools.base import (
+    Tool,
+    ToolResult,
+    ToolContext,
+    ToolCapabilities,
+    PermissionDecision,
+    build_tool,
+)
 from geny_executor.tools.registry import ToolRegistry
 from geny_executor.tools.adhoc import (
     AdhocTool,
@@ -22,6 +29,9 @@ __all__ = [
     "Tool",
     "ToolResult",
     "ToolContext",
+    "ToolCapabilities",
+    "PermissionDecision",
+    "build_tool",
     "ToolRegistry",
     # Ad-hoc
     "AdhocTool",
