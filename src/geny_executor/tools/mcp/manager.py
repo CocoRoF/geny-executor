@@ -52,6 +52,38 @@ def _looks_like_auth_failure(exc: BaseException) -> bool:
     return any(hint in text for hint in _AUTH_ERROR_HINTS)
 
 
+def _serialise_mcp_tool(t: Any) -> Dict[str, Any]:
+    """Convert one MCP SDK tool object into the cached dict shape.
+
+    Captures ``annotations`` (per the MCP spec) so the adapter can
+    map them onto :class:`ToolCapabilities` for orchestration. Hosts
+    that bring their own MCP-shaped objects (mocks, custom transports)
+    can produce the same dict directly — the adapter only reads from
+    it, never from the original SDK type.
+    """
+    annotations: Dict[str, Any] = {}
+    raw_anno = getattr(t, "annotations", None)
+    if raw_anno is not None:
+        for key in (
+            "title",
+            "readOnlyHint",
+            "destructiveHint",
+            "idempotentHint",
+            "openWorldHint",
+        ):
+            value = getattr(raw_anno, key, None)
+            if value is None and isinstance(raw_anno, dict):
+                value = raw_anno.get(key)
+            if value is not None:
+                annotations[key] = value
+    return {
+        "name": t.name,
+        "description": t.description or "",
+        "input_schema": t.inputSchema if hasattr(t, "inputSchema") else {},
+        "annotations": annotations,
+    }
+
+
 @dataclass
 class MCPServerConfig:
     """Configuration for an MCP server connection."""
@@ -256,14 +288,7 @@ class MCPServerConnection:
             await self._safe_cleanup()
             raise MCPConnectionError(self.config.name, "list_tools", cause=exc) from exc
 
-        self._tools = [
-            {
-                "name": t.name,
-                "description": t.description or "",
-                "input_schema": t.inputSchema if hasattr(t, "inputSchema") else {},
-            }
-            for t in result.tools
-        ]
+        self._tools = [_serialise_mcp_tool(t) for t in result.tools]
         self._state = MCPConnectionState.CONNECTED
         self._last_error = None
         logger.info(
