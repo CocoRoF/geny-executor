@@ -14,6 +14,7 @@ from geny_executor.stages.s12_evaluate.artifact.adaptive.strategy import (
 from geny_executor.stages.s12_evaluate.artifact.default.strategies import (
     AgentEvaluation,
     CriteriaBasedEvaluation,
+    EvaluationChain,
     NoScorer,
     SignalBasedEvaluation,
     WeightedScorer,
@@ -42,6 +43,11 @@ class EvaluateStage(Stage[Any, Any]):
                     "criteria_based": CriteriaBasedEvaluation,
                     "agent_evaluation": AgentEvaluation,
                     "binary_classify": BinaryClassifyEvaluation,
+                    # Phase 7 S7.6 — sequential evaluator chain.
+                    # Construct via ``EvaluationChain([ev1, ev2, ...])``;
+                    # the slot's zero-arg swap path produces an empty
+                    # chain (which acts as a no-op verdict).
+                    "evaluation_chain": EvaluationChain,
                 },
                 description="Evaluation strategy",
             ),

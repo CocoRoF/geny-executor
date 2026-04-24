@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from typing import Any, Dict, List, Optional
 
 from geny_executor.core.state import PipelineState
 from geny_executor.stages.s12_evaluate.interface import EvaluationStrategy, QualityScorer
 from geny_executor.stages.s12_evaluate.types import EvaluationResult, QualityCriterion
+
+logger = logging.getLogger(__name__)
 
 
 class SignalBasedEvaluation(EvaluationStrategy):
@@ -194,3 +197,95 @@ class WeightedScorer(QualityScorer):
                 weighted_sum += float(val) * weight
                 total_weight += weight
         return weighted_sum / total_weight if total_weight > 0 else 1.0
+
+
+class EvaluationChain(EvaluationStrategy):
+    """Run a sequence of evaluators, first definitive verdict wins.
+
+    Cycle 20260424 executor uplift — Phase 7 Sprint S7.6 (Evaluator
+    chain). The pre-S7.6 Stage 12 strategy slot held exactly one
+    evaluator. Composing layered policy ("trust signals first; fall
+    back to criteria; finally call an evaluator agent") meant writing
+    a custom strategy that dispatched manually.
+
+    The chain inverts that: hand it a list of evaluators. They run in
+    order; the first one returning ``decision != "continue"`` wins.
+    A trailing ``continue`` (everyone passed without a definitive
+    verdict) returns the last evaluator's result so the chain
+    behaves like "no one objected" — same semantics as
+    ``GuardChain`` for Stage 4.
+
+    Failure isolation: an evaluator that raises is logged at WARNING
+    and skipped. The chain marches on rather than blowing up the
+    whole evaluation pass — matches the fail-open semantics the rest
+    of Stage 12 already follows.
+
+    Use cases:
+        * **Layered policy**: ``[SignalBasedEvaluation(),
+          CriteriaBasedEvaluation(...), AgentEvaluation()]`` — cheap
+          checks first, expensive evaluator-LLM only when nothing
+          earlier said anything definitive.
+        * **Multiple criteria packs** (``CriteriaBasedEvaluation``
+          for safety, then for quality, then for length) without
+          having to merge their criteria lists.
+        * **A/B-style fallback** where a primary evaluator can
+          decline ("continue") and a backup runs.
+
+    Note: the chain itself is an :class:`EvaluationStrategy`, so
+    nested chains are supported.
+    """
+
+    def __init__(self, evaluators: Optional[List[EvaluationStrategy]] = None):
+        self._evaluators: List[EvaluationStrategy] = list(evaluators or [])
+
+    @property
+    def name(self) -> str:
+        return "evaluation_chain"
+
+    @property
+    def description(self) -> str:
+        names = [getattr(ev, "name", "?") for ev in self._evaluators]
+        return f"Sequential chain: {', '.join(names) if names else '(empty)'}"
+
+    @property
+    def evaluators(self) -> List[EvaluationStrategy]:
+        """Read-only view of the wrapped evaluators in declared order."""
+        return list(self._evaluators)
+
+    def add(self, evaluator: EvaluationStrategy) -> "EvaluationChain":
+        """Append an evaluator and return self for chaining."""
+        self._evaluators.append(evaluator)
+        return self
+
+    async def evaluate(self, state: PipelineState) -> EvaluationResult:
+        if not self._evaluators:
+            # Empty chain → no verdict. Match the existing
+            # CriteriaBasedEvaluation no-criteria default.
+            return EvaluationResult(
+                passed=True,
+                decision="complete",
+                feedback="empty evaluator chain",
+            )
+
+        last_result = EvaluationResult(
+            passed=True,
+            decision="continue",
+            feedback="no evaluator produced a definitive decision",
+        )
+        for evaluator in self._evaluators:
+            try:
+                result = await evaluator.evaluate(state)
+            except Exception as exc:
+                logger.warning(
+                    "EvaluationChain: evaluator %r raised; skipping (%s)",
+                    getattr(evaluator, "name", "?"),
+                    exc,
+                    exc_info=True,
+                )
+                continue
+
+            if result.decision != "continue":
+                # First definitive verdict wins — short-circuit the rest.
+                return result
+            last_result = result
+        return last_result

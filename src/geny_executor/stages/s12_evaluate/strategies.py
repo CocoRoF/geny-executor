@@ -3,10 +3,11 @@
 from geny_executor.stages.s12_evaluate.interface import EvaluationStrategy, QualityScorer
 from geny_executor.stages.s12_evaluate.types import EvaluationResult, QualityCriterion
 from geny_executor.stages.s12_evaluate.artifact.default.strategies import (
-    SignalBasedEvaluation,
-    CriteriaBasedEvaluation,
     AgentEvaluation,
+    CriteriaBasedEvaluation,
+    EvaluationChain,
     NoScorer,
+    SignalBasedEvaluation,
     WeightedScorer,
 )
 
@@ -18,6 +19,7 @@ __all__ = [
     "SignalBasedEvaluation",
     "CriteriaBasedEvaluation",
     "AgentEvaluation",
+    "EvaluationChain",
     "NoScorer",
     "WeightedScorer",
 ]
