@@ -1,15 +1,21 @@
 """Canonical ↔ vendor translation helpers.
 
-During the PR-3→PR-4 bridge, these are thin re-exports from the
-original home at :mod:`geny_executor.stages.s06_api._translate`. PR-4
-inverts the dependency: the functions move into this package and the
-s06_api module (which deletes entirely) no longer owns them.
+This package owns the canonical-format → provider-native translation
+logic for every LLM client (Anthropic, OpenAI, Google, vLLM, …). LLM
+clients are the *only* place where vendor-specific wire formats are
+constructed, so the helpers belong next to them — not under
+``stages.s06_api``, which is a *consumer* of these clients.
+
+The implementation lives in :mod:`._canonical`; this module re-exports
+the public surface. ``stages.s06_api._translate`` is now a deprecated
+backward-compat shim that re-exports from here.
 """
 
 from __future__ import annotations
 
-from geny_executor.stages.s06_api._translate import (
+from geny_executor.llm_client.translators._canonical import (
     blocks_to_text,
+    canonical_messages_to_anthropic,
     canonical_messages_to_google,
     canonical_messages_to_openai,
     canonical_thinking_to_google,
@@ -25,6 +31,7 @@ from geny_executor.stages.s06_api._translate import (
 
 __all__ = [
     "blocks_to_text",
+    "canonical_messages_to_anthropic",
     "canonical_messages_to_google",
     "canonical_messages_to_openai",
     "canonical_thinking_to_google",

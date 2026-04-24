@@ -13,6 +13,7 @@ from typing import Any, AsyncIterator, Dict, List, Optional
 from geny_executor.core.errors import APIError, ErrorCategory
 from geny_executor.core.state import TokenUsage
 from geny_executor.llm_client.base import BaseClient, ClientCapabilities
+from geny_executor.llm_client.translators import canonical_messages_to_anthropic
 from geny_executor.llm_client.types import APIRequest, APIResponse, ContentBlock
 
 
@@ -109,9 +110,15 @@ class AnthropicClient(BaseClient):
             raise self._classify_error(e) from e
 
     def _build_kwargs(self, request: APIRequest) -> Dict[str, Any]:
+        # Strip executor-internal keys (e.g. ``_meta`` on image blocks added by
+        # the s01 normalizer for downstream provenance) and lower unsupported
+        # block types (``file``) into safe fallbacks. Without this the
+        # Anthropic Messages API rejects requests with
+        # ``messages.0.content.0.image._meta: Extra inputs are not permitted``.
+        sanitized_messages = canonical_messages_to_anthropic(request.messages)
         kwargs: Dict[str, Any] = {
             "model": request.model,
-            "messages": request.messages,
+            "messages": sanitized_messages,
             "max_tokens": request.max_tokens,
         }
 
