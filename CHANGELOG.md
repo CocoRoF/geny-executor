@@ -4,6 +4,37 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.32.1] — 2026-04-24
+
+Patch release — fixes Python 3.13 CI failure that blocked 0.32.0 from
+publishing. No runtime behaviour changes; the source tree is otherwise
+identical to the 0.32.0 target.
+
+### Fixed
+
+- **`tests/unit/test_phase6_history.py`** — two `ExecutionReplayer`
+  tests (`test_replay_basic`, `test_replay_empty_raises`) called
+  `asyncio.get_event_loop().run_until_complete(...)`. Python 3.13
+  removed the implicit-event-loop fallback for this call and raises
+  `RuntimeError: There is no current event loop` in the main thread
+  when no loop is running, failing the CI runner. Replaced with
+  `asyncio.run(...)` which works on 3.11+ identically.
+- **`tests/unit/test_stage10_partition_executor.py`** — same issue in
+  the new PartitionExecutor tests added by 0.32.0: 10 test methods
+  built an explicit `new_event_loop()` + `run_until_complete` +
+  `close` triplet, and the `_TimedTool` fixture called
+  `asyncio.get_event_loop().time()` inside its async `execute()`.
+  Switched to `asyncio.run(...)` at the entry point and
+  `time.monotonic()` for wall-clock timing. More concise and
+  Python-3.13-safe.
+
+### Notes
+
+The 0.32.0 git tag exists on the repo but no wheel was published to
+PyPI — this patch release carries the same Phase 1 foundation
+functionality (PRs #49–#52) under a fresh version so the first
+published release is green on all supported Python versions.
+
 ## [0.32.0] — 2026-04-24
 
 **Executor uplift Phase 1 — Foundation.** First release of a multi-phase

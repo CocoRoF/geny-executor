@@ -663,7 +663,7 @@ class TestExecutionReplayer:
                 results.append(evt)
             return results
 
-        results = asyncio.get_event_loop().run_until_complete(_run())
+        results = asyncio.run(_run())
         assert len(results) == 2
         assert all(isinstance(r, ReplayEvent) for r in results)
         assert results[0].type == "event"
@@ -677,7 +677,7 @@ class TestExecutionReplayer:
                 pass
 
         with pytest.raises(ValueError, match="No events"):
-            asyncio.get_event_loop().run_until_complete(_run())
+            asyncio.run(_run())
 
 
 # ═══════════════════════════════════════════════════════════
