@@ -11,6 +11,7 @@ from geny_executor.core.state import PipelineState
 from geny_executor.stages.s13_loop.interface import LoopController
 from geny_executor.stages.s13_loop.artifact.default.controllers import (
     BudgetAwareLoopController,
+    MultiDimensionalBudgetController,
     SingleTurnController,
     StandardLoopController,
 )
@@ -38,6 +39,11 @@ class LoopStage(Stage[Any, Any]):
                     "standard": StandardLoopController,
                     "single_turn": SingleTurnController,
                     "budget_aware": BudgetAwareLoopController,
+                    # Phase 7 S7.7 — pluggable multi-dimensional
+                    # budget. Dimensions arrive via constructor; the
+                    # zero-arg slot-swap path produces an empty
+                    # dimension list (acts like StandardLoopController).
+                    "multi_dim_budget": MultiDimensionalBudgetController,
                 },
                 description="Loop decision strategy",
             ),

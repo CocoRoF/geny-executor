@@ -2,9 +2,16 @@
 
 from geny_executor.stages.s13_loop.interface import LoopController, LoopDecision
 from geny_executor.stages.s13_loop.artifact.default.controllers import (
-    StandardLoopController,
-    SingleTurnController,
     BudgetAwareLoopController,
+    BudgetDimension,
+    CostBudget,
+    IterationBudget,
+    MultiDimensionalBudgetController,
+    SingleTurnController,
+    StandardLoopController,
+    TokenBudget,
+    ToolCallBudget,
+    WallClockBudget,
 )
 
 __all__ = [
@@ -13,4 +20,11 @@ __all__ = [
     "StandardLoopController",
     "SingleTurnController",
     "BudgetAwareLoopController",
+    "BudgetDimension",
+    "MultiDimensionalBudgetController",
+    "IterationBudget",
+    "CostBudget",
+    "TokenBudget",
+    "WallClockBudget",
+    "ToolCallBudget",
 ]
