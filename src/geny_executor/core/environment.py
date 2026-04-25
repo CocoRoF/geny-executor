@@ -104,8 +104,14 @@ class ToolsSnapshot:
         )
 
 
-MANIFEST_VERSION = "2.0"
-_LEGACY_VERSIONS = {"1.0"}
+MANIFEST_VERSION = "3.0"
+# Older versions auto-migrated by ``EnvironmentManifest.from_dict``.
+# v1 → v2 added the v2 stage fields (artifact / tool_binding /
+# model_override / chain_order). v2 → v3 (Sub-phase 9a / S9a.4)
+# pads the stages list out to the new 21-slot layout — any of the
+# five new orders missing from the payload are inserted as the
+# default pass-through entry with active=False.
+_LEGACY_VERSIONS = {"1.0", "2.0"}
 
 
 @dataclass
@@ -184,6 +190,54 @@ def _migrate_v1_to_v2(data: Dict[str, Any]) -> Dict[str, Any]:
             }
         )
     data["stages"] = migrated
+    data["version"] = "2.0"
+    return data
+
+
+# v2 → v3 (Sub-phase 9a / S9a.4): the canonical layout grew from 16
+# slots to 21. v2 payloads have stage entries for whichever orders
+# the host serialised — typically the original 16. The migration
+# pads the array out to 21 by inserting default pass-through entries
+# for any of the five new orders (11/13/15/19/20) that aren't
+# already present. Entries the v2 payload supplied are preserved
+# byte-for-byte; only the missing orders are filled. ``active`` is
+# left at its v3 default (False) so consumers must explicitly opt
+# the new stages in.
+_V3_NEW_ORDERS: Dict[int, str] = {
+    11: "tool_review",
+    13: "task_registry",
+    15: "hitl",
+    19: "summarize",
+    20: "persist",
+}
+
+
+def _migrate_v2_to_v3(data: Dict[str, Any]) -> Dict[str, Any]:
+    """Pad a v2 manifest's stages list out to the 21-slot v3 layout."""
+    data = copy.deepcopy(data)
+    stages = list(data.get("stages", []))
+    seen_orders = {int(s.get("order", 0)) for s in stages}
+    for order, name in _V3_NEW_ORDERS.items():
+        if order in seen_orders:
+            continue
+        stages.append(
+            {
+                "order": order,
+                "name": name,
+                "active": False,
+                "artifact": "default",
+                "strategies": {},
+                "strategy_configs": {},
+                "config": {},
+                "tool_binding": None,
+                "model_override": None,
+                "chain_order": {},
+            }
+        )
+    # Keep the array sorted by order so consumers iterating in
+    # declaration order see a stable layout.
+    stages.sort(key=lambda s: int(s.get("order", 0)))
+    data["stages"] = stages
     data["version"] = MANIFEST_VERSION
     return data
 
@@ -218,9 +272,19 @@ class EnvironmentManifest:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> EnvironmentManifest:
+        """Load + auto-migrate to the current manifest version.
+
+        v1 → v2: adds the v2 stage fields. v2 → v3: pads the stages
+        list out to the 21-slot layout. Migrations are chained so
+        a v1 payload upgrades all the way to the current version in
+        one call.
+        """
         version = str(data.get("version", "1.0"))
-        if version in _LEGACY_VERSIONS:
+        if version == "1.0":
             data = _migrate_v1_to_v2(data)
+            version = "2.0"
+        if version == "2.0":
+            data = _migrate_v2_to_v3(data)
             version = MANIFEST_VERSION
         return cls(
             version=version,
