@@ -253,7 +253,12 @@ class PipelinePresets:
     ) -> Pipeline:
         """Agent pipeline — full autonomous agent with all stages.
 
-        Active stages: All 16 stages
+        Sub-phase 9a (S9a.5): also registers the five scaffolding
+        stages (tool_review / task_registry / hitl / summarize /
+        persist) so they show up in introspection. They're pass-
+        through / bypass for now — Sub-phase 9b adds real behaviour.
+
+        Active stages: 16 legacy stages + 5 scaffolds = 21 total.
         """
         builder = (
             PipelineBuilder("agent", api_key=api_key, model=model)
@@ -262,9 +267,14 @@ class PipelinePresets:
             .with_guard()
             .with_cache(strategy="aggressive")
             .with_think()
+            .with_tool_review()
+            .with_task_registry()
+            .with_hitl()
             .with_evaluate()
             .with_loop(max_turns=max_turns)
             .with_memory()
+            .with_summarize()
+            .with_persist()
         )
 
         if tools:
@@ -298,7 +308,11 @@ class PipelinePresets:
     ) -> Pipeline:
         """Geny VTuber pipeline — full Geny system reproduction.
 
-        Active stages: All 16 stages + VTuber/TTS emitters
+        Sub-phase 9a (S9a.5): also registers the five scaffolding
+        stages so introspection and manifest export show all 21
+        slots. Scaffolds are pass-through / bypass for now.
+
+        Active stages: 16 legacy stages + 5 scaffolds + VTuber/TTS emitters.
         """
         builder = (
             PipelineBuilder("geny-vtuber", api_key=api_key, model=model)
@@ -307,9 +321,14 @@ class PipelinePresets:
             .with_guard()
             .with_cache(strategy="aggressive")
             .with_think()
+            .with_tool_review()
+            .with_task_registry()
+            .with_hitl()
             .with_evaluate()
             .with_loop(max_turns=50)
             .with_memory()
+            .with_summarize()
+            .with_persist()
         )
 
         if tools:

@@ -91,7 +91,12 @@ class GenyPresets:
             .with_system(builder=builder)
             .with_guard()
             .with_cache(strategy="system")
+            .with_tool_review()
+            .with_task_registry()
+            .with_hitl()
             .with_memory(strategy=strategy, persistence=persistence)
+            .with_summarize()
+            .with_persist()
             .build()
         )
 
@@ -144,9 +149,14 @@ class GenyPresets:
             .with_guard()
             .with_cache(strategy="aggressive")
             .with_think()
+            .with_tool_review()
+            .with_task_registry()
+            .with_hitl()
             .with_evaluate()
             .with_loop(max_turns=max_turns)
             .with_memory(strategy=strategy, persistence=persistence)
+            .with_summarize()
+            .with_persist()
         )
 
         if tools:
@@ -224,9 +234,14 @@ class GenyPresets:
             .with_guard()
             .with_cache(strategy="aggressive")
             .with_think()
+            .with_tool_review()
+            .with_task_registry()
+            .with_hitl()
             .with_evaluate(strategy=eval_strategy)
             .with_loop(max_turns=max_turns)
             .with_memory(strategy=strategy, persistence=persistence)
+            .with_summarize()
+            .with_persist()
         )
 
         if tools:
@@ -281,9 +296,14 @@ class GenyPresets:
             .with_system(builder=sys_builder)
             .with_guard()
             .with_cache(strategy="system")
+            .with_tool_review()
+            .with_task_registry()
+            .with_hitl()
             .with_evaluate()
             .with_loop(max_turns=10)
             .with_memory(strategy=strategy, persistence=persistence)
+            .with_summarize()
+            .with_persist()
         )
 
         if tools:

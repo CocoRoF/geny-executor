@@ -112,6 +112,34 @@ class PipelineBuilder:
         self._stage_configs["emit"] = kwargs
         return self
 
+    # ── Sub-phase 9a scaffolds (S9a.5) ──
+    # The five new stages added by S9a.2/3 default to pass-through /
+    # bypass behaviour. Calling these builder methods is *opt-in*
+    # registration — they wire the scaffold into the pipeline so it
+    # appears in describe()/introspection and is ready to swap in a
+    # real implementation when Sub-phase 9b lands. Without calling
+    # them the pipeline is identical to pre-9a behaviour.
+
+    def with_tool_review(self, **kwargs: Any) -> PipelineBuilder:
+        self._stage_configs["tool_review"] = kwargs
+        return self
+
+    def with_task_registry(self, **kwargs: Any) -> PipelineBuilder:
+        self._stage_configs["task_registry"] = kwargs
+        return self
+
+    def with_hitl(self, **kwargs: Any) -> PipelineBuilder:
+        self._stage_configs["hitl"] = kwargs
+        return self
+
+    def with_summarize(self, **kwargs: Any) -> PipelineBuilder:
+        self._stage_configs["summarize"] = kwargs
+        return self
+
+    def with_persist(self, **kwargs: Any) -> PipelineBuilder:
+        self._stage_configs["persist"] = kwargs
+        return self
+
     def build(self) -> Pipeline:
         """Build the pipeline with all configured stages."""
         model_config = ModelConfig(model=self._model, **self._model_kwargs)
@@ -218,6 +246,36 @@ class PipelineBuilder:
             from geny_executor.stages.s18_memory import MemoryStage
 
             pipeline.register_stage(MemoryStage(**self._stage_configs["memory"]))
+
+        # ── Sub-phase 9a scaffolds (S9a.5) ──
+        # Each only registers when the host opts in via the matching
+        # `with_*` method. Defaults are pass-through / bypass so a
+        # registered scaffold is a no-op until 9b replaces it.
+
+        if "tool_review" in self._stage_configs:
+            from geny_executor.stages.s11_tool_review import ToolReviewStage
+
+            pipeline.register_stage(ToolReviewStage(**self._stage_configs["tool_review"]))
+
+        if "task_registry" in self._stage_configs:
+            from geny_executor.stages.s13_task_registry import TaskRegistryStage
+
+            pipeline.register_stage(TaskRegistryStage(**self._stage_configs["task_registry"]))
+
+        if "hitl" in self._stage_configs:
+            from geny_executor.stages.s15_hitl import HITLStage
+
+            pipeline.register_stage(HITLStage(**self._stage_configs["hitl"]))
+
+        if "summarize" in self._stage_configs:
+            from geny_executor.stages.s19_summarize import SummarizeStage
+
+            pipeline.register_stage(SummarizeStage(**self._stage_configs["summarize"]))
+
+        if "persist" in self._stage_configs:
+            from geny_executor.stages.s20_persist import PersistStage
+
+            pipeline.register_stage(PersistStage(**self._stage_configs["persist"]))
 
         return pipeline
 
