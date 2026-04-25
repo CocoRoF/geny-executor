@@ -40,6 +40,29 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 17 new tests in ``tests/unit/test_s13_file_backed_registry.py``.
 
+### Added — BackgroundTaskRunner + executors (PR-A.1.3)
+
+- ``geny_executor.runtime`` — new framework-runtime layer that
+  lives outside the synchronous pipeline path. Service code (FastAPI
+  lifespan / CLI bootstrap / SDK bootstrap) instantiates it at
+  startup and tears it down at shutdown.
+- ``BackgroundTaskExecutor`` ABC — one executor per task ``kind``.
+  Yields output bytes; raises on failure.
+- ``LocalBashExecutor`` — runs ``payload['command']`` via shell;
+  streams stdout (+stderr merged) up to a configurable
+  ``max_output_bytes`` cap.
+- ``LocalAgentExecutor`` — dispatches to a
+  :class:`SubagentTypeOrchestrator` via ``run_subagent`` /
+  ``spawn``; serializes the result (str / bytes / json) for
+  consumers reading via ``stream_output``.
+- ``BackgroundTaskRunner`` — owns ``asyncio.Task`` futures;
+  ``submit / stop / shutdown / start``. ``start`` sweeps stale
+  RUNNING records (crash recovery). Concurrency limited by
+  ``max_concurrent`` semaphore. Idempotent re-submit, idempotent
+  shutdown.
+
+20 new unit tests in ``tests/unit/test_runtime_task_runner.py``.
+
 ## [1.0.0] — 2026-04-25
 
 **First stable release.** Closes the multi-month executor uplift
