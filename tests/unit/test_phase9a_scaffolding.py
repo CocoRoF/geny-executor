@@ -32,12 +32,10 @@ IDENTITY_CASES = [
     (PersistStage, "persist", 20, "finalize"),
 ]
 
-# Still pass-through scaffolds (Sub-phase 9b hasn't touched them
-# yet). HITL/Summarize were promoted in S9b.3/S9b.4 so only Persist
-# remains in this set.
-PASSTHROUGH_CASES = [
-    (PersistStage, "persist", 20, "finalize"),
-]
+# Sub-phase 9b is complete — every former scaffold has real
+# behaviour now. The pass-through tests below were the original
+# zero-body sanity checks; the per-stage `test_s9b*_*.py` files
+# now own those guarantees.
 
 
 @pytest.mark.parametrize("cls,name,order,category", IDENTITY_CASES)
@@ -50,27 +48,6 @@ class TestScaffoldIdentity:
 
     def test_category(self, cls, name, order, category):
         assert cls().category == category
-
-
-@pytest.mark.parametrize("cls,name,order,category", PASSTHROUGH_CASES)
-class TestPassThroughScaffolds:
-    def test_no_strategy_slots(self, cls, name, order, category):
-        assert cls().get_strategy_slots() == {}
-
-    @pytest.mark.asyncio
-    async def test_returns_input_unchanged(self, cls, name, order, category):
-        state = PipelineState(session_id="s")
-        result = await cls().execute(input="passthrough-marker", state=state)
-        assert result == "passthrough-marker"
-
-    @pytest.mark.asyncio
-    async def test_does_not_mutate_state(self, cls, name, order, category):
-        state = PipelineState(session_id="s")
-        before_msgs = list(state.messages)
-        before_meta = dict(state.metadata)
-        await cls().execute(input=None, state=state)
-        assert state.messages == before_msgs
-        assert state.metadata == before_meta
 
 
 class TestHITLBypass:
