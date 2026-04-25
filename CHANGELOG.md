@@ -63,6 +63,23 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 20 new unit tests in ``tests/unit/test_runtime_task_runner.py``.
 
+### Added — AgentTool built-in (PR-A.1.4)
+
+- ``AgentTool`` (registered as ``"Agent"``) — LLM-callable tool that
+  spawns a sub-agent via a host-supplied
+  :class:`SubagentTypeOrchestrator`. The orchestrator is read from
+  ``ToolContext.extras["agent_orchestrator"]`` (host wires at startup).
+- Recursion guarded by ``extras["agent_depth"]`` /
+  ``extras["agent_max_depth"]`` (default 3) so AgentTool calling
+  AgentTool can't run away.
+- All error paths return structured ``{"error": {"code": ..., "message": ...}}``
+  payloads so the LLM can introspect and recover instead of seeing
+  free-form exception strings.
+- Added to ``BUILT_IN_TOOL_CLASSES`` and a new ``"agent"`` feature
+  group.
+
+16 new unit tests in ``tests/unit/test_agent_tool.py``.
+
 ## [1.0.0] — 2026-04-25
 
 **First stable release.** Closes the multi-month executor uplift

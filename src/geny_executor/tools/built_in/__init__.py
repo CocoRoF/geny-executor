@@ -20,6 +20,7 @@ subset without hardcoding tool names.
 from typing import Dict, Iterable, List, Optional, Type
 
 from geny_executor.tools.base import Tool
+from geny_executor.tools.built_in.agent_tool import AgentTool
 from geny_executor.tools.built_in.read_tool import ReadTool
 from geny_executor.tools.built_in.write_tool import WriteTool
 from geny_executor.tools.built_in.edit_tool import EditTool
@@ -51,6 +52,7 @@ BUILT_IN_TOOL_CLASSES: Dict[str, Type[Tool]] = {
     "ToolSearch": ToolSearchTool,
     "EnterPlanMode": EnterPlanModeTool,
     "ExitPlanMode": ExitPlanModeTool,
+    "Agent": AgentTool,
 }
 
 
@@ -65,6 +67,7 @@ BUILT_IN_TOOL_FEATURES: Dict[str, List[str]] = {
     "web": ["WebFetch", "WebSearch"],
     "workflow": ["TodoWrite"],
     "meta": ["ToolSearch", "EnterPlanMode", "ExitPlanMode"],
+    "agent": ["Agent"],
 }
 
 
@@ -122,6 +125,7 @@ def get_builtin_tools(
 
 
 __all__ = [
+    "AgentTool",
     "ReadTool",
     "WriteTool",
     "EditTool",
