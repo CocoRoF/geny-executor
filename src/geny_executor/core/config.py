@@ -103,7 +103,7 @@ class PipelineConfig:
     single_turn: bool = False
 
     # Artifact selection — maps stage identifier to artifact name.
-    # e.g. {"s06_api": "openai", "s15_memory": "vector"}
+    # e.g. {"s06_api": "openai", "s18_memory": "vector"}
     # Unspecified stages use "default".
     artifacts: Dict[str, str] = field(default_factory=dict)
 

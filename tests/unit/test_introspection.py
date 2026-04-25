@@ -60,7 +60,7 @@ def test_introspect_stage_default_every_stage(order: int, module_name: str):
 # These tests pin the contract so regressions can't quietly return.
 
 
-_MODEL_OVERRIDE_STAGES = {"s02_context", "s06_api", "s15_memory"}
+_MODEL_OVERRIDE_STAGES = {"s02_context", "s06_api", "s18_memory"}
 _TOOL_BINDING_STAGES = {"s10_tool"}
 
 
@@ -85,7 +85,7 @@ def test_capability_flags_context_stage_allows_model_override():
 
 def test_capability_flags_memory_stage_allows_model_override():
     """s15 consumes the override via GenyMemoryStrategy native reflection."""
-    insp = introspect_stage("s15_memory", "default")
+    insp = introspect_stage("s18_memory", "default")
     assert insp.model_override_supported is True
     assert insp.tool_binding_supported is False
 
@@ -113,7 +113,7 @@ def test_capability_flags_default_false_elsewhere(order: int, module_name: str):
 # Input → API → Parse → Yield is the ``minimal`` preset. These 4 stages must
 # always stay active — UIs read ``required`` to force the Active toggle on.
 
-_REQUIRED_STAGES = {"s01_input", "s06_api", "s09_parse", "s16_yield"}
+_REQUIRED_STAGES = {"s01_input", "s06_api", "s09_parse", "s21_yield"}
 
 
 @pytest.mark.parametrize("module_name", sorted(_REQUIRED_STAGES))
@@ -163,7 +163,7 @@ def test_introspect_stage_slot_schema_keys_match_available_impls():
 
 def test_introspect_stage_chain_schemas_match_available_impls():
     """Chain stages (s04/s14) expose impl schemas for every registered strategy."""
-    for module_name in ("s04_guard", "s14_emit"):
+    for module_name in ("s04_guard", "s17_emit"):
         insp = introspect_stage(module_name, "default")
         assert insp.strategy_chains, f"{module_name} must expose at least one chain"
         for chain in insp.strategy_chains.values():
@@ -192,14 +192,14 @@ def test_introspect_stage_openai_uses_dummy_key():
 def test_introspect_stage_raises_for_strategy_only_artifact():
     """Adaptive evaluate is strategy-only (Stage = None)."""
     with pytest.raises(IntrospectionUnsupported):
-        introspect_stage("s12_evaluate", "adaptive")
+        introspect_stage("s14_evaluate", "adaptive")
 
 
 def test_introspect_all_falls_back_to_default_on_strategy_only():
     """introspect_all must never raise on a well-formed override map."""
-    results = introspect_all({"s12_evaluate": "adaptive"})
+    results = introspect_all({"s14_evaluate": "adaptive"})
     # Find s12 entry and verify it fell back to default
-    s12 = next(r for r in results if r.stage == "s12_evaluate")
+    s12 = next(r for r in results if r.stage == "s14_evaluate")
     assert s12.artifact == "default"
 
 

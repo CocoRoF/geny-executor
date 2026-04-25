@@ -21,7 +21,7 @@ import pytest
 from geny_executor import Pipeline, PipelineConfig, PipelineState
 from geny_executor.stages.s01_input import InputStage
 from geny_executor.stages.s09_parse import ParseStage
-from geny_executor.stages.s16_yield import YieldStage
+from geny_executor.stages.s21_yield import YieldStage
 
 
 class _HostRuntime:

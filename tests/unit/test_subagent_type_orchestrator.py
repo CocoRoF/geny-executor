@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from geny_executor.core.state import PipelineState
-from geny_executor.stages.s11_agent import (
+from geny_executor.stages.s12_agent import (
     AgentStage,
     SubagentTypeDescriptor,
     SubagentTypeOrchestrator,

@@ -84,7 +84,7 @@ def _introspection_kwargs(stage_module: str, artifact: str) -> Dict[str, Any]:
 #     thinking).
 #   - ``s10_tool`` reads ``self.tool_binding`` in ``execute`` (only tool-
 #     calling stage — enforces the per-stage allow/block list).
-#   - ``s15_memory`` consumes ``model_override`` via
+#   - ``s18_memory`` consumes ``model_override`` via
 #     ``GenyMemoryStrategy._reflect`` native path (gates reflective
 #     insight extraction).
 #   - Every other stage reads neither.
@@ -102,7 +102,7 @@ _STAGE_CAPABILITIES: Dict[str, _StageCapabilities] = {
     "s02_context": {"tool_binding": False, "model_override": True},
     "s06_api": {"tool_binding": False, "model_override": True},
     "s10_tool": {"tool_binding": True, "model_override": False},
-    "s15_memory": {"tool_binding": False, "model_override": True},
+    "s18_memory": {"tool_binding": False, "model_override": True},
 }
 
 
@@ -127,7 +127,7 @@ def _stage_capabilities(stage_module: str) -> _StageCapabilities:
 #     or emit.
 #   - ``s09_parse``  — converts raw API output into the typed events every
 #     downstream stage (tool, loop, memory, yield) consumes.
-#   - ``s16_yield``  — surfaces the final result to the caller; without it the
+#   - ``s21_yield``  — surfaces the final result to the caller; without it the
 #     run produces no output.
 #
 # This set mirrors the ``minimal`` preset (Input → API → Parse → Yield), which
@@ -138,7 +138,7 @@ def _stage_capabilities(stage_module: str) -> _StageCapabilities:
 # Environment Builder UIs read this via ``StageIntrospection.required`` and
 # force the stage's Active toggle on.
 
-_STAGE_REQUIRED: Set[str] = {"s01_input", "s06_api", "s09_parse", "s16_yield"}
+_STAGE_REQUIRED: Set[str] = {"s01_input", "s06_api", "s09_parse", "s21_yield"}
 
 
 def _stage_required(stage_module: str) -> bool:

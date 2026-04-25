@@ -51,10 +51,10 @@ def test_describe_artifact_defaults_for_missing_meta():
 
 def test_describe_artifact_flags_strategy_only_artifacts():
     """``Stage = None`` artifacts (e.g. evaluate/adaptive) report provides_stage=False."""
-    info = describe_artifact("s12_evaluate", "adaptive")
+    info = describe_artifact("s14_evaluate", "adaptive")
     assert info.provides_stage is False
     # default artifact remains fully instantiable
-    assert describe_artifact("s12_evaluate", "default").provides_stage is True
+    assert describe_artifact("s14_evaluate", "default").provides_stage is True
 
 
 def test_describe_artifact_accepts_all_stage_identifier_forms():

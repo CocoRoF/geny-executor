@@ -19,8 +19,8 @@ from geny_executor.stages.s02_context.types import MemoryChunk
 from geny_executor.stages.s03_system import SystemStage
 from geny_executor.stages.s03_system.interface import PromptBuilder
 from geny_executor.stages.s10_tool import ToolStage
-from geny_executor.stages.s15_memory import MemoryStage
-from geny_executor.stages.s15_memory.interface import (
+from geny_executor.stages.s18_memory import MemoryStage
+from geny_executor.stages.s18_memory.interface import (
     ConversationPersistence,
     MemoryUpdateStrategy,
 )

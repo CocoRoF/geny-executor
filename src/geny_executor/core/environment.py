@@ -304,7 +304,7 @@ class EnvironmentManifest:
         16 rows immediately and the user only has to edit fields — no
         "missing required field" errors the moment a stage is flipped active.
 
-        Four stages — ``s01_input``, ``s06_api``, ``s09_parse``, ``s16_yield``
+        Four stages — ``s01_input``, ``s06_api``, ``s09_parse``, ``s21_yield``
         — are load-bearing for every pipeline (see
         :data:`~geny_executor.core.introspection._STAGE_REQUIRED`) and default
         to ``active=True``; every other stage defaults to ``active=False`` so

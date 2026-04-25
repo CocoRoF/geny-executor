@@ -44,12 +44,12 @@ from geny_executor.stages.s07_token.artifact.default.stage import TokenStage
 from geny_executor.stages.s08_think.artifact.default.stage import ThinkStage
 from geny_executor.stages.s09_parse.artifact.default.stage import ParseStage
 from geny_executor.stages.s10_tool.artifact.default.stage import ToolStage
-from geny_executor.stages.s11_agent.artifact.default.stage import AgentStage
-from geny_executor.stages.s12_evaluate.artifact.default.stage import EvaluateStage
-from geny_executor.stages.s13_loop.artifact.default.stage import LoopStage
-from geny_executor.stages.s14_emit.artifact.default.stage import EmitStage
-from geny_executor.stages.s15_memory.artifact.default.stage import MemoryStage
-from geny_executor.stages.s16_yield.artifact.default.stage import YieldStage
+from geny_executor.stages.s12_agent.artifact.default.stage import AgentStage
+from geny_executor.stages.s14_evaluate.artifact.default.stage import EvaluateStage
+from geny_executor.stages.s16_loop.artifact.default.stage import LoopStage
+from geny_executor.stages.s17_emit.artifact.default.stage import EmitStage
+from geny_executor.stages.s18_memory.artifact.default.stage import MemoryStage
+from geny_executor.stages.s21_yield.artifact.default.stage import YieldStage
 
 
 # ── Stage Factory ────────────────────────────────────────────────
