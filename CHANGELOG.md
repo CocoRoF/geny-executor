@@ -80,6 +80,29 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 16 new unit tests in ``tests/unit/test_agent_tool.py``.
 
+### Added — 6 task lifecycle tools (PR-A.1.5)
+
+LLM-callable wrappers around BackgroundTaskRunner + TaskRegistry:
+
+- ``TaskCreate`` — submit a new background task; returns task_id +
+  current status.
+- ``TaskGet`` — fetch one record by id.
+- ``TaskList`` — list with optional ``status`` / ``kind`` / ``limit``
+  filter; ordered by created_at desc.
+- ``TaskUpdate`` — mutate ``payload`` only. Status transitions are
+  intentionally NOT user-mutable so a misbehaving LLM can't mark a
+  still-running task as DONE.
+- ``TaskOutput`` — read accumulated bytes (offset + limit). Capped
+  at 1 MiB per call so the response budget can't be blown.
+- ``TaskStop`` — cooperative cancel via runner.
+
+Wiring contract: hosts inject ``task_registry`` + ``task_runner``
+into ``ToolContext.extras`` at startup. Read-only tools (Get / List /
+Update / Output) work without ``task_runner`` so a host can read
+state from a backend populated by a different process.
+
+22 new unit tests in ``tests/unit/test_task_tools.py``.
+
 ## [1.0.0] — 2026-04-25
 
 **First stable release.** Closes the multi-month executor uplift
