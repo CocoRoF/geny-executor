@@ -4,6 +4,115 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.45.0] — 2026-04-25
+
+**Closes Phase 9 Sub-phase 9a (21-stage scaffolding) of the
+executor uplift roadmap.** Largest single structural change in
+the uplift: the canonical pipeline grew from 16 to 21 slots.
+Sub-phase 9a is **no-op behaviour-wise** — five new slots are
+pass-through / bypass scaffolds that Sub-phase 9b will fill with
+real implementations. Existing pipelines continue to run
+identically; new infrastructure makes 9b a one-PR-per-stage
+exercise.
+
+### Stage layout (new)
+
+| Order | Module | Body | Source |
+|---|---|---|---|
+|  1 | s01_input | Input | unchanged |
+|  2 | s02_context | Context | unchanged |
+|  3 | s03_system | System | unchanged |
+|  4 | s04_guard | Guard | unchanged |
+|  5 | s05_cache | Cache | unchanged |
+|  6 | s06_api | API | unchanged |
+|  7 | s07_token | Token | unchanged |
+|  8 | s08_think | Think | unchanged |
+|  9 | s09_parse | Parse | unchanged |
+| 10 | s10_tool | Tool | unchanged |
+| **11** | **s11_tool_review** | **Tool Review (pass-through)** | **NEW (S9a.2)** |
+| 12 | s12_agent | Agent | renamed from s11_agent |
+| **13** | **s13_task_registry** | **Task Registry (pass-through)** | **NEW (S9a.2)** |
+| 14 | s14_evaluate | Evaluate | renamed from s12_evaluate |
+| **15** | **s15_hitl** | **HITL (always-bypass)** | **NEW (S9a.2)** |
+| 16 | s16_loop | Loop | renamed from s13_loop |
+| 17 | s17_emit | Emit | renamed from s14_emit |
+| 18 | s18_memory | Memory | renamed from s15_memory |
+| **19** | **s19_summarize** | **Summarize (no-op)** | **NEW (S9a.2)** |
+| **20** | **s20_persist** | **Persist (NoPersist)** | **NEW (S9a.2)** |
+| 21 | s21_yield | Yield | renamed from s16_yield |
+
+### Added — S9a.1 Stage rename (PR #108)
+
+- ``git mv`` for the six existing stages whose orders moved.
+  All 110 import references in ``src/`` and ``tests/`` updated
+  via grep + sed. ``order`` properties left at the legacy values
+  in this PR (they move in S9a.3).
+
+### Added — S9a.2 Scaffolding stages (PR #109)
+
+- Five new directories with pass-through / bypass implementations:
+  ``s11_tool_review``, ``s13_task_registry``, ``s15_hitl``,
+  ``s19_summarize``, ``s20_persist``. Each ships ``__init__`` /
+  ``artifact/__init__`` / ``artifact/default/__init__`` /
+  ``artifact/default/stage.py`` and exposes a ``Stage`` alias for
+  ``create_stage``.
+
+### Added — S9a.3 Pipeline wiring (PR #110)
+
+- ``STAGE_MODULES`` re-keyed from 16 → 21 entries; ``STAGE_ALIASES``
+  gains five new short names.
+- Per-stage ``order`` properties bumped to match the new slot
+  (Agent 11 → 12, Evaluate 12 → 14, Loop 13 → 16, Emit 14 → 17,
+  Memory 15 → 18, Yield 16 → 21).
+- ``Pipeline.LOOP_END`` 13 → 16, ``FINALIZE_START`` 14 → 17,
+  ``FINALIZE_END`` 16 → 21; ``_DEFAULT_STAGE_NAMES`` extended.
+- ``Pipeline.describe()`` and ``PipelineMutator.snapshot()`` walk
+  ``STAGE_MODULES`` instead of hard-coded ``range(1, 17)`` so future
+  renumberings don't need a code edit.
+
+### Added — S9a.4 Manifest v2 → v3 auto-migration (PR #111)
+
+- ``MANIFEST_VERSION`` bumped ``"2.0"`` → ``"3.0"``.
+- ``EnvironmentManifest.from_dict`` chains v1 → v2 → v3 in one
+  call. The v2 → v3 step pads the stages list out to the new
+  21-slot layout — any of the five new orders missing from the
+  payload are inserted as inactive default pass-through entries.
+  Existing entries are preserved byte-for-byte; the migration is
+  idempotent (existing entries at the new orders are not
+  overwritten).
+
+### Added — S9a.5 Preset regen (PR #112)
+
+- Five new ``PipelineBuilder`` opt-in methods:
+  ``with_tool_review`` / ``with_task_registry`` / ``with_hitl`` /
+  ``with_summarize`` / ``with_persist``.
+- ``PipelinePresets.agent`` / ``.geny_vtuber`` and
+  ``GenyPresets.worker_easy`` / ``.worker_adaptive`` /
+  ``.worker_full`` / ``.vtuber`` updated to call the new methods
+  so introspection and manifest export show all 21 slots
+  populated. ``minimal`` / ``chat`` / ``evaluator`` intentionally
+  unchanged.
+
+### Compatibility
+
+- Existing pipelines continue to run identically — the five new
+  stages are pass-through / bypass; ``_try_run_stage`` silently
+  skips unregistered slots.
+- Manifests load forward (v1 / v2 → v3) automatically.
+- Hosts that pin ``geny-executor[web]>=0.45.0,<0.46.0`` and
+  rebuild from manifest will see ``len(introspect_all()) == 21``
+  and ``Pipeline.describe()`` returning 21 entries.
+
+### Phase 9 Sub-phase 9a summary
+
+Five sprints, one release. The pipeline architecture is now ready
+for Sub-phase 9b — each new stage gets a dedicated PR replacing
+its scaffold body with real behaviour (Tool Review chain, Task
+Registry, HITL gate with ``Pipeline.resume`` API, Summarize LTM
+indexer, Persist session checkpoint).
+
+---
+
 ## [0.44.0] — 2026-04-25
 
 **Closes Phase 8 (MCP Advanced) of the executor uplift roadmap.**
