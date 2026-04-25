@@ -6,6 +6,9 @@ from geny_executor.stages.s16_yield.formatters import (
     DefaultFormatter,
     StructuredFormatter,
     StreamingFormatter,
+    MultiFormatFormatter,
+    build_markdown,
+    build_structured,
 )
 
 __all__ = [
@@ -14,4 +17,7 @@ __all__ = [
     "DefaultFormatter",
     "StructuredFormatter",
     "StreamingFormatter",
+    "MultiFormatFormatter",
+    "build_markdown",
+    "build_structured",
 ]
