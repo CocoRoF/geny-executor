@@ -4,6 +4,79 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.42.0] — 2026-04-25
+
+Phase 7 sprint batch — three more stage enhancements bundled into
+one minor release. Each is independently opt-in; without consuming
+the new surfaces, behaviour is identical to 0.41.x.
+
+### Added — S7.8 Stage 6 API (PR #96)
+
+- ``ModelRouter`` Strategy ABC in
+  ``geny_executor.stages.s06_api.interface`` — single
+  ``route(cfg, state) -> Optional[ModelConfig]`` method.
+- ``PassthroughRouter`` (default, no-op) and ``AdaptiveModelRouter``
+  ship as built-in artifact registry entries. Adaptive picks
+  Opus / Sonnet / Haiku tiers from lightweight heuristics:
+  ``thinking_enabled`` → heavy, character-count thresholds →
+  heavy/light, tools-on-state → balanced. Tier model names and
+  thresholds are constructor-tunable.
+- ``APIStage`` gains a third strategy slot ``router``. Slot lookup
+  exposes ``"passthrough"`` / ``"adaptive"``.
+- ``APIStage.execute()`` runs the slot via a new
+  ``_route_model(state)`` helper that emits ``api.model_routed``
+  on actual swaps and ``api.router.error`` if the router raises
+  (call is never blocked). State is not mutated — the override
+  applies only to the call.
+
+### Added — S7.9 Stage 15 Memory (PR #97)
+
+- ``geny_executor.stages.s15_memory.insight`` module with the
+  ``record_insight()`` / ``coerce_insight()`` /
+  ``drain_pending_insights()`` helpers and the
+  ``PENDING_INSIGHTS_KEY`` / ``INSIGHTS_KEY`` ``state.metadata``
+  contract. Re-uses the existing
+  ``geny_executor.memory.provider.Insight`` + ``Importance`` types
+  as the canonical record shape — no parallel hierarchy.
+- ``StructuredReflectiveStrategy`` registered as
+  ``"structured_reflective"`` in ``MemoryStage``'s strategy slot.
+  Drains pending insights, appends to
+  ``state.metadata[INSIGHTS_KEY]``, emits ``memory.insight_recorded``
+  per record + ``memory.structured_reflection_done`` summary +
+  ``memory.insight_invalid`` on coercion failure (queue is always
+  cleared so a bad payload cannot wedge subsequent runs). Clears
+  the legacy ``needs_reflection`` flag once it processes the queue.
+
+### Added — S7.10 Stage 8 Think (PR #98)
+
+- ``ThinkingBudgetPlanner`` Strategy ABC in
+  ``geny_executor.stages.s08_think.interface`` — single
+  ``plan(state) -> int`` method.
+- ``StaticThinkingBudget`` (default, fixed-value) and
+  ``AdaptiveThinkingBudget`` (heuristic-based: base +
+  ``tools_bonus`` + ``reflection_bonus`` + size-step bonus per
+  ``size_step_chars``, clamped to ``[min_budget, max_budget]``).
+- ``apply_thinking_budget(state, planner)`` helper writes the
+  planned value back onto ``state.thinking_budget_tokens`` and
+  emits ``think.budget_applied {planner, from, to}``.
+- ``ThinkStage`` gains a ``budget_planner`` slot (registry:
+  ``"static"`` / ``"adaptive"``) and an
+  ``apply_planned_budget(state)`` method that hosts call from a
+  pre-Stage-6 hook. ``execute()`` itself does **not** auto-invoke
+  the planner — Stage 8 only runs after the API response is in hand.
+- ``make_planner(adaptive_budget, min_budget, max_budget,
+  base_budget)`` factory matches the ``ConfigSchema``-style flags
+  from the design doc.
+
+### Compatibility
+
+Additive only. The default slot strategies (``PassthroughRouter``,
+``AppendOnlyStrategy``, ``StaticThinkingBudget``) all preserve the
+exact pre-0.42.0 behaviour; existing pipelines see zero functional
+change.
+
+---
+
 ## [0.41.0] — 2026-04-24
 
 Phase 7 sprint batch — three more stage enhancements bundled into
