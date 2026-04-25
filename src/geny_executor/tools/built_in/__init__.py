@@ -21,6 +21,10 @@ from typing import Dict, Iterable, List, Optional, Type
 
 from geny_executor.tools.base import Tool
 from geny_executor.tools.built_in.agent_tool import AgentTool
+from geny_executor.tools.built_in.ask_user_question_tool import (
+    AskUserQuestionTool,
+    QuestionCancelled,
+)
 from geny_executor.tools.built_in.read_tool import ReadTool
 from geny_executor.tools.built_in.task_tools import (
     TaskCreateTool,
@@ -61,6 +65,7 @@ BUILT_IN_TOOL_CLASSES: Dict[str, Type[Tool]] = {
     "EnterPlanMode": EnterPlanModeTool,
     "ExitPlanMode": ExitPlanModeTool,
     "Agent": AgentTool,
+    "AskUserQuestion": AskUserQuestionTool,
     "TaskCreate": TaskCreateTool,
     "TaskGet": TaskGetTool,
     "TaskList": TaskListTool,
@@ -83,6 +88,7 @@ BUILT_IN_TOOL_FEATURES: Dict[str, List[str]] = {
     "meta": ["ToolSearch", "EnterPlanMode", "ExitPlanMode"],
     "agent": ["Agent"],
     "tasks": ["TaskCreate", "TaskGet", "TaskList", "TaskUpdate", "TaskOutput", "TaskStop"],
+    "interaction": ["AskUserQuestion"],
 }
 
 
@@ -141,6 +147,8 @@ def get_builtin_tools(
 
 __all__ = [
     "AgentTool",
+    "AskUserQuestionTool",
+    "QuestionCancelled",
     "ReadTool",
     "TaskCreateTool",
     "TaskGetTool",
