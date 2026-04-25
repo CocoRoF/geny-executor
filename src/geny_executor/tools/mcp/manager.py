@@ -628,6 +628,50 @@ class MCPManager:
         conn = self._servers.get(name)
         return conn.is_connected if conn else False
 
+    # ── Resource API (S8.3) ────────────────────────────────────
+
+    async def read_mcp_resource(self, uri: str) -> Optional[str]:
+        """Read a resource referenced by an ``mcp://server/<id>`` URI.
+
+        The URI is parsed via :func:`parse_mcp_uri`. The portion after
+        ``mcp://server_name/`` is forwarded to the server's
+        ``read_resource`` API verbatim — the underlying MCP SDK
+        decides how to interpret it. Returns ``None`` when the
+        server is unknown or not connected, or when the read fails
+        (logged at WARNING by the connection layer).
+        """
+        from geny_executor.tools.mcp.uri import parse_mcp_uri
+
+        server_name, resource_id = parse_mcp_uri(uri)
+        conn = self._servers.get(server_name)
+        if conn is None or not conn.is_connected:
+            return None
+        return await conn.read_resource(resource_id)
+
+    async def list_all_resources(self) -> List[Dict[str, Any]]:
+        """List resources across every connected server.
+
+        Each entry is the same shape as
+        :meth:`MCPServerConnection.list_resources` plus two extra
+        keys: ``server`` (the server name) and ``mcp_uri`` (the
+        canonical ``mcp://server/<native uri>`` reference). Servers
+        that fail to list are skipped — the warning is logged at the
+        connection layer.
+        """
+        from geny_executor.tools.mcp.uri import build_mcp_uri
+
+        out: List[Dict[str, Any]] = []
+        for name, conn in self._servers.items():
+            if not conn.is_connected:
+                continue
+            for entry in await conn.list_resources():
+                native_uri = entry.get("uri", "")
+                merged = dict(entry)
+                merged["server"] = name
+                merged["mcp_uri"] = build_mcp_uri(name, native_uri)
+                out.append(merged)
+        return out
+
     @classmethod
     def from_config_file(cls, path: str) -> MCPManager:
         """Load MCP configuration from .mcp.json file.
