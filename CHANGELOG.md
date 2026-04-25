@@ -160,6 +160,22 @@ Mutating / control commands shipped alongside the introspection set:
 The ``install_built_in_commands`` registry helper now installs the
 full set (12) — both batches at once.
 
+### Added — Markdown template slash commands (PR-A.2.4)
+
+- ``MdTemplateCommand`` — slash command synthesised from a markdown
+  file with frontmatter (description / category / aliases) + body.
+  Body is treated as a prompt template; ``$ARG_N`` (1-indexed) and
+  ``$ARGS`` (joined) substitution. Returns a ``follow_up_prompt``
+  the host feeds to the LLM as the next user turn — never executes
+  anything on the host.
+- ``load_md_command(path)`` / ``load_md_commands_into(registry, dir)``
+  helpers. Discovery files are bounded at 64 KiB; invalid name /
+  empty body / missing frontmatter all skip with a warning log.
+- ``SlashCommandRegistry.discover_paths`` now actually loads from
+  the directory it walks (was a no-op stub in PR-A.2.1).
+
+18 new tests in ``tests/unit/test_slash_md_template.py``.
+
 ## [1.0.0] — 2026-04-25
 
 **First stable release.** Closes the multi-month executor uplift
