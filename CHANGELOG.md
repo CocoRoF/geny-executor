@@ -141,6 +141,25 @@ all work.
 
 17 new unit tests in ``tests/unit/test_slash_built_in_introspection.py``.
 
+### Added — 6 control slash commands (PR-A.2.3)
+
+Mutating / control commands shipped alongside the introspection set:
+
+- ``/tasks``       — list background tasks (filter by status). Read-only.
+- ``/cancel``      — request pipeline stop (best-effort method probe).
+- ``/compact``     — manually trigger Stage 19 summarization.
+- ``/config``      — dump the active strategy slot map per stage.
+- ``/model``       — show or switch the session model. Allow-prefix
+                     guard (default ``"claude-"``) catches obvious typos
+                     before they hit the API.
+- ``/preset-info`` — show preset name + metadata. Mutation is host
+                     domain (e.g. Geny ships ``/preset``).
+
+20 new unit tests in ``tests/unit/test_slash_built_in_control.py``.
+
+The ``install_built_in_commands`` registry helper now installs the
+full set (12) — both batches at once.
+
 ## [1.0.0] — 2026-04-25
 
 **First stable release.** Closes the multi-month executor uplift

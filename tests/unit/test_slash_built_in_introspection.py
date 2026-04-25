@@ -215,10 +215,10 @@ class TestContext:
 
 
 class TestInstall:
-    def test_installs_six(self):
+    def test_installs_introspection_subset(self):
         reg = SlashCommandRegistry()
-        count = install_built_in_commands(reg)
-        assert count == 6
+        install_built_in_commands(reg)
+        # PR-A.2.2 ships these six; PR-A.2.3 adds more.
         for name in ("cost", "clear", "status", "help", "memory", "context"):
             assert reg.resolve(name) is not None
 
