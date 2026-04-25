@@ -9,6 +9,14 @@ from geny_executor.tools.mcp.credentials import (
 )
 from geny_executor.tools.mcp.errors import MCPConnectionError
 from geny_executor.tools.mcp.manager import MCPManager, MCPServerConfig
+from geny_executor.tools.mcp.oauth import (
+    OAuthAuthConfig,
+    OAuthError,
+    OAuthFlow,
+    OAuthToken,
+    build_authorize_url,
+    find_free_port,
+)
 from geny_executor.tools.mcp.state import (
     RECONNECTABLE_STATES,
     MCPConnectionState,
@@ -23,6 +31,12 @@ __all__ = [
     "MCPServerConfig",
     "MCPToolAdapter",
     "MemoryCredentialStore",
+    "OAuthAuthConfig",
+    "OAuthError",
+    "OAuthFlow",
+    "OAuthToken",
     "RECONNECTABLE_STATES",
+    "build_authorize_url",
+    "find_free_port",
     "mcp_credential_key",
 ]
