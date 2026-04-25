@@ -393,6 +393,84 @@ class MCPServerConnection:
                 return text
         return None
 
+    async def list_prompts(self) -> List[Dict[str, Any]]:
+        """List the MCP prompts this server exposes (S8.4).
+
+        Returns dicts with the shape ``{"name", "description",
+        "arguments"}`` where ``arguments`` is a list of
+        ``{"name", "description", "required"}``. Returns ``[]`` when
+        the server isn't CONNECTED, when it doesn't implement prompt
+        listing, or when the call raises (logged at WARNING; prompts
+        are advisory).
+        """
+        if not self.is_connected or self._client_session is None:
+            return []
+        try:
+            result = await asyncio.wait_for(self._client_session.list_prompts(), timeout=10.0)
+        except Exception as exc:
+            logger.warning("MCP %s list_prompts failed: %s", self.config.name, exc)
+            return []
+        out: List[Dict[str, Any]] = []
+        for p in getattr(result, "prompts", []) or []:
+            args_out: List[Dict[str, Any]] = []
+            for arg in getattr(p, "arguments", []) or []:
+                args_out.append(
+                    {
+                        "name": str(getattr(arg, "name", "") or ""),
+                        "description": str(getattr(arg, "description", "") or ""),
+                        "required": bool(getattr(arg, "required", False)),
+                    }
+                )
+            out.append(
+                {
+                    "name": str(getattr(p, "name", "") or ""),
+                    "description": str(getattr(p, "description", "") or ""),
+                    "arguments": args_out,
+                }
+            )
+        return out
+
+    async def get_prompt(
+        self, prompt_name: str, arguments: Optional[Dict[str, Any]] = None
+    ) -> Optional[List[Dict[str, Any]]]:
+        """Fetch a prompt's rendered messages (S8.4).
+
+        Returns a list of message dicts with shape
+        ``{"role": "...", "content": "..."}`` or ``None`` when the
+        server isn't connected, the prompt is missing, or the call
+        raises (logged at WARNING; prompts are advisory).
+        Non-text message content is coerced to its string repr so
+        downstream consumers always see strings.
+        """
+        if not self.is_connected or self._client_session is None:
+            return None
+        try:
+            result = await asyncio.wait_for(
+                self._client_session.get_prompt(prompt_name, arguments or {}),
+                timeout=10.0,
+            )
+        except Exception as exc:
+            logger.warning(
+                "MCP %s get_prompt(%s) failed: %s",
+                self.config.name,
+                prompt_name,
+                exc,
+            )
+            return None
+        out: List[Dict[str, Any]] = []
+        for msg in getattr(result, "messages", []) or []:
+            role = str(getattr(msg, "role", "") or "user")
+            content = getattr(msg, "content", None)
+            text = getattr(content, "text", None)
+            if isinstance(text, str):
+                out.append({"role": role, "content": text})
+            elif isinstance(content, str):
+                out.append({"role": role, "content": content})
+            else:
+                # Best-effort: stringify so callers always see something.
+                out.append({"role": role, "content": str(content)})
+        return out
+
     async def call_tool(self, tool_name: str, arguments: Dict[str, Any]) -> Any:
         """Call a tool on the MCP server.
 
@@ -647,6 +725,36 @@ class MCPManager:
         if conn is None or not conn.is_connected:
             return None
         return await conn.read_resource(resource_id)
+
+    # ── Prompt API (S8.4) ──────────────────────────────────────
+
+    async def list_all_prompts(self) -> List[Dict[str, Any]]:
+        """List prompts across every connected server (S8.4).
+
+        Each entry is the connection's ``list_prompts`` shape with
+        an extra ``server`` key. Disconnected servers are skipped.
+        """
+        out: List[Dict[str, Any]] = []
+        for name, conn in self._servers.items():
+            if not conn.is_connected:
+                continue
+            for entry in await conn.list_prompts():
+                merged = dict(entry)
+                merged["server"] = name
+                out.append(merged)
+        return out
+
+    async def get_mcp_prompt(
+        self,
+        server_name: str,
+        prompt_name: str,
+        arguments: Optional[Dict[str, Any]] = None,
+    ) -> Optional[List[Dict[str, Any]]]:
+        """Fetch a prompt from a named server. Returns ``None`` for unknown / disconnected."""
+        conn = self._servers.get(server_name)
+        if conn is None or not conn.is_connected:
+            return None
+        return await conn.get_prompt(prompt_name, arguments)
 
     async def list_all_resources(self) -> List[Dict[str, Any]]:
         """List resources across every connected server.
