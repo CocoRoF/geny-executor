@@ -24,8 +24,9 @@ from geny_executor.core.schema import ConfigField, ConfigSchema
 from geny_executor.core.slot import StrategySlot
 from geny_executor.core.stage import Stage
 from geny_executor.core.state import PipelineState
+from geny_executor.core.config import ModelConfig
 from geny_executor.llm_client import BaseClient, ClientRegistry, ProviderBackedClient
-from geny_executor.stages.s06_api.interface import APIProvider, RetryStrategy
+from geny_executor.stages.s06_api.interface import APIProvider, ModelRouter, RetryStrategy
 from geny_executor.stages.s06_api.artifact.default.providers import (
     AnthropicProvider,
     MockProvider,
@@ -34,6 +35,10 @@ from geny_executor.stages.s06_api.artifact.default.retry import (
     ExponentialBackoffRetry,
     NoRetry,
     RateLimitAwareRetry,
+)
+from geny_executor.stages.s06_api.artifact.default.router import (
+    AdaptiveModelRouter,
+    PassthroughRouter,
 )
 from geny_executor.stages.s06_api.types import APIRequest, APIResponse
 
@@ -53,6 +58,7 @@ class APIStage(Stage[Any, APIResponse]):
         provider: Union[str, APIProvider, None] = None,
         retry: Optional[RetryStrategy] = None,
         *,
+        router: Optional[ModelRouter] = None,
         api_key: str = "",
         base_url: Optional[str] = None,
         default_headers: Optional[Dict[str, str]] = None,
@@ -101,6 +107,15 @@ class APIStage(Stage[Any, APIResponse]):
                 },
                 description="Retry strategy on API errors",
             ),
+            "router": StrategySlot(
+                name="router",
+                strategy=router or PassthroughRouter(),
+                registry={
+                    "passthrough": PassthroughRouter,
+                    "adaptive": AdaptiveModelRouter,
+                },
+                description="Adaptive model selection per call (passthrough = no override)",
+            ),
         }
 
     def _build_legacy_provider(self, name: str) -> APIProvider:
@@ -148,6 +163,10 @@ class APIStage(Stage[Any, APIResponse]):
     @property
     def _retry(self) -> RetryStrategy:
         return self._slots["retry"].strategy  # type: ignore[return-value]
+
+    @property
+    def _router(self) -> ModelRouter:
+        return self._slots["router"].strategy  # type: ignore[return-value]
 
     @property
     def name(self) -> str:
@@ -232,6 +251,37 @@ class APIStage(Stage[Any, APIResponse]):
             value = int(config["timeout_ms"])
             self._timeout_ms = value if value > 0 else None
 
+    def _route_model(self, state: PipelineState) -> ModelConfig:
+        """Resolve the baseline ModelConfig and pass it through the router slot.
+
+        The default :class:`PassthroughRouter` returns ``None`` so this
+        is identical to ``resolve_model_config(state)``. A custom router
+        may return a swapped :class:`ModelConfig`; in that case we emit
+        ``api.model_routed`` so observers can attribute cost/latency to
+        the swap. The state is *not* mutated — the override only applies
+        for this call.
+        """
+        cfg = self.resolve_model_config(state)
+        try:
+            override = self._router.route(cfg, state)
+        except Exception as exc:
+            state.add_event(
+                "api.router.error",
+                {"router": getattr(self._router, "name", ""), "error": str(exc)},
+            )
+            return cfg
+        if override is None or override.model == cfg.model:
+            return cfg
+        state.add_event(
+            "api.model_routed",
+            {
+                "router": getattr(self._router, "name", ""),
+                "from": cfg.model,
+                "to": override.model,
+            },
+        )
+        return override
+
     def _resolve_stream(self, state: PipelineState) -> bool:
         state_stream = getattr(state, "stream", None)
         if state_stream is not None:
@@ -264,7 +314,7 @@ class APIStage(Stage[Any, APIResponse]):
         return self._local_client
 
     async def execute(self, input: Any, state: PipelineState) -> APIResponse:
-        cfg = self.resolve_model_config(state)
+        cfg = self._route_model(state)
         client = self._resolve_client(state)
         use_stream = self._resolve_stream(state)
 

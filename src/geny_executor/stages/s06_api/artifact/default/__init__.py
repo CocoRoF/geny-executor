@@ -11,6 +11,10 @@ from geny_executor.stages.s06_api.artifact.default.retry import (
     NoRetry,
     RateLimitAwareRetry,
 )
+from geny_executor.stages.s06_api.artifact.default.router import (
+    AdaptiveModelRouter,
+    PassthroughRouter,
+)
 
 # Canonical alias
 Stage = APIStage
@@ -24,4 +28,6 @@ __all__ = [
     "ExponentialBackoffRetry",
     "NoRetry",
     "RateLimitAwareRetry",
+    "AdaptiveModelRouter",
+    "PassthroughRouter",
 ]
