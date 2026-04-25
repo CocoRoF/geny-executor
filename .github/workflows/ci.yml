@@ -86,7 +86,11 @@ jobs:
           python-version: "3.12"
       - run: pip install pip-audit
       - run: pip install -e .
-      - run: pip-audit
+      # CVE-2026-3219 affects pip 26.x itself; the CI runner installs an
+      # affected pip and there is no fix release as of this commit.
+      # Ignore the single CVE so the audit keeps catching real issues
+      # in our dependency tree. Revisit once pip ships a fix.
+      - run: pip-audit --ignore-vuln CVE-2026-3219
 
   build:
     name: Build package
