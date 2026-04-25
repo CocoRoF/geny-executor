@@ -38,16 +38,35 @@ from geny_executor.core.artifact import STAGE_MODULES
 # ── introspect_stage on every default artifact ─────────────────
 
 
+_SCAFFOLD_MODULES = frozenset(
+    {
+        "s11_tool_review",
+        "s13_task_registry",
+        "s15_hitl",
+        "s19_summarize",
+        "s20_persist",
+    }
+)
+
+
 @pytest.mark.parametrize("order,module_name", sorted(STAGE_MODULES.items()))
 def test_introspect_stage_default_every_stage(order: int, module_name: str):
-    """Every default artifact must introspect without raising."""
+    """Every default artifact must introspect without raising.
+
+    Sub-phase 9a scaffolds (tool_review / task_registry / hitl /
+    summarize / persist) ship without slots/chains for now —
+    Sub-phase 9b adds them. Skip the "exposes something" assertion
+    for those until 9b lands.
+    """
     insp = introspect_stage(module_name, "default")
     assert isinstance(insp, StageIntrospection)
     assert insp.stage == module_name
     assert insp.artifact == "default"
     assert insp.order == order
     assert insp.artifact_info.provides_stage is True
-    # Every stage exposes *something* configurable (either schema, a slot, or a chain)
+    if module_name in _SCAFFOLD_MODULES:
+        return
+    # Every non-scaffold stage exposes *something* configurable (either schema, a slot, or a chain)
     assert insp.config_schema is not None or insp.strategy_slots or insp.strategy_chains, (
         f"{module_name} exposes no introspectable surface"
     )
@@ -206,10 +225,11 @@ def test_introspect_all_falls_back_to_default_on_strategy_only():
 # ── introspect_all contract ─────────────────────────────────────
 
 
-def test_introspect_all_returns_16_in_order():
+def test_introspect_all_returns_21_in_order():
+    """Sub-phase 9a (S9a.3) widened the layout from 16 to 21 stages."""
     results = introspect_all()
-    assert len(results) == 16
-    assert [r.order for r in results] == list(range(1, 17))
+    assert len(results) == 21
+    assert [r.order for r in results] == list(range(1, 22))
     assert all(r.artifact == "default" for r in results)
 
 

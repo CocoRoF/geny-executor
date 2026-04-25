@@ -1,8 +1,15 @@
 """Stage Uniformity Contract tests (E1.8).
 
-Every stage in geny-executor's 16-stage pipeline must satisfy the same
+Every stage in geny-executor's 21-stage pipeline must satisfy the same
 introspection and configuration contract, regardless of slot- vs. chain-
 based architecture. These tests pin that contract so regressions fail fast.
+
+Sub-phase 9a (S9a.3) widened the layout from 16 to 21 stages. The five
+new scaffolding stages (tool_review / task_registry / hitl /
+summarize / persist) are pass-throughs / bypass — they expose no
+strategy slots yet (real slots ship in 9b), so they're excluded from
+the contract checks that require at least one configurable surface.
+The orderings + names are still pinned.
 
 Contract surface:
   1. name / order / category properties
@@ -44,11 +51,16 @@ from geny_executor.stages.s07_token.artifact.default.stage import TokenStage
 from geny_executor.stages.s08_think.artifact.default.stage import ThinkStage
 from geny_executor.stages.s09_parse.artifact.default.stage import ParseStage
 from geny_executor.stages.s10_tool.artifact.default.stage import ToolStage
+from geny_executor.stages.s11_tool_review.artifact.default.stage import ToolReviewStage
 from geny_executor.stages.s12_agent.artifact.default.stage import AgentStage
+from geny_executor.stages.s13_task_registry.artifact.default.stage import TaskRegistryStage
 from geny_executor.stages.s14_evaluate.artifact.default.stage import EvaluateStage
+from geny_executor.stages.s15_hitl.artifact.default.stage import HITLStage
 from geny_executor.stages.s16_loop.artifact.default.stage import LoopStage
 from geny_executor.stages.s17_emit.artifact.default.stage import EmitStage
 from geny_executor.stages.s18_memory.artifact.default.stage import MemoryStage
+from geny_executor.stages.s19_summarize.artifact.default.stage import SummarizeStage
+from geny_executor.stages.s20_persist.artifact.default.stage import PersistStage
 from geny_executor.stages.s21_yield.artifact.default.stage import YieldStage
 
 
@@ -71,15 +83,35 @@ STAGE_FACTORIES = [
     (8, "think", ThinkStage),
     (9, "parse", ParseStage),
     (10, "tool", ToolStage),
-    (11, "agent", AgentStage),
-    (12, "evaluate", EvaluateStage),
-    (13, "loop", LoopStage),
-    (14, "emit", EmitStage),
-    (15, "memory", MemoryStage),
-    (16, "yield", YieldStage),
+    (11, "tool_review", ToolReviewStage),
+    (12, "agent", AgentStage),
+    (13, "task_registry", TaskRegistryStage),
+    (14, "evaluate", EvaluateStage),
+    (15, "hitl", HITLStage),
+    (16, "loop", LoopStage),
+    (17, "emit", EmitStage),
+    (18, "memory", MemoryStage),
+    (19, "summarize", SummarizeStage),
+    (20, "persist", PersistStage),
+    (21, "yield", YieldStage),
 ]
 
-VALID_CATEGORIES = {"ingress", "pre_flight", "execution", "decision", "egress"}
+# Sub-phase 9a scaffolds: pass-through stages with no strategy
+# slots/chains yet. Excluded from the "at least one strategy
+# surface" contract until 9b lands.
+_SCAFFOLD_NAMES = frozenset({"tool_review", "task_registry", "hitl", "summarize", "persist"})
+
+VALID_CATEGORIES = {
+    "ingress",
+    "pre_flight",
+    "execution",
+    "decision",
+    "egress",
+    "review",
+    "orchestration",
+    "gate",
+    "finalize",
+}
 
 
 @pytest.fixture(params=STAGE_FACTORIES, ids=[f"s{o:02d}_{n}" for o, n, _ in STAGE_FACTORIES])
@@ -119,6 +151,8 @@ class TestStageUniformityContract:
 
     def test_at_least_one_strategy_surface(self, stage: Stage) -> None:
         """A stage must expose at least one slot or one chain."""
+        if stage.name in _SCAFFOLD_NAMES:
+            pytest.skip(f"Sub-phase 9a scaffold ({stage.name}) — slots arrive in 9b")
         slots = stage.get_strategy_slots()
         chains = stage.get_strategy_chains()
         assert slots or chains, (
@@ -187,13 +221,13 @@ class TestChainStageContract:
 
 
 def test_stage_orders_are_unique_and_dense() -> None:
-    """Each stage declares a distinct order; the set covers 1..16 exactly."""
+    """Each stage declares a distinct order; the set covers 1..21 exactly."""
     orders = []
     for order, _name, factory in STAGE_FACTORIES:
         stage = factory()
         orders.append(stage.order)
         assert stage.order == order
-    assert sorted(orders) == list(range(1, 17))
+    assert sorted(orders) == list(range(1, 22))
 
 
 def test_stage_names_are_unique() -> None:

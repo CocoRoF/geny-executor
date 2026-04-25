@@ -558,7 +558,13 @@ class PipelineMutator:
         on a stage without overrides) serialize as ``None`` / ``{}``.
         """
         stages: List[StageSnapshot] = []
-        for order in range(1, 17):
+        # Sub-phase 9a (S9a.3) widened the layout from 16 to 21 stages.
+        # Walk the live STAGE_MODULES registry instead of hard-coding
+        # the upper bound so future renumberings do not need a code
+        # edit here.
+        from geny_executor.core.artifact import STAGE_MODULES
+
+        for order in sorted(STAGE_MODULES):
             stage = self._pipeline.get_stage(order)
             if stage:
                 strategies: Dict[str, str] = {}

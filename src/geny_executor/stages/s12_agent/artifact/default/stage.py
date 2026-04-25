@@ -60,7 +60,7 @@ class AgentStage(Stage[Any, Any]):
 
     @property
     def order(self) -> int:
-        return 11
+        return 12
 
     @property
     def category(self) -> str:

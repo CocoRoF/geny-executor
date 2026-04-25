@@ -188,7 +188,7 @@ def test_pipeline_describe():
     pipeline = _make_mock_pipeline()
     desc = pipeline.describe()
 
-    assert len(desc) == 16  # all 16 slots
+    assert len(desc) == 21  # all 21 slots (S9a.3 widened layout)
     active = [d for d in desc if d.is_active]
     assert len(active) == 4  # 4 registered stages
     names = {d.name for d in active}

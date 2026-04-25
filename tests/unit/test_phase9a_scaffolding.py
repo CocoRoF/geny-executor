@@ -66,23 +66,28 @@ class TestHITLBypass:
         assert HITLStage().should_bypass(PipelineState()) is True
 
 
-class TestNotYetRegistered:
-    """Sanity: scaffolds exist as packages but aren't in STAGE_MODULES yet."""
+class TestRegistration:
+    """Sanity: S9a.3 wired the scaffolds into STAGE_MODULES."""
 
-    def test_stage_modules_unchanged(self):
+    def test_stage_modules_now_21_entries(self):
         from geny_executor.core.artifact import STAGE_MODULES
 
-        # Still 16 entries; new orders 11/13/15/19/20 not yet wired.
-        assert len(STAGE_MODULES) == 16
-        # The new order numbers map to legacy modules, not the
-        # scaffolding ones — that mapping moves in S9a.3.
-        assert STAGE_MODULES[11] == "s12_agent"
-        assert STAGE_MODULES[13] == "s16_loop"
-        assert STAGE_MODULES[15] == "s18_memory"
+        assert len(STAGE_MODULES) == 21
+        # Each new order points at its scaffolding module.
+        assert STAGE_MODULES[11] == "s11_tool_review"
+        assert STAGE_MODULES[13] == "s13_task_registry"
+        assert STAGE_MODULES[15] == "s15_hitl"
+        assert STAGE_MODULES[19] == "s19_summarize"
+        assert STAGE_MODULES[20] == "s20_persist"
 
     def test_scaffolds_importable_via_artifact(self):
-        # create_stage uses STAGE_MODULES, so it can't reach the
-        # scaffolds yet by short name. Direct import still works:
         from geny_executor.stages.s11_tool_review.artifact.default import Stage
 
         assert Stage is ToolReviewStage
+
+    def test_create_stage_resolves_scaffolds(self):
+        from geny_executor.core.artifact import create_stage
+
+        s = create_stage("s11_tool_review")
+        assert isinstance(s, ToolReviewStage)
+        assert s.order == 11

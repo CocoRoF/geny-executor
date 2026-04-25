@@ -297,11 +297,11 @@ class EnvironmentManifest:
         model: Optional[Dict[str, Any]] = None,
         pipeline: Optional[Dict[str, Any]] = None,
     ) -> EnvironmentManifest:
-        """Build a 16-stage template with the structurally required stages on.
+        """Build a 21-stage template with the structurally required stages on.
 
         Every stage is populated with its default artifact plus the artifact's
         default strategy implementations and config, so a UI can render all
-        16 rows immediately and the user only has to edit fields — no
+        21 rows immediately and the user only has to edit fields — no
         "missing required field" errors the moment a stage is flipped active.
 
         Four stages — ``s01_input``, ``s06_api``, ``s09_parse``, ``s21_yield``

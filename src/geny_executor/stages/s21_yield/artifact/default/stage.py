@@ -50,7 +50,7 @@ class YieldStage(Stage[Any, Any]):
 
     @property
     def order(self) -> int:
-        return 16
+        return 21
 
     @property
     def category(self) -> str:
