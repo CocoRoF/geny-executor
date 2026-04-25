@@ -29,6 +29,17 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 20 new unit tests in ``tests/unit/test_s13_task_registry_output.py``.
 
+### Added — FileBackedRegistry (PR-A.1.2)
+
+- ``FileBackedRegistry(root: Path)`` — durable single-process task
+  registry. Mutations append to ``root/registry.jsonl``; tombstones
+  for ``remove`` so reload doesn't resurrect deleted tasks. Output
+  bytes per task in ``root/outputs/<task_id>.bin`` (path-traversal
+  safe). Corrupt / partial JSONL lines logged + skipped on load.
+- Exported from ``geny_executor.stages.s13_task_registry``.
+
+17 new tests in ``tests/unit/test_s13_file_backed_registry.py``.
+
 ## [1.0.0] — 2026-04-25
 
 **First stable release.** Closes the multi-month executor uplift
