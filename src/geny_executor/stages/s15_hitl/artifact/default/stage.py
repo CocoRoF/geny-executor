@@ -35,6 +35,7 @@ from geny_executor.core.state import PipelineState
 from geny_executor.stages.s15_hitl.artifact.default.requesters import (
     CallbackRequester,
     NullRequester,
+    PipelineResumeRequester,
 )
 from geny_executor.stages.s15_hitl.artifact.default.timeouts import (
     AutoApproveTimeout,
@@ -82,6 +83,11 @@ class HITLStage(Stage[Any, Any]):
                 registry={
                     "null": NullRequester,
                     "callback": CallbackRequester,
+                    # PipelineResumeRequester needs a Pipeline ref at
+                    # construction so it isn't auto-instantiable from
+                    # the registry; hosts wire it explicitly via the
+                    # constructor or with_hitl(requester=...).
+                    "pipeline_resume": PipelineResumeRequester,
                 },
                 description="Resolves a HITL request into a decision",
             ),

@@ -2,11 +2,18 @@
 
 from __future__ import annotations
 
-from typing import Awaitable, Callable, Optional
+import asyncio
+import logging
+from typing import TYPE_CHECKING, Awaitable, Callable, Optional
 
 from geny_executor.core.state import PipelineState
 from geny_executor.stages.s15_hitl.interface import Requester
 from geny_executor.stages.s15_hitl.types import HITLDecision, HITLRequest
+
+if TYPE_CHECKING:
+    from geny_executor.core.pipeline import Pipeline
+
+logger = logging.getLogger(__name__)
 
 
 class NullRequester(Requester):
@@ -59,8 +66,52 @@ class CallbackRequester(Requester):
         return await self._callback(request, state)
 
 
+class PipelineResumeRequester(Requester):
+    """Requester that pauses the pipeline until ``Pipeline.resume`` fires (S9c.1).
+
+    On every request the requester:
+
+    1. creates an :class:`asyncio.Future` on the running event loop,
+    2. registers it on the host :class:`Pipeline` under the request's
+       ``token`` (via ``pipeline._pending_hitl``),
+    3. awaits the future,
+    4. removes the registration in a ``finally`` so a cancelled run
+       cannot leak Future objects.
+
+    External code (typically a websocket handler or HTTP endpoint
+    receiving the human's verdict) then calls
+    ``pipeline.resume(token, decision)`` to satisfy the future. The
+    pipeline is taken by reference at construction time so it stays
+    alive for the duration of the run; pipelines released after the
+    run completes will GC normally.
+    """
+
+    def __init__(self, pipeline: "Pipeline") -> None:
+        self._pipeline = pipeline
+
+    @property
+    def name(self) -> str:
+        return "pipeline_resume"
+
+    @property
+    def description(self) -> str:
+        return "Awaits Pipeline.resume(token, decision) — for cross-request HITL"
+
+    async def request(self, request: HITLRequest, state: PipelineState) -> Optional[HITLDecision]:
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future = loop.create_future()
+        self._pipeline._pending_hitl[request.token] = future
+        try:
+            return await future
+        finally:
+            # Drop the registration whether resolved, cancelled, or
+            # exceptioned out — never leak entries on the pipeline.
+            self._pipeline._pending_hitl.pop(request.token, None)
+
+
 __all__ = [
     "CallbackFn",
     "CallbackRequester",
     "NullRequester",
+    "PipelineResumeRequester",
 ]

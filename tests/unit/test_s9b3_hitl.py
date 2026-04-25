@@ -257,7 +257,14 @@ class TestHITLStage:
     def test_slot_registries(self):
         stage = HITLStage()
         slots = stage.get_strategy_slots()
-        assert set(slots["requester"].registry) == {"null", "callback"}
+        # S9c.1 added pipeline_resume to the requester registry. It is
+        # not auto-instantiable from the registry (needs a Pipeline
+        # ref) — hosts wire it explicitly.
+        assert set(slots["requester"].registry) == {
+            "null",
+            "callback",
+            "pipeline_resume",
+        }
         assert set(slots["timeout"].registry) == {
             "indefinite",
             "auto_approve",
