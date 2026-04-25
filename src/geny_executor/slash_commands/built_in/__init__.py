@@ -14,12 +14,18 @@ Categories:
 
 from __future__ import annotations
 
+from geny_executor.slash_commands.built_in.cancel import CancelCommand
 from geny_executor.slash_commands.built_in.clear import ClearCommand
+from geny_executor.slash_commands.built_in.compact import CompactCommand
+from geny_executor.slash_commands.built_in.config import ConfigCommand
 from geny_executor.slash_commands.built_in.context import ContextCommand
 from geny_executor.slash_commands.built_in.cost import CostCommand
 from geny_executor.slash_commands.built_in.help import HelpCommand
 from geny_executor.slash_commands.built_in.memory import MemoryCommand
+from geny_executor.slash_commands.built_in.model import ModelCommand
+from geny_executor.slash_commands.built_in.preset_info import PresetInfoCommand
 from geny_executor.slash_commands.built_in.status import StatusCommand
+from geny_executor.slash_commands.built_in.tasks import TasksCommand
 from geny_executor.slash_commands.registry import (
     SlashCommandRegistry,
     get_default_registry,
@@ -31,12 +37,20 @@ def install_built_in_commands(registry: SlashCommandRegistry) -> int:
     count registered. Idempotent — re-registering the same command
     overwrites silently (logged at WARNING by the registry)."""
     classes = [
+        # Introspection (read-only)
         CostCommand,
-        ClearCommand,
         StatusCommand,
         HelpCommand,
         MemoryCommand,
         ContextCommand,
+        ConfigCommand,
+        PresetInfoCommand,
+        TasksCommand,
+        # Control (mutating)
+        ClearCommand,
+        CancelCommand,
+        CompactCommand,
+        ModelCommand,
     ]
     for cls in classes:
         registry.register(cls())
@@ -49,11 +63,17 @@ install_built_in_commands(get_default_registry())
 
 
 __all__ = [
+    "CancelCommand",
     "ClearCommand",
+    "CompactCommand",
+    "ConfigCommand",
     "ContextCommand",
     "CostCommand",
     "HelpCommand",
     "MemoryCommand",
+    "ModelCommand",
+    "PresetInfoCommand",
     "StatusCommand",
+    "TasksCommand",
     "install_built_in_commands",
 ]
