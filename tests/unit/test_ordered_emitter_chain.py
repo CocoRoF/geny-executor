@@ -8,7 +8,7 @@ from typing import List, Optional, Tuple
 import pytest
 
 from geny_executor.core.state import PipelineState
-from geny_executor.stages.s14_emit import (
+from geny_executor.stages.s17_emit import (
     EmitResult,
     Emitter,
     OrderedEmitterChain,

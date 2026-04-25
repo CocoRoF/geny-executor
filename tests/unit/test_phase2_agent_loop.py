@@ -17,8 +17,8 @@ from geny_executor.stages.s06_api.retry import NoRetry
 from geny_executor.stages.s07_token import TokenStage
 from geny_executor.stages.s09_parse import ParseStage
 from geny_executor.stages.s10_tool import ToolStage
-from geny_executor.stages.s13_loop import LoopStage, StandardLoopController, SingleTurnController
-from geny_executor.stages.s16_yield import YieldStage
+from geny_executor.stages.s16_loop import LoopStage, StandardLoopController, SingleTurnController
+from geny_executor.stages.s21_yield import YieldStage
 from geny_executor.tools import Tool, ToolResult, ToolRegistry
 
 

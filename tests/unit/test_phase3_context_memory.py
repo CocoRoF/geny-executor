@@ -30,11 +30,11 @@ from geny_executor.stages.s05_cache import (
 from geny_executor.stages.s06_api import APIStage, MockProvider
 from geny_executor.stages.s06_api.retry import NoRetry
 from geny_executor.stages.s09_parse import ParseStage
-from geny_executor.stages.s15_memory import (
+from geny_executor.stages.s18_memory import (
     MemoryStage,
     InMemoryPersistence,
 )
-from geny_executor.stages.s16_yield import YieldStage
+from geny_executor.stages.s21_yield import YieldStage
 from geny_executor.session import Session, SessionManager
 
 

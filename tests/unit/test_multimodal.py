@@ -17,7 +17,7 @@ from geny_executor.stages.s06_api._translate import (
     canonical_messages_to_openai,
     canonical_messages_to_google,
 )
-from geny_executor.stages.s15_memory._dehydrate import (
+from geny_executor.stages.s18_memory._dehydrate import (
     dehydrate_message,
     dehydrate_messages,
 )

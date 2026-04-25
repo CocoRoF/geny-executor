@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List
 
-from geny_executor.stages.s15_memory.interface import ConversationPersistence
+from geny_executor.stages.s18_memory.interface import ConversationPersistence
 
 logger = logging.getLogger(__name__)
 

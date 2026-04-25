@@ -7,7 +7,7 @@ from typing import List
 import pytest
 
 from geny_executor.core.state import PipelineState, TokenUsage
-from geny_executor.stages.s13_loop import (
+from geny_executor.stages.s16_loop import (
     BudgetDimension,
     CostBudget,
     IterationBudget,
@@ -17,7 +17,7 @@ from geny_executor.stages.s13_loop import (
     ToolCallBudget,
     WallClockBudget,
 )
-from geny_executor.stages.s13_loop.interface import LoopDecision
+from geny_executor.stages.s16_loop.interface import LoopDecision
 
 
 # ─────────────────────────────────────────────────────────────────

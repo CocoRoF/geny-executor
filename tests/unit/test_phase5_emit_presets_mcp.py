@@ -12,10 +12,10 @@ from geny_executor.stages.s01_input import InputStage
 from geny_executor.stages.s06_api import APIStage, MockProvider
 from geny_executor.stages.s06_api.retry import NoRetry
 from geny_executor.stages.s09_parse import ParseStage
-from geny_executor.stages.s16_yield import YieldStage
+from geny_executor.stages.s21_yield import YieldStage
 
 # Emit imports
-from geny_executor.stages.s14_emit import (
+from geny_executor.stages.s17_emit import (
     EmitStage,
     TextEmitter,
     CallbackEmitter,

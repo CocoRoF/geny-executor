@@ -13,7 +13,7 @@ from geny_executor.stages.s01_input import InputStage
 from geny_executor.stages.s06_api import APIStage, MockProvider, APIResponse
 from geny_executor.stages.s06_api.types import ContentBlock
 from geny_executor.stages.s09_parse import ParseStage
-from geny_executor.stages.s16_yield import YieldStage
+from geny_executor.stages.s21_yield import YieldStage
 
 
 def _make_mock_pipeline(text: str = "Hello from mock!", **kwargs) -> Pipeline:
@@ -391,7 +391,7 @@ async def test_cost_budget_enforced_in_loop():
 
     from geny_executor.stages.s07_token import TokenStage
     from geny_executor.stages.s10_tool import ToolStage
-    from geny_executor.stages.s13_loop import LoopStage
+    from geny_executor.stages.s16_loop import LoopStage
     from geny_executor.tools.registry import ToolRegistry
     from geny_executor.tools.base import Tool, ToolResult
 
@@ -496,7 +496,7 @@ async def test_single_turn_completes_after_one_pass():
 
     from geny_executor.stages.s07_token import TokenStage
     from geny_executor.stages.s10_tool import ToolStage
-    from geny_executor.stages.s13_loop import LoopStage
+    from geny_executor.stages.s16_loop import LoopStage
     from geny_executor.tools.registry import ToolRegistry
     from geny_executor.tools.base import Tool, ToolResult
 

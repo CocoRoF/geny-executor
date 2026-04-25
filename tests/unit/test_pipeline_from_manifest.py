@@ -45,8 +45,8 @@ def _template_pipeline() -> Pipeline:
     pipeline.register_stage(create_stage("s05_cache"))
     pipeline.register_stage(create_stage("s06_api", "default", provider=MockProvider()))
     pipeline.register_stage(create_stage("s09_parse"))
-    pipeline.register_stage(create_stage("s14_emit"))
-    pipeline.register_stage(create_stage("s16_yield"))
+    pipeline.register_stage(create_stage("s17_emit"))
+    pipeline.register_stage(create_stage("s21_yield"))
     return pipeline
 
 
@@ -182,7 +182,7 @@ def test_from_manifest_v1_payload_migrates_then_instantiates():
         "pipeline": {"name": "legacy"},
         "stages": [
             {"order": 1, "name": "s01_input", "active": True},
-            {"order": 16, "name": "s16_yield", "active": True},
+            {"order": 16, "name": "s21_yield", "active": True},
         ],
         "tools": {},
     }

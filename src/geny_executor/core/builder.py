@@ -130,7 +130,7 @@ class PipelineBuilder:
         from geny_executor.stages.s01_input import InputStage
         from geny_executor.stages.s07_token import TokenStage
         from geny_executor.stages.s09_parse import ParseStage
-        from geny_executor.stages.s16_yield import YieldStage
+        from geny_executor.stages.s21_yield import YieldStage
 
         pipeline.register_stage(InputStage())
         pipeline.register_stage(self._build_api_stage(config))
@@ -190,32 +190,32 @@ class PipelineBuilder:
 
         # Agent
         if "agent" in self._stage_configs:
-            from geny_executor.stages.s11_agent import AgentStage
+            from geny_executor.stages.s12_agent import AgentStage
 
             pipeline.register_stage(AgentStage(**self._stage_configs["agent"]))
 
         # Evaluate
         if "evaluate" in self._stage_configs:
-            from geny_executor.stages.s12_evaluate import EvaluateStage
+            from geny_executor.stages.s14_evaluate import EvaluateStage
 
             pipeline.register_stage(EvaluateStage(**self._stage_configs["evaluate"]))
 
         # Loop
         if "loop" in self._stage_configs:
-            from geny_executor.stages.s13_loop import LoopStage
+            from geny_executor.stages.s16_loop import LoopStage
 
             loop_cfg = dict(self._stage_configs["loop"])
             pipeline.register_stage(LoopStage(**loop_cfg))
 
         # Emit
         if "emit" in self._stage_configs:
-            from geny_executor.stages.s14_emit import EmitStage
+            from geny_executor.stages.s17_emit import EmitStage
 
             pipeline.register_stage(EmitStage(**self._stage_configs["emit"]))
 
         # Memory
         if "memory" in self._stage_configs:
-            from geny_executor.stages.s15_memory import MemoryStage
+            from geny_executor.stages.s18_memory import MemoryStage
 
             pipeline.register_stage(MemoryStage(**self._stage_configs["memory"]))
 

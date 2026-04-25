@@ -187,7 +187,7 @@ class GenyPresets:
                        → API → Token → Think → Parse → Tool
                        → Evaluate(BinaryClassify) → Loop → Memory → Yield
         """
-        from geny_executor.stages.s12_evaluate.artifact.adaptive.strategy import (
+        from geny_executor.stages.s14_evaluate.artifact.adaptive.strategy import (
             BinaryClassifyConfig,
             BinaryClassifyEvaluation,
         )

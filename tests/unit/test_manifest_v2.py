@@ -281,7 +281,7 @@ REQUIRED_STAGE_ORDERS = {1, 6, 9, 16}
 
 
 def test_blank_manifest_returns_16_stages_with_required_ones_active():
-    """Required stages (s01_input, s06_api, s09_parse, s16_yield) default
+    """Required stages (s01_input, s06_api, s09_parse, s21_yield) default
     active=True so a blank env is runnable without forcing the user to flip
     the load-bearing four. The other twelve remain active=False."""
     m = EnvironmentManifest.blank_manifest("Blank Env")

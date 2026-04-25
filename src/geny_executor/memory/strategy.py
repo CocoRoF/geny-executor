@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from geny_executor.core.state import PipelineState
-from geny_executor.stages.s15_memory.interface import MemoryUpdateStrategy
+from geny_executor.stages.s18_memory.interface import MemoryUpdateStrategy
 
 logger = logging.getLogger(__name__)
 

@@ -55,12 +55,12 @@ STAGE_MODULES: Dict[int, str] = {
     8: "s08_think",
     9: "s09_parse",
     10: "s10_tool",
-    11: "s11_agent",
-    12: "s12_evaluate",
-    13: "s13_loop",
-    14: "s14_emit",
-    15: "s15_memory",
-    16: "s16_yield",
+    11: "s12_agent",
+    12: "s14_evaluate",
+    13: "s16_loop",
+    14: "s17_emit",
+    15: "s18_memory",
+    16: "s21_yield",
 }
 
 # Reverse lookup: module name -> order
@@ -78,12 +78,12 @@ STAGE_ALIASES: Dict[str, str] = {
     "think": "s08_think",
     "parse": "s09_parse",
     "tool": "s10_tool",
-    "agent": "s11_agent",
-    "evaluate": "s12_evaluate",
-    "loop": "s13_loop",
-    "emit": "s14_emit",
-    "memory": "s15_memory",
-    "yield": "s16_yield",
+    "agent": "s12_agent",
+    "evaluate": "s14_evaluate",
+    "loop": "s16_loop",
+    "emit": "s17_emit",
+    "memory": "s18_memory",
+    "yield": "s21_yield",
 }
 
 
@@ -202,7 +202,7 @@ class ArtifactInfo:
     on disk is discoverable, even without metadata.
 
     Note on ``provides_stage``:
-        Some artifacts (e.g. ``s12_evaluate/adaptive``) ship a Strategy to be
+        Some artifacts (e.g. ``s14_evaluate/adaptive``) ship a Strategy to be
         injected into the default Stage rather than a standalone Stage class.
         These set ``Stage = None`` in their ``__init__.py`` — ``describe_artifact``
         detects that and surfaces ``provides_stage=False`` so UIs can disable
