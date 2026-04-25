@@ -7,8 +7,16 @@ from typing import Any, Dict, List, Optional
 from geny_executor.core.slot import StrategySlot
 from geny_executor.core.stage import Stage
 from geny_executor.core.state import PipelineState
-from geny_executor.stages.s08_think.interface import ThinkingProcessor
+from geny_executor.stages.s08_think.interface import (
+    ThinkingBudgetPlanner,
+    ThinkingProcessor,
+)
 from geny_executor.stages.s08_think.types import ThinkingBlock, ThinkingResult
+from geny_executor.stages.s08_think.artifact.default.budget import (
+    AdaptiveThinkingBudget,
+    StaticThinkingBudget,
+    apply_thinking_budget,
+)
 from geny_executor.stages.s08_think.artifact.default.processors import (
     ExtractAndStoreProcessor,
     PassthroughProcessor,
@@ -26,11 +34,18 @@ class ThinkStage(Stage[Any, Any]):
     1. Extracts type="thinking" blocks from API response content
     2. Processes them via the configured ThinkingProcessor
     3. Passes remaining blocks (text, tool_use) to downstream stages
+
+    Per-turn budget sizing (S7.10) lives on the ``budget_planner`` slot.
+    Planners run *before* the API call (Stage 6) — invoke
+    :meth:`apply_planned_budget` from a host-side hook or test
+    fixture. ``execute()`` itself does not auto-invoke the planner
+    because Stage 8 only runs after the API response is in hand.
     """
 
     def __init__(
         self,
         processor: Optional[ThinkingProcessor] = None,
+        budget_planner: Optional[ThinkingBudgetPlanner] = None,
     ):
         self._slots: Dict[str, StrategySlot] = {
             "processor": StrategySlot(
@@ -43,11 +58,37 @@ class ThinkStage(Stage[Any, Any]):
                 },
                 description="Thinking block processing strategy",
             ),
+            "budget_planner": StrategySlot(
+                name="budget_planner",
+                strategy=budget_planner or StaticThinkingBudget(),
+                registry={
+                    "static": StaticThinkingBudget,
+                    "adaptive": AdaptiveThinkingBudget,
+                },
+                description=(
+                    "Per-turn thinking_budget_tokens planner — invoke via "
+                    "apply_planned_budget(state) before the API call"
+                ),
+            ),
         }
 
     @property
     def _processor(self) -> ThinkingProcessor:
         return self._slots["processor"].strategy  # type: ignore[return-value]
+
+    @property
+    def _budget_planner(self) -> ThinkingBudgetPlanner:
+        return self._slots["budget_planner"].strategy  # type: ignore[return-value]
+
+    def apply_planned_budget(self, state: PipelineState) -> int:
+        """Run the configured planner and write the result onto state.
+
+        Hosts call this from a pre-Stage-6 hook (or a test) to size
+        the per-turn ``thinking_budget_tokens``. Returns the new
+        budget; the state mutation and the ``think.budget_applied``
+        event are handled by :func:`apply_thinking_budget`.
+        """
+        return apply_thinking_budget(state, self._budget_planner)
 
     @property
     def name(self) -> str:
