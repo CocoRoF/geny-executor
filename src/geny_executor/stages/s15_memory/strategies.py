@@ -5,6 +5,7 @@ from geny_executor.stages.s15_memory.artifact.default.strategies import (
     AppendOnlyStrategy,
     NoMemoryStrategy,
     ReflectiveStrategy,
+    StructuredReflectiveStrategy,
 )
 
 __all__ = [
@@ -12,4 +13,5 @@ __all__ = [
     "AppendOnlyStrategy",
     "NoMemoryStrategy",
     "ReflectiveStrategy",
+    "StructuredReflectiveStrategy",
 ]

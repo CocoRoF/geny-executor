@@ -34,6 +34,7 @@ from geny_executor.stages.s15_memory.artifact.default.strategies import (
     AppendOnlyStrategy,
     NoMemoryStrategy,
     ReflectiveStrategy,
+    StructuredReflectiveStrategy,
 )
 
 logger = logging.getLogger(__name__)
@@ -77,6 +78,7 @@ class MemoryStage(Stage[Any, Any]):
                     "append_only": AppendOnlyStrategy,
                     "no_memory": NoMemoryStrategy,
                     "reflective": ReflectiveStrategy,
+                    "structured_reflective": StructuredReflectiveStrategy,
                 },
                 description="Memory update strategy",
             ),
