@@ -4,6 +4,105 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.44.0] — 2026-04-25
+
+**Closes Phase 8 (MCP Advanced) of the executor uplift roadmap.**
+Bundles four sprints (S8.1 → S8.4) into one minor release. All
+new surfaces are independently opt-in; existing MCP integrations
+see no behaviour change.
+
+### Added — S8.1 Credential store (PR #103)
+
+- ``geny_executor.tools.mcp.credentials`` module:
+    * ``CredentialStore`` Protocol — get / set / delete / keys.
+    * ``MemoryCredentialStore`` — process-lifetime dict.
+    * ``FileCredentialStore`` — JSON-file persistence with
+      ``mode=0600`` atomic writes (tempfile + ``os.replace`` +
+      ``fsync``). Tolerates missing/empty files; rejects corrupt
+      JSON / non-object payloads with descriptive ``ValueError``;
+      creates parent directories on first set.
+    * ``mcp_credential_key(server_name)`` — canonical
+      ``mcp:<name>`` prefix helper.
+
+### Added — S8.2 OAuth 2.0 authorization-code flow (PR #104)
+
+- ``geny_executor.tools.mcp.oauth`` module:
+    * ``OAuthAuthConfig`` frozen dataclass + required-field
+      validation.
+    * ``OAuthToken`` (access/refresh/expires_at/scope/raw) with
+      JSON round-trip + ``is_expired(leeway_seconds=30)`` and a
+      ``from_token_response`` normaliser (``expires_in`` → epoch
+      ``expires_at``).
+    * ``OAuthError`` single error type.
+    * ``build_authorize_url`` — composes URLs with state + scope
+      + extra params (tolerates pre-existing query strings).
+    * ``find_free_port`` helper.
+    * ``OAuthFlow`` end-to-end orchestrator: 32-byte URL-safe
+      state for CSRF; stdlib ``HTTPServer`` bound to ``127.0.0.1``
+      by default; ``consent_handler`` callback for the URL;
+      injectable ``http_post`` (default ``httpx``); persists JSON
+      blob under ``mcp:<server_name>`` via the credential store.
+      Threads cleanly shut down in the ``finally`` block.
+      ``load_cached_token`` returns ``None`` on corrupt cache;
+      ``revoke_cached_token`` removes it.
+
+### Added — S8.3 mcp:// URI scheme + manager resource API (PR #105)
+
+- ``geny_executor.tools.mcp.uri`` module:
+    * ``mcp://<server>[/<resource_id>]`` grammar; server name
+      regex ``[A-Za-z0-9_.-]+``; opaque ``resource_id`` passed
+      back to the MCP SDK verbatim.
+    * ``parse_mcp_uri`` / ``build_mcp_uri`` / ``is_mcp_uri`` /
+      ``MCPURIError`` / ``MCP_URI_SCHEME``.
+- ``MCPManager`` API:
+    * ``read_mcp_resource(uri)`` — parses, routes, returns
+      ``None`` for unknown / disconnected; invalid URI raises
+      ``MCPURIError``.
+    * ``list_all_resources()`` — aggregates across connected
+      servers; adds ``server`` and ``mcp_uri`` keys per entry.
+
+### Added — S8.4 MCP prompts → Skills bridge (PR #106)
+
+- Per-connection (``MCPServerConnection``):
+    * ``list_prompts()`` — returns
+      ``[{name, description, arguments: [{name, description, required}]}]``.
+    * ``get_prompt(name, arguments)`` — returns
+      ``[{role, content}]`` message list. Both failure-isolated
+      like the resource API (returns empty/None with WARN log).
+- Manager (``MCPManager``):
+    * ``list_all_prompts()`` — aggregates across connected
+      servers; adds ``server`` key.
+    * ``get_mcp_prompt(server, name, arguments)`` — routes;
+      ``None`` for unknown / disconnected.
+- ``geny_executor.skills.mcp_bridge`` module:
+    * ``mcp_skill_id(server, prompt)`` →
+      ``"mcp__<server>__<prompt>"``.
+    * ``mcp_prompts_to_skills(manager)`` → ``List[Skill]`` with
+      ``extras = {server, prompt_name, arguments, source="mcp"}``.
+      Per-server failure isolation. Body is a short placeholder;
+      hosts wanting prompt-as-tool routing subclass
+      ``SkillTool`` and look up the call target via
+      ``metadata.extras``.
+    * ``MCP_SKILL_ID_PREFIX`` / ``MCP_SKILL_SOURCE_TAG``
+      constants re-exported.
+
+### Compatibility
+
+Additive only. Existing per-connection ``list_resources`` /
+``read_resource`` / tool-discovery surfaces and the FSM (S6.x
+shipped earlier) are unchanged. Hosts that don't construct an
+``OAuthFlow`` or call any of the new manager helpers see zero
+functional change.
+
+### Phase 8 summary
+
+Four sprints in one release: a pluggable credential store +
+full OAuth 2.0 authorization-code flow + ``mcp://`` URI scheme +
+prompts→Skills bridge. Phase 9 (the 21-stage reconstruction —
+the largest structural change in the uplift) follows.
+
+---
+
 ## [0.43.0] — 2026-04-25
 
 **Closes Phase 7 of the executor uplift roadmap.** Bundles the final
