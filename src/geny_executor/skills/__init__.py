@@ -25,6 +25,12 @@ from geny_executor.skills.loader import (
     load_skills_dir,
     parse_skill_file,
 )
+from geny_executor.skills.mcp_bridge import (
+    SKILL_ID_PREFIX as MCP_SKILL_ID_PREFIX,
+    SKILL_SOURCE_TAG as MCP_SKILL_SOURCE_TAG,
+    mcp_prompts_to_skills,
+    mcp_skill_id,
+)
 from geny_executor.skills.registry import SkillRegistry
 from geny_executor.skills.skill_tool import (
     SkillTool,
@@ -39,6 +45,8 @@ from geny_executor.skills.types import (
 )
 
 __all__ = [
+    "MCP_SKILL_ID_PREFIX",
+    "MCP_SKILL_SOURCE_TAG",
     "Skill",
     "SkillContext",
     "SkillMetadata",
@@ -51,6 +59,8 @@ __all__ = [
     "load_skills_dir",
     "parse_skill_file",
     "parse_frontmatter",
+    "mcp_prompts_to_skills",
+    "mcp_skill_id",
     "validate_execution_mode",
     "build_skill_tool",
 ]
