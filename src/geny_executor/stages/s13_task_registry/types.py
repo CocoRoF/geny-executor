@@ -39,7 +39,9 @@ class TaskRecord:
     ``payload`` carries whatever the host wants — typically the
     sub-agent request dict, a SubagentTypeDescriptor argument
     bundle, or a queue item id. ``result`` is filled when the task
-    reaches a terminal status.
+    reaches a terminal status. ``output_path`` is set by registries
+    that persist streaming output to external storage (file / blob)
+    so callers can locate the bytes without going through the registry.
     """
 
     task_id: str
@@ -52,6 +54,7 @@ class TaskRecord:
     result: Optional[Any] = None
     error: Optional[str] = None
     iteration_seen: int = 0
+    output_path: Optional[str] = None
 
     @property
     def is_terminal(self) -> bool:
@@ -81,10 +84,26 @@ class TaskRecord:
             "result": self.result,
             "error": self.error,
             "iteration_seen": self.iteration_seen,
+            "output_path": self.output_path,
         }
+
+
+@dataclass
+class TaskFilter:
+    """Filter applied to :meth:`TaskRegistry.list_filtered`.
+
+    Fields combine with AND. ``None`` values are no-ops. ``limit``
+    caps the result set after sorting (most-recent ``created_at`` first).
+    """
+
+    status: Optional[TaskStatus] = None
+    kind: Optional[str] = None
+    created_after: Optional[datetime] = None
+    limit: Optional[int] = None
 
 
 __all__ = [
     "TaskRecord",
     "TaskStatus",
+    "TaskFilter",
 ]

@@ -4,6 +4,31 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased] — 1.1.0
+
+### Added — Task lifecycle output streaming (PR-A.1.1)
+
+- ``TaskRecord.output_path`` — optional pointer to externally
+  persisted output bytes (file path / blob URI). Defaults to
+  ``None`` for backward compat.
+- ``TaskFilter`` — query object combining status / kind /
+  ``created_after`` / ``limit``. Used by ``TaskRegistry.list_filtered``.
+- ``TaskRegistry.list_filtered(filter)`` — default impl on top of
+  ``list_all``. Persistent backends (Postgres / Redis) override
+  to push the filter into the query layer.
+- ``TaskRegistry.append_output(task_id, chunk)`` /
+  ``read_output(task_id, offset, limit)`` /
+  ``stream_output(task_id)`` — output streaming surface. Defaults
+  to no-op / empty bytes / immediate-return so existing backends
+  remain compatible without changes.
+- ``InMemoryRegistry`` — implements the streaming surface with
+  per-task ``bytearray`` buffers + ``asyncio.Event`` so consumers
+  wake on each ``append_output`` rather than polling. ``remove`` /
+  terminal status transitions wake waiters so they drain and exit
+  cleanly.
+
+20 new unit tests in ``tests/unit/test_s13_task_registry_output.py``.
+
 ## [1.0.0] — 2026-04-25
 
 **First stable release.** Closes the multi-month executor uplift

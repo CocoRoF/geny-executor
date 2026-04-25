@@ -18,7 +18,11 @@ from geny_executor.stages.s13_task_registry.interface import (
     TaskPolicy,
     TaskRegistry,
 )
-from geny_executor.stages.s13_task_registry.types import TaskRecord, TaskStatus
+from geny_executor.stages.s13_task_registry.types import (
+    TaskFilter,
+    TaskRecord,
+    TaskStatus,
+)
 
 __all__ = [
     "EagerWaitPolicy",
@@ -27,6 +31,7 @@ __all__ = [
     "PENDING_TASKS_KEY",
     "TASKS_BY_STATUS_KEY",
     "TaskExecutor",
+    "TaskFilter",
     "TaskPolicy",
     "TaskRecord",
     "TaskRegistry",
