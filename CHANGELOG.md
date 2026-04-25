@@ -4,6 +4,155 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.46.0] — 2026-04-25
+
+**Closes Phase 9 Sub-phase 9b — every former scaffold has real
+behaviour now.** Five sprints (S9b.1 → S9b.5) bundled into one
+minor release. All five previously-scaffold stages
+(`tool_review`, `task_registry`, `hitl`, `summarize`, `persist`)
+now have full strategy-slot implementations. Defaults preserve
+pre-0.46.0 behaviour (no-op / always-approve / no-summary /
+no-persist), so existing pipelines continue to run identically.
+
+### Added — S9b.1 Stage 11 Tool Review (PR #114)
+
+- ``ToolReviewFlag`` frozen dataclass + ``Reviewer`` Strategy ABC.
+- Five default reviewers: ``SchemaReviewer`` (per-tool required
+  fields), ``SensitivePatternReviewer`` (api key / AWS / private
+  key / bearer regex), ``DestructiveResultReviewer`` (mutating
+  tool whitelist), ``NetworkAuditReviewer`` (host allowlist),
+  ``SizeReviewer`` (warn / error byte bands).
+- ``ToolReviewStage`` exposes a ``reviewers`` ``SlotChain``
+  (default order: schema → sensitive → destructive → network →
+  size). Per-reviewer failure isolation; flag list lives at
+  ``state.shared['tool_review_flags']``; reset every execute().
+- Helpers: ``collect_flags``, ``has_error_flag``, ``reset_flags``,
+  ``append_flags`` + ``SEVERITY_*`` constants. Events:
+  ``tool_review.flag``, ``tool_review.reviewer_error``,
+  ``tool_review.completed``.
+
+### Added — S9b.2 Stage 13 Task Registry (PR #115)
+
+- ``TaskStatus`` enum (pending/running/done/failed/cancelled) +
+  ``TaskRecord`` mutable dataclass with ``mark()`` and
+  ``is_terminal``.
+- ``TaskRegistry`` Strategy ABC + ``InMemoryRegistry``
+  (process-lifetime). ``TaskPolicy`` Strategy ABC + three
+  defaults: ``FireAndForgetPolicy`` (default), ``EagerWaitPolicy
+  (executor=...)``, ``TimedWaitPolicy(executor=...,
+  timeout_seconds=30)``.
+- ``TaskRegistryStage`` exposes ``registry`` + ``policy`` slots.
+  Drains ``state.shared[PENDING_TASKS_KEY]``, coerces dicts,
+  registers, runs the policy (try/except so a bad policy can't
+  wedge the loop). Publishes ``state.shared[TASKS_BY_STATUS_KEY]``
+  group-by-status snapshot. Events: ``task.registered``,
+  ``task.done`` / ``task.failed`` / ``task.timeout``,
+  ``task_registry.invalid_payload`` /
+  ``task_registry.policy_error`` / ``task_registry.synced``.
+
+### Added — S9b.3 Stage 15 HITL (PR #116)
+
+- ``HITLRequest`` frozen dataclass (auto-generated 16-byte
+  URL-safe token) + ``HITLDecision`` enum (approve/reject/cancel)
+  + ``HITLEntry`` audit record + coercion helpers.
+- ``Requester`` Strategy ABC + two defaults: ``NullRequester``
+  (always approves — safe default) and ``CallbackRequester``
+  (delegates to host async callable; ``configure()`` supports
+  late wiring).
+- ``TimeoutPolicy`` Strategy ABC + three defaults:
+  ``IndefiniteTimeout``, ``AutoApproveTimeout``,
+  ``AutoRejectTimeout``. Validation up front and on configure.
+- ``HITLStage`` exposes ``requester`` + ``timeout`` slots.
+  Bypass when ``state.shared['hitl_request']`` empty. Bounded
+  wait via ``asyncio.wait_for`` when ``timeout_seconds`` set;
+  on timeout the policy decides the verdict. Requester
+  exceptions emit ``hitl.requester_error`` and return cancel.
+  Reject → ``loop_decision="complete"`` + ``HITL_REJECTED``;
+  cancel → ``escalate`` + ``HITL_CANCELLED``. Audit log at
+  ``state.shared['hitl_history']``; latest verdict at
+  ``state.shared['hitl_last_decision']``.
+- ``Pipeline.resume`` API for cross-request resumption is
+  intentionally deferred — the current Requester abstraction
+  already covers in-process WebSocket-style HITL.
+
+### Added — S9b.4 Stage 19 Summarize (PR #117)
+
+- ``SummaryRecord`` dataclass (turn_id / abstract / key_facts /
+  entities / tags / importance / created_at). Re-uses
+  ``memory.provider.Importance``.
+- ``Summarizer`` Strategy ABC + two defaults: ``NoSummarizer``
+  (default — returns None / no-op) and ``RuleBasedSummarizer``
+  (sentence-split + capitalised-token extraction; configurable
+  caps + extra_tags; handles bare-string and block-shaped
+  assistant messages).
+- ``ImportanceScorer`` Strategy ABC + two defaults:
+  ``FixedImportance(grade=MEDIUM)`` (default) and
+  ``HeuristicImportance`` (high keywords → HIGH, escalation to
+  CRITICAL on tool-review error; low keywords → LOW; many facts
+  / entities → HIGH).
+- ``SummarizeStage`` exposes ``summarizer`` + ``importance``
+  slots. Bypass for default NoSummarizer. Per-component try/
+  except. Publishes ``state.shared['turn_summary']`` +
+  ``state.shared['summary_history']``. Optional forward to
+  ``state.session_runtime.memory_provider.record_summary``
+  when present (failures isolated). Events: ``summary.skipped``,
+  ``summary.written``, ``summary.summarizer_error``,
+  ``summary.importance_error``,
+  ``summary.provider_recorded`` / ``summary.provider_error``.
+
+### Added — S9b.5 Stage 20 Persist (PR #118)
+
+- ``CheckpointRecord`` dataclass (auto-generated ``ckpt_*`` id /
+  session_id / iteration / created_at / payload).
+- ``Persister`` Strategy ABC + two defaults: ``NoPersister``
+  (default no-op) and ``FilePersister(base_dir)`` (atomic
+  JSON-file writes via tempfile + ``os.replace`` + ``fsync``
+  running in ``asyncio.to_thread``; implements ``read`` +
+  ``list_checkpoints``).
+- ``FrequencyPolicy`` Strategy ABC + three defaults:
+  ``EveryTurnFrequency`` (default), ``EveryNTurnsFrequency
+  (n=5)``, ``OnSignificantFrequency`` (significant when an
+  event in ``significant_events`` fired this turn, or
+  tool-review error, or high-importance summary, or
+  ``state.completion_signal`` set).
+- ``PersistStage`` exposes ``persister`` + ``frequency`` slots.
+  ``should_bypass`` for default NoPersister. Frequency check
+  first; payload covers non-runtime state only (live
+  ``llm_client`` / ``session_runtime`` excluded). Persister
+  exceptions emit ``checkpoint.persister_error``. Successful
+  writes update ``state.shared['last_checkpoint']`` +
+  ``state.shared['checkpoint_history']``. Events:
+  ``checkpoint.skipped``, ``checkpoint.written``,
+  ``checkpoint.persister_error``.
+- ``Pipeline.resume_from_checkpoint`` is intentionally deferred
+  — this release ships the *write* half so hosts can start
+  collecting checkpoints; the read/restore API lands in a
+  follow-up.
+
+### Compatibility
+
+Additive only. Default slot strategies for every promoted stage
+preserve the exact pre-0.46.0 behaviour:
+
+* tool_review: empty pending tool calls → ``should_bypass`` True.
+* task_registry: empty queue → publishes empty status view, no
+  side effects.
+* hitl: empty request key → ``should_bypass`` True.
+* summarize: ``NoSummarizer`` → ``should_bypass`` True.
+* persist: ``NoPersister`` → ``should_bypass`` True.
+
+### Phase 9 summary
+
+Two sub-phases, ten sprints. Sub-phase 9a (S9a.1–S9a.5) widened
+the canonical pipeline from 16 to 21 slots and migrated manifests
++ presets. Sub-phase 9b (S9b.1–S9b.5) replaced each scaffold's
+pass-through body with a real strategy-slot implementation.
+``Pipeline.resume`` / ``resume_from_checkpoint`` for cross-
+request HITL and crash-recovery remain on the follow-up backlog
+— Sub-phase 9b ships the in-process write half of both.
+
+---
+
 ## [0.45.0] — 2026-04-25
 
 **Closes Phase 9 Sub-phase 9a (21-stage scaffolding) of the
