@@ -120,6 +120,27 @@ state from a backend populated by a different process.
 
 26 new unit tests in ``tests/unit/test_slash_commands.py``.
 
+### Added — 6 introspection slash commands (PR-A.2.2)
+
+Built-in commands auto-installed into the default registry on
+``import geny_executor.slash_commands.built_in``:
+
+- ``/cost``    — token / USD snapshot from a token accountant strategy.
+- ``/clear``   — reset history via the active history provider.
+- ``/status``  — preset / model / active stages dump.
+- ``/help``    — list every registered command grouped by category.
+- ``/memory``  — recent notes from a memory provider.
+- ``/context`` — paths the context loader last loaded.
+
+Each command is graceful: missing pipeline / missing strategy
+returns a structured "not configured" message instead of raising.
+Strategy lookup is host-shape-agnostic via ``find_strategy`` so a
+host that wires slots via ``pipeline.get_strategy`` /
+``pipeline.<attr>`` / ``pipeline._strategies`` / ``stage.get_strategy_slots``
+all work.
+
+17 new unit tests in ``tests/unit/test_slash_built_in_introspection.py``.
+
 ## [1.0.0] — 2026-04-25
 
 **First stable release.** Closes the multi-month executor uplift
