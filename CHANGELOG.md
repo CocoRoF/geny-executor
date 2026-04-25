@@ -176,6 +176,22 @@ full set (12) — both batches at once.
 
 18 new tests in ``tests/unit/test_slash_md_template.py``.
 
+### Added — AskUserQuestionTool (PR-A.3.1)
+
+- ``AskUserQuestionTool`` (registered as ``"AskUserQuestion"``) — let
+  the LLM ask a free-text question and wait for the user's reply.
+  Inverse of HITL (which is approve/reject on a tool the LLM already
+  proposed).
+- Wiring: host injects an ``async question_handler`` into
+  ``ToolContext.extras["question_handler"]``. Signature carries
+  ``question / options / default / timeout_seconds / prompt_id``.
+- ``QuestionCancelled`` exception for handlers to signal user-dismiss.
+- Timeout enforced via ``asyncio.wait_for``; structured error payloads
+  for NO_HANDLER / BAD_INPUT / TIMEOUT / CANCELLED / HANDLER_FAILED.
+- New ``"interaction"`` feature group.
+
+10 new tests in ``tests/unit/test_ask_user_question_tool.py``.
+
 ## [1.0.0] — 2026-04-25
 
 **First stable release.** Closes the multi-month executor uplift
