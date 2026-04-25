@@ -1000,9 +1000,15 @@ class Pipeline:
     async def _run_phases(self, input: Any, state: PipelineState) -> None:
         """Execute all three pipeline phases (single source of truth).
 
+        Sub-phase 9a (S9a.3) widened the layout from 16 → 21 stages.
+
         Phase A: Stage 1 (Input) — once
-        Phase B: Stages 2~13 (Agent Loop) — repeats
-        Phase C: Stages 14~16 (Finalize) — once
+        Phase B: Stages 2~16 (Agent Loop) — repeats
+        Phase C: Stages 17~21 (Finalize) — once
+
+        ``_try_run_stage`` silently skips slots that have no stage
+        registered, so presets that don't opt the new scaffolds in
+        (orders 11/13/15/19/20) still run identically to pre-9a.
         """
         # Phase A: Input
         current = await self._run_stage(1, input, state)
