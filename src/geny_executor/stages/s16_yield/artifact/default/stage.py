@@ -13,6 +13,9 @@ from geny_executor.stages.s16_yield.artifact.default.formatters import (
     StreamingFormatter,
     StructuredFormatter,
 )
+from geny_executor.stages.s16_yield.artifact.default.multi_format import (
+    MultiFormatFormatter,
+)
 
 
 class YieldStage(Stage[Any, Any]):
@@ -31,6 +34,7 @@ class YieldStage(Stage[Any, Any]):
                     "default": DefaultFormatter,
                     "structured": StructuredFormatter,
                     "streaming": StreamingFormatter,
+                    "multi_format": MultiFormatFormatter,
                 },
                 description="Final result formatting strategy",
             ),
