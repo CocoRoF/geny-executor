@@ -33,9 +33,9 @@ IDENTITY_CASES = [
 ]
 
 # Still pass-through scaffolds (Sub-phase 9b hasn't touched them
-# yet). HITL was promoted in S9b.3 so it's removed from this set.
+# yet). HITL/Summarize were promoted in S9b.3/S9b.4 so only Persist
+# remains in this set.
 PASSTHROUGH_CASES = [
-    (SummarizeStage, "summarize", 19, "finalize"),
     (PersistStage, "persist", 20, "finalize"),
 ]
 
