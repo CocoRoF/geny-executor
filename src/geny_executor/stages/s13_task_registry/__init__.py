@@ -1,9 +1,36 @@
-"""Stage 13: Task Registry — pass-through scaffolding (Sub-phase 9a).
+"""Stage 13: Task Registry — registry + policy implementation (S9b.2)."""
 
-Real implementation lands in Sub-phase 9b. For now the directory
-just reserves the slot.
-"""
+from geny_executor.stages.s13_task_registry.artifact.default.policies import (
+    EagerWaitPolicy,
+    FireAndForgetPolicy,
+    TaskExecutor,
+    TimedWaitPolicy,
+)
+from geny_executor.stages.s13_task_registry.artifact.default.registry import (
+    InMemoryRegistry,
+)
+from geny_executor.stages.s13_task_registry.artifact.default.stage import (
+    TaskRegistryStage,
+)
+from geny_executor.stages.s13_task_registry.interface import (
+    PENDING_TASKS_KEY,
+    TASKS_BY_STATUS_KEY,
+    TaskPolicy,
+    TaskRegistry,
+)
+from geny_executor.stages.s13_task_registry.types import TaskRecord, TaskStatus
 
-from geny_executor.stages.s13_task_registry.artifact.default.stage import TaskRegistryStage
-
-__all__ = ["TaskRegistryStage"]
+__all__ = [
+    "EagerWaitPolicy",
+    "FireAndForgetPolicy",
+    "InMemoryRegistry",
+    "PENDING_TASKS_KEY",
+    "TASKS_BY_STATUS_KEY",
+    "TaskExecutor",
+    "TaskPolicy",
+    "TaskRecord",
+    "TaskRegistry",
+    "TaskRegistryStage",
+    "TaskStatus",
+    "TimedWaitPolicy",
+]

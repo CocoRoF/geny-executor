@@ -1,9 +1,14 @@
 """Tests for Sub-phase 9a scaffolding stages.
 
-These five new stages reserve the slots that Sub-phase 9b will fill
-with real behaviour. For now each one is a pass-through (or always-
-bypass for HITL). The pipeline registry / introspection / capability
-matrix are NOT yet aware of them — those updates land in S9a.3.
+Originally all five stages were pure pass-throughs. Sub-phase 9b
+promotes them one at a time:
+
+  * S9b.1 — tool_review (chain of reviewers)
+  * S9b.2 — task_registry (registry + policy slots)
+  * S9b.3+ — hitl / summarize / persist still pass-through-ish
+
+The metadata + ``execute`` round-trip checks below skip the stages
+that have been promoted (they have their own dedicated tests).
 """
 
 from __future__ import annotations
@@ -18,7 +23,8 @@ from geny_executor.stages.s19_summarize import SummarizeStage
 from geny_executor.stages.s20_persist import PersistStage
 
 
-SCAFFOLDS = [
+# All five still report the same identity; only the bodies have grown.
+IDENTITY_CASES = [
     (ToolReviewStage, "tool_review", 11, "review"),
     (TaskRegistryStage, "task_registry", 13, "orchestration"),
     (HITLStage, "hitl", 15, "gate"),
@@ -26,9 +32,18 @@ SCAFFOLDS = [
     (PersistStage, "persist", 20, "finalize"),
 ]
 
+# These three are still pass-through scaffolds (Sub-phase 9b hasn't
+# touched them yet). Used for the "no slots / pass-through execute"
+# checks below.
+PASSTHROUGH_CASES = [
+    (HITLStage, "hitl", 15, "gate"),
+    (SummarizeStage, "summarize", 19, "finalize"),
+    (PersistStage, "persist", 20, "finalize"),
+]
 
-@pytest.mark.parametrize("cls,name,order,category", SCAFFOLDS)
-class TestScaffoldMetadata:
+
+@pytest.mark.parametrize("cls,name,order,category", IDENTITY_CASES)
+class TestScaffoldIdentity:
     def test_name(self, cls, name, order, category):
         assert cls().name == name
 
@@ -38,20 +53,20 @@ class TestScaffoldMetadata:
     def test_category(self, cls, name, order, category):
         assert cls().category == category
 
+
+@pytest.mark.parametrize("cls,name,order,category", PASSTHROUGH_CASES)
+class TestPassThroughScaffolds:
     def test_no_strategy_slots(self, cls, name, order, category):
         assert cls().get_strategy_slots() == {}
 
-
-@pytest.mark.parametrize("cls", [c for c, *_ in SCAFFOLDS])
-class TestScaffoldExecution:
     @pytest.mark.asyncio
-    async def test_returns_input_unchanged(self, cls):
+    async def test_returns_input_unchanged(self, cls, name, order, category):
         state = PipelineState(session_id="s")
         result = await cls().execute(input="passthrough-marker", state=state)
         assert result == "passthrough-marker"
 
     @pytest.mark.asyncio
-    async def test_does_not_mutate_state(self, cls):
+    async def test_does_not_mutate_state(self, cls, name, order, category):
         state = PipelineState(session_id="s")
         before_msgs = list(state.messages)
         before_meta = dict(state.metadata)
