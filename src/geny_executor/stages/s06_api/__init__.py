@@ -1,10 +1,12 @@
 """Stage 6: API — Anthropic Messages API call."""
 
-from geny_executor.stages.s06_api.interface import APIProvider, RetryStrategy
+from geny_executor.stages.s06_api.interface import APIProvider, ModelRouter, RetryStrategy
 from geny_executor.stages.s06_api.artifact.default import (
     APIStage,
+    AdaptiveModelRouter,
     AnthropicProvider,
     MockProvider,
+    PassthroughRouter,
     RecordingProvider,
     ExponentialBackoffRetry,
     NoRetry,
@@ -22,6 +24,9 @@ __all__ = [
     "ExponentialBackoffRetry",
     "NoRetry",
     "RateLimitAwareRetry",
+    "ModelRouter",
+    "AdaptiveModelRouter",
+    "PassthroughRouter",
     "APIRequest",
     "APIResponse",
     "ContentBlock",
