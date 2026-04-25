@@ -32,11 +32,9 @@ IDENTITY_CASES = [
     (PersistStage, "persist", 20, "finalize"),
 ]
 
-# These three are still pass-through scaffolds (Sub-phase 9b hasn't
-# touched them yet). Used for the "no slots / pass-through execute"
-# checks below.
+# Still pass-through scaffolds (Sub-phase 9b hasn't touched them
+# yet). HITL was promoted in S9b.3 so it's removed from this set.
 PASSTHROUGH_CASES = [
-    (HITLStage, "hitl", 15, "gate"),
     (SummarizeStage, "summarize", 19, "finalize"),
     (PersistStage, "persist", 20, "finalize"),
 ]
@@ -76,8 +74,9 @@ class TestPassThroughScaffolds:
 
 
 class TestHITLBypass:
-    def test_hitl_always_bypasses(self):
-        # Sub-phase 9a scaffolding: HITL never blocks the pipeline.
+    def test_hitl_bypasses_when_no_request(self):
+        # S9b.3: HITL still bypasses when there's no pending request,
+        # so pipelines that don't opt in see no behaviour change.
         assert HITLStage().should_bypass(PipelineState()) is True
 
 
