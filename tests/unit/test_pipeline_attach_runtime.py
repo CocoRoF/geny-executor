@@ -115,7 +115,7 @@ def test_attach_runtime_replaces_context_retriever():
 
 def test_attach_runtime_replaces_memory_strategy_and_persistence():
     pipeline = _make_pipeline_with_context_and_memory()
-    memory_stage = pipeline.get_stage(15)
+    memory_stage = pipeline.get_stage(18)
 
     strategy = _TrackedStrategy("mem")
     persistence = _TrackedPersistence("mem")
@@ -143,8 +143,8 @@ def test_attach_runtime_all_three_kwargs():
     )
 
     assert pipeline.get_stage(2)._retriever is retriever
-    assert pipeline.get_stage(15)._strategy is strategy
-    assert pipeline.get_stage(15)._persistence is persistence
+    assert pipeline.get_stage(18)._strategy is strategy
+    assert pipeline.get_stage(18)._persistence is persistence
 
 
 def test_attach_runtime_is_idempotent_before_first_run():
@@ -173,7 +173,7 @@ def test_attach_runtime_missing_stage_is_silent_noop():
     pipeline.attach_runtime(memory_retriever=retriever, memory_strategy=strategy)
 
     assert pipeline.get_stage(2)._retriever is retriever
-    assert pipeline.get_stage(15) is None
+    assert pipeline.get_stage(18) is None
 
 
 def test_attach_runtime_none_kwargs_dont_overwrite():
@@ -188,7 +188,7 @@ def test_attach_runtime_none_kwargs_dont_overwrite():
     pipeline.attach_runtime(memory_strategy=strategy)
 
     assert pipeline.get_stage(2)._retriever is first
-    assert pipeline.get_stage(15)._strategy is strategy
+    assert pipeline.get_stage(18)._strategy is strategy
 
 
 @pytest.mark.asyncio
@@ -209,12 +209,12 @@ def test_attach_runtime_no_args_is_valid_noop():
     """Calling with no kwargs is valid — nothing changes."""
     pipeline = _make_pipeline_with_context_and_memory()
     baseline_retriever = pipeline.get_stage(2)._retriever
-    baseline_strategy = pipeline.get_stage(15)._strategy
+    baseline_strategy = pipeline.get_stage(18)._strategy
 
     pipeline.attach_runtime()
 
     assert pipeline.get_stage(2)._retriever is baseline_retriever
-    assert pipeline.get_stage(15)._strategy is baseline_strategy
+    assert pipeline.get_stage(18)._strategy is baseline_strategy
 
 
 # ─── v0.26.0: system_builder / tool_context ───
@@ -327,8 +327,8 @@ def test_attach_runtime_all_five_kwargs_together():
     assert pipeline.get_stage(2)._retriever is retriever
     assert pipeline.get_stage(3)._builder is builder
     assert pipeline.get_stage(10)._context is ctx
-    assert pipeline.get_stage(15)._strategy is strategy
-    assert pipeline.get_stage(15)._persistence is persistence
+    assert pipeline.get_stage(18)._strategy is strategy
+    assert pipeline.get_stage(18)._persistence is persistence
 
 
 @pytest.mark.asyncio

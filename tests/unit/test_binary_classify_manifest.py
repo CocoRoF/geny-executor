@@ -34,7 +34,9 @@ def _manifest_with_binary_classify(*, strategy_config: dict | None = None) -> En
     entries = [
         StageManifestEntry(order=1, name="input"),
         StageManifestEntry(
-            order=12,
+            # Sub-phase 9a (S9a.3): evaluate moved 12 → 14 in the
+            # 21-stage layout.
+            order=14,
             name="evaluate",
             strategies={"strategy": "binary_classify", "scorer": "no_scorer"},
             strategy_configs=({"strategy": strategy_config} if strategy_config is not None else {}),
@@ -58,8 +60,8 @@ def test_binary_classify_resolves_from_manifest():
     manifest = _manifest_with_binary_classify()
     pipeline = Pipeline.from_manifest(manifest, api_key="sk-test", strict=False)
 
-    stage12 = pipeline.get_stage(12)
-    strategy = stage12.get_strategy_slots()["strategy"].strategy
+    stage14 = pipeline.get_stage(14)
+    strategy = stage14.get_strategy_slots()["strategy"].strategy
 
     assert isinstance(strategy, BinaryClassifyEvaluation)
     assert strategy.name == "binary_classify"
@@ -71,8 +73,8 @@ def test_binary_classify_configure_applies_strategy_config():
     )
     pipeline = Pipeline.from_manifest(manifest, api_key="sk-test", strict=False)
 
-    stage12 = pipeline.get_stage(12)
-    strategy = stage12.get_strategy_slots()["strategy"].strategy
+    stage14 = pipeline.get_stage(14)
+    strategy = stage14.get_strategy_slots()["strategy"].strategy
 
     assert strategy._config.easy_max_turns == 1
     assert strategy._config.not_easy_max_turns == 30
@@ -82,8 +84,8 @@ def test_binary_classify_defaults_when_no_config():
     manifest = _manifest_with_binary_classify()
     pipeline = Pipeline.from_manifest(manifest, api_key="sk-test", strict=False)
 
-    stage12 = pipeline.get_stage(12)
-    strategy = stage12.get_strategy_slots()["strategy"].strategy
+    stage14 = pipeline.get_stage(14)
+    strategy = stage14.get_strategy_slots()["strategy"].strategy
 
     defaults = BinaryClassifyConfig()
     assert strategy._config.easy_max_turns == defaults.easy_max_turns

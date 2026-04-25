@@ -43,7 +43,13 @@ DEFAULT_ARTIFACT = "default"
 #                           "requires": list[str]}``. Missing keys fall back to defaults.
 ARTIFACT_META_ATTR = "ARTIFACT_META"
 
-# Canonical stage identifiers (order -> module name)
+# Canonical stage identifiers (order -> module name).
+#
+# Sub-phase 9a (S9a.3) re-keyed this map from the legacy 16-slot
+# layout to the 21-slot layout. The five new entries (11, 13, 15, 19,
+# 20) point at the scaffolding stages added in S9a.2; their bodies are
+# pass-throughs / bypass for now and Sub-phase 9b replaces them with
+# real implementations.
 STAGE_MODULES: Dict[int, str] = {
     1: "s01_input",
     2: "s02_context",
@@ -55,12 +61,17 @@ STAGE_MODULES: Dict[int, str] = {
     8: "s08_think",
     9: "s09_parse",
     10: "s10_tool",
-    11: "s12_agent",
-    12: "s14_evaluate",
-    13: "s16_loop",
-    14: "s17_emit",
-    15: "s18_memory",
-    16: "s21_yield",
+    11: "s11_tool_review",
+    12: "s12_agent",
+    13: "s13_task_registry",
+    14: "s14_evaluate",
+    15: "s15_hitl",
+    16: "s16_loop",
+    17: "s17_emit",
+    18: "s18_memory",
+    19: "s19_summarize",
+    20: "s20_persist",
+    21: "s21_yield",
 }
 
 # Reverse lookup: module name -> order
@@ -78,11 +89,16 @@ STAGE_ALIASES: Dict[str, str] = {
     "think": "s08_think",
     "parse": "s09_parse",
     "tool": "s10_tool",
+    "tool_review": "s11_tool_review",
     "agent": "s12_agent",
+    "task_registry": "s13_task_registry",
     "evaluate": "s14_evaluate",
+    "hitl": "s15_hitl",
     "loop": "s16_loop",
     "emit": "s17_emit",
     "memory": "s18_memory",
+    "summarize": "s19_summarize",
+    "persist": "s20_persist",
     "yield": "s21_yield",
 }
 

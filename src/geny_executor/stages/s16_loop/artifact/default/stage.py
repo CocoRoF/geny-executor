@@ -61,7 +61,7 @@ class LoopStage(Stage[Any, Any]):
 
     @property
     def order(self) -> int:
-        return 13
+        return 16
 
     @property
     def category(self) -> str:

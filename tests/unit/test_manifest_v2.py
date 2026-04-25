@@ -277,16 +277,19 @@ def test_snapshot_json_is_valid_utf8():
 # ── EnvironmentManifest.blank_manifest ────────────────────────
 
 
-REQUIRED_STAGE_ORDERS = {1, 6, 9, 16}
+# Required stages: input(1) / api(6) / parse(9) / yield(21).
+# Sub-phase 9a (S9a.3) renumbered yield from 16 → 21 as part of the
+# 21-stage layout; the required set itself is unchanged.
+REQUIRED_STAGE_ORDERS = {1, 6, 9, 21}
 
 
-def test_blank_manifest_returns_16_stages_with_required_ones_active():
+def test_blank_manifest_returns_21_stages_with_required_ones_active():
     """Required stages (s01_input, s06_api, s09_parse, s21_yield) default
     active=True so a blank env is runnable without forcing the user to flip
-    the load-bearing four. The other twelve remain active=False."""
+    the load-bearing four. The other seventeen remain active=False."""
     m = EnvironmentManifest.blank_manifest("Blank Env")
     entries = m.stage_entries()
-    assert [e.order for e in entries] == list(range(1, 17))
+    assert [e.order for e in entries] == list(range(1, 22))
     active_orders = {e.order for e in entries if e.active}
     assert active_orders == REQUIRED_STAGE_ORDERS
 
@@ -295,7 +298,7 @@ def test_blank_manifest_optional_stages_default_inactive():
     """Every non-required stage must default active=False — users opt in."""
     m = EnvironmentManifest.blank_manifest("Blank Env")
     inactive_orders = {e.order for e in m.stage_entries() if not e.active}
-    assert inactive_orders == set(range(1, 17)) - REQUIRED_STAGE_ORDERS
+    assert inactive_orders == set(range(1, 22)) - REQUIRED_STAGE_ORDERS
 
 
 def test_blank_manifest_uses_default_artifact_per_stage():
@@ -345,7 +348,7 @@ def test_blank_manifest_roundtrips_through_json():
     original = EnvironmentManifest.blank_manifest("RT")
     restored = EnvironmentManifest.from_dict(json.loads(json.dumps(original.to_dict())))
     assert restored.version == MANIFEST_VERSION
-    assert len(restored.stages) == 16
+    assert len(restored.stages) == 21
     assert restored.metadata.base_preset == ""
 
 

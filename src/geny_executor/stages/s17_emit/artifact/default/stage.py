@@ -54,7 +54,7 @@ class EmitStage(Stage[Any, Any]):
 
     @property
     def order(self) -> int:
-        return 14
+        return 17
 
     @property
     def category(self) -> str:

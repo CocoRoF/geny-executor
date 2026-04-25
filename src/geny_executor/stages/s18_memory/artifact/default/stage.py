@@ -122,7 +122,7 @@ class MemoryStage(Stage[Any, Any]):
 
     @property
     def order(self) -> int:
-        return 15
+        return 18
 
     @property
     def category(self) -> str:

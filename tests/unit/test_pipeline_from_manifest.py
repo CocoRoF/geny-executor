@@ -95,7 +95,7 @@ def test_from_manifest_roundtrip_preserves_structure():
 
     # Stage order, names, artifacts
     rebuilt_orders = [s.order for s in rebuilt.stages]
-    assert rebuilt_orders == [1, 4, 5, 6, 9, 14, 16]
+    assert rebuilt_orders == [1, 4, 5, 6, 9, 17, 21]
     rebuilt_s06 = rebuilt.get_stage(6)
     assert rebuilt_s06.artifact_name == "default"
 
@@ -168,13 +168,20 @@ def test_from_manifest_non_strict_drops_broken_stages():
     rebuilt = Pipeline.from_manifest(manifest, api_key=None, strict=False)
     # s06_api requires api_key and should have been skipped
     assert rebuilt.get_stage(6) is None
-    # Stages that don't need credentials still registered
+    # Stages that don't need credentials still registered.
+    # Sub-phase 9a (S9a.3) renumbered yield 16 → 21.
     assert rebuilt.get_stage(1) is not None
-    assert rebuilt.get_stage(16) is not None
+    assert rebuilt.get_stage(21) is not None
 
 
 def test_from_manifest_v1_payload_migrates_then_instantiates():
-    """v1 manifest JSON loads + builds a pipeline without explicit migration."""
+    """v1 manifest JSON loads + builds a pipeline without explicit migration.
+
+    Sub-phase 9a (S9a.3) renumbered yield from 16 → 21 as part of
+    the 21-stage layout. The rebuilt pipeline reports each stage's
+    actual class-level ``order``, not the legacy slot number from
+    the manifest payload, so the assertion uses the new orders.
+    """
     v1 = {
         "version": "1.0",
         "metadata": {"id": "env_legacy", "name": "Legacy"},
@@ -182,11 +189,11 @@ def test_from_manifest_v1_payload_migrates_then_instantiates():
         "pipeline": {"name": "legacy"},
         "stages": [
             {"order": 1, "name": "s01_input", "active": True},
-            {"order": 16, "name": "s21_yield", "active": True},
+            {"order": 21, "name": "s21_yield", "active": True},
         ],
         "tools": {},
     }
     manifest = EnvironmentManifest.from_dict(v1)
     rebuilt = Pipeline.from_manifest(manifest, strict=True)
-    assert {s.order for s in rebuilt.stages} == {1, 16}
+    assert {s.order for s in rebuilt.stages} == {1, 21}
     assert rebuilt._config.model.model == "claude-opus-4-7"

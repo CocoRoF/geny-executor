@@ -206,11 +206,15 @@ class Pipeline:
     can reach either without re-plumbing.
     """
 
-    # Loop boundary constants
+    # Loop boundary constants. Sub-phase 9a (S9a.3) extended the
+    # 16-slot layout to 21 slots — the loop body now spans the
+    # five new mid-pipeline stages (tool_review / task_registry /
+    # hitl) and the finalize tail is five stages long instead of
+    # three (emit / memory / summarize / persist / yield).
     LOOP_START = 2
-    LOOP_END = 13  # inclusive
-    FINALIZE_START = 14
-    FINALIZE_END = 16  # inclusive
+    LOOP_END = 16  # inclusive
+    FINALIZE_START = 17
+    FINALIZE_END = 21  # inclusive
     EVENT_DATA_TRUNCATE = 500  # max chars for event data preview
 
     # Default names for unregistered stage slots (used in bypass events)
@@ -225,12 +229,17 @@ class Pipeline:
         8: "think",
         9: "parse",
         10: "tool",
-        11: "agent",
-        12: "evaluate",
-        13: "loop",
-        14: "emit",
-        15: "memory",
-        16: "yield",
+        11: "tool_review",
+        12: "agent",
+        13: "task_registry",
+        14: "evaluate",
+        15: "hitl",
+        16: "loop",
+        17: "emit",
+        18: "memory",
+        19: "summarize",
+        20: "persist",
+        21: "yield",
     }
 
     def __init__(self, config: Optional[PipelineConfig] = None):
@@ -963,9 +972,14 @@ class Pipeline:
     # ── UI metadata ──
 
     def describe(self) -> List[StageDescription]:
-        """Return pipeline structure for UI rendering."""
+        """Return pipeline structure for UI rendering.
+
+        Iterates the canonical 21-slot layout (S9a.3). Slots without a
+        registered stage emit an ``unregistered`` placeholder so UIs can
+        still render the full row.
+        """
         descriptions = []
-        for order in range(1, 17):
+        for order in range(1, self.FINALIZE_END + 1):
             stage = self._stages.get(order)
             if stage:
                 desc = stage.describe()

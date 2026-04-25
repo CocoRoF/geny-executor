@@ -76,7 +76,7 @@ class EvaluateStage(Stage[Any, Any]):
 
     @property
     def order(self) -> int:
-        return 12
+        return 14
 
     @property
     def category(self) -> str:

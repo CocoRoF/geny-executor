@@ -605,7 +605,7 @@ class TestPipelineMutator:
         snap = mutator.snapshot("test snapshot")
         assert snap.pipeline_name == "mut-test"
         assert snap.description == "test snapshot"
-        assert len(snap.stages) == 16  # full 1-16 range
+        assert len(snap.stages) == 21  # full 1-21 range (S9a.3)
         # Stage 2 should have strategy info
         s2 = next(s for s in snap.stages if s.order == 2)
         assert s2.is_active is True
@@ -648,7 +648,7 @@ class TestPipelineMutator:
         json_str = snap.to_json()
         restored = PipelineSnapshot.from_json(json_str)
         assert restored.pipeline_name == snap.pipeline_name
-        assert len(restored.stages) == 16
+        assert len(restored.stages) == 21
 
 
 # ══════════════════════════════════════════════════════════
