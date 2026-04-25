@@ -182,6 +182,8 @@ def test_environment_manifest_v2_roundtrip_idempotent():
 
 
 def test_environment_manifest_stage_entries_helper():
+    """v1 → v2 → v3 chain: a single-stage v1 payload comes out
+    padded to include the five new v3 scaffold slots (active=False)."""
     v1 = {
         "version": "1.0",
         "metadata": {"id": "env_x"},
@@ -189,9 +191,15 @@ def test_environment_manifest_stage_entries_helper():
     }
     m = EnvironmentManifest.from_dict(v1)
     entries = m.stage_entries()
-    assert len(entries) == 1
-    assert entries[0].order == 1
-    entries[0].artifact = "custom"
+    # 1 original entry + 5 v2→v3 scaffold pads.
+    assert len(entries) == 6
+    by_order = {e.order: e for e in entries}
+    assert by_order[1].order == 1 and by_order[1].active is True
+    # The five v3 scaffold orders are appended as inactive.
+    for order in (11, 13, 15, 19, 20):
+        assert order in by_order
+        assert by_order[order].active is False
+    by_order[1].artifact = "custom"
     m.set_stage_entries(entries)
     assert m.stages[0]["artifact"] == "custom"
 
