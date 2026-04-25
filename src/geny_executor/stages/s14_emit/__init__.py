@@ -10,6 +10,7 @@ from geny_executor.stages.s14_emit.emitters import (
     EmitterChain,
     EmitResult,
 )
+from geny_executor.stages.s14_emit.types import OrderedEmitterChain
 
 __all__ = [
     "EmitStage",
@@ -19,5 +20,6 @@ __all__ = [
     "VTuberEmitter",
     "TTSEmitter",
     "EmitterChain",
+    "OrderedEmitterChain",
     "EmitResult",
 ]
