@@ -97,10 +97,11 @@ STAGE_FACTORIES = [
 ]
 
 # Sub-phase 9a scaffolds: pass-through stages with no strategy
-# slots/chains yet. Excluded from the "at least one strategy
-# surface" contract until 9b lands. S9b.1-4 promoted tool_review,
-# task_registry, hitl, summarize. Only persist remains.
-_SCAFFOLD_NAMES = frozenset({"persist"})
+# slots/chains yet. Sub-phase 9b promoted all five
+# (tool_review / task_registry / hitl / summarize / persist) — the
+# skip set is now empty. Kept as a frozenset so future scaffold
+# additions slot in without re-introducing the import.
+_SCAFFOLD_NAMES: frozenset[str] = frozenset()
 
 VALID_CATEGORIES = {
     "ingress",
