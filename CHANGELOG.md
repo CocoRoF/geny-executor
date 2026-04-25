@@ -103,6 +103,23 @@ state from a backend populated by a different process.
 
 22 new unit tests in ``tests/unit/test_task_tools.py``.
 
+### Added — Slash command registry + parser (PR-A.2.1)
+
+- ``geny_executor.slash_commands`` — new subsystem.
+- ``SlashCommand`` ABC, ``SlashContext``, ``SlashResult``,
+  ``SlashCategory`` (introspection / control / domain).
+- ``SlashCommandRegistry`` — register / deregister / resolve /
+  list_all / list_by_category / discover_paths. Default singleton
+  via ``get_default_registry`` plus ``reset_default_registry`` for
+  tests.
+- ``parse_slash(input_text)`` — detects ``/<cmd>`` prefix, splits
+  args via shlex (quoted args supported), preserves
+  ``remaining_prompt`` (anything after first newline) for the host
+  to feed to the LLM as user input. Bad command names / unmatched
+  quotes return ``None`` so the caller treats input as literal.
+
+26 new unit tests in ``tests/unit/test_slash_commands.py``.
+
 ## [1.0.0] — 2026-04-25
 
 **First stable release.** Closes the multi-month executor uplift
