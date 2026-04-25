@@ -4,6 +4,77 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.43.0] — 2026-04-25
+
+**Closes Phase 7 of the executor uplift roadmap.** Bundles the final
+two sprints (S7.11 + S7.12) into one minor release. Both are
+independently opt-in; without consuming the new surfaces, behaviour
+is identical to 0.42.x.
+
+### Added — S7.11 Stage 14 Emit (PR #100)
+
+- ``Emitter`` ABC gains two optional class-level scheduling hints:
+  ``requires: Tuple[str, ...]`` (names of emitters that must
+  succeed first) and ``timeout_seconds: Optional[float]`` (per-emit
+  wall-clock budget). Both default to "no constraint" so existing
+  emitters keep working unchanged.
+- ``OrderedEmitterChain`` (new class alongside the unchanged
+  legacy ``EmitterChain``) honours those hints:
+    * Topological order via Kahn's algorithm. Cycles fall back to
+      declared order with an ``emit.cycle_detected`` event.
+      Unknown deps emit ``emit.unknown_dependency`` and are
+      dropped from the dep set so a typo cannot wedge the whole
+      chain.
+    * Dep-failure skip — dependents whose required emitters did
+      not ``emitted=True`` are skipped with metadata
+      ``{"skipped": "dep_failed", "deps": [...]}`` and an
+      ``emit.skipped_dep_failed`` event.
+    * Timeout-based backpressure — per-emitter consecutive-timeout
+      counter. Once it reaches ``backpressure_threshold`` (default
+      3), the emitter is skipped (metadata.skipped="backpressure")
+      with an ``emit.skipped_backpressure`` event until success or
+      :meth:`reset_backpressure`. Non-timeout exceptions don't
+      count toward backpressure (correctness bugs ≠ latency).
+- ``EmitResult`` gains ``emitter_name: str = ""`` for clean
+  result→producer pairing. Legacy chain leaves it blank;
+  ``OrderedEmitterChain`` populates it on every result.
+
+### Added — S7.12 Stage 16 Yield (PR #101)
+
+- ``MultiFormatFormatter(formats=…, include_thinking=False)`` —
+  produces text + structured + markdown payloads in one pass.
+  ``state.final_output`` becomes a dict keyed by the requested
+  format names; consumers pick whichever they need without
+  re-running the pipeline.
+- ``include_thinking`` toggle folds the most recent thinking turn
+  from ``state.thinking_history`` into the markdown output (off
+  by default — matches existing privacy posture).
+- Public helpers ``build_structured(state)`` (same shape as
+  ``StructuredFormatter``) and ``build_markdown(state,
+  include_thinking=False)`` (`# Result` / optional `## Thinking`
+  / optional `## Status` / metadata footer) for hosts that want
+  the payloads without going through a formatter.
+- ``YieldStage``'s formatter slot registry now exposes
+  ``"multi_format"``.
+
+### Compatibility
+
+Additive only. No default slot strategy or chain class changes —
+existing pipelines see zero functional change. ``EmitterChain``
+and the legacy formatters (``Default`` / ``Structured`` /
+``Streaming``) are unchanged; the new ``OrderedEmitterChain`` and
+``MultiFormatFormatter`` are alternatives, not replacements.
+
+### Phase 7 summary
+
+Twelve sprints across nine stages, shipped over six minor releases
+(0.38–0.43). Every stage now ships at least one new strategy slot
+or class-level extension surface, all opt-in, all backward-
+compatible. Phase 8 (MCP Advanced) and Phase 9 (21-stage
+reconstruction) are next.
+
+---
+
 ## [0.42.0] — 2026-04-25
 
 Phase 7 sprint batch — three more stage enhancements bundled into
