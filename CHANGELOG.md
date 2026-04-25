@@ -4,6 +4,91 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.0.0] — 2026-04-25
+
+**First stable release.** Closes the multi-month executor uplift
+roadmap. PyPI classifier moves from ``Development Status :: 4 -
+Beta`` to ``Development Status :: 5 - Production/Stable``.
+
+This release bundles the deferred Sub-phase 9c follow-ups (the
+read half of HITL + crash recovery) plus the formal stability
+declaration. There are **no breaking changes** vs 0.46.x — every
+0.46-pinned host can pin ``geny-executor[web]>=1.0.0,<2.0.0`` and
+upgrade with no code changes.
+
+### Added — S9c.1 Pipeline.resume API for HITL (PR #120)
+
+- ``Pipeline._pending_hitl: Dict[str, Future[HITLDecision]]`` —
+  internal token-keyed registry the resume requester populates
+  and the resume API resolves.
+- ``Pipeline.list_pending_hitl()`` — token list of unresolved
+  requests.
+- ``Pipeline.resume(token, decision)`` — resolves the pending
+  Future. Accepts :class:`HITLDecision` or strings
+  (``"approve"`` / ``"reject"`` / ``"cancel"``). Raises
+  ``KeyError`` on unknown token, ``RuntimeError`` when already
+  resolved, ``ValueError`` on unknown decision string.
+- ``Pipeline.cancel_pending_hitl(token) -> bool`` — convenience
+  for "session terminated, drop in-flight approvals" cleanup.
+- ``PipelineResumeRequester(pipeline)`` — :class:`Requester`
+  that registers a Future on ``pipeline._pending_hitl`` under
+  the request's token and awaits it. Cleans up the registration
+  in a ``finally`` block so cancellation never leaks entries.
+  Added to ``HITLStage``'s slot registry as
+  ``"pipeline_resume"``.
+
+### Added — S9c.2 Checkpoint restoration helpers (PR #121)
+
+- ``CheckpointNotFound`` LookupError — distinguishable from
+  backend errors which propagate.
+- ``state_from_payload(payload) -> PipelineState`` — inverse of
+  ``PersistStage._build_payload``. Tolerates missing keys,
+  ignores unknown extras, rebuilds :class:`TokenUsage`.
+- ``state_from_record(record)`` — convenience wrapper.
+- ``async restore_state_from_checkpoint(persister, checkpoint_id)``
+  — reads via the persister and rebuilds. Raises
+  ``CheckpointNotFound`` when the persister returns ``None``.
+- Runtime fields (``llm_client`` / ``session_runtime``) are
+  intentionally **not** restored — hosts rebind them on the run
+  that uses the restored state.
+
+### Stability commitment
+
+The library now ships under semver 1.0:
+
+* **Breaking changes** require a major version bump (2.0).
+* **Additive features** ship in minor (1.x.0); they preserve the
+  default behaviour of every 1.0-era pipeline.
+* **Bug fixes** ship in patch (1.0.x).
+* The 21-stage layout, the strategy-slot interfaces, the
+  :class:`Pipeline` / :class:`PipelineState` / :class:`PipelineConfig`
+  class surfaces, the :class:`MCPManager` API, the manifest v3
+  schema, and the slot-registry conventions are all considered
+  stable. Internals prefixed with ``_`` remain freely
+  changeable.
+
+### Roadmap completion summary
+
+The executor uplift shipped over six minor releases (0.42 → 0.46)
+and one stability marker (1.0.0):
+
+* **Phase 7** (12 sprints) — every stage gained at least one new
+  strategy slot or class-level extension surface.
+* **Phase 8** (4 sprints) — credential store, OAuth 2.0 flow,
+  ``mcp://`` URI scheme, prompts→Skills bridge.
+* **Phase 9 Sub-phase 9a** (5 sprints) — 16-stage → 21-stage
+  layout, manifest v2→v3 migration, preset regen.
+* **Phase 9 Sub-phase 9b** (5 sprints) — real strategy slots for
+  the five new stages (tool_review / task_registry / hitl /
+  summarize / persist).
+* **Phase 9 Sub-phase 9c** (2 sprints) — Pipeline.resume +
+  checkpoint restoration helpers.
+
+Phase 10 (Observability — frontend dashboard) remains optional
+and does not block 1.0.
+
+---
+
 ## [0.46.0] — 2026-04-25
 
 **Closes Phase 9 Sub-phase 9b — every former scaffold has real
