@@ -256,6 +256,13 @@ class Pipeline:
         )
         self._attached_llm_client: Any = None  # set by attach_runtime; propagated in _init_state
         self._attached_session_runtime: Any = None  # v0.30.0 plugin slot; propagated in _init_state
+        # S9c.1 Pipeline.resume: token → asyncio.Future[HITLDecision].
+        # The HITL stage's PipelineResumeRequester registers a future
+        # here when it issues a request and awaits it. ``resume(token,
+        # decision)`` resolves the future from outside the stage —
+        # typically a websocket handler or HTTP endpoint receiving the
+        # human's verdict.
+        self._pending_hitl: Dict[str, Any] = {}
 
     @property
     def mcp_manager(self) -> Any:
@@ -968,6 +975,69 @@ class Pipeline:
     def event_bus(self) -> EventBus:
         """Access the event bus directly."""
         return self._event_bus
+
+    # ── Pipeline.resume API (S9c.1) ─────────────────────────────
+
+    def list_pending_hitl(self) -> List[str]:
+        """Tokens of unresolved HITL requests this pipeline is awaiting.
+
+        Useful for UIs that want to show "X approvals waiting" or for
+        admin endpoints that audit which sessions are paused.
+        """
+        return [t for t, fut in self._pending_hitl.items() if not fut.done()]
+
+    def resume(self, token: str, decision: Any) -> None:
+        """Resolve a pending HITL request by token.
+
+        ``decision`` is normally an :class:`HITLDecision`; strings
+        ``"approve"`` / ``"reject"`` / ``"cancel"`` are accepted and
+        coerced. Resolves the asyncio.Future the HITL stage's
+        :class:`PipelineResumeRequester` is awaiting on, which lets
+        the pipeline continue from where it paused.
+
+        Raises:
+            KeyError: If the token is unknown.
+            RuntimeError: If the token has already been resolved.
+        """
+        # Local import to avoid a runtime cycle with the HITL stage.
+        from geny_executor.stages.s15_hitl.types import (
+            HITLDecision,
+            coerce_decision,
+        )
+
+        future = self._pending_hitl.get(token)
+        if future is None:
+            raise KeyError(f"unknown HITL token: {token!r}")
+        if future.done():
+            raise RuntimeError(f"HITL token already resolved: {token!r}")
+        if isinstance(decision, HITLDecision):
+            verdict = decision
+        else:
+            coerced = coerce_decision(decision)
+            if coerced is None:
+                raise ValueError(
+                    f"unknown HITL decision: {decision!r} "
+                    f"(expected approve/reject/cancel or HITLDecision)"
+                )
+            verdict = coerced
+        future.set_result(verdict)
+
+    def cancel_pending_hitl(self, token: str) -> bool:
+        """Cancel a pending HITL request without supplying a decision.
+
+        Equivalent to :meth:`resume` with :attr:`HITLDecision.CANCEL`
+        but distinct in intent — used for "session terminated, drop
+        any in-flight approvals" cleanup. Returns True when the token
+        was unresolved (and is now cancelled), False when the token is
+        unknown or already resolved.
+        """
+        from geny_executor.stages.s15_hitl.types import HITLDecision
+
+        future = self._pending_hitl.get(token)
+        if future is None or future.done():
+            return False
+        future.set_result(HITLDecision.CANCEL)
+        return True
 
     # ── UI metadata ──
 

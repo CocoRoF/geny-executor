@@ -4,6 +4,7 @@ from geny_executor.stages.s15_hitl.artifact.default.requesters import (
     CallbackFn,
     CallbackRequester,
     NullRequester,
+    PipelineResumeRequester,
 )
 from geny_executor.stages.s15_hitl.artifact.default.stage import HITLStage
 from geny_executor.stages.s15_hitl.artifact.default.timeouts import (
@@ -40,6 +41,7 @@ __all__ = [
     "HITL_REQUEST_KEY",
     "IndefiniteTimeout",
     "NullRequester",
+    "PipelineResumeRequester",
     "Requester",
     "TimeoutPolicy",
     "coerce_decision",
