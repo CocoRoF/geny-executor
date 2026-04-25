@@ -98,9 +98,9 @@ STAGE_FACTORIES = [
 
 # Sub-phase 9a scaffolds: pass-through stages with no strategy
 # slots/chains yet. Excluded from the "at least one strategy
-# surface" contract until 9b lands. S9b.1/2/3 promoted tool_review,
-# task_registry, hitl.
-_SCAFFOLD_NAMES = frozenset({"summarize", "persist"})
+# surface" contract until 9b lands. S9b.1-4 promoted tool_review,
+# task_registry, hitl, summarize. Only persist remains.
+_SCAFFOLD_NAMES = frozenset({"persist"})
 
 VALID_CATEGORIES = {
     "ingress",
