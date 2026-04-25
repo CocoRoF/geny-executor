@@ -22,6 +22,14 @@ from typing import Dict, Iterable, List, Optional, Type
 from geny_executor.tools.base import Tool
 from geny_executor.tools.built_in.agent_tool import AgentTool
 from geny_executor.tools.built_in.read_tool import ReadTool
+from geny_executor.tools.built_in.task_tools import (
+    TaskCreateTool,
+    TaskGetTool,
+    TaskListTool,
+    TaskOutputTool,
+    TaskStopTool,
+    TaskUpdateTool,
+)
 from geny_executor.tools.built_in.write_tool import WriteTool
 from geny_executor.tools.built_in.edit_tool import EditTool
 from geny_executor.tools.built_in.bash_tool import BashTool
@@ -53,6 +61,12 @@ BUILT_IN_TOOL_CLASSES: Dict[str, Type[Tool]] = {
     "EnterPlanMode": EnterPlanModeTool,
     "ExitPlanMode": ExitPlanModeTool,
     "Agent": AgentTool,
+    "TaskCreate": TaskCreateTool,
+    "TaskGet": TaskGetTool,
+    "TaskList": TaskListTool,
+    "TaskUpdate": TaskUpdateTool,
+    "TaskOutput": TaskOutputTool,
+    "TaskStop": TaskStopTool,
 }
 
 
@@ -68,6 +82,7 @@ BUILT_IN_TOOL_FEATURES: Dict[str, List[str]] = {
     "workflow": ["TodoWrite"],
     "meta": ["ToolSearch", "EnterPlanMode", "ExitPlanMode"],
     "agent": ["Agent"],
+    "tasks": ["TaskCreate", "TaskGet", "TaskList", "TaskUpdate", "TaskOutput", "TaskStop"],
 }
 
 
@@ -127,6 +142,12 @@ def get_builtin_tools(
 __all__ = [
     "AgentTool",
     "ReadTool",
+    "TaskCreateTool",
+    "TaskGetTool",
+    "TaskListTool",
+    "TaskOutputTool",
+    "TaskStopTool",
+    "TaskUpdateTool",
     "WriteTool",
     "EditTool",
     "BashTool",
