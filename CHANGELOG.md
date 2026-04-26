@@ -6,6 +6,18 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased] — 1.2.0
 
+### Added — Richer SKILL.md schema (PR-B.4.1)
+
+- ``SkillMetadata`` gains optional ``category`` / ``effort`` /
+  ``examples``. Old SKILL.md files load unchanged (all default safely).
+- Loader strips empty strings to None on ``category`` / ``effort``;
+  rejects non-string ``examples`` entries with SkillLoadError.
+- All three new keys consumed from frontmatter so they don't leak
+  into ``extras``.
+
+9 new tests in ``tests/unit/test_skill_richer_schema.py``; full
+70 skills tests still green.
+
 ### Added — PermissionMode ACCEPT_EDITS + DONT_ASK (PR-B.5.1)
 
 - Two new modes on ``PermissionMode``:

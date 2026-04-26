@@ -124,6 +124,37 @@ def parse_skill_file(path: Path) -> Skill:
     if isinstance(model_override, str) and not model_override.strip():
         model_override = None
 
+    # PR-B.4.1 — additional richer-schema fields. All optional.
+    category = meta_dict.get("category")
+    if category is not None and not isinstance(category, str):
+        category = str(category)
+    if isinstance(category, str) and not category.strip():
+        category = None
+    elif isinstance(category, str):
+        category = category.strip()
+
+    effort = meta_dict.get("effort")
+    if effort is not None and not isinstance(effort, str):
+        effort = str(effort)
+    if isinstance(effort, str) and not effort.strip():
+        effort = None
+    elif isinstance(effort, str):
+        effort = effort.strip()
+
+    raw_examples = meta_dict.get("examples", [])
+    if raw_examples in (None, ""):
+        examples: Tuple[str, ...] = ()
+    elif isinstance(raw_examples, list):
+        if not all(isinstance(x, str) for x in raw_examples):
+            raise SkillLoadError(f"{path}: every entry in 'examples' must be a string")
+        examples = tuple(raw_examples)
+    elif isinstance(raw_examples, str):
+        examples = (raw_examples,)
+    else:
+        raise SkillLoadError(
+            f"{path}: 'examples' must be a list/string (got {type(raw_examples).__name__})"
+        )
+
     # Extras: every key we didn't explicitly consume — gives hosts a
     # growth surface without forcing executor schema changes.
     consumed = {
@@ -133,6 +164,9 @@ def parse_skill_file(path: Path) -> Skill:
         "allowed_tools",
         "model_override",
         "execution_mode",
+        "category",
+        "effort",
+        "examples",
     }
     extras = {k: v for k, v in meta_dict.items() if k not in consumed}
 
@@ -143,6 +177,9 @@ def parse_skill_file(path: Path) -> Skill:
         allowed_tools=allowed,
         model_override=model_override,
         execution_mode=execution_mode,
+        category=category,
+        effort=effort,
+        examples=examples,
         extras=extras,
     )
 
