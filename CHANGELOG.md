@@ -4,6 +4,20 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased] — 1.2.0
+
+### Added — Auto-compaction frequency policy (PR-B.2.1)
+
+- ``FrequencyPolicy`` ABC + 3 reference impls under
+  ``geny_executor.stages.s19_summarize.frequency_policy``:
+  - ``NeverPolicy`` — disables fires entirely.
+  - ``EveryNTurnsPolicy`` — fires on iteration % n == 0.
+  - ``OnContextFillPolicy`` — fires when used / max ≥ threshold
+    AND ``min_turns_between`` has elapsed since the last fire.
+- ``FrequencyAwareSummarizerProxy`` wraps any Summarizer with a
+  policy gate so hosts can drop it in without touching the stage.
+- 15 new tests in ``tests/unit/test_s19_frequency_policy.py``.
+
 ## [1.1.0] — 2026-04-26
 
 new-executor-uplift Cycle A executor side. 18 merged PRs across
