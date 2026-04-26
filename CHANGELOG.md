@@ -205,6 +205,23 @@ full set (12) — both batches at once.
 
 11 new tests in ``tests/unit/test_push_notification_tool.py``.
 
+### Added — MCP wrapper tools (PR-A.3.3)
+
+Four LLM-facing wrappers around the host's MCPManager
+(``ctx.extras["mcp_manager"]``):
+
+- ``MCP``               — call ``server::tool`` with arguments
+- ``ListMcpResources``  — discover resources / tools / prompts
+- ``ReadMcpResource``   — read a ``mcp://`` URI
+- ``McpAuth``           — kick off OAuth for a server requiring auth
+
+Each tool probes a small set of method names so it works against
+varying manager shapes. Structured errors for NO_MANAGER /
+MCP_CALL_FAILED / MCP_LIST_FAILED / MCP_READ_FAILED /
+MCP_AUTH_FAILED. New ``"mcp"`` feature group.
+
+10 new tests in ``tests/unit/test_mcp_wrapper_tools.py``.
+
 ## [1.0.0] — 2026-04-25
 
 **First stable release.** Closes the multi-month executor uplift
