@@ -276,6 +276,18 @@ ExitWorktree, LSP, REPL, Brief, Config, Monitor, SendUserFile,
 SendMessage, plus the 6 task tools from PR-A.1.5 = 20 total
 catalog growth from 13 → 33).
 
+### Added — Cron job store + types (PR-A.4.1)
+
+- ``geny_executor.cron`` — new subsystem.
+- ``CronJob`` / ``CronJobStatus`` types.
+- ``CronJobStore`` ABC.
+- ``InMemoryCronJobStore`` (process-lifetime) + ``FileBackedCronJobStore``
+  (single-file json with atomic write + .bak retention).
+- Optional dep: ``croniter>=2.0`` under ``[project.optional-dependencies].cron``
+  (used by the runner in PR-A.4.3, not by the store itself).
+
+10 new tests in ``tests/unit/test_cron_store.py``.
+
 ## [1.0.0] — 2026-04-25
 
 **First stable release.** Closes the multi-month executor uplift
