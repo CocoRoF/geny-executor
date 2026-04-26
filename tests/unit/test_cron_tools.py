@@ -1,10 +1,24 @@
-"""Cron tools tests (PR-A.4.2)."""
+"""Cron tools tests (PR-A.4.2).
+
+Skips when croniter isn't installed — test_invalid_cron_expr asserts
+rejection via croniter validation. CronJobStore tests live in
+test_cron_store.py and don't need croniter (they pass without).
+"""
 
 from __future__ import annotations
 
 import pytest
 
-from geny_executor.cron import CronJob, CronJobStatus, InMemoryCronJobStore
+pytest.importorskip(
+    "croniter",
+    reason="cron extra not installed (pip install -e .[cron])",
+)
+
+from geny_executor.cron import (  # noqa: E402
+    CronJob,
+    CronJobStatus,
+    InMemoryCronJobStore,
+)
 from geny_executor.tools.base import ToolContext
 from geny_executor.tools.built_in import (
     BUILT_IN_TOOL_CLASSES,

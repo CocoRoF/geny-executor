@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
-from geny_executor.tools.base import Tool, ToolCapabilities, ToolContext, ToolResult
+from geny_executor.tools.base import Tool, ToolCapabilities, ToolResult
 
 
 class SendMessageTool(Tool):

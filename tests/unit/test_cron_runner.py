@@ -1,4 +1,10 @@
-"""CronRunner tests (PR-A.4.3)."""
+"""CronRunner tests (PR-A.4.3).
+
+Skips the whole module when ``croniter`` isn't installed — that's the
+[cron] extra and CI's [dev] install doesn't pull it. The runner
+itself accepts a missing croniter at runtime (logs + skips); the
+tests need it because they assert real fire times.
+"""
 
 from __future__ import annotations
 
@@ -8,7 +14,12 @@ from typing import List
 
 import pytest
 
-from geny_executor.cron import (
+pytest.importorskip(
+    "croniter",
+    reason="cron extra not installed (pip install -e .[cron])",
+)
+
+from geny_executor.cron import (  # noqa: E402
     CronJob,
     CronJobStatus,
     CronRunner,

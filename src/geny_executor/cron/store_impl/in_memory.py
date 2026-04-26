@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 from copy import deepcopy
-from datetime import datetime
 from typing import Dict, List, Optional
 
 from geny_executor.cron.store_abc import CronJobStore

@@ -32,8 +32,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timezone
-from typing import Dict, Optional
+from typing import Dict
 
 from geny_executor.runtime.task_executors import BackgroundTaskExecutor
 from geny_executor.stages.s13_task_registry.interface import TaskRegistry

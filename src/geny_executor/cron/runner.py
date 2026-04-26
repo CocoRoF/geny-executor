@@ -25,7 +25,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from geny_executor.cron.store_abc import CronJobStore
-from geny_executor.cron.types import CronJob, CronJobStatus
+from geny_executor.cron.types import CronJob
 
 logger = logging.getLogger(__name__)
 

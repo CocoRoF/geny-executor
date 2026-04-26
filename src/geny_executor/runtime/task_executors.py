@@ -24,7 +24,7 @@ from __future__ import annotations
 import asyncio
 import json
 from abc import ABC, abstractmethod
-from typing import Any, AsyncIterator, Callable, Optional
+from typing import Any, AsyncIterator, Callable
 
 from geny_executor.stages.s13_task_registry.types import TaskRecord
 
