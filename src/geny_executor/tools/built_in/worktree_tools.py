@@ -25,11 +25,62 @@ _DEFAULT_WORKTREE_BASE = ".worktrees"
 
 
 def _stack(ctx: ToolContext) -> List[Dict[str, Any]]:
+    """Legacy dict-stack used by the original Worktree tools.
+
+    Kept alongside the PR-D.4.2 WorkspaceStack so existing flows that
+    only inspect ctx.extras["worktree_stack"] keep working. The
+    Workspace stack push/pop is mirrored by _push_workspace /
+    _pop_workspace below — both representations stay in sync per call.
+    """
     stack = ctx.extras.get("worktree_stack")
     if not isinstance(stack, list):
         stack = []
         ctx.extras["worktree_stack"] = stack
     return stack
+
+
+def _workspace_stack(ctx: ToolContext):
+    """Lazily fetch / create the Workspace stack from ctx.extras.
+
+    Returns ``None`` when the executor doesn't have the workspace
+    module available (older pin) — callers fall back to the legacy
+    dict stack alone.
+    """
+    try:
+        from geny_executor.workspace import Workspace, WorkspaceStack
+    except ImportError:
+        return None
+    ws = ctx.extras.get("workspace_stack")
+    if not isinstance(ws, WorkspaceStack):
+        # Seed with the host's working_dir as the initial workspace so
+        # ctx.workspace always returns something (even before any
+        # EnterWorktree).
+        from pathlib import Path as _Path
+        initial = Workspace(cwd=_Path(ctx.working_dir or "."))
+        ws = WorkspaceStack(initial=initial)
+        ctx.extras["workspace_stack"] = ws
+    return ws
+
+
+def _push_workspace(ctx: ToolContext, *, cwd: str, branch: str) -> None:
+    ws_stack = _workspace_stack(ctx)
+    if ws_stack is None:
+        return
+    from pathlib import Path as _Path
+    from geny_executor.workspace import Workspace
+    parent = ws_stack.current() or Workspace()
+    new_ws = parent.with_cwd(_Path(cwd)).with_branch(branch)
+    ws_stack.push(new_ws)
+
+
+def _pop_workspace(ctx: ToolContext) -> None:
+    ws_stack = _workspace_stack(ctx)
+    if ws_stack is None or ws_stack.depth() == 0:
+        return
+    try:
+        ws_stack.pop()
+    except IndexError:
+        pass
 
 
 def _err(code: str, message: str) -> ToolResult:
@@ -96,6 +147,10 @@ class EnterWorktreeTool(Tool):
         if rc != 0:
             return _err("GIT_WORKTREE_FAILED", stderr.strip()[:500] or stdout.strip()[:500])
         _stack(context).append({"path": path, "branch": branch})
+        # PR-D.4.2 — also push onto the unified WorkspaceStack so
+        # workspace-aware downstream tools (LSP / sub-agents) see the
+        # new branch + cwd without consulting the legacy dict stack.
+        _push_workspace(context, cwd=path, branch=branch)
         return ToolResult(content={"worktree_path": path, "branch": branch, "depth": len(_stack(context))})
 
 
@@ -123,6 +178,9 @@ class ExitWorktreeTool(Tool):
         if not stack:
             return _err("NO_WORKTREE", "session stack is empty")
         entry = stack.pop()
+        # Mirror onto the WorkspaceStack so downstream tools see the
+        # parent workspace restored.
+        _pop_workspace(context)
         if input.get("remove", False):
             cwd = context.working_dir or "."
             rc, _stdout, stderr = await _git("worktree", "remove", entry["path"], cwd=cwd)

@@ -21,6 +21,24 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 Tools / SubagentTypeOrchestrator integration land in PR-D.4.2 / D.4.3;
 this PR ships the value object + stack only.
 
+### Added — Worktree + LSP tools workspace-aware (PR-D.4.2)
+
+- ``EnterWorktreeTool`` / ``ExitWorktreeTool`` now mirror their dict
+  push/pop onto the unified ``WorkspaceStack`` in
+  ``ctx.extras["workspace_stack"]``. Legacy ``worktree_stack`` dict
+  stays as the source of truth for paths/branches; the workspace
+  stack carries the same view in the canonical Workspace shape.
+- ``LSPTool`` reads ``Workspace.cwd`` first, falls back to
+  ``context.working_dir``. Hosts that haven't wired a workspace
+  see no behaviour change.
+- Workspace stack auto-seeds with ``Workspace(cwd=working_dir)`` on
+  first access so ``ctx.workspace_stack.current()`` is never None
+  even before any EnterWorktree.
+
+4 new integration tests in
+``tests/unit/test_workspace_tools_integration.py``; existing
+worktree/dev tool suites green.
+
 ## [1.2.0] — 2026-04-26
 
 new-executor-uplift Cycle B executor side. 5 merged PRs across 4
