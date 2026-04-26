@@ -6,6 +6,19 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased] — 1.2.0
 
+### Added — In-process hook handlers (PR-B.1.1)
+
+- ``HookRunner.register_in_process(event, handler)`` — register
+  async or sync callables. Run BEFORE subprocess hooks (registration
+  order, serially). Returns a deregister callable.
+- A blocking outcome short-circuits subprocess execution, saving the
+  spawn cost on a clear deny. Per-handler exceptions logged + skipped
+  (fail-isolation).
+- ``HookRunner.list_in_process_handlers`` for visibility / tests.
+
+9 new tests in ``tests/unit/test_hook_in_process.py``; existing
+36 hook_runner tests still green.
+
 ### Added — Auto-compaction frequency policy (PR-B.2.1)
 
 - ``FrequencyPolicy`` ABC + 3 reference impls under

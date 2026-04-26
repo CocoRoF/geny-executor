@@ -79,6 +79,11 @@ class HookRunner:
         self._opt_in = hooks_opt_in_from_env(self._env)
         self._audit_callback = audit_callback
         self._audit_path = Path(config.audit_log_path) if config.audit_log_path else None
+        # PR-B.1.1: in-process handlers fire BEFORE subprocess hooks.
+        # ``Dict[HookEvent, List[Callable]]`` — registration order
+        # preserved per event. A handler may return None (continue) or
+        # a HookOutcome with ``blocked=True`` to short-circuit.
+        self._in_process: Dict[HookEvent, List[Any]] = {}
 
     @property
     def enabled(self) -> bool:
@@ -92,6 +97,45 @@ class HookRunner:
     def set_audit_callback(self, callback: Optional[AuditCallback]) -> None:
         """Set or clear the audit callback (called once per invocation)."""
         self._audit_callback = callback
+
+    # ── In-process handlers (PR-B.1.1) ────────────────────────────────
+
+    def register_in_process(self, event: HookEvent, handler: Any) -> Any:
+        """Register an in-process handler for ``event``.
+
+        Handler signature::
+
+            async def handler(payload: HookEventPayload) -> Optional[HookOutcome]:
+                ...
+                return None                                 # let event continue
+                return HookOutcome(blocked=True, ...)       # short-circuit, skip subprocess
+
+        Sync handlers are also accepted; the runner awaits them via
+        ``inspect.iscoroutine``-style handling. Returns a deregister
+        callable so call sites can detach without keeping the handler
+        ref themselves.
+
+        In-process handlers run BEFORE subprocess hooks (registration
+        order, serially). If any returns blocked=True, subprocess
+        execution is skipped — saves the spawn cost on a clear deny.
+
+        Fail-isolation: handler exceptions are logged + skipped; the
+        next handler still runs. The pipeline never dies on a broken
+        handler.
+        """
+        self._in_process.setdefault(event, []).append(handler)
+
+        def _deregister() -> None:
+            try:
+                self._in_process[event].remove(handler)
+            except (KeyError, ValueError):
+                pass
+
+        return _deregister
+
+    def list_in_process_handlers(self) -> Dict[HookEvent, int]:
+        """Return ``{event: handler_count}`` for visibility / tests."""
+        return {ev: len(handlers) for ev, handlers in self._in_process.items()}
 
     async def fire(
         self,
@@ -112,15 +156,21 @@ class HookRunner:
         if not self.enabled:
             return HookOutcome.passthrough()
 
+        # PR-B.1.1: in-process handlers run BEFORE subprocess hooks.
+        # A blocked outcome short-circuits subprocess execution.
+        in_proc_outcome = await self._fire_in_process(event, payload)
+        if in_proc_outcome.blocked:
+            return in_proc_outcome
+
         entries = self._config.entries_for(event)
         if not entries:
-            return HookOutcome.passthrough()
+            return in_proc_outcome  # may be passthrough or have payload edits
 
         matches: List[HookConfigEntry] = [e for e in entries if e.matches(event, payload.tool_name)]
         if not matches:
-            return HookOutcome.passthrough()
+            return in_proc_outcome
 
-        outcome = HookOutcome.passthrough()
+        outcome = in_proc_outcome
         for entry in matches:
             entry_outcome = await self._invoke_one(entry, event, payload)
             outcome = outcome.combine(entry_outcome)
@@ -129,6 +179,40 @@ class HookRunner:
                 # already blocked — a downstream audit hook can't
                 # un-block, and we'd just be wasting subprocess spawns.
                 break
+        return outcome
+
+    async def _fire_in_process(
+        self,
+        event: HookEvent,
+        payload: HookEventPayload,
+    ) -> HookOutcome:
+        """Run in-process handlers serially. Return a combined outcome.
+
+        Per-handler exceptions logged + skipped (fail-isolation). The
+        first blocked outcome short-circuits remaining handlers.
+        """
+        handlers = list(self._in_process.get(event, []))
+        if not handlers:
+            return HookOutcome.passthrough()
+        outcome = HookOutcome.passthrough()
+        for handler in handlers:
+            try:
+                result = handler(payload)
+                if hasattr(result, "__await__"):
+                    result = await result
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "in_process_hook_failed handler=%s event=%s err=%s",
+                    getattr(handler, "__name__", str(handler)),
+                    event.value if hasattr(event, "value") else event,
+                    exc,
+                )
+                continue
+            if result is None:
+                continue
+            outcome = outcome.combine(result)
+            if outcome.blocked:
+                return outcome
         return outcome
 
     async def _invoke_one(
