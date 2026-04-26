@@ -234,6 +234,17 @@ class SubagentTypeOrchestrator(AgentOrchestrator):
             session_id=f"{state.session_id}-{agent_type}-{uuid.uuid4().hex[:8]}",
         )
 
+        # PR-D.4.3 — thread workspace context to the sub-pipeline.
+        # The parent's host stashes the active WorkspaceStack as a
+        # snapshot under state.shared["workspace_snapshot"]; we copy
+        # it down so sub-tools see the same cwd/branch the parent
+        # was using when AgentTool fired. This keeps "subagent picks
+        # up where parent left off" semantics without requiring the
+        # sub to re-enter every worktree.
+        ws_snapshot = state.shared.get("workspace_snapshot")
+        if ws_snapshot is not None:
+            sub_state.shared["workspace_snapshot"] = ws_snapshot
+
         try:
             result = await sub_pipeline.run(task, sub_state)
         except Exception as exc:
