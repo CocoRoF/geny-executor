@@ -39,6 +39,28 @@ this PR ships the value object + stack only.
 ``tests/unit/test_workspace_tools_integration.py``; existing
 worktree/dev tool suites green.
 
+### Added — SubagentTypeOrchestrator threads workspace (PR-D.4.3)
+
+- ``SubagentTypeOrchestrator._dispatch_one`` copies
+  ``state.shared["workspace_snapshot"]`` to the sub-pipeline's
+  state when present. Sub-tools then see the same cwd / branch /
+  env the parent had at AgentTool fire time.
+- ``geny_executor.workspace.workspace_stack_to_snapshot`` and
+  ``workspace_stack_from_snapshot`` helpers serialize / rehydrate
+  a WorkspaceStack across pipeline boundaries.
+- 5 new tests in ``tests/unit/test_workspace_propagation.py``;
+  full executor suite at 2157 passing.
+
+Adoption pattern (host side):
+
+    # On AgentTool fire:
+    state.shared["workspace_snapshot"] = workspace_stack_to_snapshot(
+        ctx.extras["workspace_stack"],
+    )
+    # Sub-pipeline lifespan reads it back:
+    if (snap := sub_state.shared.get("workspace_snapshot")) is not None:
+        sub_ctx.extras["workspace_stack"] = workspace_stack_from_snapshot(snap)
+
 ## [1.2.0] — 2026-04-26
 
 new-executor-uplift Cycle B executor side. 5 merged PRs across 4
