@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "geny-executor"
-version = "1.0.0"
+version = "1.1.0"
 description = "Harness-engineered agent pipeline library with 21-stage dual-abstraction architecture, built on the Anthropic API"
 readme = "README.md"
 license = "MIT"
