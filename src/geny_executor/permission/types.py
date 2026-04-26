@@ -28,12 +28,26 @@ class PermissionMode(str, Enum):
             non-interactive CI). Rules can still ``deny``.
         ``BYPASS`` — allow everything unconditionally. Developer-only;
             intentionally bypasses even explicit ``deny`` rules.
+        ``ACCEPT_EDITS`` — like DEFAULT, but ASKs on edit-class tools
+            (Write / Edit / NotebookEdit / MultiEdit) are auto-promoted
+            to ALLOW. Other ASK rules untouched. (PR-B.5.1)
+        ``DONT_ASK`` — every ASK becomes ALLOW. DENY rules still apply.
+            For chat-style sessions where users want fewer prompts.
+            (PR-B.5.1)
     """
 
     DEFAULT = "default"
     PLAN = "plan"
     AUTO = "auto"
     BYPASS = "bypass"
+    ACCEPT_EDITS = "acceptEdits"
+    DONT_ASK = "dontAsk"
+
+
+# Tools whose destructiveness is "edit a file" — gated by ACCEPT_EDITS.
+EDIT_TOOLS: Tuple[str, ...] = (
+    "Write", "Edit", "NotebookEdit", "MultiEdit",
+)
 
 
 class PermissionSource(str, Enum):

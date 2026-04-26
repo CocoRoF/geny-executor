@@ -6,6 +6,20 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased] — 1.2.0
 
+### Added — PermissionMode ACCEPT_EDITS + DONT_ASK (PR-B.5.1)
+
+- Two new modes on ``PermissionMode``:
+  - ``ACCEPT_EDITS`` — promotes ASK rules on Write/Edit/NotebookEdit/
+    MultiEdit to ALLOW; other ASKs untouched.
+  - ``DONT_ASK`` — promotes every ASK to ALLOW. DENY rules pass through.
+- ``EDIT_TOOLS`` tuple exported alongside the enum so hosts can
+  extend it for new edit-class tool names.
+- Promotion happens inside ``evaluate_permission`` so any caller of
+  the matrix benefits — no separate code path.
+
+8 new tests in ``tests/unit/test_permission_mode_promotions.py``;
+existing 21 permission_matrix tests still green.
+
 ### Added — In-process hook handlers (PR-B.1.1)
 
 - ``HookRunner.register_in_process(event, handler)`` — register
