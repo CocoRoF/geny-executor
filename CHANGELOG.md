@@ -247,6 +247,18 @@ MCP_AUTH_FAILED. New ``"mcp"`` feature group.
 
 14 new tests in ``tests/unit/test_dev_tools.py``.
 
+### Added — Operator tools — Config / Monitor / SendUserFile (PR-A.3.6)
+
+- ``ConfigTool`` — list_active reads pipeline.stages directly;
+  get/set delegates to ``ctx.extras["pipeline_mutator"]``.
+- ``MonitorTool`` — bounded subscription to host event_bus,
+  collects events for ``duration_seconds`` (capped 300).
+- ``SendUserFileTool`` — delivers a file via host-supplied
+  ``UserFileChannel`` (new ABC under ``geny_executor.channels``).
+- New ``"operator"`` feature group.
+
+15 new tests in ``tests/unit/test_operator_tools.py``.
+
 ## [1.0.0] — 2026-04-25
 
 **First stable release.** Closes the multi-month executor uplift

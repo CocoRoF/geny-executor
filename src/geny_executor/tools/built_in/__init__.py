@@ -39,6 +39,11 @@ from geny_executor.tools.built_in.dev_tools import (
     LSPTool,
     REPLTool,
 )
+from geny_executor.tools.built_in.operator_tools import (
+    ConfigTool,
+    MonitorTool,
+    SendUserFileTool,
+)
 from geny_executor.tools.built_in.read_tool import ReadTool
 from geny_executor.tools.built_in.worktree_tools import (
     EnterWorktreeTool,
@@ -94,6 +99,9 @@ BUILT_IN_TOOL_CLASSES: Dict[str, Type[Tool]] = {
     "LSP": LSPTool,
     "REPL": REPLTool,
     "Brief": BriefTool,
+    "Config": ConfigTool,
+    "Monitor": MonitorTool,
+    "SendUserFile": SendUserFileTool,
     "TaskCreate": TaskCreateTool,
     "TaskGet": TaskGetTool,
     "TaskList": TaskListTool,
@@ -121,6 +129,7 @@ BUILT_IN_TOOL_FEATURES: Dict[str, List[str]] = {
     "mcp": ["MCP", "ListMcpResources", "ReadMcpResource", "McpAuth"],
     "worktree": ["EnterWorktree", "ExitWorktree"],
     "dev": ["LSP", "REPL", "Brief"],
+    "operator": ["Config", "Monitor", "SendUserFile"],
 }
 
 
@@ -181,11 +190,14 @@ __all__ = [
     "AgentTool",
     "AskUserQuestionTool",
     "BriefTool",
+    "ConfigTool",
     "EnterWorktreeTool",
     "ExitWorktreeTool",
     "LSPTool",
     "ListMcpResourcesTool",
+    "MonitorTool",
     "REPLTool",
+    "SendUserFileTool",
     "MCPTool",
     "McpAuthTool",
     "PushNotificationTool",
