@@ -233,6 +233,20 @@ MCP_AUTH_FAILED. New ``"mcp"`` feature group.
 
 8 new tests in ``tests/unit/test_worktree_tools.py``.
 
+### Added — Dev environment tools — LSP / REPL / Brief (PR-A.3.5)
+
+- ``LSPTool`` — language server query (diagnostics / hover /
+  definition / references). Adapters injected via
+  ``ctx.extras["lsp_adapters"]`` (dict of language → async callable)
+  so the framework stays adapter-agnostic.
+- ``REPLTool`` — Python expression in subprocess; bounded by
+  timeout (default 5s, max 60s). Captures stdout/stderr/exit_code.
+- ``BriefTool`` — manual Stage 19 trigger via
+  ``ctx.extras["summarize_strategy"]``.
+- New ``"dev"`` feature group.
+
+14 new tests in ``tests/unit/test_dev_tools.py``.
+
 ## [1.0.0] — 2026-04-25
 
 **First stable release.** Closes the multi-month executor uplift
