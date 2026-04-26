@@ -91,10 +91,19 @@ async def evaluate_permission(
             continue
         if rule.pattern is not None and not matcher(rule.pattern):
             continue
-        # First match wins
+        # First match wins.
         reason = (
             rule.reason or f"matched {rule.source.value}: {rule.tool_name}({rule.pattern or '*'})"
         )
+        # PR-B.5.1: ACCEPT_EDITS / DONT_ASK promote ASK rules to ALLOW.
+        # DENY rules pass through untouched on both modes.
+        promoted = _maybe_promote_ask(rule, mode, tool.name)
+        if promoted is not None:
+            return PermissionDecision(
+                behavior=promoted,
+                reason=f"{reason} (mode={mode.value} promoted to allow)",
+                matched_rule=rule,
+            )
         return PermissionDecision(
             behavior=rule.behavior,
             reason=reason,
@@ -114,3 +123,27 @@ async def evaluate_permission(
 
     # Default — allow (tools opt in to deny via their own check_permissions)
     return PermissionDecision.allow(reason="no matching rule")
+
+
+def _maybe_promote_ask(rule, mode, tool_name):
+    """Return PermissionBehavior.ALLOW when the mode promotes an ASK
+    rule to an ALLOW for this tool. Otherwise return None and the
+    caller leaves the rule's behavior unchanged.
+
+    Promotion rules:
+      - DONT_ASK     → any ASK becomes ALLOW.
+      - ACCEPT_EDITS → ASK on edit-class tools becomes ALLOW.
+    """
+    from geny_executor.permission.types import (
+        EDIT_TOOLS,
+        PermissionBehavior,
+        PermissionMode,
+    )
+
+    if rule.behavior is not PermissionBehavior.ASK:
+        return None
+    if mode is PermissionMode.DONT_ASK:
+        return PermissionBehavior.ALLOW
+    if mode is PermissionMode.ACCEPT_EDITS and tool_name in EDIT_TOOLS:
+        return PermissionBehavior.ALLOW
+    return None
