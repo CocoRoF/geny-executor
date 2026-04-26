@@ -4,6 +4,23 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased] — 1.3.0
+
+### Added — Workspace value object + stack (PR-D.4.1)
+
+- ``geny_executor.workspace.Workspace`` — frozen dataclass bundling
+  ``cwd`` / ``git_branch`` / ``lsp_session_id`` / ``env_vars`` /
+  ``metadata``. Composition via ``with_cwd`` / ``with_branch`` /
+  ``with_lsp`` / ``with_env`` / ``with_metadata``.
+- ``geny_executor.workspace.WorkspaceStack`` — LIFO push/pop/current
+  for nested tool scopes (worktree branches, LSP sessions). Snapshot
+  returns a frozen copy so AgentTool spawn can hand the chain to a
+  sub-agent without leaking the live stack.
+- 16 new unit tests in ``tests/unit/test_workspace.py``.
+
+Tools / SubagentTypeOrchestrator integration land in PR-D.4.2 / D.4.3;
+this PR ships the value object + stack only.
+
 ## [1.2.0] — 2026-04-26
 
 new-executor-uplift Cycle B executor side. 5 merged PRs across 4
