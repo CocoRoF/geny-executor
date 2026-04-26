@@ -35,6 +35,10 @@ from geny_executor.tools.built_in.push_notification_tool import (
     PushNotificationTool,
 )
 from geny_executor.tools.built_in.read_tool import ReadTool
+from geny_executor.tools.built_in.worktree_tools import (
+    EnterWorktreeTool,
+    ExitWorktreeTool,
+)
 from geny_executor.tools.built_in.task_tools import (
     TaskCreateTool,
     TaskGetTool,
@@ -80,6 +84,8 @@ BUILT_IN_TOOL_CLASSES: Dict[str, Type[Tool]] = {
     "ListMcpResources": ListMcpResourcesTool,
     "ReadMcpResource": ReadMcpResourceTool,
     "McpAuth": McpAuthTool,
+    "EnterWorktree": EnterWorktreeTool,
+    "ExitWorktree": ExitWorktreeTool,
     "TaskCreate": TaskCreateTool,
     "TaskGet": TaskGetTool,
     "TaskList": TaskListTool,
@@ -105,6 +111,7 @@ BUILT_IN_TOOL_FEATURES: Dict[str, List[str]] = {
     "interaction": ["AskUserQuestion"],
     "notification": ["PushNotification"],
     "mcp": ["MCP", "ListMcpResources", "ReadMcpResource", "McpAuth"],
+    "worktree": ["EnterWorktree", "ExitWorktree"],
 }
 
 
@@ -164,6 +171,8 @@ def get_builtin_tools(
 __all__ = [
     "AgentTool",
     "AskUserQuestionTool",
+    "EnterWorktreeTool",
+    "ExitWorktreeTool",
     "ListMcpResourcesTool",
     "MCPTool",
     "McpAuthTool",

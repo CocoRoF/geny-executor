@@ -222,6 +222,17 @@ MCP_AUTH_FAILED. New ``"mcp"`` feature group.
 
 10 new tests in ``tests/unit/test_mcp_wrapper_tools.py``.
 
+### Added — Worktree tools (PR-A.3.4)
+
+- ``EnterWorktreeTool`` / ``ExitWorktreeTool`` — git worktree
+  isolation for sub-agents working on parallel branches.
+- Tracks worktree stack on ``ctx.extras["worktree_stack"]`` so
+  Enter/Exit are paired without changing the host process cwd.
+- Default worktree path under ``<cwd>/.worktrees/<branch>``.
+- New ``"worktree"`` feature group.
+
+8 new tests in ``tests/unit/test_worktree_tools.py``.
+
 ## [1.0.0] — 2026-04-25
 
 **First stable release.** Closes the multi-month executor uplift
