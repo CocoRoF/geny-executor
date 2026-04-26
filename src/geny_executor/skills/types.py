@@ -74,6 +74,13 @@ class SkillMetadata:
     allowed_tools: Tuple[str, ...] = ()
     model_override: Optional[str] = None
     execution_mode: str = "inline"
+    # PR-B.4.1 — richer schema. All optional with defaults so existing
+    # SKILL.md files load unchanged. ``category`` slots the skill into
+    # the help / discovery UI, ``effort`` hints expected token+time
+    # cost, ``examples`` are the LLM-visible "use it like this" snippets.
+    category: Optional[str] = None
+    effort: Optional[str] = None  # "low" | "medium" | "high" (free string for forward-compat)
+    examples: Tuple[str, ...] = ()
     extras: Dict[str, Any] = field(default_factory=dict)
 
 
