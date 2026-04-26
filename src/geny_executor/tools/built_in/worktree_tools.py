@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 from geny_executor.tools.base import Tool, ToolCapabilities, ToolContext, ToolResult
 

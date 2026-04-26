@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
-from geny_executor.cron.types import CronJob, CronJobStatus
+from geny_executor.cron.types import CronJob
 from geny_executor.tools.base import Tool, ToolCapabilities, ToolContext, ToolResult
 
 

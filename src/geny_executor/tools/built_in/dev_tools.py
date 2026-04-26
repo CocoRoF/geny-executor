@@ -6,7 +6,7 @@ import asyncio
 import sys
 from typing import Any, Dict
 
-from geny_executor.tools.base import Tool, ToolCapabilities, ToolContext, ToolResult
+from geny_executor.tools.base import Tool, ToolCapabilities, ToolResult
 
 
 def _err(code: str, message: str) -> ToolResult:
