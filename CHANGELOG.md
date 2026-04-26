@@ -4,7 +4,16 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased] — 1.3.0
+## [1.3.0] — 2026-04-26
+
+new-executor-uplift Cycle D follow-up phase 5. 3 merged PRs adding
+the workspace abstraction layer:
+
+- D.4.1 Workspace value object + WorkspaceStack
+- D.4.2 Worktree + LSP tools workspace-aware
+- D.4.3 SubagentTypeOrchestrator threads workspace_snapshot
+
+All additive — zero breaking changes vs 1.2.x. Net +25 unit tests.
 
 ### Added — Workspace value object + stack (PR-D.4.1)
 
