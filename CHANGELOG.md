@@ -192,6 +192,19 @@ full set (12) — both batches at once.
 
 10 new tests in ``tests/unit/test_ask_user_question_tool.py``.
 
+### Added — PushNotificationTool + endpoint registry (PR-A.3.2)
+
+- ``geny_executor.notifications`` — new module with
+  ``NotificationEndpoint`` + ``NotificationEndpointRegistry``.
+- ``PushNotificationTool`` — fires JSON POST to a host-registered
+  endpoint. Headers can carry secrets (host-supplied). Structured
+  errors for NO_REGISTRY / UNKNOWN_ENDPOINT / WEBHOOK_HTTP /
+  WEBHOOK_FAILED.
+- 10s timeout, no retry (caller decides).
+- New ``"notification"`` feature group.
+
+11 new tests in ``tests/unit/test_push_notification_tool.py``.
+
 ## [1.0.0] — 2026-04-25
 
 **First stable release.** Closes the multi-month executor uplift

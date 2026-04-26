@@ -25,6 +25,9 @@ from geny_executor.tools.built_in.ask_user_question_tool import (
     AskUserQuestionTool,
     QuestionCancelled,
 )
+from geny_executor.tools.built_in.push_notification_tool import (
+    PushNotificationTool,
+)
 from geny_executor.tools.built_in.read_tool import ReadTool
 from geny_executor.tools.built_in.task_tools import (
     TaskCreateTool,
@@ -66,6 +69,7 @@ BUILT_IN_TOOL_CLASSES: Dict[str, Type[Tool]] = {
     "ExitPlanMode": ExitPlanModeTool,
     "Agent": AgentTool,
     "AskUserQuestion": AskUserQuestionTool,
+    "PushNotification": PushNotificationTool,
     "TaskCreate": TaskCreateTool,
     "TaskGet": TaskGetTool,
     "TaskList": TaskListTool,
@@ -89,6 +93,7 @@ BUILT_IN_TOOL_FEATURES: Dict[str, List[str]] = {
     "agent": ["Agent"],
     "tasks": ["TaskCreate", "TaskGet", "TaskList", "TaskUpdate", "TaskOutput", "TaskStop"],
     "interaction": ["AskUserQuestion"],
+    "notification": ["PushNotification"],
 }
 
 
@@ -148,6 +153,7 @@ def get_builtin_tools(
 __all__ = [
     "AgentTool",
     "AskUserQuestionTool",
+    "PushNotificationTool",
     "QuestionCancelled",
     "ReadTool",
     "TaskCreateTool",
