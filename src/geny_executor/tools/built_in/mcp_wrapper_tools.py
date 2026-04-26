@@ -84,7 +84,8 @@ class MCPTool(Tool):
             return _err("NO_MANAGER", "mcp_manager not wired into ctx.extras")
         try:
             result = await _try_call(
-                mgr, ["call_tool", "invoke_tool", "call"],
+                mgr,
+                ["call_tool", "invoke_tool", "call"],
                 server_name=input["server"],
                 tool_name=input["tool"],
                 arguments=input.get("arguments", {}),
@@ -93,14 +94,19 @@ class MCPTool(Tool):
             # Fallback to positional.
             try:
                 result = await _try_call(
-                    mgr, ["call_tool", "invoke_tool", "call"],
-                    input["server"], input["tool"], input.get("arguments", {}),
+                    mgr,
+                    ["call_tool", "invoke_tool", "call"],
+                    input["server"],
+                    input["tool"],
+                    input.get("arguments", {}),
                 )
             except Exception as exc:  # noqa: BLE001
                 return _err("MCP_CALL_FAILED", str(exc))
         except Exception as exc:  # noqa: BLE001
             return _err("MCP_CALL_FAILED", str(exc))
-        return ToolResult(content={"server": input["server"], "tool": input["tool"], "result": result})
+        return ToolResult(
+            content={"server": input["server"], "tool": input["tool"], "result": result}
+        )
 
 
 # ── ListMcpResources ─────────────────────────────────────────────────
@@ -134,7 +140,8 @@ class ListMcpResourcesTool(Tool):
             return _err("NO_MANAGER", "mcp_manager not wired into ctx.extras")
         try:
             resources = await _try_call(
-                mgr, ["list_resources", "list_all", "describe"],
+                mgr,
+                ["list_resources", "list_all", "describe"],
                 server=input.get("server"),
                 kind=input.get("kind"),
             )
@@ -165,7 +172,9 @@ class ReadMcpResourceTool(Tool):
         return {"type": "object", "properties": {"uri": {"type": "string"}}, "required": ["uri"]}
 
     def capabilities(self, input):
-        return ToolCapabilities(concurrency_safe=True, read_only=True, idempotent=True, network_egress=True)
+        return ToolCapabilities(
+            concurrency_safe=True, read_only=True, idempotent=True, network_egress=True
+        )
 
     async def execute(self, input, context):
         mgr = _mgr(context)
@@ -197,7 +206,11 @@ class McpAuthTool(Tool):
 
     @property
     def input_schema(self) -> Dict[str, Any]:
-        return {"type": "object", "properties": {"server": {"type": "string"}}, "required": ["server"]}
+        return {
+            "type": "object",
+            "properties": {"server": {"type": "string"}},
+            "required": ["server"],
+        }
 
     def capabilities(self, input):
         return ToolCapabilities(concurrency_safe=False, network_egress=True)
@@ -208,13 +221,16 @@ class McpAuthTool(Tool):
             return _err("NO_MANAGER", "mcp_manager not wired into ctx.extras")
         try:
             status = await _try_call(
-                mgr, ["start_oauth", "begin_oauth", "auth"],
+                mgr,
+                ["start_oauth", "begin_oauth", "auth"],
                 server_name=input["server"],
             )
         except (AttributeError, TypeError):
             try:
                 status = await _try_call(
-                    mgr, ["start_oauth", "begin_oauth", "auth"], input["server"],
+                    mgr,
+                    ["start_oauth", "begin_oauth", "auth"],
+                    input["server"],
                 )
             except Exception as exc:  # noqa: BLE001
                 return _err("MCP_AUTH_FAILED", str(exc))

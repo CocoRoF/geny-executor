@@ -36,28 +36,39 @@ class PushNotificationTool(Tool):
 
     def capabilities(self, input: Dict[str, Any]) -> ToolCapabilities:
         return ToolCapabilities(
-            concurrency_safe=True, network_egress=True, idempotent=False,
+            concurrency_safe=True,
+            network_egress=True,
+            idempotent=False,
         )
 
     async def execute(self, input: Dict[str, Any], context: ToolContext) -> ToolResult:
         registry = context.extras.get("notification_endpoints")
         if registry is None:
             return ToolResult(
-                content={"error": {"code": "NO_REGISTRY", "message": "notification_endpoints not wired"}},
+                content={
+                    "error": {"code": "NO_REGISTRY", "message": "notification_endpoints not wired"}
+                },
                 is_error=True,
             )
         endpoint_name = input.get("endpoint", "")
         endpoint = registry.get(endpoint_name)
         if endpoint is None:
             return ToolResult(
-                content={"error": {"code": "UNKNOWN_ENDPOINT", "message": f"unknown endpoint: {endpoint_name}"}},
+                content={
+                    "error": {
+                        "code": "UNKNOWN_ENDPOINT",
+                        "message": f"unknown endpoint: {endpoint_name}",
+                    }
+                },
                 is_error=True,
             )
-        body = json.dumps({
-            "title": input.get("title", "Notification"),
-            "message": input["message"],
-            "metadata": input.get("metadata") or {},
-        }).encode("utf-8")
+        body = json.dumps(
+            {
+                "title": input.get("title", "Notification"),
+                "message": input["message"],
+                "metadata": input.get("metadata") or {},
+            }
+        ).encode("utf-8")
         headers = {"Content-Type": "application/json"}
         if endpoint.headers:
             headers.update(endpoint.headers)
@@ -67,7 +78,9 @@ class PushNotificationTool(Tool):
                 status = resp.status
         except error.HTTPError as exc:
             return ToolResult(
-                content={"error": {"code": "WEBHOOK_HTTP", "message": f"HTTP {exc.code}: {exc.reason}"}},
+                content={
+                    "error": {"code": "WEBHOOK_HTTP", "message": f"HTTP {exc.code}: {exc.reason}"}
+                },
                 is_error=True,
             )
         except error.URLError as exc:

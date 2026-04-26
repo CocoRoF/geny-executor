@@ -39,6 +39,7 @@ def workspace_stack_from_snapshot(snapshot: list) -> WorkspaceStack:
     """Inverse of :func:`workspace_stack_to_snapshot`. Tolerates dict
     rows missing keys — defaults from Workspace() apply."""
     from pathlib import Path
+
     stack = WorkspaceStack()
     if not isinstance(snapshot, list):
         return stack

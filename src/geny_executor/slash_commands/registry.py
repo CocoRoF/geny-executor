@@ -35,7 +35,10 @@ class SlashCommandRegistry:
         if cmd.name in self._commands:
             logger.warning(
                 "slash_command_overwritten",
-                extra={"command_name": cmd.name, "old_class": type(self._commands[cmd.name]).__name__},
+                extra={
+                    "command_name": cmd.name,
+                    "old_class": type(self._commands[cmd.name]).__name__,
+                },
             )
         self._commands[cmd.name] = cmd
         for alias in cmd.aliases or []:

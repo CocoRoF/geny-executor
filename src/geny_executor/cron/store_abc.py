@@ -32,7 +32,9 @@ class CronJobStore(ABC):
 
     @abstractmethod
     async def update_status(
-        self, name: str, status: CronJobStatus,
+        self,
+        name: str,
+        status: CronJobStatus,
     ) -> Optional[CronJob]: ...
 
 

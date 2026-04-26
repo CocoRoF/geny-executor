@@ -89,11 +89,13 @@ class LSPTool(Tool):
                 result = await result
         except Exception as exc:  # noqa: BLE001
             return _err("LSP_FAILED", str(exc))
-        return ToolResult(content={
-            "language": input["language"],
-            "action": input["action"],
-            "result": result,
-        })
+        return ToolResult(
+            content={
+                "language": input["language"],
+                "action": input["action"],
+                "result": result,
+            }
+        )
 
 
 # ── REPLTool ─────────────────────────────────────────────────────────
@@ -134,7 +136,9 @@ class REPLTool(Tool):
         timeout = int(input.get("timeout_seconds", 5))
         try:
             proc = await asyncio.create_subprocess_exec(
-                sys.executable, "-c", expr,
+                sys.executable,
+                "-c",
+                expr,
                 cwd=context.working_dir or ".",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
@@ -147,11 +151,13 @@ class REPLTool(Tool):
             proc.kill()
             await proc.wait()
             return _err("REPL_TIMEOUT", f"expression exceeded {timeout}s")
-        return ToolResult(content={
-            "stdout": stdout.decode(errors="replace")[:64_000],
-            "stderr": stderr.decode(errors="replace")[:8_000],
-            "exit_code": proc.returncode or 0,
-        })
+        return ToolResult(
+            content={
+                "stdout": stdout.decode(errors="replace")[:64_000],
+                "stderr": stderr.decode(errors="replace")[:8_000],
+                "exit_code": proc.returncode or 0,
+            }
+        )
 
 
 # ── BriefTool ────────────────────────────────────────────────────────
@@ -195,17 +201,20 @@ class BriefTool(Tool):
                         result = await result
                 except Exception as exc:  # noqa: BLE001
                     return _err("SUMMARIZE_FAILED", str(exc))
-                return ToolResult(content={
-                    "scope": scope,
-                    "summary": getattr(result, "summary", None) or str(result or ""),
-                    "tokens_compressed": getattr(result, "tokens_compressed", None),
-                })
+                return ToolResult(
+                    content={
+                        "scope": scope,
+                        "summary": getattr(result, "summary", None) or str(result or ""),
+                        "tokens_compressed": getattr(result, "tokens_compressed", None),
+                    }
+                )
         return _err("SUMMARIZE_API", "summarize_strategy has no summarize_now/compact/run")
 
 
 def _accepts_kw(fn, name: str) -> bool:
     try:
         import inspect
+
         return name in inspect.signature(fn).parameters
     except (TypeError, ValueError):
         return False

@@ -135,14 +135,12 @@ class FrequencyAwareSummarizerProxy(Summarizer):
 
     @property
     def description(self) -> str:
-        return (
-            f"Summariser {self._inner.name} gated by "
-            f"{type(self._policy).__name__}"
-        )
+        return f"Summariser {self._inner.name} gated by {type(self._policy).__name__}"
 
     async def summarize(self, state: PipelineState) -> Optional[SummaryRecord]:
         ctx = FrequencyPolicy.from_state(
-            state, last_fired_iteration=self._last_fired_iteration,
+            state,
+            last_fired_iteration=self._last_fired_iteration,
         )
         if not self._policy.should_fire(ctx):
             return None

@@ -31,7 +31,9 @@ class TasksCommand(SlashCommand):
                 )
         rows = registry.list_filtered(TaskFilter(status=status, limit=20))
         if not rows:
-            return SlashResult(content="No tasks." if status is None else f"No {status.value} tasks.")
+            return SlashResult(
+                content="No tasks." if status is None else f"No {status.value} tasks."
+            )
         header = "**Tasks**" if status is None else f"**Tasks** ({status.value})"
         lines = [header, ""]
         for r in rows:

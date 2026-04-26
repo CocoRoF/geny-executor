@@ -36,8 +36,8 @@ from geny_executor.tools.base import Tool, ToolCapabilities, ToolContext, ToolRe
 logger = logging.getLogger(__name__)
 
 _MAX_OUTPUT_LIMIT = 1 * 1024 * 1024  # 1 MiB cap per call so an LLM
-                                     # asking for everything doesn't blow
-                                     # the response budget.
+# asking for everything doesn't blow
+# the response budget.
 
 
 def _registry(ctx: ToolContext) -> Optional[TaskRegistry]:

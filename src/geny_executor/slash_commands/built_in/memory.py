@@ -20,9 +20,8 @@ class MemoryCommand(SlashCommand):
         early = need_pipeline(ctx)
         if early is not None:
             return early
-        memory = (
-            find_strategy(ctx.pipeline, "memory_provider")
-            or find_strategy(ctx.pipeline, "memory")
+        memory = find_strategy(ctx.pipeline, "memory_provider") or find_strategy(
+            ctx.pipeline, "memory"
         )
         if memory is None:
             return SlashResult(content="No memory provider configured.", success=False)
@@ -51,11 +50,7 @@ class MemoryCommand(SlashCommand):
             return SlashResult(content="No memory notes.")
         lines = [f"**Recent memory** (last {len(notes)})", ""]
         for note in notes[:limit]:
-            summary = (
-                getattr(note, "summary", None)
-                or getattr(note, "text", None)
-                or str(note)
-            )
+            summary = getattr(note, "summary", None) or getattr(note, "text", None) or str(note)
             lines.append(f"- {summary}")
         return SlashResult(content="\n".join(lines))
 
@@ -63,6 +58,7 @@ class MemoryCommand(SlashCommand):
 def _accepts_kw(fn, name: str) -> bool:
     try:
         import inspect
+
         sig = inspect.signature(fn)
         return name in sig.parameters
     except (TypeError, ValueError):

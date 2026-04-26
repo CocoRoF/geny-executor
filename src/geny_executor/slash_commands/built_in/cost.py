@@ -21,9 +21,8 @@ class CostCommand(SlashCommand):
         if early is not None:
             return early
         # Common slot names hosts wire for token bookkeeping.
-        accountant = (
-            find_strategy(ctx.pipeline, "token_accountant")
-            or find_strategy(ctx.pipeline, "token_account")
+        accountant = find_strategy(ctx.pipeline, "token_accountant") or find_strategy(
+            ctx.pipeline, "token_account"
         )
         if accountant is None:
             return SlashResult(

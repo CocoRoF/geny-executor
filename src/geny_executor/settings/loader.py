@@ -74,12 +74,16 @@ class SettingsLoader:
                 data = json.loads(text) if text.strip() else {}
             except json.JSONDecodeError as exc:
                 logger.warning(
-                    "settings_invalid_json path=%s err=%s", path, exc,
+                    "settings_invalid_json path=%s err=%s",
+                    path,
+                    exc,
                 )
                 continue
             if not isinstance(data, dict):
                 logger.warning(
-                    "settings_root_not_object path=%s type=%s", path, type(data).__name__,
+                    "settings_root_not_object path=%s type=%s",
+                    path,
+                    type(data).__name__,
                 )
                 continue
             merged = _deep_merge(merged, data)
@@ -111,7 +115,9 @@ class SettingsLoader:
             return schema(**section)
         except Exception as exc:  # noqa: BLE001
             logger.warning(
-                "settings_section_invalid name=%s err=%s", name, exc,
+                "settings_section_invalid name=%s err=%s",
+                name,
+                exc,
             )
             return default
 
