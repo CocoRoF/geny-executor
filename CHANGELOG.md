@@ -299,6 +299,27 @@ catalog growth from 13 → 33).
 
 11 new tests in ``tests/unit/test_cron_tools.py``.
 
+### Added — CronRunner daemon (PR-A.4.3) — closes P0.4 / Cycle A executor
+
+- ``CronRunner(store, task_runner, cycle_seconds=60)`` — asyncio
+  daemon that polls the CronJobStore, computes the next fire via
+  croniter, and submits a TaskRecord through the host's
+  BackgroundTaskRunner.
+- ``last_fired_at`` is stamped at the actual fire wall-clock (not the
+  scheduled minute) so a daemon coming back from an outage doesn't
+  burn the catch-up debt by firing every missed minute.
+- Disabled jobs / invalid expressions / submit failures all logged
+  but never propagated — the daemon must keep ticking.
+- ``tick_once`` is exposed as a sync test helper so callers don't
+  have to deal with start/sleep/shutdown to verify firing behaviour.
+
+10 new tests in ``tests/unit/test_cron_runner.py``.
+
+**Cycle A executor side complete: 1.1.0 ready to release.** Total
+across A.1.x + A.2.x + A.3.x + A.4.x = **18 PR**, 23 new built-in
+tools, 5 new subsystems (runtime / slash_commands / channels /
+notifications / cron), ~580 net new tests.
+
 ## [1.0.0] — 2026-04-25
 
 **First stable release.** Closes the multi-month executor uplift
