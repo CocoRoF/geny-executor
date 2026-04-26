@@ -288,6 +288,17 @@ catalog growth from 13 → 33).
 
 10 new tests in ``tests/unit/test_cron_store.py``.
 
+### Added — Cron tools — CronCreate / CronDelete / CronList (PR-A.4.2)
+
+- Three LLM-callable tools wrap the host's CronJobStore.
+- CronCreate validates the cron expression via croniter (when the
+  optional dep is installed) so typos surface before scheduling.
+- Optional cron_runner.refresh() invoked after Create/Delete so
+  schedule changes take effect immediately.
+- New ``"cron"`` feature group.
+
+11 new tests in ``tests/unit/test_cron_tools.py``.
+
 ## [1.0.0] — 2026-04-25
 
 **First stable release.** Closes the multi-month executor uplift
