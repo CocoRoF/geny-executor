@@ -6,6 +6,22 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased] — 1.2.0
 
+### Added — settings.json hierarchical loader (PR-B.3.1)
+
+- ``geny_executor.settings`` — new module.
+- ``SettingsLoader(paths)`` — JSON cascade with deep-merge. Lazy
+  loading + cached; ``reload`` invalidates. Missing/invalid files
+  logged + skipped so a partial config still boots.
+- ``register_section(name, schema)`` ABC — host registers pydantic-
+  style callables; ``get_section`` validates + returns parsed model.
+  Sections without a registered schema return raw dicts.
+- ``get_default_loader`` / ``reset_default_loader`` for singleton
+  + test isolation.
+- Lists in section values REPLACE on overlay (intentional — concat
+  semantics belong in section-specific schemas, not the merger).
+
+16 new tests in ``tests/unit/test_settings_loader.py``.
+
 ### Added — Richer SKILL.md schema (PR-B.4.1)
 
 - ``SkillMetadata`` gains optional ``category`` / ``effort`` /
