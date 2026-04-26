@@ -45,6 +45,11 @@ from geny_executor.tools.built_in.operator_tools import (
     SendUserFileTool,
 )
 from geny_executor.tools.built_in.read_tool import ReadTool
+from geny_executor.tools.built_in.cron_tools import (
+    CronCreateTool,
+    CronDeleteTool,
+    CronListTool,
+)
 from geny_executor.tools.built_in.send_message_tool import SendMessageTool
 from geny_executor.tools.built_in.worktree_tools import (
     EnterWorktreeTool,
@@ -104,6 +109,9 @@ BUILT_IN_TOOL_CLASSES: Dict[str, Type[Tool]] = {
     "Monitor": MonitorTool,
     "SendUserFile": SendUserFileTool,
     "SendMessage": SendMessageTool,
+    "CronCreate": CronCreateTool,
+    "CronDelete": CronDeleteTool,
+    "CronList": CronListTool,
     "TaskCreate": TaskCreateTool,
     "TaskGet": TaskGetTool,
     "TaskList": TaskListTool,
@@ -133,6 +141,7 @@ BUILT_IN_TOOL_FEATURES: Dict[str, List[str]] = {
     "dev": ["LSP", "REPL", "Brief"],
     "operator": ["Config", "Monitor", "SendUserFile"],
     "messaging": ["SendMessage"],
+    "cron": ["CronCreate", "CronDelete", "CronList"],
 }
 
 
@@ -194,6 +203,9 @@ __all__ = [
     "AskUserQuestionTool",
     "BriefTool",
     "ConfigTool",
+    "CronCreateTool",
+    "CronDeleteTool",
+    "CronListTool",
     "EnterWorktreeTool",
     "ExitWorktreeTool",
     "LSPTool",
