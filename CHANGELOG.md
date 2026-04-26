@@ -4,7 +4,14 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased] — 1.1.0
+## [1.1.0] — 2026-04-26
+
+new-executor-uplift Cycle A executor side. 18 merged PRs across
+4 priority buckets: Task lifecycle / Slash commands / Tool catalog /
+Cron. Built-in tool catalog grew 13 → 33 (+20). Five new
+subsystems: ``runtime`` / ``slash_commands`` / ``channels`` /
+``notifications`` / ``cron``. Net +~580 unit tests; full suite at
+2075 passing.
 
 ### Added — Task lifecycle output streaming (PR-A.1.1)
 
