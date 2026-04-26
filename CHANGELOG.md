@@ -4,7 +4,18 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased] — 1.2.0
+## [1.2.0] — 2026-04-26
+
+new-executor-uplift Cycle B executor side. 5 merged PRs across 4
+priority buckets:
+
+- P1.1 In-process hook handlers (HookRunner.register_in_process)
+- P1.2 Auto-compaction frequency policies (Never / EveryN / OnContextFill)
+- P1.3 Hierarchical settings.json loader + section registry
+- P1.4 Richer SKILL.md schema (category / effort / examples)
+- P1.5 PermissionMode ACCEPT_EDITS + DONT_ASK promotion
+
+All additive — zero breaking changes vs 1.1.x. Net +57 unit tests.
 
 ### Added — settings.json hierarchical loader (PR-B.3.1)
 
