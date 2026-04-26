@@ -133,12 +133,18 @@ class CronRunner:
             fired += 1
             logger.info(
                 "cron_fired",
-                extra={"job_name": job.name, "next_fire": next_fire.isoformat(), "task_id": task_id},
+                extra={
+                    "job_name": job.name,
+                    "next_fire": next_fire.isoformat(),
+                    "task_id": task_id,
+                },
             )
         return fired
 
     def _compute_next_fire(
-        self, job: CronJob, now: datetime,
+        self,
+        job: CronJob,
+        now: datetime,
     ) -> Optional[datetime]:
         from croniter import croniter  # type: ignore[import-not-found]
 

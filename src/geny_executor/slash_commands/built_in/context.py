@@ -13,16 +13,17 @@ from geny_executor.slash_commands.types import (
 
 class ContextCommand(SlashCommand):
     name = "context"
-    description = "Show files currently loaded by the context loader (CLAUDE.md / AGENTS.md / etc.)."
+    description = (
+        "Show files currently loaded by the context loader (CLAUDE.md / AGENTS.md / etc.)."
+    )
     category = SlashCategory.INTROSPECTION
 
     async def execute(self, args, ctx: SlashContext) -> SlashResult:
         early = need_pipeline(ctx)
         if early is not None:
             return early
-        loader = (
-            find_strategy(ctx.pipeline, "context_loader")
-            or find_strategy(ctx.pipeline, "context_provider")
+        loader = find_strategy(ctx.pipeline, "context_loader") or find_strategy(
+            ctx.pipeline, "context_provider"
         )
         if loader is None:
             return SlashResult(content="No context loader strategy configured.", success=False)

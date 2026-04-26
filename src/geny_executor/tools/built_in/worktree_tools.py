@@ -56,6 +56,7 @@ def _workspace_stack(ctx: ToolContext):
         # ctx.workspace always returns something (even before any
         # EnterWorktree).
         from pathlib import Path as _Path
+
         initial = Workspace(cwd=_Path(ctx.working_dir or "."))
         ws = WorkspaceStack(initial=initial)
         ctx.extras["workspace_stack"] = ws
@@ -68,6 +69,7 @@ def _push_workspace(ctx: ToolContext, *, cwd: str, branch: str) -> None:
         return
     from pathlib import Path as _Path
     from geny_executor.workspace import Workspace
+
     parent = ws_stack.current() or Workspace()
     new_ws = parent.with_cwd(_Path(cwd)).with_branch(branch)
     ws_stack.push(new_ws)
@@ -92,7 +94,8 @@ def _err(code: str, message: str) -> ToolResult:
 
 async def _git(*args: str, cwd: str) -> tuple[int, str, str]:
     proc = await asyncio.create_subprocess_exec(
-        "git", *args,
+        "git",
+        *args,
         cwd=cwd,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
@@ -151,7 +154,9 @@ class EnterWorktreeTool(Tool):
         # workspace-aware downstream tools (LSP / sub-agents) see the
         # new branch + cwd without consulting the legacy dict stack.
         _push_workspace(context, cwd=path, branch=branch)
-        return ToolResult(content={"worktree_path": path, "branch": branch, "depth": len(_stack(context))})
+        return ToolResult(
+            content={"worktree_path": path, "branch": branch, "depth": len(_stack(context))}
+        )
 
 
 class ExitWorktreeTool(Tool):
@@ -161,7 +166,9 @@ class ExitWorktreeTool(Tool):
 
     @property
     def description(self) -> str:
-        return "Pop the most recent worktree from the session stack. Optionally remove it from disk."
+        return (
+            "Pop the most recent worktree from the session stack. Optionally remove it from disk."
+        )
 
     @property
     def input_schema(self) -> Dict[str, Any]:
@@ -195,16 +202,20 @@ class ExitWorktreeTool(Tool):
                         "warning": stderr.strip()[:500],
                     },
                 )
-            return ToolResult(content={
+            return ToolResult(
+                content={
+                    "exited": entry["path"],
+                    "branch": entry["branch"],
+                    "removed": True,
+                }
+            )
+        return ToolResult(
+            content={
                 "exited": entry["path"],
                 "branch": entry["branch"],
-                "removed": True,
-            })
-        return ToolResult(content={
-            "exited": entry["path"],
-            "branch": entry["branch"],
-            "removed": False,
-        })
+                "removed": False,
+            }
+        )
 
 
 __all__ = ["EnterWorktreeTool", "ExitWorktreeTool"]

@@ -73,11 +73,13 @@ class ConfigTool(Tool):
                     continue
                 for slot_name, slot in slots.items():
                     strategy = getattr(slot, "strategy", slot)
-                    out.append({
-                        "stage": stage_name,
-                        "slot": slot_name,
-                        "impl": type(strategy).__name__,
-                    })
+                    out.append(
+                        {
+                            "stage": stage_name,
+                            "slot": slot_name,
+                            "impl": type(strategy).__name__,
+                        }
+                    )
             return ToolResult(content={"active": out})
         mutator = context.extras.get("pipeline_mutator")
         if mutator is None:
@@ -87,13 +89,17 @@ class ConfigTool(Tool):
                 value = mutator.get(input.get("section"), input.get("key"))
             except Exception as exc:  # noqa: BLE001
                 return _err("CONFIG_GET_FAILED", str(exc))
-            return ToolResult(content={"section": input.get("section"), "key": input.get("key"), "value": value})
+            return ToolResult(
+                content={"section": input.get("section"), "key": input.get("key"), "value": value}
+            )
         # action == "set"
         try:
             mutator.set(input.get("section"), input.get("key"), input.get("value"))
         except Exception as exc:  # noqa: BLE001
             return _err("CONFIG_SET_FAILED", str(exc))
-        return ToolResult(content={"section": input.get("section"), "key": input.get("key"), "set": True})
+        return ToolResult(
+            content={"section": input.get("section"), "key": input.get("key"), "set": True}
+        )
 
 
 # ── MonitorTool ──────────────────────────────────────────────────────
@@ -146,15 +152,19 @@ class MonitorTool(Tool):
         try:
             ctx_mgr = sub_fn(events_filter) if events_filter is not None else sub_fn()
             async with ctx_mgr as stream:
+
                 async def _drain():
                     async for evt in stream:
-                        collected.append({
-                            "type": getattr(evt, "type", None),
-                            "ts": _isofy(getattr(evt, "ts", None)),
-                            "data": getattr(evt, "data", None),
-                        })
+                        collected.append(
+                            {
+                                "type": getattr(evt, "type", None),
+                                "ts": _isofy(getattr(evt, "ts", None)),
+                                "data": getattr(evt, "data", None),
+                            }
+                        )
                         if len(collected) >= max_events:
                             return
+
                 try:
                     await asyncio.wait_for(_drain(), timeout=duration)
                 except asyncio.TimeoutError:

@@ -46,7 +46,10 @@ class PermissionMode(str, Enum):
 
 # Tools whose destructiveness is "edit a file" — gated by ACCEPT_EDITS.
 EDIT_TOOLS: Tuple[str, ...] = (
-    "Write", "Edit", "NotebookEdit", "MultiEdit",
+    "Write",
+    "Edit",
+    "NotebookEdit",
+    "MultiEdit",
 )
 
 

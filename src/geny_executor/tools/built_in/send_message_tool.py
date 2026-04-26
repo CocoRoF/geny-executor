@@ -39,14 +39,21 @@ class SendMessageTool(Tool):
         registry = context.extras.get("send_message_channels")
         if registry is None:
             return ToolResult(
-                content={"error": {"code": "NO_REGISTRY", "message": "send_message_channels not wired"}},
+                content={
+                    "error": {"code": "NO_REGISTRY", "message": "send_message_channels not wired"}
+                },
                 is_error=True,
             )
         channel_name = input["channel"]
         channel = registry.get(channel_name)
         if channel is None:
             return ToolResult(
-                content={"error": {"code": "UNKNOWN_CHANNEL", "message": f"unknown channel: {channel_name}"}},
+                content={
+                    "error": {
+                        "code": "UNKNOWN_CHANNEL",
+                        "message": f"unknown channel: {channel_name}",
+                    }
+                },
                 is_error=True,
             )
         try:
