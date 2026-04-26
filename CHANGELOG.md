@@ -259,6 +259,23 @@ MCP_AUTH_FAILED. New ``"mcp"`` feature group.
 
 15 new tests in ``tests/unit/test_operator_tools.py``.
 
+### Added — SendMessageTool + channel registry (PR-A.3.7) — closes P0.3
+
+- ``SendMessageChannel`` ABC + ``SendMessageChannelRegistry`` under
+  ``geny_executor.channels``.
+- ``StdoutSendMessageChannel`` reference impl.
+- ``SendMessageTool`` — dispatches by channel name to the registered
+  impl. Errors structured for NO_REGISTRY / UNKNOWN_CHANNEL / SEND_FAILED.
+- New ``"messaging"`` feature group.
+
+10 new tests in ``tests/unit/test_send_message_tool.py``.
+
+**Total tools added in 1.1.0 unreleased**: 14 new built-ins
+(Agent, AskUserQuestion, PushNotification, MCP×4, EnterWorktree,
+ExitWorktree, LSP, REPL, Brief, Config, Monitor, SendUserFile,
+SendMessage, plus the 6 task tools from PR-A.1.5 = 20 total
+catalog growth from 13 → 33).
+
 ## [1.0.0] — 2026-04-25
 
 **First stable release.** Closes the multi-month executor uplift
