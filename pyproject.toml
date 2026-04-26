@@ -52,6 +52,12 @@ dependencies = [
 memory = [
     "numpy>=1.24",
 ]
+cron = [
+    # croniter parses + iterates cron expressions for the framework's
+    # scheduled task daemon (geny_executor.cron). Pulled in only when
+    # hosts opt into scheduling.
+    "croniter>=2.0",
+]
 web = [
     # ddgs powers WebSearch (DuckDuckGo text search backend). Pulled in
     # only when hosts actually want web search — keeps the core install
