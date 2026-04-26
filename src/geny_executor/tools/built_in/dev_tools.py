@@ -13,6 +13,22 @@ def _err(code: str, message: str) -> ToolResult:
     return ToolResult(content={"error": {"code": code, "message": message}}, is_error=True)
 
 
+def _resolve_cwd(context) -> str:
+    """PR-D.4.2 — prefer the active Workspace.cwd when present.
+
+    Falls back to context.working_dir for hosts that haven't yet
+    wired the workspace stack. Tools that consult cwd through this
+    helper become workspace-aware automatically as soon as a
+    WorkspaceStack is in extras.
+    """
+    ws_stack = context.extras.get("workspace_stack")
+    if ws_stack is not None and hasattr(ws_stack, "current"):
+        ws = ws_stack.current()
+        if ws is not None and getattr(ws, "cwd", None) is not None:
+            return str(ws.cwd)
+    return context.working_dir or "."
+
+
 # ── LSPTool ──────────────────────────────────────────────────────────
 
 
@@ -58,13 +74,16 @@ class LSPTool(Tool):
         adapter = adapters.get(input["language"])
         if adapter is None:
             return _err("NO_ADAPTER", f"no LSP adapter for language: {input['language']}")
+        # PR-D.4.2 — workspace-aware cwd. Fall back to working_dir
+        # when no workspace stack is wired (older host pin).
+        cwd = _resolve_cwd(context)
         try:
             result = adapter(
                 action=input["action"],
                 file=input["file"],
                 line=input.get("line", 0),
                 col=input.get("col", 0),
-                cwd=context.working_dir or ".",
+                cwd=cwd,
             )
             if hasattr(result, "__await__"):
                 result = await result
