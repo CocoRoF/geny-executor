@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, Iterable, List, Sequence
 
+from geny_executor.core.schema import ConfigField, ConfigSchema
 from geny_executor.core.state import PipelineState
 from geny_executor.stages.s21_yield.interface import ResultFormatter
 
@@ -144,6 +145,46 @@ class MultiFormatFormatter(ResultFormatter):
     @property
     def formats(self) -> tuple[str, ...]:
         return self._formats
+
+    @classmethod
+    def config_schema(cls) -> ConfigSchema:
+        return ConfigSchema(
+            name="multi_format",
+            fields=[
+                ConfigField(
+                    name="formats",
+                    type="array",
+                    item_type="string",
+                    label="Output formats",
+                    description=(
+                        "Subset of {text, structured, markdown}. Order matters: "
+                        "the dict keys are emitted in this order."
+                    ),
+                    default=list(_DEFAULT_FORMATS),
+                ),
+                ConfigField(
+                    name="include_thinking",
+                    type="boolean",
+                    label="Include thinking in markdown",
+                    description="Fold the most recent thinking turn into the markdown output.",
+                    default=False,
+                    ui_widget="toggle",
+                ),
+            ],
+        )
+
+    def configure(self, config: Dict[str, Any]) -> None:
+        formats = config.get("formats")
+        if isinstance(formats, list) and formats:
+            self._formats = _validate_formats(formats)
+        if "include_thinking" in config:
+            self._include_thinking = bool(config["include_thinking"])
+
+    def get_config(self) -> Dict[str, Any]:
+        return {
+            "formats": list(self._formats),
+            "include_thinking": self._include_thinking,
+        }
 
     @property
     def include_thinking(self) -> bool:

@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
+from geny_executor.core.schema import ConfigField, ConfigSchema
 from geny_executor.core.state import TokenUsage
 from geny_executor.stages.s07_token.interface import CostCalculator
 
@@ -173,6 +174,44 @@ class CustomPricingCalculator(CostCalculator):
     @property
     def description(self) -> str:
         return "Custom flat-rate pricing"
+
+    @classmethod
+    def config_schema(cls) -> ConfigSchema:
+        return ConfigSchema(
+            name="custom_pricing",
+            fields=[
+                ConfigField(
+                    name="input_per_million",
+                    type="number",
+                    label="Input ($ / 1M tokens)",
+                    description="Flat input-token rate per million.",
+                    default=3.0,
+                    min_value=0,
+                ),
+                ConfigField(
+                    name="output_per_million",
+                    type="number",
+                    label="Output ($ / 1M tokens)",
+                    description="Flat output-token rate per million.",
+                    default=15.0,
+                    min_value=0,
+                ),
+            ],
+        )
+
+    def configure(self, config: Dict[str, Any]) -> None:
+        v = config.get("input_per_million")
+        if isinstance(v, (int, float)) and v >= 0:
+            self._input_rate = float(v)
+        v = config.get("output_per_million")
+        if isinstance(v, (int, float)) and v >= 0:
+            self._output_rate = float(v)
+
+    def get_config(self) -> Dict[str, Any]:
+        return {
+            "input_per_million": self._input_rate,
+            "output_per_million": self._output_rate,
+        }
 
     def calculate(self, usage: TokenUsage, model: str) -> float:
         cost = (usage.input_tokens / 1_000_000) * self._input_rate

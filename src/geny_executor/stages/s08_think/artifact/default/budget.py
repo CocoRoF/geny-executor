@@ -23,6 +23,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional
 
+from geny_executor.core.schema import ConfigField, ConfigSchema
 from geny_executor.core.state import PipelineState
 from geny_executor.stages.s08_think.interface import ThinkingBudgetPlanner
 
@@ -66,6 +67,30 @@ class StaticThinkingBudget(ThinkingBudgetPlanner):
     @property
     def budget_tokens(self) -> int:
         return self._budget
+
+    @classmethod
+    def config_schema(cls) -> ConfigSchema:
+        return ConfigSchema(
+            name="static",
+            fields=[
+                ConfigField(
+                    name="budget_tokens",
+                    type="integer",
+                    label="Budget tokens",
+                    description="Fixed thinking budget per turn.",
+                    default=10_000,
+                    min_value=0,
+                ),
+            ],
+        )
+
+    def configure(self, config: Dict[str, Any]) -> None:
+        n = config.get("budget_tokens")
+        if isinstance(n, int) and n >= 0:
+            self._budget = n
+
+    def get_config(self) -> Dict[str, Any]:
+        return {"budget_tokens": self._budget}
 
     def plan(self, state: PipelineState) -> int:
         return self._budget
@@ -119,6 +144,81 @@ class AdaptiveThinkingBudget(ThinkingBudgetPlanner):
     @property
     def bounds(self) -> tuple[int, int]:
         return (self._min, self._max)
+
+    @classmethod
+    def config_schema(cls) -> ConfigSchema:
+        return ConfigSchema(
+            name="adaptive",
+            fields=[
+                ConfigField(
+                    name="base_budget",
+                    type="integer",
+                    label="Base budget",
+                    description="Starting budget before bonuses.",
+                    default=4_000,
+                    min_value=0,
+                ),
+                ConfigField(
+                    name="min_budget",
+                    type="integer",
+                    label="Min budget",
+                    description="Lower clamp on the final per-turn budget.",
+                    default=2_000,
+                    min_value=0,
+                ),
+                ConfigField(
+                    name="max_budget",
+                    type="integer",
+                    label="Max budget",
+                    description="Upper clamp on the final per-turn budget.",
+                    default=24_000,
+                    min_value=0,
+                ),
+                ConfigField(
+                    name="tools_bonus",
+                    type="integer",
+                    label="Tools bonus",
+                    description="Extra budget when state.tools is non-empty.",
+                    default=4_000,
+                    min_value=0,
+                ),
+                ConfigField(
+                    name="reflection_bonus",
+                    type="integer",
+                    label="Reflection bonus",
+                    description="Extra budget when state.metadata.needs_reflection is set.",
+                    default=4_000,
+                    min_value=0,
+                ),
+            ],
+        )
+
+    def configure(self, config: Dict[str, Any]) -> None:
+        for key in ("base_budget", "min_budget", "max_budget", "tools_bonus", "reflection_bonus"):
+            v = config.get(key)
+            if isinstance(v, int) and v >= 0:
+                setattr(
+                    self,
+                    {
+                        "base_budget": "_base",
+                        "min_budget": "_min",
+                        "max_budget": "_max",
+                        "tools_bonus": "_tools_bonus",
+                        "reflection_bonus": "_reflection_bonus",
+                    }[key],
+                    v,
+                )
+        if self._max < self._min:
+            self._max = self._min
+
+    def get_config(self) -> Dict[str, Any]:
+        return {
+            "base_budget": self._base,
+            "min_budget": self._min,
+            "max_budget": self._max,
+            "tools_bonus": self._tools_bonus,
+            "reflection_bonus": self._reflection_bonus,
+        }
 
     def _raw(self, state: PipelineState) -> int:
         budget = self._base

@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import re
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
+from geny_executor.core.schema import ConfigField, ConfigSchema
 from geny_executor.core.state import PipelineState
 from geny_executor.memory.provider import Importance
 from geny_executor.stages.s19_summarize.interface import Summarizer
@@ -96,6 +97,68 @@ class RuleBasedSummarizer(Summarizer):
     @property
     def description(self) -> str:
         return "Sentence-split + capitalised-token extraction"
+
+    @classmethod
+    def config_schema(cls) -> ConfigSchema:
+        return ConfigSchema(
+            name="rule_based",
+            fields=[
+                ConfigField(
+                    name="max_sentences",
+                    type="integer",
+                    label="Max abstract sentences",
+                    description="First N sentences of the assistant text become the summary abstract.",
+                    default=3,
+                    min_value=1,
+                ),
+                ConfigField(
+                    name="max_facts",
+                    type="integer",
+                    label="Max key facts",
+                    description="Cap on key_facts list (deduped sentences after the abstract).",
+                    default=5,
+                    min_value=0,
+                ),
+                ConfigField(
+                    name="max_entities",
+                    type="integer",
+                    label="Max entities",
+                    description="Cap on extracted capitalised tokens.",
+                    default=8,
+                    min_value=0,
+                ),
+                ConfigField(
+                    name="extra_tags",
+                    type="array",
+                    item_type="string",
+                    label="Extra tags",
+                    description="Additional tags appended after the default 'rule_based' tag.",
+                    default=[],
+                ),
+            ],
+        )
+
+    def configure(self, config: Dict[str, Any]) -> None:
+        v = config.get("max_sentences")
+        if isinstance(v, int) and v >= 1:
+            self._max_sentences = v
+        v = config.get("max_facts")
+        if isinstance(v, int) and v >= 0:
+            self._max_facts = v
+        v = config.get("max_entities")
+        if isinstance(v, int) and v >= 0:
+            self._max_entities = v
+        tags = config.get("extra_tags")
+        if isinstance(tags, list):
+            self._extra_tags = [str(t) for t in tags]
+
+    def get_config(self) -> Dict[str, Any]:
+        return {
+            "max_sentences": self._max_sentences,
+            "max_facts": self._max_facts,
+            "max_entities": self._max_entities,
+            "extra_tags": list(self._extra_tags),
+        }
 
     @staticmethod
     def _split_sentences(text: str) -> List[str]:

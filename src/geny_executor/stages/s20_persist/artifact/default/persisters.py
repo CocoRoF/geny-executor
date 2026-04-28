@@ -9,6 +9,7 @@ from pathlib import Path
 from threading import Lock
 from typing import Any, Dict, List, Optional
 
+from geny_executor.core.schema import ConfigField, ConfigSchema
 from geny_executor.core.state import PipelineState
 from geny_executor.stages.s20_persist.interface import Persister
 from geny_executor.stages.s20_persist.types import CheckpointRecord
@@ -42,7 +43,12 @@ class FilePersister(Persister):
     own :class:`Persister` — this implementation is plaintext-on-disk.
     """
 
-    def __init__(self, base_dir: str | os.PathLike[str]) -> None:
+    DEFAULT_BASE_DIR = ".geny/checkpoints"
+
+    def __init__(self, base_dir: str | os.PathLike[str] = DEFAULT_BASE_DIR) -> None:
+        # Default lets the registry instantiate via cls() during a
+        # manifest swap; configure() then overrides with the manifest's
+        # actual base_dir.
         self._base = Path(base_dir)
         self._lock = Lock()
 
@@ -57,6 +63,30 @@ class FilePersister(Persister):
     @property
     def base_dir(self) -> Path:
         return self._base
+
+    @classmethod
+    def config_schema(cls) -> ConfigSchema:
+        return ConfigSchema(
+            name="file",
+            fields=[
+                ConfigField(
+                    name="base_dir",
+                    type="string",
+                    label="Base directory",
+                    description="Filesystem root for checkpoint files. Per-session subfolders are created automatically.",
+                    default=cls.DEFAULT_BASE_DIR,
+                    required=True,
+                ),
+            ],
+        )
+
+    def configure(self, config: Dict[str, Any]) -> None:
+        base = config.get("base_dir")
+        if isinstance(base, str) and base.strip():
+            self._base = Path(base)
+
+    def get_config(self) -> Dict[str, Any]:
+        return {"base_dir": str(self._base)}
 
     def _path_for(self, session_id: str, checkpoint_id: str) -> Path:
         return self._session_dir(session_id) / f"{checkpoint_id}.json"
