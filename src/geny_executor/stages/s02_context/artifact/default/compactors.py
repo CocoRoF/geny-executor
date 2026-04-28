@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Dict, Optional
 
 from geny_executor.core.config import ModelConfig
+from geny_executor.core.schema import ConfigField, ConfigSchema
 from geny_executor.core.state import PipelineState
 from geny_executor.stages.s02_context.interface import HistoryCompactor
 
@@ -22,6 +23,30 @@ class TruncateCompactor(HistoryCompactor):
     @property
     def description(self) -> str:
         return f"Keep last {self._keep_last} messages, drop older"
+
+    @classmethod
+    def config_schema(cls) -> ConfigSchema:
+        return ConfigSchema(
+            name="truncate",
+            fields=[
+                ConfigField(
+                    name="keep_last",
+                    type="integer",
+                    label="Keep last (messages)",
+                    description="Drop everything older than the last N messages once history exceeds the threshold.",
+                    default=20,
+                    min_value=1,
+                ),
+            ],
+        )
+
+    def configure(self, config: Dict[str, Any]) -> None:
+        n = config.get("keep_last")
+        if isinstance(n, int) and n > 0:
+            self._keep_last = n
+
+    def get_config(self) -> Dict[str, Any]:
+        return {"keep_last": self._keep_last}
 
     async def compact(self, state: PipelineState) -> None:
         if len(state.messages) > self._keep_last:
@@ -47,6 +72,44 @@ class SummaryCompactor(HistoryCompactor):
     @property
     def description(self) -> str:
         return "Replace old messages with summary"
+
+    @classmethod
+    def config_schema(cls) -> ConfigSchema:
+        return ConfigSchema(
+            name="summary",
+            fields=[
+                ConfigField(
+                    name="keep_recent",
+                    type="integer",
+                    label="Keep recent (messages)",
+                    description="Number of most recent messages to keep verbatim.",
+                    default=10,
+                    min_value=1,
+                ),
+                ConfigField(
+                    name="summary_text",
+                    type="string",
+                    label="Summary placeholder",
+                    description="Optional static summary text. If empty, a generic placeholder is used.",
+                    default="",
+                    ui_widget="textarea",
+                ),
+            ],
+        )
+
+    def configure(self, config: Dict[str, Any]) -> None:
+        keep = config.get("keep_recent")
+        if isinstance(keep, int) and keep > 0:
+            self._keep_recent = keep
+        text = config.get("summary_text")
+        if isinstance(text, str):
+            self._summary_text = text
+
+    def get_config(self) -> Dict[str, Any]:
+        return {
+            "keep_recent": self._keep_recent,
+            "summary_text": self._summary_text,
+        }
 
     async def compact(self, state: PipelineState) -> None:
         if len(state.messages) <= self._keep_recent:
@@ -207,6 +270,30 @@ class SlidingWindowCompactor(HistoryCompactor):
     @property
     def description(self) -> str:
         return f"Fixed window of {self._window_size} messages"
+
+    @classmethod
+    def config_schema(cls) -> ConfigSchema:
+        return ConfigSchema(
+            name="sliding_window",
+            fields=[
+                ConfigField(
+                    name="window_size",
+                    type="integer",
+                    label="Window size (messages)",
+                    description="Fixed size of the rolling window. Older messages collapse into a single summary marker.",
+                    default=30,
+                    min_value=1,
+                ),
+            ],
+        )
+
+    def configure(self, config: Dict[str, Any]) -> None:
+        n = config.get("window_size")
+        if isinstance(n, int) and n > 0:
+            self._window_size = n
+
+    def get_config(self) -> Dict[str, Any]:
+        return {"window_size": self._window_size}
 
     async def compact(self, state: PipelineState) -> None:
         if len(state.messages) <= self._window_size:

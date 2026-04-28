@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from typing import Any, Dict
+
+from geny_executor.core.schema import ConfigField, ConfigSchema
 from geny_executor.core.state import PipelineState
 from geny_executor.stages.s02_context.interface import ContextStrategy
 
@@ -39,6 +42,30 @@ class HybridStrategy(ContextStrategy):
     def description(self) -> str:
         return f"Recent {self._max_recent_turns} turns + memory injection"
 
+    @classmethod
+    def config_schema(cls) -> ConfigSchema:
+        return ConfigSchema(
+            name="hybrid",
+            fields=[
+                ConfigField(
+                    name="max_recent_turns",
+                    type="integer",
+                    label="Max recent turns",
+                    description="Number of most recent user+assistant turn pairs to keep.",
+                    default=20,
+                    min_value=1,
+                ),
+            ],
+        )
+
+    def configure(self, config: Dict[str, Any]) -> None:
+        n = config.get("max_recent_turns")
+        if isinstance(n, int) and n > 0:
+            self._max_recent_turns = n
+
+    def get_config(self) -> Dict[str, Any]:
+        return {"max_recent_turns": self._max_recent_turns}
+
     async def build_context(self, state: PipelineState) -> None:
         # Trim history to last N messages (each turn = user + assistant = 2 messages)
         max_messages = self._max_recent_turns * 2
@@ -62,6 +89,30 @@ class ProgressiveDisclosureStrategy(ContextStrategy):
     @property
     def description(self) -> str:
         return "Start with summaries, expand relevant parts"
+
+    @classmethod
+    def config_schema(cls) -> ConfigSchema:
+        return ConfigSchema(
+            name="progressive_disclosure",
+            fields=[
+                ConfigField(
+                    name="summary_threshold",
+                    type="integer",
+                    label="Summary threshold (turns)",
+                    description="Once history exceeds this many turn pairs, older turns are folded into a summary marker.",
+                    default=10,
+                    min_value=1,
+                ),
+            ],
+        )
+
+    def configure(self, config: Dict[str, Any]) -> None:
+        n = config.get("summary_threshold")
+        if isinstance(n, int) and n > 0:
+            self._summary_threshold = n
+
+    def get_config(self) -> Dict[str, Any]:
+        return {"summary_threshold": self._summary_threshold}
 
     async def build_context(self, state: PipelineState) -> None:
         # If history is short, keep as-is

@@ -9,6 +9,7 @@ from typing import Any, Dict, Optional, Tuple
 
 import jsonschema
 
+from geny_executor.core.schema import ConfigField, ConfigSchema
 from geny_executor.stages.s06_api.types import APIResponse
 from geny_executor.stages.s09_parse.interface import ResponseParser
 from geny_executor.stages.s09_parse.types import ParsedResponse, ToolCall
@@ -103,6 +104,41 @@ class StructuredOutputParser(ResponseParser):
     def schema(self) -> Optional[Dict[str, Any]]:
         """The bound JSON Schema, or ``None`` for unvalidated parse."""
         return self._schema
+
+    @classmethod
+    def config_schema(cls) -> ConfigSchema:
+        return ConfigSchema(
+            name="structured_output",
+            fields=[
+                ConfigField(
+                    name="schema",
+                    type="object",
+                    label="JSON Schema",
+                    description=(
+                        "Optional JSON Schema (Draft 7) to validate the parsed JSON. "
+                        "Empty / null disables validation but still parses JSON."
+                    ),
+                    ui_widget="code",
+                ),
+            ],
+        )
+
+    def configure(self, config: Dict[str, Any]) -> None:
+        schema = config.get("schema")
+        if schema is None:
+            self._schema = None
+            return
+        if isinstance(schema, dict):
+            try:
+                jsonschema.Draft7Validator.check_schema(schema)
+            except jsonschema.SchemaError as exc:
+                raise ValueError(
+                    f"StructuredOutputParser.configure: invalid JSON Schema: {exc.message}"
+                ) from exc
+            self._schema = schema
+
+    def get_config(self) -> Dict[str, Any]:
+        return {"schema": dict(self._schema) if self._schema else None}
 
     def parse(self, response: APIResponse) -> ParsedResponse:
         text = response.text

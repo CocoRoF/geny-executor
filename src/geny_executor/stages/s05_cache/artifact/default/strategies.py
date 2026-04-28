@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from typing import Any, Dict
+
+from geny_executor.core.schema import ConfigField, ConfigSchema
 from geny_executor.core.state import PipelineState
 from geny_executor.stages.s05_cache.interface import CacheStrategy, EPHEMERAL_CACHE
 
@@ -89,6 +92,30 @@ class AggressiveCacheStrategy(CacheStrategy):
     @property
     def description(self) -> str:
         return "Cache system + tools + stable history"
+
+    @classmethod
+    def config_schema(cls) -> ConfigSchema:
+        return ConfigSchema(
+            name="aggressive_cache",
+            fields=[
+                ConfigField(
+                    name="stable_history_offset",
+                    type="integer",
+                    label="Stable history offset",
+                    description="Place a cache breakpoint this many messages before the end of state.messages.",
+                    default=4,
+                    min_value=0,
+                ),
+            ],
+        )
+
+    def configure(self, config: Dict[str, Any]) -> None:
+        n = config.get("stable_history_offset")
+        if isinstance(n, int) and n >= 0:
+            self._stable_offset = n
+
+    def get_config(self) -> Dict[str, Any]:
+        return {"stable_history_offset": self._stable_offset}
 
     def apply_cache_markers(self, state: PipelineState) -> None:
         if not _supports_cache_control(state):

@@ -7,8 +7,9 @@ slot.
 
 from __future__ import annotations
 
-from typing import List, Tuple
+from typing import Any, Dict, List, Tuple
 
+from geny_executor.core.schema import ConfigField, ConfigSchema
 from geny_executor.core.state import PipelineState
 from geny_executor.stages.s20_persist.interface import FrequencyPolicy
 
@@ -52,12 +53,31 @@ class EveryNTurnsFrequency(FrequencyPolicy):
     def n(self) -> int:
         return self._n
 
+    @classmethod
+    def config_schema(cls) -> ConfigSchema:
+        return ConfigSchema(
+            name="every_n_turns",
+            fields=[
+                ConfigField(
+                    name="n",
+                    type="integer",
+                    label="N (turns)",
+                    description="Persist on iterations 0, N, 2N, …",
+                    default=5,
+                    min_value=1,
+                ),
+            ],
+        )
+
     def configure(self, config: dict) -> None:
         if "n" in config:
             n = int(config["n"])
             if n < 1:
                 raise ValueError("n must be >= 1")
             self._n = n
+
+    def get_config(self) -> Dict[str, Any]:
+        return {"n": self._n}
 
     def should_persist(self, state: PipelineState) -> bool:
         return state.iteration % self._n == 0
@@ -105,6 +125,48 @@ class OnSignificantFrequency(FrequencyPolicy):
     @property
     def description(self) -> str:
         return "Write a checkpoint when this turn produced a significant signal"
+
+    @classmethod
+    def config_schema(cls) -> ConfigSchema:
+        return ConfigSchema(
+            name="on_significant",
+            fields=[
+                ConfigField(
+                    name="significant_events",
+                    type="array",
+                    item_type="string",
+                    label="Significant event types",
+                    description=(
+                        "Event types that trigger a checkpoint when emitted this turn. "
+                        "Empty = use defaults (hitl.decision, tool_review.flag, etc.)."
+                    ),
+                    default=list(_DEFAULT_SIGNIFICANT_EVENTS),
+                ),
+                ConfigField(
+                    name="escalate_on_high_importance",
+                    type="boolean",
+                    label="Escalate on HIGH/CRITICAL summary",
+                    description="Persist when state.shared.turn_summary.importance is HIGH or CRITICAL.",
+                    default=True,
+                    ui_widget="toggle",
+                ),
+            ],
+        )
+
+    def configure(self, config: Dict[str, Any]) -> None:
+        events = config.get("significant_events")
+        if isinstance(events, list) and events:
+            self._events = frozenset(str(e) for e in events)
+        elif isinstance(events, list):
+            self._events = frozenset(_DEFAULT_SIGNIFICANT_EVENTS)
+        if "escalate_on_high_importance" in config:
+            self._escalate_importance = bool(config["escalate_on_high_importance"])
+
+    def get_config(self) -> Dict[str, Any]:
+        return {
+            "significant_events": sorted(self._events),
+            "escalate_on_high_importance": self._escalate_importance,
+        }
 
     def _has_event_this_turn(self, state: PipelineState) -> bool:
         iteration = state.iteration

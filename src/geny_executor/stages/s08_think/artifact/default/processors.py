@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
+from geny_executor.core.schema import ConfigField, ConfigSchema
 from geny_executor.core.state import PipelineState
 from geny_executor.stages.s08_think.interface import ThinkingProcessor
 from geny_executor.stages.s08_think.types import ThinkingBlock
@@ -56,6 +57,30 @@ class ThinkingFilterProcessor(ThinkingProcessor):
     @property
     def name(self) -> str:
         return "filter"
+
+    @classmethod
+    def config_schema(cls) -> ConfigSchema:
+        return ConfigSchema(
+            name="filter",
+            fields=[
+                ConfigField(
+                    name="exclude_patterns",
+                    type="array",
+                    item_type="string",
+                    label="Exclude patterns",
+                    description="Substrings; any thinking block containing one is dropped before storage.",
+                    default=[],
+                ),
+            ],
+        )
+
+    def configure(self, config: Dict[str, Any]) -> None:
+        patterns = config.get("exclude_patterns")
+        if isinstance(patterns, list):
+            self._exclude_patterns = [str(p) for p in patterns]
+
+    def get_config(self) -> Dict[str, Any]:
+        return {"exclude_patterns": list(self._exclude_patterns)}
 
     async def process(
         self,
