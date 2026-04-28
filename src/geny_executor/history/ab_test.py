@@ -20,7 +20,7 @@ class ABTestRunner:
         env_b_id: str,
         user_input: str,
         session_id: str = "ab_test",
-        model: str = "claude-sonnet-4-20250514",
+        model: str = "claude-sonnet-4-6",
     ) -> ABTestResult:
         """Create a test structure (execution happens externally).
 

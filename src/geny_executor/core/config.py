@@ -25,7 +25,7 @@ class ModelConfig:
         budget_tokens must be < max_tokens when thinking_type="enabled".
     """
 
-    model: str = "claude-sonnet-4-20250514"
+    model: str = "claude-sonnet-4-6"
     max_tokens: int = 8192
     temperature: float = 0.0
     top_p: Optional[float] = None
