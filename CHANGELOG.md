@@ -4,6 +4,24 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.3.1] — 2026-04-28
+
+Patch release.
+
+### Changed
+
+- Default model id bumped from `claude-sonnet-4-20250514` to
+  `claude-sonnet-4-6` across `ModelConfig`, `PipelineState`,
+  `PipelineBuilder`, every `Pipeline.{minimal,agent,coder,…}` preset,
+  every `memory/presets.py` factory, and `ABTestRunner`. Pricing
+  tables (`history/cost.py`, `s07_token/.../pricing.py`) keep the
+  legacy id verbatim — those entries bill historical executions and
+  removing them would orphan cost lookups.
+
+Callers passing an explicit `model=` are unaffected. Behaviour change
+only applies when the framework picks the default on the user's
+behalf.
+
 ## [1.3.0] — 2026-04-26
 
 new-executor-uplift Cycle D follow-up phase 5. 3 merged PRs adding
