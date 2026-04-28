@@ -209,7 +209,7 @@ class PipelinePresets:
     """Pre-configured pipeline patterns for common use cases."""
 
     @staticmethod
-    def minimal(api_key: str, model: str = "claude-sonnet-4-20250514") -> Pipeline:
+    def minimal(api_key: str, model: str = "claude-sonnet-4-6") -> Pipeline:
         """Minimal pipeline — simple Q&A.
 
         Active stages: Input → API → Parse → Yield
@@ -219,7 +219,7 @@ class PipelinePresets:
     @staticmethod
     def chat(
         api_key: str,
-        model: str = "claude-sonnet-4-20250514",
+        model: str = "claude-sonnet-4-6",
         system_prompt: str = "You are a helpful assistant.",
         tools: Optional[ToolRegistry] = None,
     ) -> Pipeline:
@@ -246,7 +246,7 @@ class PipelinePresets:
     @staticmethod
     def agent(
         api_key: str,
-        model: str = "claude-sonnet-4-20250514",
+        model: str = "claude-sonnet-4-6",
         system_prompt: str = "You are an autonomous agent. Complete the task step by step.",
         tools: Optional[ToolRegistry] = None,
         max_turns: int = 50,
@@ -285,7 +285,7 @@ class PipelinePresets:
     @staticmethod
     def evaluator(
         api_key: str,
-        model: str = "claude-sonnet-4-20250514",
+        model: str = "claude-sonnet-4-6",
         evaluation_prompt: str = "Evaluate the following response for quality, accuracy, and completeness.",
     ) -> Pipeline:
         """Evaluator pipeline — lightweight evaluation for Generator/Evaluator pattern.
@@ -302,7 +302,7 @@ class PipelinePresets:
     @staticmethod
     def geny_vtuber(
         api_key: str,
-        model: str = "claude-sonnet-4-20250514",
+        model: str = "claude-sonnet-4-6",
         persona: str = "You are Geny, a friendly AI VTuber.",
         tools: Optional[ToolRegistry] = None,
     ) -> Pipeline:

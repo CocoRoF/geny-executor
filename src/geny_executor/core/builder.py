@@ -20,7 +20,7 @@ class PipelineBuilder:
 
         pipeline = (
             PipelineBuilder("my-agent", api_key="sk-...")
-            .with_model("claude-sonnet-4-20250514",
+            .with_model("claude-sonnet-4-6",
                          max_tokens=4096, temperature=0.7)
             .with_system(prompt="You are helpful.")
             .with_tools(registry=my_tools)
@@ -33,7 +33,7 @@ class PipelineBuilder:
     def __init__(self, name: str = "default", *, api_key: str = "", model: str = ""):
         self._name = name
         self._api_key = api_key
-        self._model = model or "claude-sonnet-4-20250514"
+        self._model = model or "claude-sonnet-4-6"
         self._model_kwargs: Dict[str, Any] = {}
         self._config_kwargs: Dict[str, Any] = {}
         self._stage_configs: Dict[str, Dict[str, Any]] = {}
