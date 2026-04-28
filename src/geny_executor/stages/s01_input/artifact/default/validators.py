@@ -68,6 +68,23 @@ class StrictValidator(InputValidator):
     def description(self) -> str:
         return "Strict validation with pattern blocking"
 
+    def configure(self, config: Dict[str, Any]) -> None:
+        # Manifest-restore feeds strategy_configs.validator into here. The
+        # ctor wires the same fields, but without configure() the snapshot
+        # restore path silently drops them (mutation.py catches AttributeError).
+        patterns = config.get("blocked_patterns")
+        if isinstance(patterns, list):
+            self._blocked_patterns = [str(p) for p in patterns]
+        max_length = config.get("max_length")
+        if isinstance(max_length, int) and max_length > 0:
+            self._max_length = max_length
+
+    def get_config(self) -> Dict[str, Any]:
+        return {
+            "blocked_patterns": list(self._blocked_patterns),
+            "max_length": self._max_length,
+        }
+
     def validate(self, raw_input: Any) -> Optional[str]:
         if raw_input is None:
             return "Input cannot be None"
