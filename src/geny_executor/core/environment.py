@@ -115,6 +115,78 @@ _LEGACY_VERSIONS = {"1.0", "2.0"}
 
 
 @dataclass
+class HostSelections:
+    """Per-environment subset selection of host-registered resources.
+
+    Hooks, skills, and permission rules live host-level (one set of
+    files shared by every environment on this machine). Each manifest
+    records which subset of those host registrations is *active for
+    this environment*. The runtime intersects the host registry with
+    the env selection at session boot.
+
+    Sentinel ``["*"]`` means "use everything the host has registered,
+    including future additions" — distinct from selecting every
+    currently-known name individually. An empty list means "use none"
+    and is a deliberate opt-out (rare but supported, e.g. a sandbox
+    env that must not fire any hook).
+
+    The default for a fresh blank env is ``["*"]`` for all three —
+    the friendliest possible default ("if you registered it host-side,
+    it's on by default"). Users narrow on a per-env basis when they
+    need to.
+
+    .. note:: ``permissions`` is reserved but the runtime does not yet
+       intersect it. The frontend exposes a placeholder picker so the
+       data shape is forward-compatible; expect real enforcement in a
+       future minor release.
+    """
+
+    hooks: List[str] = field(default_factory=lambda: ["*"])
+    skills: List[str] = field(default_factory=lambda: ["*"])
+    permissions: List[str] = field(default_factory=lambda: ["*"])
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "hooks": list(self.hooks),
+            "skills": list(self.skills),
+            "permissions": list(self.permissions),
+        }
+
+    @classmethod
+    def from_dict(cls, data: Optional[Dict[str, Any]]) -> "HostSelections":
+        # Missing payload → all-on. Pre-1.3.3 manifests don't record
+        # this section at all, and the runtime should treat them as
+        # "use whatever the host has" (the implicit pre-1.3.3
+        # behaviour). An explicit empty list, by contrast, means "none".
+        if not data:
+            return cls()
+        return cls(
+            hooks=list(data.get("hooks", ["*"])),
+            skills=list(data.get("skills", ["*"])),
+            permissions=list(data.get("permissions", ["*"])),
+        )
+
+    @staticmethod
+    def resolve(selection: List[str], available: List[str]) -> List[str]:
+        """Apply a selection list to the host's registered names.
+
+        ``["*"]`` → every available name (future-proof).
+        ``[]``    → empty (explicit opt-out).
+        Otherwise → intersection of the selection and what the host has.
+
+        Names listed in the selection but not registered host-side are
+        dropped silently — the manifest may outlive a host registration
+        and the runtime should keep working.
+        """
+        if selection == ["*"]:
+            return list(available)
+        if not selection:
+            return []
+        avail = set(available)
+        return [name for name in selection if name in avail]
+
+
+@dataclass
 class StageManifestEntry:
     """Structured stage entry in a v2 environment manifest.
 
@@ -259,6 +331,7 @@ class EnvironmentManifest:
     pipeline: Dict[str, Any] = field(default_factory=dict)
     stages: List[Dict[str, Any]] = field(default_factory=list)
     tools: ToolsSnapshot = field(default_factory=ToolsSnapshot)
+    host_selections: HostSelections = field(default_factory=HostSelections)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -268,6 +341,7 @@ class EnvironmentManifest:
             "pipeline": dict(self.pipeline),
             "stages": list(self.stages),
             "tools": self.tools.to_dict(),
+            "host_selections": self.host_selections.to_dict(),
         }
 
     @classmethod
@@ -278,6 +352,12 @@ class EnvironmentManifest:
         list out to the 21-slot layout. Migrations are chained so
         a v1 payload upgrades all the way to the current version in
         one call.
+
+        ``host_selections`` is read-or-default: pre-1.3.3 manifests
+        omit the field and load with the all-on default, matching the
+        implicit "host hooks/skills always apply" behaviour of those
+        older versions. No version bump is needed because the change
+        is a pure additive default.
         """
         version = str(data.get("version", "1.0"))
         if version == "1.0":
@@ -293,6 +373,7 @@ class EnvironmentManifest:
             pipeline=data.get("pipeline", {}),
             stages=data.get("stages", []),
             tools=ToolsSnapshot.from_dict(data.get("tools", {})),
+            host_selections=HostSelections.from_dict(data.get("host_selections")),
         )
 
     # ── Structured stage access ─────────────────────────────
@@ -380,6 +461,12 @@ class EnvironmentManifest:
         Unlike :meth:`from_snapshot`, ``blank_manifest`` never sets
         ``metadata.base_preset`` — a blank environment has no origin preset.
 
+        ``tools.built_in`` defaults to ``["*"]`` (wildcard) — every built-in
+        tool, including future additions, is exposed to the LLM at stage 10.
+        The user can still narrow the whitelist by replacing the wildcard
+        with explicit names. An empty list means the agent has no built-in
+        tools, which is rarely what a fresh template wants.
+
         Session-less: construction goes through
         :func:`~geny_executor.core.introspection.introspect_all`, so no live
         :class:`Pipeline` is required.
@@ -424,7 +511,8 @@ class EnvironmentManifest:
             model=dict(model) if model else {},
             pipeline=dict(pipeline) if pipeline else {},
             stages=stages,
-            tools=ToolsSnapshot(),
+            tools=ToolsSnapshot(built_in=["*"]),
+            host_selections=HostSelections(),  # all wildcards by default
         )
 
     def to_snapshot(self) -> PipelineSnapshot:

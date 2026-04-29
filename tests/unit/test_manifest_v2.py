@@ -22,6 +22,7 @@ import pytest
 
 from geny_executor import (
     EnvironmentManifest,
+    HostSelections,
     ModelConfig,
     Pipeline,
     PipelineConfig,
@@ -358,6 +359,98 @@ def test_blank_manifest_roundtrips_through_json():
     assert restored.version == MANIFEST_VERSION
     assert len(restored.stages) == 21
     assert restored.metadata.base_preset == ""
+
+
+def test_blank_manifest_defaults_built_in_tools_to_wildcard():
+    """A fresh blank env exposes every built-in tool by default (``["*"]``).
+
+    Empty list meant "agent has no built-in tools" which is rarely what a
+    new template wants — users had to manually check 38 tools to get a
+    runnable agent. The wildcard also future-proofs: tools added to the
+    catalog later are exposed automatically.
+    """
+    m = EnvironmentManifest.blank_manifest("Blank Env")
+    assert m.tools.built_in == ["*"]
+
+
+# ── HostSelections ────────────────────────────────────────────
+
+
+def test_blank_manifest_host_selections_default_to_wildcards():
+    """Hooks/skills/permissions all default to ``["*"]`` — every host-
+    registered item applies to a fresh env. Users narrow by editing
+    the picker UI or manifest."""
+    m = EnvironmentManifest.blank_manifest("Blank Env")
+    assert m.host_selections.hooks == ["*"]
+    assert m.host_selections.skills == ["*"]
+    assert m.host_selections.permissions == ["*"]
+
+
+def test_host_selections_resolve_wildcard_returns_all_available():
+    available = ["audit", "metrics", "tracing"]
+    assert HostSelections.resolve(["*"], available) == available
+
+
+def test_host_selections_resolve_empty_means_none():
+    """Explicit empty list is opt-out, not "all" — distinct from wildcard."""
+    assert HostSelections.resolve([], ["audit", "metrics"]) == []
+
+
+def test_host_selections_resolve_intersects_with_available():
+    """Listed names not registered host-side are dropped silently —
+    a manifest can outlive a host registration."""
+    out = HostSelections.resolve(["audit", "stale"], ["audit", "metrics"])
+    assert out == ["audit"]
+
+
+def test_host_selections_roundtrip_through_dict():
+    sel = HostSelections(hooks=["audit"], skills=["*"], permissions=[])
+    restored = HostSelections.from_dict(sel.to_dict())
+    assert restored.hooks == ["audit"]
+    assert restored.skills == ["*"]
+    assert restored.permissions == []
+
+
+def test_host_selections_from_dict_missing_payload_defaults_to_wildcards():
+    """Pre-1.3.3 manifests omit ``host_selections`` entirely — those
+    must load with the all-on default to preserve the implicit
+    pre-existing behaviour ('host hooks always apply'). An explicit
+    empty list inside the payload, by contrast, sticks as opt-out."""
+    sel = HostSelections.from_dict(None)
+    assert sel.hooks == ["*"]
+    assert sel.skills == ["*"]
+    assert sel.permissions == ["*"]
+
+    sel = HostSelections.from_dict({})
+    assert sel.hooks == ["*"]
+
+
+def test_manifest_legacy_payload_loads_with_default_host_selections():
+    """A v3 payload without the new field still loads — the auto-on
+    default kicks in. Saving it back materialises the field."""
+    legacy = {
+        "version": MANIFEST_VERSION,
+        "metadata": {},
+        "model": {},
+        "pipeline": {},
+        "stages": [],
+        "tools": {},
+        # no host_selections
+    }
+    m = EnvironmentManifest.from_dict(legacy)
+    assert m.host_selections.hooks == ["*"]
+    assert "host_selections" in m.to_dict()
+
+
+def test_manifest_with_explicit_host_selections_round_trips():
+    m = EnvironmentManifest.blank_manifest("RT")
+    m.host_selections.hooks = ["audit"]
+    m.host_selections.skills = []
+    text = json.dumps(m.to_dict())
+    restored = EnvironmentManifest.from_dict(json.loads(text))
+    assert restored.host_selections.hooks == ["audit"]
+    assert restored.host_selections.skills == []
+    assert restored.host_selections.permissions == ["*"]
 
 
 def test_blank_manifest_builds_minimal_pipeline_via_from_manifest():
