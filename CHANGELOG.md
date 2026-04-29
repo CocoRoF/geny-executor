@@ -4,6 +4,52 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.3.3] — 2026-04-29
+
+Patch release.
+
+### Added
+
+- `EnvironmentManifest.host_selections` (typed `HostSelections`).
+  Per-environment subset selection of host-registered hooks, skills,
+  and permission rules. Hooks/skills/permissions remain stored host-
+  level (one set of files, every env shares the registry); each
+  manifest now records *which subset is active for this env*.
+
+  Sentinel ``["*"]`` means "use everything the host has, including
+  future additions". Empty list ``[]`` is an explicit opt-out. A
+  literal name list is the intersection of selection × what the host
+  has registered. `HostSelections.resolve()` exposes the resolution
+  helper for runtime consumers.
+
+  Defaults are all wildcards — pre-1.3.3 manifests load with the
+  same all-on behaviour they had before, so the upgrade is
+  source-compatible. The frontend can narrow on a per-env basis.
+
+  ``permissions`` is reserved but not yet enforced at runtime; the UI
+  ships a placeholder picker so manifests written today are
+  forward-compatible.
+
+- `HostSelections` re-exported from the top-level package
+  (`geny_executor.HostSelections`).
+
+## [1.3.2] — 2026-04-29
+
+Patch release.
+
+### Changed
+
+- `EnvironmentManifest.blank_manifest()` now seeds `tools.built_in =
+  ["*"]` (wildcard) instead of `[]`. A fresh blank env exposes every
+  built-in tool — including future additions — to stage 10 by default,
+  matching what the Globals → Executor Built-in panel actually wants
+  for "all checked". The empty-list default forced new users to
+  manually toggle 38 boxes before their agent could use any tool.
+
+  Callers that explicitly populate `tools.built_in` are unaffected.
+  `build_stage_manifest()` (used by vtuber-derived flows) keeps its
+  empty default — those archetypes intentionally start tool-less.
+
 ## [1.3.1] — 2026-04-28
 
 Patch release.
