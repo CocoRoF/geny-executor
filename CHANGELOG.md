@@ -4,6 +4,68 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.8.0] — 2026-04-30
+
+Skills uplift, phase 10.7 (final) — hot-reload watcher. Operators
+editing `SKILL.md` files at `~/.geny/skills/<id>/` now see their
+changes land in the *current* session, not the next one.
+
+### Added
+
+- `geny_executor.skills.watcher.SkillRegistryWatcher` — poll-based
+  hot-reload. Owns a daemon thread that re-scans configured roots
+  on a fixed interval, debounces editor write-rename flips, and
+  rebuilds the registry in place when an `SKILL.md` changes
+  (mtime / size / new file / removed file).
+
+  Usage:
+
+  ```python
+  watcher = SkillRegistryWatcher(
+      registry,
+      roots=[Path("~/.geny/skills").expanduser()],
+      poll_interval_s=2.0,
+      debounce_s=0.3,
+      on_change=lambda report: logger.info("reloaded %d skills", len(report.loaded)),
+  )
+  watcher.start()
+  ```
+
+  Stdlib only — no `watchdog` / `chokidar` dependency, no
+  platform-specific eventing quirks. Hosts wanting OS-level
+  watching can swap in a custom watcher (the `start()`/`stop()`
+  surface is tiny).
+
+- `SkillRegistry.clear()` — atomic catalog wipe used by the
+  watcher when reloading.
+
+- Both exposed at the package top level.
+
+### Watcher semantics
+
+- `reload_now()` — synchronous reload, bypasses debounce. Useful
+  from tests or a UI "refresh" button.
+- `on_change(report)` — fires after every successful reload with
+  the full :class:`SkillLoadReport` (so the host can refresh UI,
+  log, etc.).
+- `on_error(exc)` — fires when scanning or reloading raises.
+  Default: logs at WARNING and keeps the prior catalog.
+- Thread is a daemon — process exit doesn't wait on it. Call
+  `stop()` for graceful shutdown.
+
+### Tests
+
+- 11 new cases in `tests/unit/test_skill_phase_10_7_watcher.py`:
+  - Synchronous `reload_now()` with add / remove / modify.
+  - Empty-root tolerance.
+  - `on_change` / `on_error` callback wiring.
+  - Background thread lifecycle (start/stop idempotent,
+    actually picks up changes, debounces rapid writes).
+  - Multi-root watching + collision handling (first-wins
+    propagates as `on_error`).
+
+  Skills suite 208/208, full unit suite 2304/2304.
+
 ## [1.7.1] — 2026-04-30
 
 Skills uplift, phase 10.6 — killer bundled skills. Three higher-
