@@ -4,6 +4,61 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.4.0] — 2026-04-30
+
+Skills uplift, phase 10.1 — schema additions, `${name}` argument
+substitution, invocation flags. Lays the groundwork for phases 10.2
+(`allowed_tools` enforcement + `paths` conditional activation), 10.3
+(shell-block execution + bundled-asset extraction), 10.5 (fork mode),
+and the bundled-skill catalog (10.4 + 10.6).
+
+### Added
+
+- New `SkillMetadata` fields:
+  - `arguments: Tuple[str, ...]` — declared argument names. Body
+    references them via `${name}` placeholders. Empty / unknown
+    names render as the empty string instead of leaking the literal
+    `${...}` to the model.
+  - `argument_hint: Optional[str]` — short usage hint shown in CLI /
+    slash-command autocomplete (e.g. `"<file> [count]"`).
+  - `when_to_use: Optional[str]` — extended discovery copy. Surfaced
+    by `SkillTool.description` so the model can disambiguate between
+    similarly-named skills without bloating the headline summary.
+  - `user_invocable: bool = True` — when `False`, the skill is
+    invisible to user-driven slash commands. The model can still
+    reach it via `SkillTool` (paired with the next field for
+    full-lock-down).
+  - `disable_model_invocation: bool = False` — when `True`, the
+    skill is filtered out of `SkillToolProvider.list_tools()` so the
+    model never sees it. Reserved for skills that *must* originate
+    from a human in the loop.
+
+- `SkillTool` now interpolates `${name}` placeholders with
+  `invoke_args`. Legacy `{name}` brace-style placeholders still work
+  for skills written before 1.4.0 — migration is opt-in.
+
+- `SkillTool.input_schema` documents declared arguments + the hint
+  inline so the model knows the expected shape without leaving the
+  tool description.
+
+### Changed
+
+- `SkillToolProvider.list_tools()` honours
+  `disable_model_invocation`. Skills marked thus are still
+  registered in `SkillRegistry` (so user-side slash command paths
+  resolve them) but never appear in the model's tool roster.
+
+- `__version__` in `geny_executor.__init__` is now kept in sync with
+  `pyproject.toml` (was stuck at `"1.0.0"`).
+
+### Tests
+
+- 32 new cases in `tests/unit/test_skill_phase_10_1.py` covering
+  schema parsing, the boolean coercion table for invocation flags,
+  `${name}` substitution edge cases, input_schema documentation, and
+  end-to-end `SkillTool.execute()` rendering. 102/102 in the skills
+  suite.
+
 ## [1.3.3] — 2026-04-29
 
 Patch release.

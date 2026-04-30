@@ -13,31 +13,42 @@ Execution modes:
   steps itself using whatever other tools it already has access to,
   and returns to the host with the final result. Simple, cheap, and
   good enough for most skills.
-* **fork** (Phase 7) — the tool spawns a sub-pipeline with the skill's
-  restricted tool roster + model override, lets it run to completion,
-  and returns a summary. Requires the AgentTool runtime, which lands
-  alongside isolation worktrees.
+* **fork** (Phase 10.5) — the tool spawns a sub-pipeline with the
+  skill's restricted tool roster + model override, lets it run to
+  completion, and returns a summary. Requires the AgentTool runtime,
+  which lands alongside isolation worktrees.
 
 This module ships the inline path. Fork mode is stubbed with a clean
 error so skills marked ``execution_mode: fork`` fail fast instead of
 silently running inline.
 
-Argument interpolation is minimal by design: the skill body is
-rendered with Python ``str.format_map`` over ``invoke_args``, using a
-``_SafeFormatDict`` that leaves unknown placeholders untouched. Skill
-authors who want structured args declare them as frontmatter ``extras``
-and describe them in the body; the LLM reads the description and
-passes appropriate values.
+Argument interpolation (Phase 10.1):
+    Skills declare argument names in frontmatter (``arguments: [foo,
+    bar]``) and reference them in the body as ``${foo}`` / ``${bar}``.
+    The renderer substitutes invoke_args at execution time. Names
+    that aren't passed in are replaced with the empty string, *not*
+    the literal placeholder, so a skill body that depends on an
+    optional argument doesn't dump ``${foo}`` into the LLM's mouth.
+    Brace-style ``{name}`` tokens are still tolerated for
+    backward-compat with skills written before 10.1.
 """
 
 from __future__ import annotations
 
+import re
 from typing import Any, Dict, List
 
 from geny_executor.skills.registry import SkillRegistry
 from geny_executor.skills.types import Skill, SkillContext
 from geny_executor.tools.base import Tool, ToolCapabilities, ToolContext, ToolResult
 from geny_executor.tools.provider import ToolProvider
+
+
+# ${name} placeholder. Names follow Python identifier rules (the only
+# subset we need — every skill author is comfortable with that). The
+# pattern is intentionally non-greedy so adjacent placeholders parse
+# cleanly: ``${a}${b}`` matches twice.
+_DOLLAR_PLACEHOLDER = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 
 
 class _SafeFormatDict(dict):
@@ -55,19 +66,44 @@ class _SafeFormatDict(dict):
 def _render_body(skill: Skill, invoke_args: Dict[str, Any]) -> str:
     """Interpolate ``invoke_args`` into the skill body.
 
-    Uses ``str.format_map`` with a safe dict so unknown ``{placeholders}``
-    pass through unchanged. Non-string values are coerced with ``str``.
+    Two-stage substitution:
+      1. ``${name}`` placeholders (Phase 10.1, the recommended form) —
+         missing names become empty string so optional-argument skills
+         don't leak literal ``${foo}`` to the LLM.
+      2. ``{name}`` brace placeholders (legacy, pre-10.1) — passed
+         through unchanged when the key is missing so skill bodies
+         containing genuine example braces don't crash.
+
+    Non-string values are coerced with ``str``.
     """
-    if not invoke_args:
-        return skill.body
-    safe = _SafeFormatDict({k: v for k, v in invoke_args.items()})
-    try:
-        return skill.body.format_map(safe)
-    except (ValueError, KeyError, IndexError):
-        # Malformed format spec in the body — return the body as-is
-        # rather than crashing. The LLM can still follow the
-        # guidance even if one placeholder is miswritten.
-        return skill.body
+    body = skill.body
+
+    if invoke_args:
+        # ``${name}`` style — current preferred form.
+        coerced = {k: ("" if v is None else str(v)) for k, v in invoke_args.items()}
+
+        def _replace(match: "re.Match[str]") -> str:
+            return coerced.get(match.group(1), "")
+
+        body = _DOLLAR_PLACEHOLDER.sub(_replace, body)
+
+        # ``{name}`` brace style — legacy. Only run when the body
+        # still contains braces, to keep the common case cheap.
+        if "{" in body and "}" in body:
+            safe = _SafeFormatDict(coerced)
+            try:
+                body = body.format_map(safe)
+            except (ValueError, KeyError, IndexError):
+                # Malformed format spec — return what we have rather
+                # than blow up. The ${...} pass already substituted
+                # everything we expected to substitute.
+                pass
+    else:
+        # No args — still strip ${name} placeholders so the body
+        # doesn't ship literal placeholders to the LLM.
+        body = _DOLLAR_PLACEHOLDER.sub("", body)
+
+    return body
 
 
 class SkillTool(Tool):
@@ -96,20 +132,42 @@ class SkillTool(Tool):
     @property
     def description(self) -> str:
         suffix = f" [skill, {self._skill.metadata.execution_mode}]"
-        return self._skill.description + suffix
+        head = self._skill.description + suffix
+        # Phase 10.1 — surface the longer "when to use" copy to the
+        # model so it can disambiguate between similarly-named skills.
+        when = self._skill.metadata.when_to_use
+        if when:
+            head = f"{head}\n\nWhen to use: {when}"
+        return head
 
     @property
     def input_schema(self) -> Dict[str, Any]:
+        # Phase 10.1 — when the skill declares its arguments, surface
+        # them to the model so it knows what shape ``args`` should be.
+        # We document them in the description rather than hoisting to
+        # named top-level properties so all skills present a uniform
+        # schema (one ``args`` object) — easier for the LLM to learn.
+        args_doc = (
+            "Optional arguments for the skill. Schema "
+            "defined by the skill body itself — consult "
+            "the skill description."
+        )
+        declared = self._skill.metadata.arguments
+        if declared:
+            args_doc = (
+                f"Arguments (declared by the skill author): "
+                f"{', '.join(declared)}. "
+                f"Reference them in the body as ${{name}}."
+            )
+            hint = self._skill.metadata.argument_hint
+            if hint:
+                args_doc = f"{args_doc} Hint: {hint}"
         return {
             "type": "object",
             "properties": {
                 "args": {
                     "type": "object",
-                    "description": (
-                        "Optional arguments for the skill. Schema "
-                        "defined by the skill body itself — consult "
-                        "the skill description."
-                    ),
+                    "description": args_doc,
                     "additionalProperties": True,
                 },
             },
@@ -137,9 +195,9 @@ class SkillTool(Tool):
             return ToolResult(
                 content=(
                     f"skill {self._skill.id!r} declares execution_mode='fork' "
-                    f"but the fork runtime (AgentTool isolation, Phase 7) is "
-                    f"not yet available in this release. Mark the skill as "
-                    f"execution_mode='inline' to run now."
+                    f"but the fork runtime (AgentTool isolation, Phase 10.5) "
+                    f"is not yet available in this release. Mark the skill "
+                    f"as execution_mode='inline' to run now."
                 ),
                 is_error=True,
             )
@@ -238,7 +296,16 @@ class SkillToolProvider(ToolProvider):
         return f"Skill tools ({count} skill{'s' if count != 1 else ''})"
 
     def list_tools(self) -> List[Tool]:
-        return [SkillTool(skill) for skill in self._registry.list_all()]
+        # Phase 10.1 — honour the per-skill
+        # ``disable_model_invocation`` flag so user-only slash commands
+        # don't leak into the model's tool roster. The registry still
+        # has them (so a user-driven slash command path can resolve
+        # them); only this provider filters.
+        return [
+            SkillTool(skill)
+            for skill in self._registry.list_all()
+            if not skill.metadata.disable_model_invocation
+        ]
 
 
 def build_skill_tool(skill: Skill) -> SkillTool:
