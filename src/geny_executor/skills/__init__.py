@@ -61,6 +61,7 @@ from geny_executor.skills.types import (
     SkillMetadata,
     validate_execution_mode,
 )
+from geny_executor.skills.watcher import SkillRegistryWatcher
 
 __all__ = [
     "MCP_SKILL_ID_PREFIX",
@@ -89,6 +90,8 @@ __all__ = [
     "ForkResult",
     "SkillForkRunner",
     "make_default_fork_runner",
+    # Phase 10.7 — hot-reload watcher
+    "SkillRegistryWatcher",
     # Loaders / parsers
     "load_skills_dir",
     "parse_skill_file",

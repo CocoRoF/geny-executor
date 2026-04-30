@@ -57,6 +57,12 @@ class SkillRegistry:
         """Remove the skill with this id. No-op if not present."""
         self._skills.pop(skill_id, None)
 
+    def clear(self) -> None:
+        """Remove every registered skill. Phase 10.7 — used by
+        :class:`SkillRegistryWatcher` to atomically reload the
+        catalog after an on-disk change."""
+        self._skills.clear()
+
     def get(self, skill_id: str) -> Optional[Skill]:
         """Return the skill or ``None`` if not registered."""
         return self._skills.get(skill_id)
