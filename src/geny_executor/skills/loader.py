@@ -40,7 +40,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Tuple
+from typing import Any, List, Tuple
 
 from geny_executor.skills.frontmatter import parse_frontmatter
 from geny_executor.skills.types import Skill, SkillMetadata, validate_execution_mode
@@ -155,6 +155,68 @@ def parse_skill_file(path: Path) -> Skill:
             f"{path}: 'examples' must be a list/string (got {type(raw_examples).__name__})"
         )
 
+    # Phase 10.1 — declared argument names. Body uses ${name} for
+    # interpolation. Accepts a list, a single string (single-arg
+    # convenience), or empty.
+    raw_arguments = meta_dict.get("arguments", [])
+    if raw_arguments in (None, ""):
+        arguments: Tuple[str, ...] = ()
+    elif isinstance(raw_arguments, list):
+        if not all(isinstance(x, str) for x in raw_arguments):
+            raise SkillLoadError(f"{path}: every entry in 'arguments' must be a string")
+        arguments = tuple(s.strip() for s in raw_arguments if s.strip())
+    elif isinstance(raw_arguments, str):
+        arguments = (raw_arguments.strip(),) if raw_arguments.strip() else ()
+    else:
+        raise SkillLoadError(
+            f"{path}: 'arguments' must be a list/string (got {type(raw_arguments).__name__})"
+        )
+
+    # Phase 10.1 — argument_hint / when_to_use are pure copy fields.
+    argument_hint = meta_dict.get("argument_hint")
+    if argument_hint is not None and not isinstance(argument_hint, str):
+        argument_hint = str(argument_hint)
+    if isinstance(argument_hint, str) and not argument_hint.strip():
+        argument_hint = None
+    elif isinstance(argument_hint, str):
+        argument_hint = argument_hint.strip()
+
+    when_to_use = meta_dict.get("when_to_use")
+    if when_to_use is not None and not isinstance(when_to_use, str):
+        when_to_use = str(when_to_use)
+    if isinstance(when_to_use, str) and not when_to_use.strip():
+        when_to_use = None
+    elif isinstance(when_to_use, str):
+        when_to_use = when_to_use.strip()
+
+    # Phase 10.1 — invocation flags. Accept the full menagerie of
+    # YAML-loadable booleanish values so authors aren't surprised.
+    def _coerce_bool(value: Any, *, default: bool, field_name: str) -> bool:
+        if value is None:
+            return default
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return bool(value)
+        if isinstance(value, str):
+            normalised = value.strip().lower()
+            if normalised in ("true", "yes", "y", "on", "1"):
+                return True
+            if normalised in ("false", "no", "n", "off", "0", ""):
+                return False
+        raise SkillLoadError(f"{path}: '{field_name}' must be a boolean (got {value!r})")
+
+    user_invocable = _coerce_bool(
+        meta_dict.get("user_invocable"),
+        default=True,
+        field_name="user_invocable",
+    )
+    disable_model_invocation = _coerce_bool(
+        meta_dict.get("disable_model_invocation"),
+        default=False,
+        field_name="disable_model_invocation",
+    )
+
     # Extras: every key we didn't explicitly consume — gives hosts a
     # growth surface without forcing executor schema changes.
     consumed = {
@@ -167,6 +229,11 @@ def parse_skill_file(path: Path) -> Skill:
         "category",
         "effort",
         "examples",
+        "arguments",
+        "argument_hint",
+        "when_to_use",
+        "user_invocable",
+        "disable_model_invocation",
     }
     extras = {k: v for k, v in meta_dict.items() if k not in consumed}
 
@@ -180,6 +247,11 @@ def parse_skill_file(path: Path) -> Skill:
         category=category,
         effort=effort,
         examples=examples,
+        arguments=arguments,
+        argument_hint=argument_hint,
+        when_to_use=when_to_use,
+        user_invocable=user_invocable,
+        disable_model_invocation=disable_model_invocation,
         extras=extras,
     )
 

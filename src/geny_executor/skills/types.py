@@ -65,6 +65,28 @@ class SkillMetadata:
         * ``model_override`` — canonical model id (e.g.
           ``"claude-opus-4-7"``) or ``None`` to inherit host.
         * ``execution_mode`` — ``"inline"`` or ``"fork"``.
+        * ``category`` / ``effort`` / ``examples`` — discovery hints
+          (PR-B.4.1).
+        * ``arguments`` — declared argument names. Body uses
+          ``${name}`` placeholders to interpolate them; missing names
+          render as the empty string instead of leaking the literal
+          ``${...}`` to the model. (Phase 10.1.)
+        * ``argument_hint`` — short human-readable hint shown by CLI /
+          slash-command autocomplete (e.g. ``"<file> [count]"``).
+        * ``when_to_use`` — extra usage guidance for *model-side*
+          discovery; surfaced separately from ``description`` so the
+          short one-liner stays scannable while the longer rationale
+          is available when the model is choosing whether to call the
+          skill.
+        * ``user_invocable`` — if False, the skill cannot be triggered
+          via the user's slash-command interface (still callable by
+          the model through ``SkillTool``). Defaults to True for
+          on-disk skills; bridges (e.g. MCP prompts) can set False to
+          keep them out of the slash-command palette.
+        * ``disable_model_invocation`` — if True, the model cannot
+          call the skill via ``SkillTool``; only user-driven slash
+          commands fire it. Use for skills that *must* originate from
+          the human in the loop (e.g. risky destructive workflows).
         * ``extras`` — every frontmatter key the executor doesn't own.
     """
 
@@ -81,6 +103,13 @@ class SkillMetadata:
     category: Optional[str] = None
     effort: Optional[str] = None  # "low" | "medium" | "high" (free string for forward-compat)
     examples: Tuple[str, ...] = ()
+    # Phase 10.1 (skills uplift) — argument schema + invocation flags +
+    # discovery copy. All optional, all backward compatible.
+    arguments: Tuple[str, ...] = ()
+    argument_hint: Optional[str] = None
+    when_to_use: Optional[str] = None
+    user_invocable: bool = True
+    disable_model_invocation: bool = False
     extras: Dict[str, Any] = field(default_factory=dict)
 
 
