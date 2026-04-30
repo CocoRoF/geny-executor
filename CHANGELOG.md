@@ -4,6 +4,63 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.6.1] — 2026-04-30
+
+Skills uplift, phase 10.4 — operational bundled-skill catalog. Five
+production-ready skills ship with the wheel so hosts get useful
+behaviour out of the box without authoring SKILL.md files first.
+
+### Added
+
+- `geny_executor/skills/bundled/<id>/SKILL.md` directory tree. Five
+  shipped skills:
+  - **verify** (`category: diagnostic`, shell-block) — captures host
+    runtime versions, project files, git state, and environment
+    hints; formats them so the model can spot mismatches.
+  - **debug** (`category: diagnostic`, shell-block) — wider host +
+    session snapshot for when the user reports something acting
+    weird (cwd writability, recent file activity, listening ports,
+    redacted env).
+  - **lorem-ipsum** (`category: utility`) — context-aware filler
+    text generator (paragraphs, bullets, code shapes, markdown
+    stubs).
+  - **stuck** (`category: meta`) — recovery checklist for when the
+    conversation has been spinning. Pure prompt; explicitly tells
+    the model to *stop* calling tools.
+  - **batch** (`category: workflow`) — apply one operation across a
+    list of items with a fixed result shape.
+
+- `geny_executor.skills.bundled_skills` module:
+  - `bundled_skills_dir()` — resolves the on-package skill tree.
+  - `load_bundled_skills(strict=False)` — returns a
+    :class:`SkillLoadReport` for the bundled tree.
+  - `bundled_skill_ids()` — cheap listing without parsing each
+    `SKILL.md`.
+
+- All three exposed at the package top level so hosts can wire
+  bundled skills with one line:
+
+  ```python
+  from geny_executor.skills import load_bundled_skills, SkillRegistry
+  registry = SkillRegistry()
+  registry.register_many(load_bundled_skills().loaded)
+  ```
+
+### Changed
+
+- `pyproject.toml` `[tool.hatch.build.targets.wheel]` and
+  `[tool.hatch.build.targets.sdist]` now include
+  `src/geny_executor/skills/bundled/**/*.md` so the SKILL.md
+  payload ships with installed wheels.
+- `geny_executor/__init__.py` `__version__` bumped to `1.6.1`.
+
+### Tests
+
+- 11 new cases in `tests/unit/test_skill_phase_10_4_bundled.py`
+  pinning the catalog inventory, per-skill metadata expectations,
+  registration roundtrip, and the alphabetical-ids convention.
+  Skills suite now 180/180; full unit suite 2276/2276.
+
 ## [1.6.0] — 2026-04-30
 
 Skills uplift, phase 10.3 — shell-block execution + bundled-asset

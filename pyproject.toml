@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "geny-executor"
-version = "1.6.0"
+version = "1.6.1"
 description = "Harness-engineered agent pipeline library with 21-stage dual-abstraction architecture, built on the Anthropic API"
 readme = "README.md"
 license = "MIT"
@@ -94,10 +94,17 @@ Documentation = "https://github.com/CocoRoF/geny-executor#readme"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/geny_executor"]
+# Phase 10.4 — bundled skills ship as `SKILL.md` files inside the
+# package tree. Hatch's default rules pick up *.py only; force-include
+# the markdown so installed wheels still have the bundled catalog.
+artifacts = [
+    "src/geny_executor/skills/bundled/**/*.md",
+]
 
 [tool.hatch.build.targets.sdist]
 include = [
     "src/geny_executor/",
+    "src/geny_executor/skills/bundled/**/*.md",
     "tests/",
     "README.md",
     "README_ko.md",

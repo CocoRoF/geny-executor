@@ -17,6 +17,11 @@ Later phases add:
 - Bundled skills + CLI helpers (Phase 4 Week 9)
 """
 
+from geny_executor.skills.bundled_skills import (
+    bundled_skill_ids,
+    bundled_skills_dir,
+    load_bundled_skills,
+)
 from geny_executor.skills.frontmatter import parse_frontmatter
 from geny_executor.skills.loader import (
     SKILL_FILENAME,
@@ -32,6 +37,14 @@ from geny_executor.skills.mcp_bridge import (
     mcp_skill_id,
 )
 from geny_executor.skills.registry import SkillRegistry
+from geny_executor.skills.shell_blocks import (
+    ShellBlock,
+    ShellRunOutcome,
+    ShellRunSummary,
+    execute_blocks,
+    is_trusted_source,
+    parse_blocks,
+)
 from geny_executor.skills.skill_tool import (
     SkillTool,
     SkillToolProvider,
@@ -56,6 +69,18 @@ __all__ = [
     "SkillLoadError",
     "SkillLoadReport",
     "SKILL_FILENAME",
+    # Phase 10.3 — shell-block execution
+    "ShellBlock",
+    "ShellRunOutcome",
+    "ShellRunSummary",
+    "execute_blocks",
+    "is_trusted_source",
+    "parse_blocks",
+    # Phase 10.4 — bundled skill catalog
+    "bundled_skill_ids",
+    "bundled_skills_dir",
+    "load_bundled_skills",
+    # Loaders / parsers
     "load_skills_dir",
     "parse_skill_file",
     "parse_frontmatter",
