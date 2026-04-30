@@ -22,6 +22,11 @@ from geny_executor.skills.bundled_skills import (
     bundled_skills_dir,
     load_bundled_skills,
 )
+from geny_executor.skills.fork import (
+    ForkResult,
+    SkillForkRunner,
+    make_default_fork_runner,
+)
 from geny_executor.skills.frontmatter import parse_frontmatter
 from geny_executor.skills.loader import (
     SKILL_FILENAME,
@@ -80,6 +85,10 @@ __all__ = [
     "bundled_skill_ids",
     "bundled_skills_dir",
     "load_bundled_skills",
+    # Phase 10.5 — fork execution mode
+    "ForkResult",
+    "SkillForkRunner",
+    "make_default_fork_runner",
     # Loaders / parsers
     "load_skills_dir",
     "parse_skill_file",

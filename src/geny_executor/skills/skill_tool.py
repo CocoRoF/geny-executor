@@ -36,8 +36,9 @@ Argument interpolation (Phase 10.1):
 from __future__ import annotations
 
 import re
-from typing import Any, Dict, Iterable, List
+from typing import Any, Dict, Iterable, List, Optional
 
+from geny_executor.skills.fork import SkillForkRunner
 from geny_executor.skills.registry import SkillRegistry
 from geny_executor.skills.types import Skill, SkillContext
 from geny_executor.tools.base import Tool, ToolCapabilities, ToolContext, ToolResult
@@ -128,9 +129,19 @@ class SkillTool(Tool):
     per-skill shapes.
     """
 
-    def __init__(self, skill: Skill):
+    def __init__(
+        self,
+        skill: Skill,
+        *,
+        fork_runner: Optional[SkillForkRunner] = None,
+    ):
         self._skill = skill
         self._name = skill.id  # id is the registry key + tool name
+        # Phase 10.5 — fork runner. ``None`` keeps the pre-10.5
+        # behaviour for fork-mode skills (clean error). Hosts (or
+        # :class:`SkillToolProvider`) inject one to make fork mode
+        # actually run.
+        self._fork_runner = fork_runner
 
     @property
     def name(self) -> str:
@@ -198,16 +209,6 @@ class SkillTool(Tool):
 
     async def execute(self, input: Dict[str, Any], context: ToolContext) -> ToolResult:
         mode = self._skill.metadata.execution_mode
-        if mode == "fork":
-            return ToolResult(
-                content=(
-                    f"skill {self._skill.id!r} declares execution_mode='fork' "
-                    f"but the fork runtime (AgentTool isolation, Phase 10.5) "
-                    f"is not yet available in this release. Mark the skill "
-                    f"as execution_mode='inline' to run now."
-                ),
-                is_error=True,
-            )
 
         raw_args = input.get("args") or {}
         if not isinstance(raw_args, dict):
@@ -217,6 +218,9 @@ class SkillTool(Tool):
             )
 
         body = _render_body(self._skill, raw_args)
+
+        if mode == "fork":
+            return await self._run_fork(body, raw_args, context)
 
         # Phase 10.2 — grant the skill's declared allowed_tools by
         # appending ALLOW rules to the live `ToolContext.permission_rules`.
@@ -318,6 +322,77 @@ class SkillTool(Tool):
             },
         )
 
+    async def _run_fork(
+        self,
+        rendered_body: str,
+        invoke_args: Dict[str, Any],
+        context: ToolContext,
+    ) -> ToolResult:
+        """Phase 10.5 — execute a fork-mode skill via the configured
+        runner.
+
+        Behaviour:
+            * No runner wired → return a clean error so the host
+              learns it needs to provide one (or switch the skill
+              to ``execution_mode: inline``).
+            * Runner returns :class:`ForkResult` → translate to
+              :class:`ToolResult`. The model_override and
+              allowed_tools advertised by the skill are applied
+              *inside* the runner (the runner is responsible for
+              honouring them — that's what differentiates fork from
+              inline).
+
+        The runner is responsible for token-budget isolation.
+        ``make_default_fork_runner`` ships an Anthropic-backed
+        single-completion runner; hosts can inject their own
+        full-pipeline / sub-agent runner via the SkillToolProvider
+        constructor.
+        """
+        skill_id = self._skill.id
+        if self._fork_runner is None:
+            return ToolResult(
+                content=(
+                    f"skill {skill_id!r} declares execution_mode='fork' "
+                    f"but no SkillForkRunner is wired on this SkillTool. "
+                    f"Either pass fork_runner=... to SkillToolProvider "
+                    f"(make_default_fork_runner() if you have an Anthropic "
+                    f"API key) or change the skill to "
+                    f"execution_mode='inline'."
+                ),
+                is_error=True,
+            )
+
+        try:
+            fork_result = await self._fork_runner(
+                skill=self._skill,
+                rendered_body=rendered_body,
+                invoke_args=invoke_args,
+                parent_context=context,
+            )
+        except Exception as exc:  # noqa: BLE001 — runner faults must not crash the parent
+            return ToolResult(
+                content=(f"fork runner raised: {type(exc).__name__}: {exc}"),
+                is_error=True,
+                metadata={
+                    "skill_id": skill_id,
+                    "execution_mode": "fork",
+                    "fork_runner_error": str(exc),
+                },
+            )
+
+        meta = dict(fork_result.metadata)
+        meta.setdefault("skill_id", skill_id)
+        meta.setdefault("skill_name", self._skill.name)
+        meta.setdefault("execution_mode", "fork")
+        meta.setdefault("allowed_tools", list(self._skill.metadata.allowed_tools))
+        meta.setdefault("model_override", self._skill.metadata.model_override)
+        meta.setdefault("args", invoke_args)
+        return ToolResult(
+            content=fork_result.content,
+            is_error=fork_result.is_error,
+            metadata=meta,
+        )
+
     def _grant_allowed_tools(self, context: ToolContext) -> List[str]:
         """Append ALLOW rules for the skill's declared tools to
         ``context.permission_rules``. Returns the list of tool names
@@ -405,6 +480,7 @@ class SkillToolProvider(ToolProvider):
         *,
         name: str = "skills",
         active_paths: Iterable[str] = (),
+        fork_runner: Optional[SkillForkRunner] = None,
     ):
         """
         Args:
@@ -417,10 +493,19 @@ class SkillToolProvider(ToolProvider):
                 the current task. Skills without declared ``paths``
                 are always included. Phase 10.2 conditional
                 activation; mutate via :meth:`set_active_paths`.
+            fork_runner: Phase 10.5 — runner used for skills with
+                ``execution_mode: fork``. ``None`` (default) keeps
+                pre-10.5 behaviour: fork-mode skills return a clean
+                error directing the operator to wire a runner.
+                :func:`make_default_fork_runner` ships an Anthropic-
+                backed default; hosts can pass any callable matching
+                :data:`SkillForkRunner` for full sub-pipeline
+                isolation.
         """
         self._registry = registry
         self._name = name
         self._active_paths: List[str] = list(active_paths)
+        self._fork_runner = fork_runner
 
     def set_active_paths(self, paths: Iterable[str]) -> None:
         """Update the active path set. Hosts call this when a tool
@@ -444,13 +529,14 @@ class SkillToolProvider(ToolProvider):
         # has them (so a user-driven slash command path can resolve
         # them); only this provider filters.
         # Phase 10.2 — also filter by `paths` conditional activation.
+        # Phase 10.5 — propagate the fork runner to each SkillTool.
         out: List[Tool] = []
         for skill in self._registry.list_all():
             if skill.metadata.disable_model_invocation:
                 continue
             if not _skill_active_for_paths(skill, self._active_paths):
                 continue
-            out.append(SkillTool(skill))
+            out.append(SkillTool(skill, fork_runner=self._fork_runner))
         return out
 
 
@@ -478,10 +564,16 @@ def _skill_active_for_paths(skill: Skill, active_paths: Iterable[str]) -> bool:
     return match_any(active_paths, compiled)
 
 
-def build_skill_tool(skill: Skill) -> SkillTool:
+def build_skill_tool(
+    skill: Skill,
+    *,
+    fork_runner: Optional[SkillForkRunner] = None,
+) -> SkillTool:
     """Factory equivalent to ``SkillTool(skill)``.
 
     Symmetric with :func:`~geny_executor.tools.base.build_tool`; handy
     for test harnesses that want a one-liner construction path.
+    Phase 10.5 — accepts an optional ``fork_runner`` for fork-mode
+    skills.
     """
-    return SkillTool(skill)
+    return SkillTool(skill, fork_runner=fork_runner)
