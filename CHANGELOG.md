@@ -4,6 +4,73 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.7.0] — 2026-04-30
+
+Skills uplift, phase 10.5 — fork execution mode. Skills with
+`execution_mode: fork` now actually run in a separate sub-agent
+instead of returning a "not yet available" error. Model overrides
+become real (the fork runner honours `model_override`); the parent
+LLM sees only the result text, not the body.
+
+### Added
+
+- `geny_executor.skills.fork` module:
+  - `ForkResult` — tiny dataclass mirroring the relevant bits of
+    `ToolResult` so runners stay decoupled from the tool layer.
+  - `SkillForkRunner` — async-callable type alias. Hosts implement
+    a runner taking `(skill, rendered_body, invoke_args,
+    parent_context)` and returning a `ForkResult`.
+  - `make_default_fork_runner(api_key=None)` — convenience factory
+    that binds an Anthropic-backed `ProviderBackedClient` and
+    returns a runner that fires a single completion with
+    `model_override` honoured. Returns `None` when no key is
+    configured so callers can decide whether to no-op or surface an
+    error.
+
+- `SkillTool(skill, *, fork_runner=...)` and
+  `SkillToolProvider(registry, *, fork_runner=...)` — opt-in
+  parameter to wire a runner for fork-mode skills.
+
+- `build_skill_tool(skill, *, fork_runner=...)` accepts the same
+  kwarg.
+
+- All three exposed at the package top level
+  (`from geny_executor.skills import make_default_fork_runner` etc.).
+
+### Changed
+
+- `SkillTool.execute()` now branches by execution mode after arg
+  substitution. Fork-mode skills route to the new `_run_fork`
+  helper which:
+  - errors cleanly when no runner is wired ("pass `fork_runner=...`
+    or change to inline");
+  - converts runner exceptions into structured `ToolResult` errors
+    so a runner fault never crashes the parent session;
+  - merges runner-returned metadata with default fields
+    (`skill_id`, `execution_mode`, `model_override`, `args`).
+
+- The legacy "fork mode is not yet available" error message is
+  retired. The unit test that asserted it has been updated to check
+  the new "no runner wired" message.
+
+### Migration
+
+For hosts that were relying on fork-mode skills failing as a
+fallback (none, that we know of) — call `SkillToolProvider(...,
+fork_runner=make_default_fork_runner())` to keep behaviour close
+to the old advisory marker, except now it actually runs.
+
+### Tests
+
+- 12 new cases in `tests/unit/test_skill_phase_10_5_fork.py`
+  covering runner invocation, body substitution before fork,
+  metadata merging, runner-exception handling, provider
+  propagation, inline-mode unaffected, and
+  `make_default_fork_runner` env-var resolution.
+- Existing fork-mode test in `test_skill_tool.py` updated for the
+  new error message. 192/192 in the skills suite, 2288/2288 in
+  the full unit test suite.
+
 ## [1.6.1] — 2026-04-30
 
 Skills uplift, phase 10.4 — operational bundled-skill catalog. Five

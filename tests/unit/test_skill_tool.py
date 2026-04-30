@@ -180,12 +180,16 @@ class TestTemplateRendering:
 
 class TestForkMode:
     @pytest.mark.asyncio
-    async def test_fork_mode_returns_clean_error(self):
+    async def test_fork_mode_returns_clean_error_when_no_runner(self):
+        # Phase 10.5 — fork mode now runs through a configured
+        # SkillForkRunner. Without one wired, the tool surfaces a
+        # clean error directing the operator to provide a runner or
+        # switch the skill to inline.
         tool = SkillTool(_skill(execution_mode="fork"))
         result = await tool.execute({}, _ctx())
         assert result.is_error
         assert "fork" in result.content.lower()
-        assert "not yet available" in result.content
+        assert "SkillForkRunner" in result.content
 
 
 class TestExecuteErrors:
