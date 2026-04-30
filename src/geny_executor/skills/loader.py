@@ -236,6 +236,22 @@ def parse_skill_file(path: Path) -> Skill:
             f"{path}: 'paths' must be a list/string (got {type(raw_paths).__name__})"
         )
 
+    # Phase 10.3 — shell-block configuration. Both fields fall back to
+    # sensible defaults so existing skills don't need to declare them.
+    shell = meta_dict.get("shell", "bash")
+    if not isinstance(shell, str) or not shell.strip():
+        raise SkillLoadError(f"{path}: 'shell' must be a non-empty string (got {shell!r})")
+    shell = shell.strip()
+
+    raw_timeout = meta_dict.get("shell_timeout_s", 30.0)
+    if isinstance(raw_timeout, bool) or not isinstance(raw_timeout, (int, float)):
+        raise SkillLoadError(
+            f"{path}: 'shell_timeout_s' must be a number (got {type(raw_timeout).__name__})"
+        )
+    shell_timeout_s = float(raw_timeout)
+    if shell_timeout_s <= 0:
+        raise SkillLoadError(f"{path}: 'shell_timeout_s' must be > 0 (got {shell_timeout_s})")
+
     # Extras: every key we didn't explicitly consume — gives hosts a
     # growth surface without forcing executor schema changes.
     consumed = {
@@ -254,6 +270,8 @@ def parse_skill_file(path: Path) -> Skill:
         "user_invocable",
         "disable_model_invocation",
         "paths",
+        "shell",
+        "shell_timeout_s",
     }
     extras = {k: v for k, v in meta_dict.items() if k not in consumed}
 
@@ -273,6 +291,8 @@ def parse_skill_file(path: Path) -> Skill:
         user_invocable=user_invocable,
         disable_model_invocation=disable_model_invocation,
         paths=paths_tuple,
+        shell=shell,
+        shell_timeout_s=shell_timeout_s,
         extras=extras,
     )
 

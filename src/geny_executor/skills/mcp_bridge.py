@@ -96,6 +96,12 @@ async def mcp_prompts_to_skills(manager: "MCPManager") -> List[Skill]:
                     "prompt_name": prompt_name,
                     "arguments": arguments,
                     "source": SKILL_SOURCE_TAG,
+                    # Phase 10.3 — tag MCP-bridged skills so the shell
+                    # block executor strips ``\`\`\`!`` blocks from
+                    # bodies served by remote prompt servers. Hosts
+                    # that wire other untrusted bridges should follow
+                    # the same convention.
+                    "source_kind": "mcp",
                 },
             )
             out.append(

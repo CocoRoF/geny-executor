@@ -209,6 +209,11 @@ class TestPromptsToSkills:
                 {"name": "pr_id", "description": "PR id", "required": True}
             ],
             "source": "mcp",
+            # Phase 10.3 — bridge tags the source kind so shell-block
+            # execution can opt this skill out of running ``\`\`\`!``
+            # blocks (untrusted remote bodies must not reach the host
+            # subprocess).
+            "source_kind": "mcp",
         }
 
     @pytest.mark.asyncio

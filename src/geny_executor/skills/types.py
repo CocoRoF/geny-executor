@@ -117,6 +117,16 @@ class SkillMetadata:
     # leading ``/`` to anchor at root, trailing ``/`` for dir-only);
     # see :mod:`geny_executor.skills.path_match`.
     paths: Tuple[str, ...] = ()
+    # Phase 10.3 — shell-block execution.
+    # Skills can embed ``\`\`\`!`` fenced blocks (multi-line) or
+    # ``!\`cmd\``` inline blocks in their body. The executor parses
+    # them, runs each command in the configured shell, and splices
+    # the captured stdout back into the body before returning to
+    # the LLM. ``shell`` selects the binary (default ``bash``).
+    # ``shell_timeout_s`` is the wall-clock per-block ceiling.
+    # See :mod:`geny_executor.skills.shell_blocks` for the full model.
+    shell: str = "bash"
+    shell_timeout_s: float = 30.0
     extras: Dict[str, Any] = field(default_factory=dict)
 
 
@@ -144,6 +154,24 @@ class Skill:
     def description(self) -> str:
         """Shortcut to ``metadata.description``."""
         return self.metadata.description
+
+    @property
+    def assets_dir(self) -> Optional[Path]:
+        """Phase 10.3 — directory the skill's assets live next to.
+
+        Convention: a skill at ``<root>/<id>/SKILL.md`` may colocate
+        scripts, data files, JSON schemas, etc. inside ``<root>/<id>/``.
+        This property exposes that directory so the renderer can
+        substitute ``${SKILL_DIR}`` placeholders at execution time.
+
+        Returns ``None`` for in-code bundled skills (no on-disk
+        source). Hosts that want bundled skills to support assets
+        should ship the skill on disk under the standard layout —
+        the in-code shortcut is for trivially small skills only.
+        """
+        if self.source is None:
+            return None
+        return self.source.parent
 
 
 @dataclass

@@ -66,11 +66,15 @@ class _SafeFormatDict(dict):
 def _render_body(skill: Skill, invoke_args: Dict[str, Any]) -> str:
     """Interpolate ``invoke_args`` into the skill body.
 
-    Two-stage substitution:
+    Three-stage substitution:
       1. ``${name}`` placeholders (Phase 10.1, the recommended form) —
          missing names become empty string so optional-argument skills
          don't leak literal ``${foo}`` to the LLM.
-      2. ``{name}`` brace placeholders (legacy, pre-10.1) — passed
+      2. ``${SKILL_DIR}`` (Phase 10.3) — resolves to the directory the
+         skill lives in (its ``assets_dir``). Missing source / in-code
+         skills resolve to the empty string so authors get a clear
+         "no assets here" signal in the rendered body.
+      3. ``{name}`` brace placeholders (legacy, pre-10.1) — passed
          through unchanged when the key is missing so skill bodies
          containing genuine example braces don't crash.
 
@@ -78,30 +82,33 @@ def _render_body(skill: Skill, invoke_args: Dict[str, Any]) -> str:
     """
     body = skill.body
 
-    if invoke_args:
-        # ``${name}`` style — current preferred form.
-        coerced = {k: ("" if v is None else str(v)) for k, v in invoke_args.items()}
+    # Build the substitution map. Argument names always win over
+    # built-in placeholders so a skill author who really wants to
+    # rebind ``SKILL_DIR`` (rare, but possible) can.
+    coerced: Dict[str, str] = {}
+    skill_dir = skill.assets_dir
+    coerced["SKILL_DIR"] = str(skill_dir) if skill_dir is not None else ""
+    for k, v in (invoke_args or {}).items():
+        coerced[k] = "" if v is None else str(v)
 
-        def _replace(match: "re.Match[str]") -> str:
-            return coerced.get(match.group(1), "")
+    def _replace(match: "re.Match[str]") -> str:
+        return coerced.get(match.group(1), "")
 
-        body = _DOLLAR_PLACEHOLDER.sub(_replace, body)
+    body = _DOLLAR_PLACEHOLDER.sub(_replace, body)
 
-        # ``{name}`` brace style — legacy. Only run when the body
-        # still contains braces, to keep the common case cheap.
-        if "{" in body and "}" in body:
-            safe = _SafeFormatDict(coerced)
-            try:
-                body = body.format_map(safe)
-            except (ValueError, KeyError, IndexError):
-                # Malformed format spec — return what we have rather
-                # than blow up. The ${...} pass already substituted
-                # everything we expected to substitute.
-                pass
-    else:
-        # No args — still strip ${name} placeholders so the body
-        # doesn't ship literal placeholders to the LLM.
-        body = _DOLLAR_PLACEHOLDER.sub("", body)
+    # ``{name}`` brace style — legacy. Only run when the body still
+    # contains braces and the operator passed args, to keep the common
+    # case cheap and avoid disturbing literal markdown braces in
+    # bodies that don't use brace-style at all.
+    if invoke_args and "{" in body and "}" in body:
+        safe = _SafeFormatDict(coerced)
+        try:
+            body = body.format_map(safe)
+        except (ValueError, KeyError, IndexError):
+            # Malformed format spec — return what we have rather
+            # than blow up. The ${...} pass already substituted
+            # everything we expected to substitute.
+            pass
 
     return body
 
@@ -221,6 +228,27 @@ class SkillTool(Tool):
         # skill's permission context merges into the outer agent's.
         granted_tools = self._grant_allowed_tools(context)
 
+        # Phase 10.3 — execute embedded shell blocks. ``${name}``
+        # substitution already ran inside _render_body, so any args
+        # the author wove into the shell command are already there.
+        # MCP-sourced skills are stripped (trust_shell=False) so a
+        # remote server can't inject shell commands into the host.
+        from geny_executor.skills.shell_blocks import (
+            execute_blocks,
+            is_trusted_source,
+        )
+
+        trusted = is_trusted_source(self._skill.source, self._skill.metadata.extras)
+        shell_summary = await execute_blocks(
+            body,
+            shell=self._skill.metadata.shell,
+            cwd=context.working_dir or None,
+            env=context.env_vars,
+            timeout_s=self._skill.metadata.shell_timeout_s,
+            trust_shell=trusted,
+        )
+        body = shell_summary.rendered_body
+
         header_lines = [
             f"Skill invoked: {self._skill.name} ({self._skill.id})",
         ]
@@ -236,6 +264,20 @@ class SkillTool(Tool):
             header_lines.append(
                 f"model override: {self._skill.metadata.model_override} (advisory in inline mode)"
             )
+        if shell_summary.outcomes:
+            ran = sum(1 for o in shell_summary.outcomes if not o.skipped)
+            skipped = sum(1 for o in shell_summary.outcomes if o.skipped)
+            failed = sum(
+                1
+                for o in shell_summary.outcomes
+                if (not o.skipped) and (o.exit_code != 0 or o.timed_out)
+            )
+            parts = [f"{ran} ran"]
+            if failed:
+                parts.append(f"{failed} failed")
+            if skipped:
+                parts.append(f"{skipped} skipped (untrusted source)")
+            header_lines.append(f"shell blocks: {', '.join(parts)}")
 
         header = "\n".join(header_lines)
         content = f"{header}\n\n{body}".rstrip() + "\n"
@@ -262,6 +304,13 @@ class SkillTool(Tool):
                 "args": raw_args,
                 "body_chars": len(body),
                 "rendered_template": body != self._skill.body,
+                "shell_blocks_run": sum(1 for o in shell_summary.outcomes if not o.skipped),
+                "shell_blocks_skipped": sum(1 for o in shell_summary.outcomes if o.skipped),
+                "shell_blocks_failed": sum(
+                    1
+                    for o in shell_summary.outcomes
+                    if (not o.skipped) and (o.exit_code != 0 or o.timed_out)
+                ),
                 "skill_context": {
                     "session_id": skill_ctx.session_id,
                     "parent_tool_use_id": skill_ctx.parent_tool_use_id,
