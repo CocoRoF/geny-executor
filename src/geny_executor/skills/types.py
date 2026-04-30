@@ -110,6 +110,13 @@ class SkillMetadata:
     when_to_use: Optional[str] = None
     user_invocable: bool = True
     disable_model_invocation: bool = False
+    # Phase 10.2 — conditional activation. Empty = always active.
+    # Non-empty = the skill is hidden from `SkillToolProvider` until
+    # one of the patterns matches a path the session is working with.
+    # Patterns use a small gitignore-ish subset (``*``, ``**``, ``?``,
+    # leading ``/`` to anchor at root, trailing ``/`` for dir-only);
+    # see :mod:`geny_executor.skills.path_match`.
+    paths: Tuple[str, ...] = ()
     extras: Dict[str, Any] = field(default_factory=dict)
 
 

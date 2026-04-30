@@ -36,7 +36,7 @@ Argument interpolation (Phase 10.1):
 from __future__ import annotations
 
 import re
-from typing import Any, Dict, List
+from typing import Any, Dict, Iterable, List
 
 from geny_executor.skills.registry import SkillRegistry
 from geny_executor.skills.types import Skill, SkillContext
@@ -211,6 +211,16 @@ class SkillTool(Tool):
 
         body = _render_body(self._skill, raw_args)
 
+        # Phase 10.2 — grant the skill's declared allowed_tools by
+        # appending ALLOW rules to the live `ToolContext.permission_rules`.
+        # The grant is *additive*: tools that were already allowed stay
+        # allowed; tools the parent's permission rules denied get an
+        # explicit ALLOW rule with lowest source priority. Persists for
+        # the lifetime of this ToolContext (one session in the typical
+        # wiring) — matches claude-code-main semantics where the
+        # skill's permission context merges into the outer agent's.
+        granted_tools = self._grant_allowed_tools(context)
+
         header_lines = [
             f"Skill invoked: {self._skill.name} ({self._skill.id})",
         ]
@@ -218,9 +228,14 @@ class SkillTool(Tool):
             header_lines.append(f"version: {self._skill.metadata.version}")
         if self._skill.metadata.allowed_tools:
             tools_joined = ", ".join(self._skill.metadata.allowed_tools)
-            header_lines.append(f"allowed tools: {tools_joined}")
+            granted_str = " (granted)" if granted_tools else " (already allowed)"
+            header_lines.append(f"allowed tools: {tools_joined}{granted_str}")
         if self._skill.metadata.model_override:
-            header_lines.append(f"model override: {self._skill.metadata.model_override} (advisory)")
+            # Inline mode can't actually switch models — fork mode
+            # (Phase 10.5) will. Keep the marker honest.
+            header_lines.append(
+                f"model override: {self._skill.metadata.model_override} (advisory in inline mode)"
+            )
 
         header = "\n".join(header_lines)
         content = f"{header}\n\n{body}".rstrip() + "\n"
@@ -242,6 +257,7 @@ class SkillTool(Tool):
                 "skill_name": self._skill.name,
                 "execution_mode": mode,
                 "allowed_tools": list(self._skill.metadata.allowed_tools),
+                "granted_tools": granted_tools,
                 "model_override": self._skill.metadata.model_override,
                 "args": raw_args,
                 "body_chars": len(body),
@@ -252,6 +268,58 @@ class SkillTool(Tool):
                 },
             },
         )
+
+    def _grant_allowed_tools(self, context: ToolContext) -> List[str]:
+        """Append ALLOW rules for the skill's declared tools to
+        ``context.permission_rules``. Returns the list of tool names
+        that received a *new* grant (already-permitted ones are
+        skipped silently).
+
+        The grant uses the executor's permission types so the matrix
+        evaluator picks them up alongside any rules the host already
+        loaded. Source is :class:`PermissionSource.PRESET_DEFAULT` —
+        lowest priority, so an explicit user-level DENY still wins
+        over a skill grant. This is the safe default: a skill saying
+        "I want Bash" can be overridden by a sandbox env saying "no
+        Bash, ever".
+        """
+        if not self._skill.metadata.allowed_tools:
+            return []
+        try:
+            from geny_executor.permission.types import (
+                PermissionBehavior,
+                PermissionRule,
+                PermissionSource,
+            )
+        except Exception:
+            # Permission subsystem unavailable in this build — stay
+            # advisory like pre-10.2 behaviour.
+            return []
+        existing: List[Any] = list(context.permission_rules)
+        granted: List[str] = []
+        # Track (tool_name, reason) tuples already granted so a
+        # rapid re-invocation of the same skill doesn't pile up dupes.
+        existing_grants = {
+            (getattr(r, "tool_name", None), getattr(r, "reason", None)) for r in existing
+        }
+        reason = f"granted by skill {self._skill.id}"
+        for tool_name in self._skill.metadata.allowed_tools:
+            key = (tool_name, reason)
+            if key in existing_grants:
+                continue
+            rule = PermissionRule(
+                tool_name=tool_name,
+                behavior=PermissionBehavior.ALLOW,
+                source=PermissionSource.PRESET_DEFAULT,
+                pattern=None,
+                reason=reason,
+            )
+            existing.append(rule)
+            granted.append(tool_name)
+        # Re-bind in case ``permission_rules`` was a tuple or otherwise
+        # immutable on a particular ToolContext implementation.
+        context.permission_rules = existing
+        return granted
 
 
 class SkillToolProvider(ToolProvider):
@@ -282,9 +350,34 @@ class SkillToolProvider(ToolProvider):
     10's tool registry snapshot owns the set).
     """
 
-    def __init__(self, registry: SkillRegistry, *, name: str = "skills"):
+    def __init__(
+        self,
+        registry: SkillRegistry,
+        *,
+        name: str = "skills",
+        active_paths: Iterable[str] = (),
+    ):
+        """
+        Args:
+            registry: Skill registry to expose.
+            name: Provider name surfaced in pipeline diagnostics.
+            active_paths: Paths the session is currently working on.
+                When non-empty, skills with declared ``paths``
+                patterns are filtered to only those that match — the
+                model's tool roster shrinks to skills relevant to
+                the current task. Skills without declared ``paths``
+                are always included. Phase 10.2 conditional
+                activation; mutate via :meth:`set_active_paths`.
+        """
         self._registry = registry
         self._name = name
+        self._active_paths: List[str] = list(active_paths)
+
+    def set_active_paths(self, paths: Iterable[str]) -> None:
+        """Update the active path set. Hosts call this when a tool
+        Read / Write / Edit touches a new path; the next
+        :meth:`list_tools` call reflects the change."""
+        self._active_paths = list(paths)
 
     @property
     def name(self) -> str:
@@ -301,11 +394,39 @@ class SkillToolProvider(ToolProvider):
         # don't leak into the model's tool roster. The registry still
         # has them (so a user-driven slash command path can resolve
         # them); only this provider filters.
-        return [
-            SkillTool(skill)
-            for skill in self._registry.list_all()
-            if not skill.metadata.disable_model_invocation
-        ]
+        # Phase 10.2 — also filter by `paths` conditional activation.
+        out: List[Tool] = []
+        for skill in self._registry.list_all():
+            if skill.metadata.disable_model_invocation:
+                continue
+            if not _skill_active_for_paths(skill, self._active_paths):
+                continue
+            out.append(SkillTool(skill))
+        return out
+
+
+def _skill_active_for_paths(skill: Skill, active_paths: Iterable[str]) -> bool:
+    """Return True iff the skill should be exposed given the active
+    path set.
+
+    A skill with no declared ``paths`` is always active. A skill with
+    declared ``paths`` is active when any of those patterns matches
+    any of the active paths. Empty active_paths + declared paths
+    means the skill is hidden.
+    """
+    declared = skill.metadata.paths
+    if not declared:
+        return True
+    if not active_paths:
+        return False
+    from geny_executor.skills.path_match import compile_patterns, match_any
+
+    # Compile per-call — the active path set churns more often than
+    # the skill list, so caching the regexes on the Skill would help
+    # only marginally; compile cost is microseconds for the small N
+    # we expect (<10 patterns per skill, <50 skills).
+    compiled = compile_patterns(declared)
+    return match_any(active_paths, compiled)
 
 
 def build_skill_tool(skill: Skill) -> SkillTool:

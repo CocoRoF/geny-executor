@@ -217,6 +217,25 @@ def parse_skill_file(path: Path) -> Skill:
         field_name="disable_model_invocation",
     )
 
+    # Phase 10.2 — `paths` conditional activation. Accepts a list, a
+    # comma-separated string, or single string. Trailing whitespace
+    # is stripped per pattern; empty entries are dropped.
+    raw_paths = meta_dict.get("paths", [])
+    if raw_paths in (None, ""):
+        paths_tuple: Tuple[str, ...] = ()
+    elif isinstance(raw_paths, list):
+        if not all(isinstance(x, str) for x in raw_paths):
+            raise SkillLoadError(f"{path}: every entry in 'paths' must be a string")
+        paths_tuple = tuple(s.strip() for s in raw_paths if s.strip())
+    elif isinstance(raw_paths, str):
+        # Allow comma-separated single-line form for convenience.
+        parts = [s.strip() for s in raw_paths.split(",")]
+        paths_tuple = tuple(p for p in parts if p)
+    else:
+        raise SkillLoadError(
+            f"{path}: 'paths' must be a list/string (got {type(raw_paths).__name__})"
+        )
+
     # Extras: every key we didn't explicitly consume — gives hosts a
     # growth surface without forcing executor schema changes.
     consumed = {
@@ -234,6 +253,7 @@ def parse_skill_file(path: Path) -> Skill:
         "when_to_use",
         "user_invocable",
         "disable_model_invocation",
+        "paths",
     }
     extras = {k: v for k, v in meta_dict.items() if k not in consumed}
 
@@ -252,6 +272,7 @@ def parse_skill_file(path: Path) -> Skill:
         when_to_use=when_to_use,
         user_invocable=user_invocable,
         disable_model_invocation=disable_model_invocation,
+        paths=paths_tuple,
         extras=extras,
     )
 
