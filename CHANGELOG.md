@@ -4,6 +4,82 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.6.0] — 2026-04-30
+
+Skills uplift, phase 10.3 — shell-block execution + bundled-asset
+extraction. Skill bodies can now embed shell commands that run
+server-side; the captured output replaces the block before the
+rendered body reaches the LLM. Skills with disk sources can ship
+helper scripts / data files alongside `SKILL.md` and reference them
+via `${SKILL_DIR}`.
+
+### Added
+
+- `geny_executor.skills.shell_blocks` — pure-stdlib parser + executor
+  for two markdown forms:
+  - Fenced: ` ``` ! ` (no language tag) opens a block whose contents
+    are fed to the configured shell.
+  - Inline: `` !`cmd` `` runs ``cmd`` and substitutes the captured
+    stdout in place.
+  Per-block execution honours the skill's ``shell`` (default
+  ``"bash"``) and ``shell_timeout_s`` (default 30s) settings, runs
+  in ``ToolContext.working_dir``, and overlays
+  ``ToolContext.env_vars`` onto ``os.environ``. Failed / timed-out
+  blocks render as ``[shell exit=N: ...]`` / ``[shell timed out ...]``
+  markers so the LLM sees the failure rather than missing context.
+
+- `Skill.assets_dir` — directory the skill lives in
+  (``source.parent``). ``${SKILL_DIR}`` placeholder in the body
+  resolves to this path so a skill can ship helper scripts /
+  schemas / data files alongside ``SKILL.md`` and reference them
+  with one substitution.
+
+- `SkillMetadata.shell` and `SkillMetadata.shell_timeout_s` —
+  per-skill overrides for the shell binary and per-block wall-clock
+  ceiling. Defaults preserve pre-1.6.0 behaviour for skills that
+  didn't declare them.
+
+### Security
+
+- MCP-bridged skills (``extras["source_kind"] == "mcp"``) are
+  **stripped** of shell blocks: the executor calls
+  ``execute_blocks(..., trust_shell=False)`` so the host subprocess
+  is never reached. Each skipped block renders as ``[shell skipped:
+  skill body is untrusted (trust_shell=False)]`` so the LLM doesn't
+  silently lose context.
+- Shell commands run as a subprocess with the parent's
+  permission-rule grants already merged in (Phase 10.2). They are
+  not gated through the permission matrix directly — the *skill* has
+  been deemed safe to run, and that skill documents the tools it
+  uses. Hosts that want stricter sandboxing can wire a hooks-based
+  `PRE_TOOL_USE` gate (Phase 5) — out of scope for 10.3.
+- The `mcp_bridge` now sets ``source_kind=mcp`` on every bridged
+  skill so the trust check picks it up. Hosts wiring other
+  untrusted bridges should follow the same convention.
+
+### Changed
+
+- `_render_body` is now three-stage: ``${name}`` substitution,
+  ``${SKILL_DIR}`` resolution, then legacy `{name}` brace fallback.
+  ``${SKILL_DIR}`` always resolves — empty string for in-code
+  bundled skills (no source), absolute path for disk-loaded skills.
+- `SkillTool.execute()` runs shell blocks after argument
+  substitution; metadata gains `shell_blocks_run`,
+  `shell_blocks_skipped`, `shell_blocks_failed` counters for audit.
+  Headers add a `shell blocks: N ran[, M failed[, K skipped (...)]`
+  line whenever any block was processed.
+
+### Tests
+
+- 32 new cases in `tests/unit/test_skill_phase_10_3.py` covering
+  block parsing (fenced, inline, mixed, edge cases), execution
+  (success, failure, timeout, cwd, env, trust gating),
+  `is_trusted_source`, loader for `shell` / `shell_timeout_s`, and
+  end-to-end `SkillTool.execute()` with shell + assets. Bash-
+  dependent tests are skipped when bash isn't available so the
+  suite stays portable. 169/169 in the skills suite, 2265/2265 in
+  the full unit test suite.
+
 ## [1.5.0] — 2026-04-30
 
 Skills uplift, phase 10.2 — `allowed_tools` enforcement + `paths`
