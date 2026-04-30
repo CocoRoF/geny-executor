@@ -4,6 +4,63 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.5.0] — 2026-04-30
+
+Skills uplift, phase 10.2 — `allowed_tools` enforcement + `paths`
+conditional activation. The schema field added in 10.1 finally has
+runtime teeth, and skills can now scope themselves to a subset of the
+session's working files.
+
+### Added
+
+- `SkillMetadata.paths: Tuple[str, ...]` — gitignore-ish patterns
+  (`*`, `**`, `?`, leading `/` for root anchor, trailing `/` for
+  dir-only). When set, the skill is hidden from
+  `SkillToolProvider.list_tools()` until one of the patterns matches
+  a path the session is working with — keeps the model's tool roster
+  focused on skills relevant to the current task.
+
+- `geny_executor.skills.path_match` — stdlib-only path pattern
+  compiler (`compile_patterns`, `match_any`). Subset of gitignore
+  syntax we actually need; swap for `pathspec` later if anyone wants
+  full gitignore behaviour.
+
+- `SkillToolProvider(active_paths=...)` + `set_active_paths()` —
+  hosts pass the path set the session is currently working on; the
+  provider filters `paths`-conditional skills accordingly. Hosts
+  call `set_active_paths()` from their Read / Write / Edit
+  observers and the next `list_tools()` reflects the change.
+
+### Changed
+
+- `SkillTool.execute()` now grants the skill's declared
+  `allowed_tools` to the active `ToolContext` by appending ALLOW
+  rules (source `PRESET_DEFAULT`, lowest priority) tagged with the
+  skill id in the `reason` field. Grant is *additive*: tools that
+  were already permitted stay permitted; tools the parent denied
+  with a higher-priority source still get denied. A skill saying
+  "I want Bash" can be overridden by a sandbox env saying "no Bash".
+
+- The grant is idempotent across repeat invocations of the same
+  skill — keyed by `(tool_name, reason)` so the rule list doesn't
+  grow unbounded if the model loops.
+
+- The `model_override` advisory header now reads
+  `"... (advisory in inline mode)"` so it's clear the override only
+  takes effect once Phase 10.5 (fork mode) ships.
+
+- `ToolResult.metadata["granted_tools"]` lists the tools that
+  received a fresh grant on this invocation (vs the static
+  `allowed_tools`). Useful for audit logs.
+
+### Tests
+
+- 35 new cases in `tests/unit/test_skill_phase_10_2.py` covering
+  `path_match` for the full pattern grammar, loader `paths` parsing
+  edge cases, `SkillToolProvider` filtering with / without active
+  paths, allowed_tools grant semantics (idempotency, prior-DENY
+  precedence, header copy). 137/137 in the skills suite.
+
 ## [1.4.0] — 2026-04-30
 
 Skills uplift, phase 10.1 — schema additions, `${name}` argument
