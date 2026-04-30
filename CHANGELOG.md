@@ -4,6 +4,47 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.7.1] — 2026-04-30
+
+Skills uplift, phase 10.6 — killer bundled skills. Three higher-
+effort workflow skills join the operational five from 10.4. Bundled
+catalog grows from five to eight.
+
+### Added
+
+- `bundled/simplify` (`category: workflow`, `effort: high`) —
+  three-pass code review (reuse / quality / efficiency) over a
+  resolved diff target. Uses shell blocks to find the merge base
+  when the user doesn't pass an explicit target. Emits a
+  prioritised punch list capped at 5 items so the output is
+  actionable, not exhaustive.
+
+- `bundled/skillify` (`category: meta`) — interview-and-write
+  workflow that captures a repeated user flow as a SKILL.md. Asks
+  one question at a time, validates the proposed frontmatter,
+  writes the file to user-scope (`~/.geny/skills/<id>/SKILL.md`)
+  or project-scope (`<cwd>/.geny/skills/<id>/SKILL.md`). Includes
+  an explicit "stop after three vague answers" guard so it doesn't
+  manufacture skills nobody will use.
+
+- `bundled/loop` (`category: workflow`) — schedule a recurring
+  task. Parses compact intervals (`5m`, `1h`, `1d`), cron
+  expressions, and plain English ("every weekday at 9am"). Ships
+  the canonical cron translation table inline so the prompt is
+  self-contained. Honest about *not* implementing the cron daemon
+  — defers actual scheduling to whatever scheduler tool the host
+  has wired (geny-executor's `cron` extra, Geny's
+  `ScheduleCron`, etc.).
+
+### Tests
+
+- 5 new cases in `tests/unit/test_skill_phase_10_6_killer.py`
+  validating each new skill's metadata, body content markers, and
+  the shared user-invocability + when_to_use expectations.
+- The locked inventory test in `test_skill_phase_10_4_bundled.py`
+  expanded to expect the eight-skill catalog. Skills suite now
+  197/197.
+
 ## [1.7.0] — 2026-04-30
 
 Skills uplift, phase 10.5 — fork execution mode. Skills with

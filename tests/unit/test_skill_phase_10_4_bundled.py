@@ -24,15 +24,21 @@ from geny_executor.skills.types import Skill
 # ── Catalog inventory ───────────────────────────────────────────────
 
 
-# The locked set of skills that ship with 1.6.x. Adding to this
+# The locked set of skills that ship with 1.7.x. Adding to this
 # requires bumping the patch version *and* updating the test;
 # removing requires a deprecation note in CHANGELOG.
+#
+# Phase 10.6 added simplify / skillify / loop alongside the original
+# five operational skills.
 EXPECTED_BUNDLED: Set[str] = {
     "verify",
     "debug",
     "lorem-ipsum",
     "stuck",
     "batch",
+    "simplify",
+    "skillify",
+    "loop",
 }
 
 
