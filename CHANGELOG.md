@@ -4,6 +4,55 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.9.0] — 2026-05-01
+
+Memory v2 — executor side. Adds the file-provider primitives and the
+retriever flag that the Geny-side leaf source-of-truth design (cf.
+`Geny/plan.md`) depends on.
+
+### Added
+
+- `GenyMemoryRetriever.slim_mode` — new keyword argument (default
+  `False`). When set, the retriever stops after the lightweight
+  layers — recent_turns, session_summary, and a duck-typed
+  ``vault_map`` rendered by ``index_manager.render_vault_map()`` —
+  and leaves the heavy layers (MEMORY.md body, vector top-k,
+  keyword recall, backlinks, curated) to the agent's progressive
+  disclosure tools (`memory_search` → `memory_read`).
+
+  ```python
+  GenyMemoryRetriever(
+      memory_manager,
+      slim_mode=True,
+      max_inject_chars=8000,
+  )
+  ```
+
+- ``_load_vault_map`` helper on the retriever — duck-types
+  ``index_manager.render_vault_map()`` so consumers that publish a
+  ~500-char vault snapshot (Geny does, via its
+  ``MemoryIndexManager``) get it injected automatically when
+  slim_mode is on.
+
+- ``NOTE_CATEGORIES`` extended with three v2 categories:
+  - ``conversations`` — leaf source-of-truth for every recorded
+    turn (``conversations/<YYYY-MM-DD>/<id>.md``)
+  - ``dms`` — per-counterpart-per-day index bundle
+  - ``compactions`` — s02 compactor snapshot vault notes
+
+  The set now mirrors Geny's
+  ``service.memory.structured_writer.VALID_CATEGORIES`` so a
+  ``FileMemoryProvider`` running standalone can scan a Geny-written
+  vault end-to-end.
+
+### Compatibility
+
+- Existing callers that don't pass ``slim_mode`` keep the historical
+  6-layer behaviour. The kwarg is opt-in.
+- ``NOTE_CATEGORIES`` only adds — no removals or renames. Older
+  vaults without the new subdirectories are scanned as before
+  (the new subdirs simply don't exist yet).
+
 ## [1.8.0] — 2026-04-30
 
 Skills uplift, phase 10.7 (final) — hot-reload watcher. Operators
