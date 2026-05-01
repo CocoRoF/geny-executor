@@ -4,6 +4,42 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.11.0] — 2026-05-01
+
+Insight category isolation. Operators reported the LLM reflection
+saving free-form facts under ``entities/`` (e.g. "User name and
+role preferences") because the reflection prompt offered
+``entities`` as one of the valid category options. This polluted
+the auto-generated counterpart-stub area: ``entities/`` is meant
+to hold only the per-counterpart Stats + Notes profile that
+``entity_bootstrap`` writes, never free-form notes.
+
+### Changed
+
+- The reflection prompt's category enumeration now reads
+  ``topics|insights|projects`` only. Two new explicit prohibitions
+  spell out which categories are off-limits to the LLM:
+  - ``entities`` — reserved for auto-generated counterpart stubs.
+  - ``conversations`` / ``dms`` / ``daily-journal`` /
+    ``compactions`` — auto-managed by the ``record_message`` hook
+    chain on the Geny side.
+
+### Added
+
+- ``GenyMemoryStrategy._RESERVED_CATEGORIES`` — defensive
+  coercion list. If a non-compliant LLM response still names a
+  reserved category, the host rewrites it to ``insights`` before
+  calling ``write_note``. Prompt + coercion together guarantee
+  the invariant; the coercion logs at debug for visibility.
+
+### Compatibility
+
+- Existing callers see no API change — ``write_note`` is still
+  called per-insight; only the *requested* category is
+  transparently sanitised for reflections. Manual writes through
+  the ``memory_write`` tool are unaffected (operator agency
+  intact for non-reserved categories).
+
 ## [1.10.0] — 2026-05-01
 
 Memory v2 followup — insight quality gate. The 1.9.0 retriever
