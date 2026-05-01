@@ -52,7 +52,7 @@ class TestDirectoryLayout:
         assert layout.transcripts.is_dir()
         assert layout.memory.is_dir()
         assert layout.topics_dir.is_dir()
-        for cat in ("daily", "entities", "projects", "insights"):
+        for cat in ("daily", "projects", "insights", "dms", "conversations"):
             assert layout.note_dir(cat).is_dir()
 
     def test_is_reserved(self, tmp_path: Path):

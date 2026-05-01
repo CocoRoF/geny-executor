@@ -78,16 +78,14 @@ class GenyMemoryStrategy(MemoryUpdateStrategy):
     _IMPORTANCE_RANK = {"critical": 0, "high": 1, "medium": 2, "low": 3}
 
     #: Categories the reflection LLM is *not* allowed to write into,
-    #: even if it asks. ``entities`` is reserved for auto-generated
-    #: counterpart profile stubs (entity_bootstrap on the Geny side);
-    #: ``conversations`` / ``dms`` / ``daily-journal`` / ``compactions``
-    #: are auto-managed by the record_message hook chain. The prompt
-    #: tells the LLM not to use these, but a defensive coercion at
-    #: write time is what actually guarantees the invariant. Any
-    #: attempt routes the note to ``insights`` instead.
+    #: even if it asks. ``conversations`` / ``dms`` / ``daily-journal``
+    #: / ``compactions`` are auto-managed by the record_message hook
+    #: chain. The prompt tells the LLM not to use these, but a
+    #: defensive coercion at write time is what actually guarantees
+    #: the invariant. Any attempt routes the note to ``insights``
+    #: instead.
     _RESERVED_CATEGORIES = frozenset(
         {
-            "entities",
             "conversations",
             "dms",
             "daily-journal",
@@ -326,8 +324,8 @@ class GenyMemoryStrategy(MemoryUpdateStrategy):
             "  - Generic best practices applicable to any agent\n"
             "  - Restating what the user just said\n"
             "  - Per-turn tactics ('I confirmed before delegating')\n"
-            "  - Anything already captured in entities/<counterpart>.md\n"
-            "    (interaction stats — that's automatic)\n"
+            "  - Counterpart interaction stats — those live in dms/\n"
+            "    (per-counterpart-per-day index) automatically\n"
             "\n"
             "ACCEPT only when the turn produced one of these:\n"
             "  - A user-stated fact about themselves, their goals, "
@@ -341,9 +339,6 @@ class GenyMemoryStrategy(MemoryUpdateStrategy):
             "  - insights:  distilled findings, decisions with rationale\n"
             "  - projects:  ongoing initiative state, milestones\n"
             "\n"
-            "Do NOT use ``entities`` as a category — it is reserved\n"
-            "for auto-generated counterpart profile stubs and\n"
-            "writing free-form notes there pollutes the index.\n"
             "Do NOT use ``conversations`` / ``dms`` /\n"
             "``daily-journal`` / ``compactions`` — those are auto-\n"
             "managed by the ``record_message`` hook chain.\n"
@@ -414,11 +409,11 @@ class GenyMemoryStrategy(MemoryUpdateStrategy):
             try:
                 # Defensive category coercion. The reflection prompt
                 # asks the LLM to pick from ``topics|insights|projects``
-                # and explicitly forbids ``entities`` /
-                # ``conversations`` / ``dms`` / ``daily-journal`` /
-                # ``compactions`` (auto-managed). A non-compliant LLM
-                # response that names a reserved category gets
-                # routed to ``insights`` instead — the host wins.
+                # and explicitly forbids ``conversations`` / ``dms`` /
+                # ``daily-journal`` / ``compactions`` (auto-managed).
+                # A non-compliant LLM response that names a reserved
+                # category gets routed to ``insights`` instead — the
+                # host wins.
                 requested_category = item.get("category", "insights")
                 if requested_category in self._RESERVED_CATEGORIES:
                     logger.debug(
