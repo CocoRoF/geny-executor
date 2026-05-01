@@ -41,8 +41,14 @@ TOPICS_SUBDIR = "topics"
 # Geny — kept duplicated rather than imported because the executor
 # stays Geny-free as a library.
 NOTE_CATEGORIES = (
-    "daily", "topics", "entities", "projects", "insights",
-    "dms", "conversations", "compactions",
+    "daily",
+    "topics",
+    "entities",
+    "projects",
+    "insights",
+    "dms",
+    "conversations",
+    "compactions",
     "root",
 )
 
