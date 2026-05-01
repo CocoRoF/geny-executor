@@ -43,7 +43,6 @@ TOPICS_SUBDIR = "topics"
 NOTE_CATEGORIES = (
     "daily",
     "topics",
-    "entities",
     "projects",
     "insights",
     "dms",

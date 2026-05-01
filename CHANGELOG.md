@@ -4,6 +4,48 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.12.0] — 2026-05-01
+
+Memory v2 ``entities/`` category retirement. The 1.11 hotfix made
+the reflection LLM stop *creating* free-form notes under
+``entities/``, but the auto-generated counterpart stub (the
+``entity_bootstrap`` hook the Geny host invoked from
+``record_message``) was still rewriting ``entities/<id>.md`` on
+every turn. Operators flagged this as a leftover bug — the data the
+stub captured (per-counterpart turn counts, last-seen timestamp)
+already lives under ``dms/<cp>/<date>.md`` frontmatter and on the
+StreamTab UI, so the stub was pure duplication.
+
+### Changed
+
+- ``NOTE_CATEGORIES`` (in ``geny_executor.memory.providers.file.layout``)
+  no longer lists ``entities`` — the directory is no longer
+  auto-created by ``DirectoryLayout.ensure()``. Existing
+  ``entities/*.md`` files on disk are left in place; the index
+  manager indexes them as ``root`` notes.
+- ``GenyMemoryStrategy._RESERVED_CATEGORIES`` removes
+  ``entities`` (no longer a real category) but keeps the
+  ``conversations`` / ``dms`` / ``daily-journal`` / ``compactions``
+  guards. The reflection prompt's prohibition list is updated to
+  match.
+
+### Removed
+
+- The reflection prompt's "anything captured in
+  ``entities/<counterpart>.md``" line — counterpart stats now live
+  in ``dms/`` and the StreamTab, so the prompt points there
+  instead.
+
+### Compatibility
+
+- Geny ≥ 1.12.0 (which retires ``service.memory.entity_bootstrap``)
+  pairs with this release. With Geny ≤ 1.11.x the host's
+  bootstrap hook will silently 404 against the executor's
+  ``NOTE_CATEGORIES`` (the directory still exists at runtime
+  because Geny's own ``StructuredMemoryWriter`` creates it), so
+  there is no crash, just stale data. Recommended path: bump Geny
+  and executor in lockstep.
+
 ## [1.11.0] — 2026-05-01
 
 Insight category isolation. Operators reported the LLM reflection
