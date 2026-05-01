@@ -21,10 +21,30 @@ VECTORDB_DIR = "vectordb"
 
 TOPICS_SUBDIR = "topics"
 
-# Hardcoded in Geny — structured notes are organised under one of six
-# category directories under `memory/`. `root` means "direct under
-# memory/", i.e. no subfolder.
-NOTE_CATEGORIES = ("daily", "topics", "entities", "projects", "insights", "root")
+# Hardcoded in Geny — structured notes are organised under category
+# directories under `memory/`. `root` means "direct under memory/",
+# i.e. no subfolder.
+#
+# Memory v2 (cf. plan §1.5) extends the historical 5-category set
+# with three semantic additions:
+#
+#   * ``conversations`` — leaf source of truth; one turn per file
+#     under ``conversations/<YYYY-MM-DD>/<id>.md``. Written by
+#     ConversationArchiver in Geny.
+#   * ``dms``           — per-counterpart-per-day index bundle
+#     under ``dms/<counterpart>/<YYYY-MM-DD>.md``. Written by
+#     DmArchiver.
+#   * ``compactions``   — s02 compactor snapshots, written by
+#     ``MemoryProvider.record_compaction``.
+#
+# Mirror of ``service.memory.structured_writer.VALID_CATEGORIES`` in
+# Geny — kept duplicated rather than imported because the executor
+# stays Geny-free as a library.
+NOTE_CATEGORIES = (
+    "daily", "topics", "entities", "projects", "insights",
+    "dms", "conversations", "compactions",
+    "root",
+)
 
 # File names that are canonical artefacts of the memory subsystem and
 # must not be treated as notes when scanning `memory/`.
