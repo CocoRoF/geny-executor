@@ -77,6 +77,24 @@ class GenyMemoryStrategy(MemoryUpdateStrategy):
     #: writing comparison code in the host.
     _IMPORTANCE_RANK = {"critical": 0, "high": 1, "medium": 2, "low": 3}
 
+    #: Categories the reflection LLM is *not* allowed to write into,
+    #: even if it asks. ``entities`` is reserved for auto-generated
+    #: counterpart profile stubs (entity_bootstrap on the Geny side);
+    #: ``conversations`` / ``dms`` / ``daily-journal`` / ``compactions``
+    #: are auto-managed by the record_message hook chain. The prompt
+    #: tells the LLM not to use these, but a defensive coercion at
+    #: write time is what actually guarantees the invariant. Any
+    #: attempt routes the note to ``insights`` instead.
+    _RESERVED_CATEGORIES = frozenset(
+        {
+            "entities",
+            "conversations",
+            "dms",
+            "daily-journal",
+            "compactions",
+        }
+    )
+
     def __init__(
         self,
         memory_manager: Any,
@@ -318,6 +336,18 @@ class GenyMemoryStrategy(MemoryUpdateStrategy):
             "  - A non-trivial technical finding (a working approach, "
             "    a gotcha, a constraint)\n"
             "\n"
+            "Category — pick the best fit:\n"
+            "  - topics:    general subject knowledge / how-tos\n"
+            "  - insights:  distilled findings, decisions with rationale\n"
+            "  - projects:  ongoing initiative state, milestones\n"
+            "\n"
+            "Do NOT use ``entities`` as a category — it is reserved\n"
+            "for auto-generated counterpart profile stubs and\n"
+            "writing free-form notes there pollutes the index.\n"
+            "Do NOT use ``conversations`` / ``dms`` /\n"
+            "``daily-journal`` / ``compactions`` — those are auto-\n"
+            "managed by the ``record_message`` hook chain.\n"
+            "\n"
             "Importance scale (be conservative):\n"
             "  - critical: the agent will fail without this fact\n"
             "  - high:     the agent's quality drops noticeably without it\n"
@@ -332,7 +362,7 @@ class GenyMemoryStrategy(MemoryUpdateStrategy):
             "    {\n"
             '      "title": "concise title (3-10 words)",\n'
             '      "content": "what was learned (1-3 sentences)",\n'
-            '      "category": "topics|insights|entities|projects",\n'
+            '      "category": "topics|insights|projects",\n'
             '      "tags": ["tag1", "tag2"],\n'
             '      "importance": "high|critical"\n'
             "    }\n"
@@ -382,10 +412,24 @@ class GenyMemoryStrategy(MemoryUpdateStrategy):
         saved = 0
         for item in gated[: self._max_insights]:
             try:
+                # Defensive category coercion. The reflection prompt
+                # asks the LLM to pick from ``topics|insights|projects``
+                # and explicitly forbids ``entities`` /
+                # ``conversations`` / ``dms`` / ``daily-journal`` /
+                # ``compactions`` (auto-managed). A non-compliant LLM
+                # response that names a reserved category gets
+                # routed to ``insights`` instead — the host wins.
+                requested_category = item.get("category", "insights")
+                if requested_category in self._RESERVED_CATEGORIES:
+                    logger.debug(
+                        "geny_strategy: LLM picked reserved category %r — coercing to 'insights'",
+                        requested_category,
+                    )
+                    requested_category = "insights"
                 filename = write_note(
                     title=item.get("title", "Insight"),
                     content=item.get("content", ""),
-                    category=item.get("category", "insights"),
+                    category=requested_category,
                     tags=item.get("tags", []),
                     importance=item.get("importance", "medium"),
                     source=source_label,
@@ -398,7 +442,7 @@ class GenyMemoryStrategy(MemoryUpdateStrategy):
                             self._curated.write_note(
                                 title=item.get("title", "Insight"),
                                 content=item.get("content", ""),
-                                category=item.get("category", "insights"),
+                                category=requested_category,
                                 tags=item.get("tags", []) + ["auto-promoted"],
                                 importance=importance,
                                 source="promoted",
