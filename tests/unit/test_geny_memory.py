@@ -335,7 +335,13 @@ class TestGenyMemoryStrategy:
 
     @pytest.mark.asyncio
     async def test_reflection_with_llm(self):
-        """With llm_reflect callable, extracts and saves insights."""
+        """With llm_reflect callable, extracts and saves insights.
+
+        1.10.0 raised the default ``min_insight_importance`` to
+        ``"high"``. The mock here emits a ``"high"`` reflection so
+        it survives the gate; the gate behaviour itself is covered
+        by ``test_reflection_gate_drops_below_threshold``.
+        """
         mgr = MockMemoryManager()
 
         async def mock_reflect(input_text: str, output_text: str):
@@ -345,7 +351,7 @@ class TestGenyMemoryStrategy:
                     "content": "Learned something",
                     "category": "insights",
                     "tags": ["test"],
-                    "importance": "medium",
+                    "importance": "high",
                 }
             ]
 
@@ -362,6 +368,77 @@ class TestGenyMemoryStrategy:
 
         assert len(mgr._notes) == 1
         assert mgr._notes[0]["title"] == "Test Insight"
+
+    @pytest.mark.asyncio
+    async def test_reflection_gate_drops_below_threshold(self):
+        """1.10.0 — ``min_insight_importance`` (default ``high``)
+        rejects medium / low reflections silently.
+        """
+        mgr = MockMemoryManager()
+
+        async def mock_reflect(input_text: str, output_text: str):
+            return [
+                {
+                    "title": "Trivial Pattern",
+                    "content": "greet warmly",
+                    "category": "insights",
+                    "tags": [],
+                    "importance": "medium",
+                },
+                {
+                    "title": "Real Fact",
+                    "content": "user prefers Korean",
+                    "category": "insights",
+                    "tags": [],
+                    "importance": "high",
+                },
+            ]
+
+        strategy = GenyMemoryStrategy(
+            mgr, enable_reflection=True, llm_reflect=mock_reflect,
+        )
+        state = PipelineState()
+        state.messages = [
+            {"role": "user", "content": "안녕"},
+            {"role": "assistant", "content": "안녕하세요"},
+        ]
+        state.final_text = "안녕하세요"
+
+        await strategy.update(state)
+
+        # Only the ``high`` reflection survives.
+        assert len(mgr._notes) == 1
+        assert mgr._notes[0]["title"] == "Real Fact"
+
+    @pytest.mark.asyncio
+    async def test_reflection_gate_low_lets_everything_through(self):
+        """``min_insight_importance="low"`` restores legacy permissive
+        behaviour (every reflection saved regardless of importance).
+        """
+        mgr = MockMemoryManager()
+
+        async def mock_reflect(input_text: str, output_text: str):
+            return [
+                {"title": "A", "content": "x", "category": "insights",
+                 "tags": [], "importance": "low"},
+                {"title": "B", "content": "y", "category": "insights",
+                 "tags": [], "importance": "medium"},
+            ]
+
+        strategy = GenyMemoryStrategy(
+            mgr, enable_reflection=True, llm_reflect=mock_reflect,
+            min_insight_importance="low",
+        )
+        state = PipelineState()
+        state.messages = [
+            {"role": "user", "content": "u"},
+            {"role": "assistant", "content": "a"},
+        ]
+        state.final_text = "a"
+        await strategy.update(state)
+
+        # Both saved (capped by max_insights=3).
+        assert len(mgr._notes) == 2
 
     @pytest.mark.asyncio
     async def test_no_manager_noop(self):

@@ -146,6 +146,13 @@ async def test_native_path_skipped_when_no_client():
 
 @pytest.mark.asyncio
 async def test_callback_still_wins_when_both_available():
+    """Verifies the callback path takes precedence over the native
+    LLM path. 1.10.0 raised the default ``min_insight_importance``
+    to ``"high"``; the callback emits ``"high"`` so the resulting
+    note survives the gate and we can assert *the callback's*
+    output (not the native client's empty output) was the one
+    recorded.
+    """
     calls: list = []
 
     async def cb(inp, out):
@@ -156,7 +163,7 @@ async def test_callback_still_wins_when_both_available():
                 "content": "via callback",
                 "category": "insights",
                 "tags": [],
-                "importance": "medium",
+                "importance": "high",
             }
         ]
 
