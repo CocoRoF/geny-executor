@@ -71,6 +71,12 @@ class GenyMemoryStrategy(MemoryUpdateStrategy):
             when no callback is provided.
     """
 
+    #: Importance ranking — lower index = higher priority. Used by the
+    #: ``min_insight_importance`` gate so callers can write
+    #: ``min_insight_importance="high"`` and reject low/medium without
+    #: writing comparison code in the host.
+    _IMPORTANCE_RANK = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+
     def __init__(
         self,
         memory_manager: Any,
@@ -81,6 +87,7 @@ class GenyMemoryStrategy(MemoryUpdateStrategy):
         auto_promote_importance: Optional[set] = None,
         curated_knowledge_manager: Any = None,
         resolver: Optional[ReflectionResolver] = None,
+        min_insight_importance: str = "high",
     ):
         self._mgr = memory_manager
         self._enable_reflection = enable_reflection
@@ -89,6 +96,15 @@ class GenyMemoryStrategy(MemoryUpdateStrategy):
         self._auto_promote = auto_promote_importance or {"high", "critical"}
         self._curated = curated_knowledge_manager
         self._resolver = resolver
+        # Quality gate. Default ``high`` — only high/critical insights
+        # land on disk. Operators wanting the historical permissive
+        # behaviour pass ``min_insight_importance="low"``. The gate
+        # rejects below-threshold reflections silently — the LLM can
+        # still emit them; they just don't pollute insights/.
+        self._min_insight_rank = self._IMPORTANCE_RANK.get(
+            min_insight_importance.lower(),
+            1,
+        )
 
     @property
     def name(self) -> str:
@@ -272,12 +288,44 @@ class GenyMemoryStrategy(MemoryUpdateStrategy):
         return ""
 
     def _build_reflection_prompt(self, input_text: str, output_text: str) -> str:
+        # Reflection prompt — high bar by design. The host filters
+        # the result by ``min_insight_importance`` (default "high")
+        # so anything that scrapes through with importance="medium"
+        # is dropped silently. The wording here aims to make the
+        # LLM rarely emit anything at all — most turns produce no
+        # genuine factual learning, and the strategy must reflect
+        # that.
         return (
-            "Analyze the following execution and extract any reusable knowledge, "
-            "decisions, or insights worth remembering for future tasks.\n\n"
+            "Analyze the following execution. Extract ONLY genuine, "
+            "factual knowledge worth remembering across future sessions — "
+            "concrete user preferences, project facts, decisions with "
+            "reasoning, or domain knowledge that wasn't already obvious.\n\n"
             f"<input>\n{input_text[:2000]}\n</input>\n\n"
             f"<output>\n{output_text[:3000]}\n</output>\n\n"
-            "Extract concise, reusable insights. Skip trivial/obvious observations.\n\n"
+            "REJECT (do not save) anything in these categories:\n"
+            "  - Behavioral / communication patterns "
+            "    (e.g. 'use friendly tone', 'greet warmly')\n"
+            "  - Generic best practices applicable to any agent\n"
+            "  - Restating what the user just said\n"
+            "  - Per-turn tactics ('I confirmed before delegating')\n"
+            "  - Anything already captured in entities/<counterpart>.md\n"
+            "    (interaction stats — that's automatic)\n"
+            "\n"
+            "ACCEPT only when the turn produced one of these:\n"
+            "  - A user-stated fact about themselves, their goals, "
+            "    constraints, or environment\n"
+            "  - A project decision with non-obvious rationale\n"
+            "  - A non-trivial technical finding (a working approach, "
+            "    a gotcha, a constraint)\n"
+            "\n"
+            "Importance scale (be conservative):\n"
+            "  - critical: the agent will fail without this fact\n"
+            "  - high:     the agent's quality drops noticeably without it\n"
+            "  - medium:   nice to know — DO NOT EMIT, host drops these\n"
+            "  - low:      drop\n"
+            "\n"
+            "Most turns produce zero insights. Empty output is correct.\n"
+            "\n"
             "Respond with JSON only:\n"
             "{\n"
             '  "learned": [\n'
@@ -286,12 +334,12 @@ class GenyMemoryStrategy(MemoryUpdateStrategy):
             '      "content": "what was learned (1-3 sentences)",\n'
             '      "category": "topics|insights|entities|projects",\n'
             '      "tags": ["tag1", "tag2"],\n'
-            '      "importance": "low|medium|high"\n'
+            '      "importance": "high|critical"\n'
             "    }\n"
             "  ],\n"
             '  "should_save": true\n'
             "}\n\n"
-            "If nothing meaningful was learned, return:\n"
+            "When in doubt, return:\n"
             '{"learned": [], "should_save": false}'
         )
 
@@ -307,8 +355,32 @@ class GenyMemoryStrategy(MemoryUpdateStrategy):
         write_note = getattr(self._mgr, "write_note", None)
         if write_note is None:
             return
+        # Quality gate. Drop anything below ``min_insight_importance``
+        # before slicing to ``max_insights`` — otherwise a noisy LLM
+        # batch of medium-importance items would crowd out the
+        # high-importance ones.
+        gated: List[Dict[str, Any]] = []
+        dropped_below_threshold = 0
+        for item in insights:
+            importance = (item.get("importance") or "medium").lower()
+            rank = self._IMPORTANCE_RANK.get(importance, 99)
+            if rank > self._min_insight_rank:
+                dropped_below_threshold += 1
+                continue
+            gated.append(item)
+        if dropped_below_threshold:
+            logger.debug(
+                "geny_strategy: dropped %d insights below importance gate",
+                dropped_below_threshold,
+            )
+        if not gated:
+            state.add_event(
+                "memory.insights_gated",
+                {"dropped": dropped_below_threshold, "threshold_rank": self._min_insight_rank},
+            )
+            return
         saved = 0
-        for item in insights[: self._max_insights]:
+        for item in gated[: self._max_insights]:
             try:
                 filename = write_note(
                     title=item.get("title", "Insight"),

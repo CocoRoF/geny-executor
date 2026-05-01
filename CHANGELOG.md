@@ -4,6 +4,51 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.10.0] — 2026-05-01
+
+Memory v2 followup — insight quality gate. The 1.9.0 retriever
+slim_mode shipped without tightening *what becomes an insight*, and
+operators reported `insights/` filling up with behavioural patterns
+("Korean greeting response pattern", "Proactive name establishment",
+"Delegating file content tasks") rather than genuine factual
+learnings. Plan §1.5 says ``insights`` is the *Derived* category —
+LLM-distilled, importance-gated knowledge — and the empirical
+output disagreed.
+
+### Added
+
+- ``GenyMemoryStrategy.min_insight_importance`` — new keyword
+  argument (default ``"high"``). Reflections below this threshold
+  are dropped silently before ``write_note``. Operators wanting the
+  historical permissive behaviour pass ``min_insight_importance="low"``.
+
+  ```python
+  GenyMemoryStrategy(memory_manager, min_insight_importance="high")
+  ```
+
+- ``memory.insights_gated`` event — emitted with ``{dropped, threshold_rank}``
+  when reflections came back but every one was below the gate.
+  Operators that want to retune the prompt can grep for this in
+  the event stream.
+
+### Changed
+
+- The reflection prompt is materially stricter. It now spells out
+  what to ACCEPT (user-stated facts, project decisions with non-obvious
+  rationale, non-trivial technical findings) and explicitly REJECTS
+  behavioural / communication patterns, generic best practices,
+  per-turn tactics, and anything already captured in
+  ``entities/<counterpart>.md``. The importance scale bottoms at
+  ``high`` — anything ``medium`` or below is dropped by the host gate.
+
+### Compatibility
+
+- ``min_insight_importance`` is a keyword argument with a sensible
+  default. Callers that don't pass it pick up the new default
+  (``high``) — this is the intended behaviour change. Pass
+  ``"low"`` if you have a workflow that depends on permissive
+  insight emission.
+
 ## [1.9.0] — 2026-05-01
 
 Memory v2 — executor side. Adds the file-provider primitives and the
