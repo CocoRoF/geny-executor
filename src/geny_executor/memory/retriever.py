@@ -68,6 +68,14 @@ class GenyMemoryRetriever(MemoryRetriever):
         llm_gate: Optional[Callable[[str], Awaitable[bool]]] = None,
         curated_knowledge_manager: Any = None,
         recent_turns: int = 6,
+        # Memory v2 PR 10 — slim mode (plan §5.2). When True, the
+        # retriever returns ONLY the lightweight layers (recent
+        # turns, session summary, vault map). Heavy layers (MEMORY.md
+        # body, vector top-k, keyword recall, backlinks, curated)
+        # are reserved for the agent's tool calls (memory_search /
+        # memory_read). Default is False so existing callers preserve
+        # legacy 6-layer behaviour until they explicitly opt in.
+        slim_mode: bool = False,
     ):
         self._mgr = memory_manager
         self._enable_vector = enable_vector_search
@@ -77,6 +85,7 @@ class GenyMemoryRetriever(MemoryRetriever):
         self._llm_gate = llm_gate
         self._curated = curated_knowledge_manager
         self._recent_turns = recent_turns
+        self._slim_mode = slim_mode
 
     @property
     def name(self) -> str:
@@ -116,6 +125,19 @@ class GenyMemoryRetriever(MemoryRetriever):
 
         # 1. Session summary (short-term latest state)
         total_chars = self._load_session_summary(chunks, total_chars, budget)
+
+        if self._slim_mode:
+            # Memory v2 PR 10 — slim path: stop here and let the
+            # vault map + agent's progressive disclosure tools
+            # (memory_search / memory_read) do the rest. Plan §5.2.
+            total_chars = self._load_vault_map(chunks, total_chars, budget)
+            logger.info(
+                "geny_retriever: slim mode loaded %d chunks (%d chars) for session %s",
+                len(chunks),
+                total_chars,
+                state.session_id,
+            )
+            return chunks
 
         # 2. MEMORY.md (persistent long-term notes)
         total_chars = self._load_main_memory(chunks, total_chars, budget)
@@ -242,6 +264,42 @@ class GenyMemoryRetriever(MemoryRetriever):
                 return total + len(summary)
         except Exception:
             logger.debug("geny_retriever: session summary load failed", exc_info=True)
+        return total
+
+    # ── Layer 1.5 (slim mode): Vault Map ─────────────────────────────
+
+    def _load_vault_map(self, chunks: List[MemoryChunk], total: int, budget: int) -> int:
+        """Inject the rendered vault map (~500 chars) so the agent
+        knows *where* to look without seeing the bodies. PR 9 + PR 10.
+
+        Duck-typed: accepts a memory_manager that exposes
+        ``index_manager.render_vault_map()``. Silent skip when the
+        index manager is absent (no LTM yet) or when render fails.
+        """
+        try:
+            idx_mgr = getattr(self._mgr, "index_manager", None)
+            if idx_mgr is None:
+                return total
+            render = getattr(idx_mgr, "render_vault_map", None)
+            if render is None:
+                return total
+            rendered = render() or ""
+            if not rendered:
+                return total
+            if total + len(rendered) > budget:
+                return total
+            chunks.append(
+                MemoryChunk(
+                    key="vault_map",
+                    content=rendered,
+                    source="vault_map",
+                    relevance_score=1.0,
+                    metadata={"layer": "vault_map"},
+                )
+            )
+            return total + len(rendered)
+        except Exception:
+            logger.debug("geny_retriever: vault_map load failed", exc_info=True)
         return total
 
     # ── Layer 2: MEMORY.md ───────────────────────────────────────────
