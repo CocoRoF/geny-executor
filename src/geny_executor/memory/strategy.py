@@ -104,6 +104,18 @@ class GenyMemoryStrategy(MemoryUpdateStrategy):
         curated_knowledge_manager: Any = None,
         resolver: Optional[ReflectionResolver] = None,
         min_insight_importance: str = "high",
+        # Memory v2 PR 12 — pluggable promotion policy. Whenever an
+        # insight clears the importance gate AND its importance is
+        # in ``auto_promote_importance``, this callback is invoked
+        # *in addition to* the curated-knowledge dual-write. The
+        # callback receives the raw insight dict (title/content/
+        # category/tags/importance) plus the host's memory_manager,
+        # so concrete hosts can decide where to pin the fact (e.g.
+        # Geny pins it under ``memory/critical/``). Default ``None``
+        # keeps the legacy behaviour: curated-only promotion.
+        promote_callback: Optional[
+            Callable[[Dict[str, Any], Any], None]
+        ] = None,
     ):
         self._mgr = memory_manager
         self._enable_reflection = enable_reflection
@@ -112,6 +124,7 @@ class GenyMemoryStrategy(MemoryUpdateStrategy):
         self._auto_promote = auto_promote_importance or {"high", "critical"}
         self._curated = curated_knowledge_manager
         self._resolver = resolver
+        self._promote_callback = promote_callback
         # Quality gate. Default ``high`` — only high/critical insights
         # land on disk. Operators wanting the historical permissive
         # behaviour pass ``min_insight_importance="low"``. The gate
@@ -432,18 +445,38 @@ class GenyMemoryStrategy(MemoryUpdateStrategy):
                 if filename:
                     saved += 1
                     importance = item.get("importance", "medium")
-                    if importance in self._auto_promote and self._curated:
-                        try:
-                            self._curated.write_note(
-                                title=item.get("title", "Insight"),
-                                content=item.get("content", ""),
-                                category=requested_category,
-                                tags=item.get("tags", []) + ["auto-promoted"],
-                                importance=importance,
-                                source="promoted",
-                            )
-                        except Exception:
-                            pass
+                    if importance in self._auto_promote:
+                        # 1) Curated knowledge dual-write (legacy
+                        #    auto-promote behaviour). Optional —
+                        #    only fires when a curated manager is
+                        #    attached.
+                        if self._curated:
+                            try:
+                                self._curated.write_note(
+                                    title=item.get("title", "Insight"),
+                                    content=item.get("content", ""),
+                                    category=requested_category,
+                                    tags=item.get("tags", []) + ["auto-promoted"],
+                                    importance=importance,
+                                    source="promoted",
+                                )
+                            except Exception:
+                                pass
+                        # 2) Host promote callback (Memory v2 PR 12).
+                        #    Hosts use this to pin the insight to a
+                        #    concrete "always-inject" surface (e.g.
+                        #    Geny pins it to ``memory/critical/``).
+                        #    Failures are non-fatal so a broken host
+                        #    callback never wedges insight saving.
+                        if self._promote_callback is not None:
+                            try:
+                                self._promote_callback(dict(item), self._mgr)
+                            except Exception:
+                                logger.debug(
+                                    "geny_strategy: promote_callback failed for '%s'",
+                                    item.get("title", "?"),
+                                    exc_info=True,
+                                )
             except Exception:
                 logger.debug(
                     "geny_strategy: failed to save insight '%s'",
