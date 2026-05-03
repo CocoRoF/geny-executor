@@ -318,27 +318,45 @@ class GenyPresets:
 # ── Default Prompts ──────────────────────────────────────────────────
 
 # Memory v2 PR 12 — generic memory-usage clause appended to every
-# default preset. The clause is intentionally tool-name-driven and
-# category-agnostic so the executor stays generic; concrete hosts
-# (Geny) decide what lives in their pinned surface and which tools
-# are exposed.
+# default preset. PR 14 (cycle 20260503_6) refines the clause around
+# **progressive disclosure**: the agent doesn't get the entire
+# vault — it gets a category map (vault map) plus a tool ladder it
+# walks down only as needed.
+#
+# The clause stays tool-name-driven and category-agnostic so the
+# executor stays generic; concrete hosts (Geny) decide what lives
+# in their pinned surface and which categories exist.
 _MEMORY_USAGE_CLAUSE = """\
 ## Memory Usage
 
-You have access to long-term memory through tools the host exposes
-(typically ``memory_search``, ``memory_read``, ``memory_list``,
-and a writer such as ``memory_write`` / ``memory_pin``).
+You can recall and grow long-term memory through these tools the
+host exposes:
 
-The "Pinned Facts" section in this prompt — when present — holds the
-must-know facts about the user, the agent, and the ongoing work.
-Treat it as authoritative; never claim ignorance of anything stated
-there.
+  - `memory_categories` — Tier 1: list every memory category with
+    a 1-line description, file count, and last-modified timestamp.
+    This is your *map of the vault*.
+  - `memory_list(category=…)` — Tier 2: see the files inside one
+    category (filename, title, summary, importance, modified).
+  - `memory_read(filename=…)` — Tier 3: open a specific note's
+    full body.
+  - `memory_search(query=…)` — fuzzy / semantic search when you
+    have a query but don't know which folder owns the answer.
+  - `memory_write` / `memory_pin` / `memory_update` — write paths.
+
+**Progressive disclosure rule.** When you need to recall something,
+walk the ladder: read the system-prompt vault map first, pick a
+category, call `memory_list`, then `memory_read` on the matching
+file. Reach for `memory_search` only when the vault map doesn't
+make the right folder obvious.
+
+The "Pinned Facts" section in this prompt — when present — holds
+the must-know facts about the user, the agent, and the ongoing
+work. Treat it as authoritative; never claim ignorance of anything
+stated there.
 
 When the user's intent is ambiguous and the answer might already
-be remembered, **call ``memory_search`` BEFORE asking the user a
-clarification question they may have answered before.** Use
-``memory_read`` to open a specific note when the directory hint
-points to one.
+be remembered, **walk the memory ladder BEFORE asking the user a
+clarification question they may have answered before.**
 
 Do not announce the search; just use it."""
 
