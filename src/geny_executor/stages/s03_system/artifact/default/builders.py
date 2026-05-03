@@ -79,17 +79,36 @@ class DateTimeBlock(PromptBlock):
 
 
 class MemoryContextBlock(PromptBlock):
-    """Inject memory context from state."""
+    """Inject memory context from state.
+
+    Renders two distinct sections when present:
+
+    - ``# Pinned Facts`` — content the host has marked must-always-be-known
+      (sourced from ``state.metadata["memory_pinned"]``). This is the T1
+      "key fact" tier that bypasses search and is injected every turn.
+    - ``# Relevant Knowledge`` — content that came back from per-turn
+      retrieval (``state.metadata["memory_context"]``). This is the
+      T2 "search-on-demand" tier.
+
+    Either, both, or neither may be present. When neither is set the
+    block renders nothing so the system prompt stays clean.
+    """
 
     @property
     def name(self) -> str:
         return "memory_context"
 
     def render(self, state: PipelineState) -> str:
+        parts: list[str] = []
+        pinned = state.metadata.get("memory_pinned", "")
+        if isinstance(pinned, str) and pinned.strip():
+            parts.append(f"# Pinned Facts\n{pinned}")
         memory_ctx = state.metadata.get("memory_context", "")
-        if not memory_ctx:
+        if isinstance(memory_ctx, str) and memory_ctx.strip():
+            parts.append(f"# Relevant Knowledge\n{memory_ctx}")
+        if not parts:
             return ""
-        return f"# Relevant Knowledge\n{memory_ctx}"
+        return "\n\n".join(parts)
 
 
 class ToolInstructionsBlock(PromptBlock):

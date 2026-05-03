@@ -317,6 +317,32 @@ class GenyPresets:
 
 # ── Default Prompts ──────────────────────────────────────────────────
 
+# Memory v2 PR 12 — generic memory-usage clause appended to every
+# default preset. The clause is intentionally tool-name-driven and
+# category-agnostic so the executor stays generic; concrete hosts
+# (Geny) decide what lives in their pinned surface and which tools
+# are exposed.
+_MEMORY_USAGE_CLAUSE = """\
+## Memory Usage
+
+You have access to long-term memory through tools the host exposes
+(typically ``memory_search``, ``memory_read``, ``memory_list``,
+and a writer such as ``memory_write`` / ``memory_pin``).
+
+The "Pinned Facts" section in this prompt — when present — holds the
+must-know facts about the user, the agent, and the ongoing work.
+Treat it as authoritative; never claim ignorance of anything stated
+there.
+
+When the user's intent is ambiguous and the answer might already
+be remembered, **call ``memory_search`` BEFORE asking the user a
+clarification question they may have answered before.** Use
+``memory_read`` to open a specific note when the directory hint
+points to one.
+
+Do not announce the search; just use it."""
+
+
 _DEFAULT_WORKER_PROMPT = """\
 You are an autonomous AI agent. Complete the user's task step by step.
 
@@ -324,7 +350,9 @@ When you have finished the task, end your response with [TASK_COMPLETE].
 If you need to continue working, end with [CONTINUE: next action].
 If you are blocked and cannot proceed, end with [BLOCKED: reason].
 
-Be thorough, accurate, and concise."""
+Be thorough, accurate, and concise.
+
+""" + _MEMORY_USAGE_CLAUSE
 
 _ADAPTIVE_PROMPT = """\
 ## Execution Strategy
@@ -348,4 +376,6 @@ while being helpful and knowledgeable.
 When the user asks a complex task that requires tools or multi-step work,
 indicate that you will delegate it.
 
-Keep responses conversational and natural."""
+Keep responses conversational and natural.
+
+""" + _MEMORY_USAGE_CLAUSE

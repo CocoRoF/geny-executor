@@ -200,11 +200,30 @@ class ContextStage(Stage[Any, Any]):
                     )
                     seen.add(chunk.key)
 
-            # Inject memory into system prompt or as user message
-            memory_text = "\n".join(f"- [{c.source}] {c.key}: {c.content}" for c in chunks)
+            # Split pinned chunks (always-inject T1 surface) from the
+            # rest (per-turn retrieval). The system prompt builder
+            # (``MemoryContextBlock``) renders them as two distinct
+            # sections so the agent can tell what's permanent from
+            # what's situational.
+            pinned_chunks = [
+                c for c in chunks
+                if c.source == "pinned" or (c.metadata or {}).get("layer") == "pinned"
+            ]
+            other_chunks = [c for c in chunks if c not in pinned_chunks]
+
             if state.messages and state.iteration == 0:
-                # First iteration: inject as context
-                state.metadata["memory_context"] = memory_text
+                if pinned_chunks:
+                    # Pinned chunks usually carry pre-rendered prose;
+                    # join with blank lines instead of the bullet
+                    # form used for search results.
+                    state.metadata["memory_pinned"] = "\n\n".join(
+                        c.content for c in pinned_chunks
+                    )
+                if other_chunks:
+                    memory_text = "\n".join(
+                        f"- [{c.source}] {c.key}: {c.content}" for c in other_chunks
+                    )
+                    state.metadata["memory_context"] = memory_text
 
         # Compact if needed (rough estimate: 4 chars per token)
         estimated_tokens = sum(len(str(m.get("content", ""))) // 4 for m in state.messages)

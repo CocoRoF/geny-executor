@@ -4,6 +4,82 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.13.0] — 2026-05-03
+
+Memory v2 PR 12 — pinned-facts tier + retrieval observability. Adds a
+generic "always-inject" surface to ``GenyMemoryRetriever`` so hosts can
+pin must-know facts (user preferences, persona-defining facts) into
+every system prompt regardless of per-turn query lexical overlap.
+Resolves the failure mode where a high-importance insight stored in
+``memory/insights/`` could never reach the prompt because the user's
+query shared no keywords with the insight body.
+
+The executor side ships only the *mechanism* — the duck-typed
+``mgr.load_pinned(max_chars)`` hook, the ``promote_callback`` policy
+hook on ``GenyMemoryStrategy``, and the ``category_boosts`` weighting
+table on ``GenyMemoryRetriever``. Concrete categorisation (which
+directory holds pinned facts, which categories deserve boosts) is
+deliberately left to the host so the executor stays a generic
+pipeline package.
+
+### Added
+
+- ``GenyMemoryRetriever`` accepts ``pin_budget_ratio`` (default
+  ``0.30``), ``category_boosts`` (default ``{}``),
+  ``always_render_vault_map`` (default ``True``), and
+  ``vault_map_max_chars`` (default ``500``).
+- New retriever layer **L1.5 pinned facts** — invokes the host's
+  duck-typed ``mgr.load_pinned(max_chars: int)`` and injects the
+  returned content as a ``MemoryChunk(source="pinned",
+  metadata={"layer": "pinned"})``. No-ops when the host does not
+  implement the method.
+- New retriever layer **L1.7 vault map (always-on)** — the small
+  directory hint from ``mgr.index_manager.render_vault_map()`` is
+  now injected on every retrieve when ``always_render_vault_map``
+  is True (capped at ``vault_map_max_chars``), not only in slim
+  mode.
+- ``GenyMemoryRetriever`` emits ``memory.retrieve_breakdown``
+  every turn with per-layer chunk counts and total chars, plus
+  ``memory.retrieved_empty`` (with a ``reason`` field) when the
+  retriever returns zero chunks.
+- ``MemoryContextBlock`` (Stage 03 SystemStage) now renders a
+  separate ``# Pinned Facts`` section sourced from
+  ``state.metadata["memory_pinned"]`` in addition to the existing
+  ``# Relevant Knowledge`` section. Stage 02 ContextStage splits
+  pinned chunks (``source="pinned"`` or ``layer="pinned"``) from
+  the rest and writes them to the new metadata key.
+- ``GenyMemoryStrategy`` accepts ``promote_callback: Callable[[Dict,
+  Any], None]`` — invoked alongside the existing curated dual-write
+  whenever an insight passes the importance gate, so hosts can pin
+  the fact wherever their pinned surface lives. Failures are
+  swallowed at debug level.
+- L4 keyword-search results pick up an additional multiplicative
+  boost from ``category_boosts`` (e.g. hosts can pass
+  ``{"insights": 1.2, "projects": 1.2}`` to bias toward distilled
+  knowledge).
+- ``presets._DEFAULT_WORKER_PROMPT`` and ``_DEFAULT_VTUBER_PROMPT``
+  gain a generic ``## Memory Usage`` clause directing the agent
+  to consult the Pinned Facts section, prefer ``memory_search``
+  before asking clarification questions, and use ``memory_read``
+  on directory hints.
+
+### Changed
+
+- Slim-mode behaviour is unchanged for callers who explicitly
+  enable it; the only difference is that the small vault map is
+  now also available outside slim mode by default. Set
+  ``always_render_vault_map=False`` to restore the pre-1.13
+  behaviour where the map shipped only in slim mode.
+
+### Compatibility
+
+- Fully additive. Hosts that don't implement ``load_pinned`` see
+  no change. Hosts that don't pass ``promote_callback`` see no
+  change. ``MemoryContextBlock`` keeps emitting an empty string
+  when neither metadata key is set, so prompts stay clean.
+- The new retriever kwargs are keyword-only with sensible
+  defaults; existing call sites compile and run unchanged.
+
 ## [1.12.0] — 2026-05-01
 
 Memory v2 ``entities/`` category retirement. The 1.11 hotfix made
