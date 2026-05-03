@@ -4,6 +4,38 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.14.0] — 2026-05-03
+
+Memory v2 PR 14 — progressive-disclosure clause in default
+preset prompts. The host (Geny) ships a hierarchical memory
+index now (root manifest + per-category shards) and a new
+``memory_categories`` tool that returns the vault's category
+map. The executor's default ``Memory Usage`` clause is rewritten
+to teach the agent the **Tier 1 → 2 → 3 ladder**:
+
+  1. ``memory_categories`` — discover what's in memory.
+  2. ``memory_list(category=…)`` — see files in one folder.
+  3. ``memory_read(filename=…)`` — open the body.
+
+``memory_search`` stays in the toolbox but is now framed as the
+fallback for "I have a query, not a folder." The Pinned Facts
+guidance and the "don't ask the user something already
+remembered" rule are unchanged.
+
+### Changed
+
+- ``presets._MEMORY_USAGE_CLAUSE`` rewritten to enumerate the
+  tool ladder explicitly and define the progressive-disclosure
+  rule. Tool names stay generic so hosts that wire a different
+  toolset don't see surprise references.
+
+### Compatibility
+
+- Pure prose change in the default preset. Hosts that supply
+  their own ``system_prompt`` are unaffected.
+- No API surface added or removed; pin update encouraged but
+  not required.
+
 ## [1.13.0] — 2026-05-03
 
 Memory v2 PR 12 — pinned-facts tier + retrieval observability. Adds a
