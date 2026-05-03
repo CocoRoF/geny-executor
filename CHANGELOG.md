@@ -4,6 +4,54 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.15.0] — 2026-05-03
+
+Memory v2 PR 15 — decouple host-specific tool names from the
+default Memory Usage preset clause. 1.13.0 / 1.14.0 had hard-coded
+``memory_search`` / ``memory_read`` / ``memory_list`` /
+``memory_categories`` / ``memory_pin`` / ``memory_write`` /
+``memory_update`` directly into ``_MEMORY_USAGE_CLAUSE``. Those
+names are concrete *Geny* tools, not part of the executor
+contract — having them in the executor's preset violated the
+package's role of shipping generic mechanisms only.
+
+The clause is rewritten to carry **policy only**: when memory
+might already hold the answer, consult it before asking the user;
+treat Pinned Facts as authoritative; don't announce the lookup.
+Concrete tool names are left out so a host that wires a
+different toolset doesn't end up with stale references in the
+prompt.
+
+### Added
+
+- ``_compose_persona_prompt(base, host_memory_clause=None)`` —
+  helper that composes ``<base>`` + ``_MEMORY_USAGE_CLAUSE`` +
+  the host's own catalogue text. Used by every default preset.
+- ``host_memory_clause: Optional[str]`` kwarg added to
+  ``GenyPresets.worker_easy``, ``worker_full``, ``worker_adaptive``,
+  and ``vtuber``. Hosts pass their tool catalogue + ladder
+  description verbatim and it's appended after the executor's
+  policy clause. Hosts that don't pass anything still get the
+  policy half (degraded but functional — the agent can still
+  discover tools from its tool catalogue).
+
+### Changed
+
+- ``_MEMORY_USAGE_CLAUSE`` rewritten — no concrete tool names.
+- Default ``_DEFAULT_WORKER_PROMPT`` and ``_DEFAULT_VTUBER_PROMPT``
+  no longer concatenate the clause inline; the clause is now
+  applied through ``_compose_persona_prompt`` so the host's tool
+  catalogue can be inserted in the right position.
+
+### Compatibility
+
+- Hosts on 1.13.0 / 1.14.0 calling presets without
+  ``host_memory_clause`` still work — they get a slightly more
+  abstract Memory Usage clause and discover tools from the tool
+  catalogue. Hosts that want concrete tool ladder text in the
+  prompt should pass ``host_memory_clause``.
+- ``system_prompt`` / ``persona_prompt`` semantics unchanged.
+
 ## [1.14.0] — 2026-05-03
 
 Memory v2 PR 14 — progressive-disclosure clause in default

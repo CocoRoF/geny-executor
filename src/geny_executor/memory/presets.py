@@ -25,6 +25,42 @@ from geny_executor.tools.base import ToolContext
 from geny_executor.tools.registry import ToolRegistry
 
 
+def _compose_persona_prompt(
+    base_prompt: str,
+    *,
+    host_memory_clause: Optional[str] = None,
+) -> str:
+    """Combine the caller's persona prompt with the executor's
+    generic memory-usage clause and the host-supplied tool catalogue.
+
+    The executor's :data:`_MEMORY_USAGE_CLAUSE` is **tool-name free**
+    by construction — it states the policy ("consult memory before
+    asking; trust Pinned Facts") without naming any specific tools,
+    because the executor cannot know which tools a host has wired
+    in. The host provides its own catalogue verbatim via
+    ``host_memory_clause`` (typically a 5-line bullet list of
+    ``memory_*`` tool names with one-line semantics) and this
+    function appends it after the executor's policy clause so the
+    final system prompt reads:
+
+        <user's prompt>
+
+        ## Memory Usage         <- executor (generic policy)
+        ...
+
+        <host_memory_clause>    <- Geny (concrete tool catalogue)
+
+    Hosts that don't supply ``host_memory_clause`` get just the
+    policy. The agent then has to discover tools from its tool
+    catalogue alone — degraded but not broken.
+    """
+    parts = [base_prompt.rstrip()] if base_prompt else []
+    parts.append(_MEMORY_USAGE_CLAUSE)
+    if host_memory_clause and host_memory_clause.strip():
+        parts.append(host_memory_clause.strip())
+    return "\n\n".join(parts)
+
+
 def _build_system_builder(
     prompt: str,
     include_memory: bool = True,
@@ -64,6 +100,7 @@ class GenyPresets:
         model: str = "claude-sonnet-4-6",
         system_prompt: str = "",
         max_inject_chars: int = 10000,
+        host_memory_clause: Optional[str] = None,
     ) -> Pipeline:
         """Worker (easy) — single-turn Q&A with memory context.
 
@@ -71,6 +108,12 @@ class GenyPresets:
                        → API → Token → Parse → Memory → Yield
 
         Best for: simple questions that need memory context but no tools or loops.
+
+        Args:
+            host_memory_clause: Concrete tool catalogue + ladder
+                description the host wants appended after the
+                executor's generic memory-usage clause. Hosts that
+                don't pass anything still get the policy half.
         """
         retriever = GenyMemoryRetriever(
             memory_manager,
@@ -83,7 +126,11 @@ class GenyPresets:
         )
         persistence = GenyPersistence(memory_manager)
 
-        builder = _build_system_builder(system_prompt or _DEFAULT_WORKER_PROMPT)
+        composed = _compose_persona_prompt(
+            system_prompt or _DEFAULT_WORKER_PROMPT,
+            host_memory_clause=host_memory_clause,
+        )
+        builder = _build_system_builder(composed)
 
         return (
             PipelineBuilder("worker-easy", api_key=api_key, model=model)
@@ -115,6 +162,7 @@ class GenyPresets:
         llm_reflect: Optional[Callable[[str, str], Awaitable[List[Dict[str, Any]]]]] = None,
         llm_gate: Optional[Callable[[str], Awaitable[bool]]] = None,
         curated_knowledge_manager: Any = None,
+        host_memory_clause: Optional[str] = None,
     ) -> Pipeline:
         """Worker (full) — autonomous agent with all stages.
 
@@ -140,7 +188,11 @@ class GenyPresets:
         )
         persistence = GenyPersistence(memory_manager)
 
-        sys_builder = _build_system_builder(system_prompt or _DEFAULT_WORKER_PROMPT)
+        composed = _compose_persona_prompt(
+            system_prompt or _DEFAULT_WORKER_PROMPT,
+            host_memory_clause=host_memory_clause,
+        )
+        sys_builder = _build_system_builder(composed)
 
         pipeline_builder = (
             PipelineBuilder("worker-full", api_key=api_key, model=model)
@@ -183,6 +235,7 @@ class GenyPresets:
         llm_reflect: Optional[Callable[[str, str], Awaitable[List[Dict[str, Any]]]]] = None,
         llm_gate: Optional[Callable[[str], Awaitable[bool]]] = None,
         curated_knowledge_manager: Any = None,
+        host_memory_clause: Optional[str] = None,
     ) -> Pipeline:
         """Worker (adaptive) — binary classify + autonomous execution.
 
@@ -218,8 +271,13 @@ class GenyPresets:
         persistence = GenyPersistence(memory_manager)
 
         # Combine user prompt with adaptive execution instructions
+        # then layer the executor's memory policy + host's tool
+        # catalogue on top.
         full_prompt = (system_prompt or _DEFAULT_WORKER_PROMPT) + "\n\n" + _ADAPTIVE_PROMPT
-        sys_builder = _build_system_builder(full_prompt)
+        composed = _compose_persona_prompt(
+            full_prompt, host_memory_clause=host_memory_clause,
+        )
+        sys_builder = _build_system_builder(composed)
 
         classify_config = BinaryClassifyConfig(
             easy_max_turns=easy_max_turns,
@@ -265,6 +323,7 @@ class GenyPresets:
         tools: Optional[ToolRegistry] = None,
         tool_context: Optional[ToolContext] = None,
         curated_knowledge_manager: Any = None,
+        host_memory_clause: Optional[str] = None,
     ) -> Pipeline:
         """VTuber — conversational agent with persona and memory reflection.
 
@@ -288,7 +347,11 @@ class GenyPresets:
         )
         persistence = GenyPersistence(memory_manager)
 
-        sys_builder = _build_system_builder(persona_prompt or _DEFAULT_VTUBER_PROMPT)
+        composed = _compose_persona_prompt(
+            persona_prompt or _DEFAULT_VTUBER_PROMPT,
+            host_memory_clause=host_memory_clause,
+        )
+        sys_builder = _build_system_builder(composed)
 
         pipeline_builder = (
             PipelineBuilder("vtuber", api_key=api_key, model=model)
@@ -317,48 +380,43 @@ class GenyPresets:
 
 # ── Default Prompts ──────────────────────────────────────────────────
 
-# Memory v2 PR 12 — generic memory-usage clause appended to every
-# default preset. PR 14 (cycle 20260503_6) refines the clause around
-# **progressive disclosure**: the agent doesn't get the entire
-# vault — it gets a category map (vault map) plus a tool ladder it
-# walks down only as needed.
+# Memory v2 PR 15 (cycle 20260503_7). The previous incarnation of
+# this clause hard-coded host-specific tool names (``memory_search``
+# / ``memory_read`` / ``memory_categories`` / …) directly into the
+# executor preset. That violated the boundary the rest of this
+# package keeps: the executor ships generic mechanisms, the host
+# (Geny etc.) ships concrete categorisation and tool naming.
 #
-# The clause stays tool-name-driven and category-agnostic so the
-# executor stays generic; concrete hosts (Geny) decide what lives
-# in their pinned surface and which categories exist.
+# The rewrite carries only **policy** here — what to do, not which
+# tools to call. The host injects its own tool catalogue verbatim
+# via the ``host_memory_clause`` preset kwarg; ``_compose_persona_prompt``
+# appends it after this clause so the final system prompt reads:
+#
+#     <user's prompt>
+#
+#     ## Memory Usage          <- this constant (policy only)
+#     ...
+#
+#     <host_memory_clause>     <- host (concrete tool catalogue)
+#
+# A host that doesn't supply a clause still gets the policy; the
+# agent then discovers concrete tools from its tool catalogue
+# alone (degraded but functional).
 _MEMORY_USAGE_CLAUSE = """\
 ## Memory Usage
 
-You can recall and grow long-term memory through these tools the
-host exposes:
-
-  - `memory_categories` — Tier 1: list every memory category with
-    a 1-line description, file count, and last-modified timestamp.
-    This is your *map of the vault*.
-  - `memory_list(category=…)` — Tier 2: see the files inside one
-    category (filename, title, summary, importance, modified).
-  - `memory_read(filename=…)` — Tier 3: open a specific note's
-    full body.
-  - `memory_search(query=…)` — fuzzy / semantic search when you
-    have a query but don't know which folder owns the answer.
-  - `memory_write` / `memory_pin` / `memory_update` — write paths.
-
-**Progressive disclosure rule.** When you need to recall something,
-walk the ladder: read the system-prompt vault map first, pick a
-category, call `memory_list`, then `memory_read` on the matching
-file. Reach for `memory_search` only when the vault map doesn't
-make the right folder obvious.
-
-The "Pinned Facts" section in this prompt — when present — holds
-the must-know facts about the user, the agent, and the ongoing
-work. Treat it as authoritative; never claim ignorance of anything
-stated there.
+The host maintains a long-term memory for you. The "Pinned Facts"
+section in this prompt — when present — holds must-know facts
+about the user, the agent, and the ongoing work. Treat them as
+authoritative; never claim ignorance of anything stated there.
 
 When the user's intent is ambiguous and the answer might already
-be remembered, **walk the memory ladder BEFORE asking the user a
-clarification question they may have answered before.**
+be remembered, **consult memory before asking a clarification
+question the user may have already answered.** Your tool
+catalogue lists the read / search / write tools the host has
+wired in for this — use them.
 
-Do not announce the search; just use it."""
+Do not announce the lookup; just do it."""
 
 
 _DEFAULT_WORKER_PROMPT = """\
@@ -368,9 +426,8 @@ When you have finished the task, end your response with [TASK_COMPLETE].
 If you need to continue working, end with [CONTINUE: next action].
 If you are blocked and cannot proceed, end with [BLOCKED: reason].
 
-Be thorough, accurate, and concise.
+Be thorough, accurate, and concise."""
 
-""" + _MEMORY_USAGE_CLAUSE
 
 _ADAPTIVE_PROMPT = """\
 ## Execution Strategy
@@ -387,6 +444,7 @@ Answer directly in one response. Do not use tools unless absolutely necessary.
 4. Signal [CONTINUE: next step] after each step
 5. Signal [TASK_COMPLETE] when all steps are done"""
 
+
 _DEFAULT_VTUBER_PROMPT = """\
 You are a friendly AI VTuber assistant. Engage in natural conversation
 while being helpful and knowledgeable.
@@ -394,6 +452,4 @@ while being helpful and knowledgeable.
 When the user asks a complex task that requires tools or multi-step work,
 indicate that you will delegate it.
 
-Keep responses conversational and natural.
-
-""" + _MEMORY_USAGE_CLAUSE
+Keep responses conversational and natural."""
