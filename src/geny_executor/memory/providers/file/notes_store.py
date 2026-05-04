@@ -348,15 +348,45 @@ class _FilesystemNotesStore(NotesHandle):
         return f"{_slug(draft.title)}-{uuid.uuid4().hex[:6]}.md"
 
     def _refresh_backlinks(self) -> None:
+        """Recompute `links_in` for every cached note.
+
+        Wikilink syntax is bare (`[[target]]`) — `target` has no `.md`
+        suffix — but the cache keys notes by their on-disk filename
+        (`target.md`). Without normalisation `link_map[target]` and
+        `cache[target.md]` never align and `target.links_in` stays
+        empty regardless of how many notes link to it.
+
+        The fix: when a wikilink target lacks `.md`, also probe the
+        cache for `<target>.md` so the resolved filename is what the
+        cache stores. Hosts that pass full-filename wikilinks
+        (`[[target.md]]`) keep working as before.
+        """
         link_map: Dict[str, List[str]] = {}
         for fname, note in self._cache.items():
             for tgt in note.links_out:
-                link_map.setdefault(tgt, []).append(fname)
+                resolved = self._resolve_link_target(tgt)
+                link_map.setdefault(resolved, []).append(fname)
             for tgt in self._explicit_links.get(fname, ()):
-                if tgt not in note.links_out:
-                    link_map.setdefault(tgt, []).append(fname)
+                if tgt in note.links_out:
+                    continue
+                resolved = self._resolve_link_target(tgt)
+                link_map.setdefault(resolved, []).append(fname)
         for fname, note in self._cache.items():
             note.links_in = list(dict.fromkeys(link_map.get(fname, [])))
+
+    def _resolve_link_target(self, target: str) -> str:
+        """Map a wikilink target to its cache key.
+
+        Tries the verbatim target first, then `<target>.md`. Falls
+        back to the verbatim target so an unresolved link still
+        appears in the link map (caller can detect via cache lookup).
+        """
+        if target in self._cache:
+            return target
+        with_md = target if target.endswith(".md") else f"{target}.md"
+        if with_md in self._cache:
+            return with_md
+        return target
 
     def _write_to_disk(self, note: Note) -> None:
         category = note.category or "root"
