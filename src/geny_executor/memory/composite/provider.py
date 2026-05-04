@@ -21,6 +21,10 @@ from __future__ import annotations
 import logging
 from typing import Dict, List, Optional, Sequence, Set
 
+from geny_executor.memory.composite.handles import (
+    _CompositeCuratedHandle,
+    _CompositeGlobalHandle,
+)
 from geny_executor.memory.composite.routing import LayerRouting
 from geny_executor.memory.composite.snapshot import decode_snapshot, encode_snapshot
 from geny_executor.memory.provider import (
@@ -71,10 +75,12 @@ class CompositeMemoryProvider(MemoryProvider):
         *,
         scope: Scope = Scope.SESSION,
         session_id: str = "",
+        user_id: str = "",
     ) -> None:
         self._routing = routing
         self._scope = scope
         self._session_id = session_id
+        self._user_id = user_id
         self._descriptor = self._build_descriptor()
 
     # ── MemoryProvider: descriptor + lifecycle ─────────────────────
@@ -113,16 +119,59 @@ class CompositeMemoryProvider(MemoryProvider):
         return prov.vector()
 
     def curated(self) -> Optional[CuratedHandle]:
-        prov = self._routing.provider_for(Layer.CURATED)
-        if prov is None:
+        """Resolve the user-scoped curated handle.
+
+        Two routing paths are accepted:
+          1. ``layers[CURATED] = <provider>`` — explicit per-layer
+             routing, the rest of the composite already understands
+             this shape.
+          2. ``scope_providers[USER] = <provider>`` — preferred when
+             curated knowledge lives at user scope alongside other
+             user-only artefacts. Picked if `layers[CURATED]` is
+             absent.
+
+        The returned handle wraps the target provider's `NotesHandle`
+        / `VectorHandle` and binds `promote_from_session` to the
+        composite's session-scope source, so a stage that calls
+        ``provider.curated().promote_from_session(ref)`` does not need
+        to know which underlying providers serve which scope.
+        """
+        target = self._routing.provider_for(Layer.CURATED) or self._routing.scope_provider(
+            Scope.USER
+        )
+        if target is None:
             return None
-        return prov.curated()
+        # Native curated handle wins if the target provider implements
+        # one (e.g. a future host-side provider that owns the curated
+        # plane natively); otherwise wrap the target's notes layer.
+        native = target.curated()
+        if native is not None:
+            return native
+        source = self._routing.scope_provider(Scope.SESSION) or self._require(Layer.NOTES)
+        return _CompositeCuratedHandle(
+            user_id=self._user_id,
+            target=target,
+            source=source,
+        )
 
     def global_(self) -> Optional[GlobalHandle]:
-        prov = self._routing.provider_for(Layer.GLOBAL)
-        if prov is None:
+        """Resolve the cross-session global handle.
+
+        Mirrors `curated()`: accepts either ``layers[GLOBAL]`` or
+        ``scope_providers[GLOBAL]``. Wraps the target provider's
+        notes/vector handles and binds `promote_from` to the
+        composite's session source.
+        """
+        target = self._routing.provider_for(Layer.GLOBAL) or self._routing.scope_provider(
+            Scope.GLOBAL
+        )
+        if target is None:
             return None
-        return prov.global_()
+        native = target.global_()
+        if native is not None:
+            return native
+        source = self._routing.scope_provider(Scope.SESSION) or self._require(Layer.NOTES)
+        return _CompositeGlobalHandle(target=target, source=source)
 
     def index(self) -> IndexHandle:
         return self._require(Layer.INDEX).index()
@@ -165,9 +214,10 @@ class CompositeMemoryProvider(MemoryProvider):
         files.append(meta.ref.filename)
         receipt.notes_written = 1
 
-        vector = self.vector()
-        if vector is not None:
-            await vector.index(meta.ref, summary.final_text)
+        # Auto-vector wiring inside the underlying notes store has
+        # already embedded the body. Surface the chunk count for
+        # callers that report on it.
+        if self.vector() is not None:
             receipt.vector_chunks = 1
 
         return _attach_files(receipt, files)
@@ -350,6 +400,15 @@ class CompositeMemoryProvider(MemoryProvider):
             capabilities.add(Capability.REINDEX)
         if any(self._routing.scope_providers.values()):
             capabilities.add(Capability.PROMOTE)
+        # Surface CURATED / GLOBAL on the descriptor so callers can
+        # capability-gate without hand-rolling the same scope-routing
+        # check the handle resolution does. The native check on the
+        # delegate provider's descriptor is preserved — if the delegate
+        # already advertises CURATED itself we never override it.
+        if self._routing.scope_provider(Scope.USER) is not None:
+            layers.add(Layer.CURATED)
+        if self._routing.scope_provider(Scope.GLOBAL) is not None:
+            layers.add(Layer.GLOBAL)
 
         delegate_summary = [
             {

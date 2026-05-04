@@ -4,6 +4,70 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.16.0] — 2026-05-04
+
+Memory v2 Phase 2d — `CuratedHandle` / `GlobalHandle` resolved at the
+composite layer, automatic vector indexing on every note write, and
+sql provider import made truly lazy. Three additions, all targeting
+the same goal: hosts running on top of `MemoryProvider` should never
+have to think about vector / scope plumbing again — `notes().write()`
+is enough, and `provider.curated()` "just works" once a user-scope
+delegate is registered.
+
+### Added
+
+- `geny_executor.memory.composite.handles._CompositeCuratedHandle` /
+  `_CompositeGlobalHandle` — wrappers that pair a target delegate's
+  `NotesHandle` + (optional) `VectorHandle` with the curated / global
+  Protocol semantics. `promote_from_session(ref)` /
+  `promote_from(ref)` move a note from the source-scope provider into
+  the target-scope provider and delete the source row.
+- `CompositeMemoryProvider.curated()` / `global_()` resolve
+  automatically when `routing.scope_providers[Scope.USER]` /
+  `[Scope.GLOBAL]` is populated. Native delegate handles still win
+  if a future provider implements them directly.
+- `CompositeMemoryProvider(... user_id=...)` — surfaced on
+  `CuratedHandle.user_id`. Empty default keeps the existing
+  composite tests working as-is.
+- `MemoryProviderFactory` composite builder honours `"user_id"` from
+  the config dict and forwards it to `CompositeMemoryProvider`.
+- `_FilesystemNotesStore` now accepts an optional `vector_indexer`
+  callback (and `attach_vector_indexer()` for late binding). Every
+  successful `write` / `update` invokes the callback outside the
+  notes lock, so embedding round-trips never stall sibling note
+  operations.
+- `FileMemoryProvider.__init__` plugs the vector store's `index`
+  method into the notes store automatically when an
+  `embedding_client` is configured. The pre-existing manual
+  `vector.index(...)` call inside `record_execution` becomes
+  redundant and was removed; the receipt's `vector_chunks` now
+  reflects the auto-indexed write.
+
+### Changed
+
+- Surface `Layer.CURATED` / `Layer.GLOBAL` on
+  `CompositeMemoryProvider.descriptor.layers` once the matching
+  `scope_providers` slot is populated. Capability gating no longer
+  needs to peek at routing internals.
+- `MemoryProviderFactory._build_sql` defers the SQL provider import
+  to call time. `from geny_executor.memory.factory import MemoryProviderFactory`
+  is now safe in environments without `psycopg` installed; SQLite
+  DSNs continue to work via stdlib `sqlite3`, and a Postgres DSN
+  surfaces the original `ImportError` only at build time.
+
+### Compatibility
+
+- Native `FileMemoryProvider.curated()` / `global_()` still return
+  `None` (single-root provider has no business knowing other
+  scopes). The composite is the integration point.
+- Existing composite configs without `user_id` keep working —
+  `CuratedHandle.user_id` falls back to the empty string.
+- `CompositeMemoryProvider.record_execution` no longer calls
+  `vector.index()` separately because the auto-vector wiring on
+  `notes().write()` covers the same row. Callers that read
+  `RecordReceipt.vector_chunks` see the same value as before
+  (1 when a vector layer is present, 0 otherwise).
+
 ## [1.15.0] — 2026-05-03
 
 Memory v2 PR 15 — decouple host-specific tool names from the

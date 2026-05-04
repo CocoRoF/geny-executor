@@ -32,25 +32,38 @@ Config shape (per provider):
      "dialect": "postgres"}
 
     {"provider": "composite",
+     "session_id": "session-abc",
+     "user_id": "alice",                       # surfaced on CuratedHandle.user_id
      "providers": {
-        "main": {"provider": "sql", "dsn": "..."},
-        "session_stm": {"provider": "ephemeral"}
+        "session": {"provider": "file",
+                    "root": "/storage/sessions/session-abc",
+                    "embedding": {"provider": "openai", ...}},
+        "user_curated": {"provider": "file",
+                         "root": "/storage/curated/alice",
+                         "embedding": {"provider": "openai", ...},
+                         "scope": "user"},
      },
      "layers": {
-        "stm": "session_stm",
-        "ltm": "main",
-        "notes": "main",
-        "vector": "main",
-        "index": "main"
+        "stm": "session", "ltm": "session", "notes": "session",
+        "vector": "session", "index": "session",
      },
      "scope_providers": {
-        "user": "main"
+        "session": "session",                  # explicit so promote_from_session knows the source
+        "user": "user_curated",                # `provider.curated()` resolves to this delegate
      }}
 
 The `providers` block under composite is named so two layers can
 share the same underlying provider instance — that's how a single
-SQL DB ends up serving STM + LTM + Notes + Vector without spinning
-up four cursors.
+file root ends up serving STM + LTM + Notes + Vector + Index for one
+session, while a second file root sits at a separate (`scope=user`)
+root for the curated knowledge plane. A future SQL setup mirrors the
+same shape with `dsn` / `dialect` instead of `root`.
+
+`scope_providers["user"]` (and `"global"`) are the canonical hook for
+the curated / global handle resolution. The composite wraps the
+delegate's `notes()` + `vector()` into a `CuratedHandle` /
+`GlobalHandle` automatically — no separate provider class needs to
+implement those handles natively.
 """
 
 from __future__ import annotations
@@ -65,8 +78,14 @@ from geny_executor.memory.embedding.registry import create_embedding_client
 from geny_executor.memory.provider import Layer, MemoryProvider, Scope
 from geny_executor.memory.providers.ephemeral import EphemeralMemoryProvider
 from geny_executor.memory.providers.file import FileMemoryProvider
-from geny_executor.memory.providers.sql import SQLMemoryProvider
-from geny_executor.memory.providers.sql.schema import Dialect
+
+# `geny_executor.memory.providers.sql` lazily imports `psycopg` for
+# Postgres dialects, but the Postgres SDK lives in the optional
+# `[postgres]` extra. Import the SQL provider lazily inside `_build_sql`
+# so a default `pip install geny-executor` (no extras) does not pay
+# the import-time cost or reach for a dep it does not need. SQLite
+# stays available because the connection module imports `sqlite3` from
+# the standard library only when an SQLite DSN is constructed.
 
 
 Builder = Callable[["MemoryProviderFactory", Mapping[str, Any]], MemoryProvider]
@@ -144,6 +163,13 @@ def _build_sql(_: MemoryProviderFactory, config: Mapping[str, Any]) -> MemoryPro
     dsn = config.get("dsn")
     if dsn in (None, ""):
         raise ValueError("sql provider config requires non-empty 'dsn'")
+    # Defer the SQL provider import until a caller actually asks for
+    # it. This keeps geny-executor importable without `psycopg`
+    # installed (postgres DSNs raise inside `connection.py` only when
+    # a connection is opened); SQLite DSNs work via stdlib `sqlite3`.
+    from geny_executor.memory.providers.sql import SQLMemoryProvider
+    from geny_executor.memory.providers.sql.schema import Dialect  # noqa: F401  (resolves at runtime)
+
     embedding_client = _build_embedding(config.get("embedding"))
     dialect = _resolve_dialect(config.get("dialect"))
     return SQLMemoryProvider(
@@ -204,6 +230,7 @@ def _build_composite(factory: MemoryProviderFactory, config: Mapping[str, Any]) 
         routing=routing,
         scope=_resolve_scope(config),
         session_id=str(config.get("session_id", "")),
+        user_id=str(config.get("user_id", "")),
     )
 
 
@@ -227,12 +254,18 @@ def _resolve_scope(config: Mapping[str, Any]) -> Scope:
     return Scope(str(raw))
 
 
-def _resolve_dialect(raw: Any) -> Optional[Dialect]:
+def _resolve_dialect(raw: Any) -> Optional[Any]:
     """Map config ``dialect`` value to a `Dialect` enum, or ``None``
     so the provider falls back to DSN-scheme detection.
+
+    Imports the `Dialect` enum lazily to keep parity with `_build_sql`
+    — callers that never trigger the SQL path never import the SQL
+    provider tree.
     """
     if raw is None or raw == "":
         return None
+    from geny_executor.memory.providers.sql.schema import Dialect
+
     if isinstance(raw, Dialect):
         return raw
     return Dialect(str(raw).lower())
