@@ -11,11 +11,12 @@ output (or vice versa). No Geny code is imported.
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 import uuid
 from datetime import datetime, tzinfo
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
+from typing import Any, Awaitable, Callable, Dict, Iterable, List, Optional, Set, Tuple
 
 from geny_executor.memory.provider import (
     Importance,
@@ -32,6 +33,16 @@ from geny_executor.memory.providers.file import frontmatter
 from geny_executor.memory.providers.file.layout import DirectoryLayout
 from geny_executor.memory.providers.file.timezone import now_in
 from geny_executor.stages.s02_context.types import MemoryChunk
+
+logger = logging.getLogger(__name__)
+
+
+# Callback signature for the auto-vector indexing hook. The notes
+# store invokes this after every successful ``write`` / ``update`` so
+# the vector layer can keep its index in lockstep with markdown disk
+# state. Returning the chunk count is informational; failures are
+# swallowed (logger.warning) to keep markdown writes authoritative.
+VectorIndexer = Callable[[NoteRef, str], Awaitable[int]]
 
 
 _WIKILINK = re.compile(r"\[\[([^\]\|]+)(?:\|([^\]]+))?\]\]")
@@ -53,6 +64,7 @@ class _FilesystemNotesStore(NotesHandle):
         *,
         tz: tzinfo,
         scope: Scope = Scope.SESSION,
+        vector_indexer: Optional[VectorIndexer] = None,
     ) -> None:
         self._layout = layout
         self._tz = tz
@@ -61,6 +73,16 @@ class _FilesystemNotesStore(NotesHandle):
         self._cache: Dict[str, Note] = {}
         self._loaded = False
         self._explicit_links: Dict[str, Set[str]] = {}
+        self._vector_indexer = vector_indexer
+
+    def attach_vector_indexer(self, indexer: Optional[VectorIndexer]) -> None:
+        """Wire (or detach) the auto-vector indexing callback.
+
+        Provided so the surrounding `MemoryProvider` can build the
+        notes store before the vector store (avoids a circular
+        construction order) and then plug the indexer in.
+        """
+        self._vector_indexer = indexer
 
     # ── NotesHandle contract ────────────────────────────────────────
 
@@ -114,7 +136,13 @@ class _FilesystemNotesStore(NotesHandle):
             self._write_to_disk(note)
             self._cache[filename] = note
             self._refresh_backlinks()
-            return note.as_meta()
+            indexer = self._vector_indexer
+            ref_for_index, body_for_index = note.ref, note.body
+        # Run auto-vector outside the write lock — embedding the body
+        # is an HTTP round-trip and must never block other note ops.
+        if indexer is not None and body_for_index:
+            await self._safe_index(indexer, ref_for_index, body_for_index)
+        return note.as_meta()
 
     async def update(self, filename: str, patch: NotePatch) -> NoteMeta:
         async with self._lock:
@@ -142,7 +170,28 @@ class _FilesystemNotesStore(NotesHandle):
 
             self._write_to_disk(current)
             self._refresh_backlinks()
-            return current.as_meta()
+            indexer = self._vector_indexer
+            ref_for_index, body_for_index = current.ref, current.body
+        if indexer is not None and body_for_index:
+            await self._safe_index(indexer, ref_for_index, body_for_index)
+        return current.as_meta()
+
+    @staticmethod
+    async def _safe_index(
+        indexer: VectorIndexer, ref: NoteRef, body: str
+    ) -> None:
+        """Best-effort indexer call — markdown writes win on any
+        embedding failure. Logs at WARNING so misconfigured embedding
+        keys surface without breaking note CRUD.
+        """
+        try:
+            await indexer(ref, body)
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "auto-vector index failed for %s; markdown write retained",
+                ref.filename,
+                exc_info=True,
+            )
 
     async def delete(self, filename: str) -> bool:
         async with self._lock:

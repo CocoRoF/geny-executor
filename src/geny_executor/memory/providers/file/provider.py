@@ -90,6 +90,12 @@ class FileMemoryProvider(MemoryProvider):
         self._notes = _FilesystemNotesStore(self._layout, tz=self._tz, scope=scope)
         self._index = _FileIndexStore(self._notes, layout=self._layout, tz=self._tz)
         self._vector = self._build_vector_store()
+        # Auto-vector wiring — every successful note write/update
+        # forwards the body to the vector store. The indexer is plugged
+        # in *after* the notes store is constructed because the vector
+        # store depends on the notes store's body lookup.
+        if self._vector is not None:
+            self._notes.attach_vector_indexer(self._vector.index)
         self._initialized = False
         self._descriptor = self._build_descriptor()
 
@@ -175,9 +181,10 @@ class FileMemoryProvider(MemoryProvider):
             )
             files.append(note_meta.ref.filename)
             receipt.notes_written = 1
-
+            # Auto-vector hook (set up in __init__) embeds the body
+            # inside notes.write — no second index() call needed.
             if self._vector is not None:
-                await self._vector.index(note_meta.ref, summary.final_text)
+                receipt.vector_chunks = 1
 
         # Refresh the index cache so subsequent retrieves see the new note
         await self._index.rebuild()
@@ -289,6 +296,8 @@ class FileMemoryProvider(MemoryProvider):
         self._notes = _FilesystemNotesStore(self._layout, tz=self._tz, scope=self._scope)
         self._index = _FileIndexStore(self._notes, layout=self._layout, tz=self._tz)
         self._vector = self._build_vector_store()
+        if self._vector is not None:
+            self._notes.attach_vector_indexer(self._vector.index)
         await self._index.rebuild()
 
     async def promote(self, ref: NoteRef, to: Scope) -> NoteRef:
