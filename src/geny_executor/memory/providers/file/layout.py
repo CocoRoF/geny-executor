@@ -132,11 +132,35 @@ class DirectoryLayout:
         return self.note_dir(category) / filename
 
     def category_dirs(self) -> Iterable[Path]:
-        """All structured-note category directories. `root` is the
-        memory directory itself (notes directly under `memory/`).
+        """All structured-note category directories.
+
+        Yields the canonical `NOTE_CATEGORIES` entries first (so the
+        host-agnostic categories are always present even when empty),
+        then any *extra* subdirectories the host has created under
+        `memory/` (e.g. Geny's `critical` / `executions`). The
+        sentinel `_curated_knowledge` and dot-directories are skipped.
+
+        `root` (memory itself) is always emitted via the `root`
+        canonical entry.
         """
+        seen: set = set()
         for cat in NOTE_CATEGORIES:
-            yield self.note_dir(cat)
+            d = self.note_dir(cat)
+            seen.add(d)
+            yield d
+        # Discover host-defined categories — any direct subdirectory
+        # of `memory/` whose name isn't already in NOTE_CATEGORIES.
+        if self.memory.exists():
+            for child in sorted(self.memory.iterdir()):
+                if not child.is_dir():
+                    continue
+                if child.name.startswith("."):
+                    continue
+                if child.name == "_curated_knowledge":
+                    continue
+                if child in seen:
+                    continue
+                yield child
 
     def ensure(self) -> None:
         """Create the root directory tree if any piece is missing.
@@ -162,8 +186,10 @@ class DirectoryLayout:
 
     def category_of(self, path: Path) -> str:
         """Infer the note category from a path under `memory/`.
-        Returns `root` if the note is directly under `memory/`,
-        `topics` for `memory/topics/*`, etc.
+        Returns `root` if the note is directly under `memory/`. Any
+        first-level subdirectory becomes the category — both the
+        canonical `NOTE_CATEGORIES` entries and host-defined
+        categories (e.g. Geny's `critical`).
         """
         try:
             rel = path.relative_to(self.memory)
@@ -173,6 +199,6 @@ class DirectoryLayout:
         if len(parts) <= 1:
             return "root"
         first = parts[0]
-        if first in NOTE_CATEGORIES:
-            return first
-        return "root"
+        if first.startswith(".") or first == "_curated_knowledge":
+            return ""
+        return first

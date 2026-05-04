@@ -4,6 +4,28 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.17.1] — 2026-05-05
+
+Patch release. `_FilesystemNotesStore` now discovers
+host-defined note categories during `_ensure_loaded`, not just the
+hard-coded `NOTE_CATEGORIES` list. Without this, hosts that use
+extra categories (Geny's `critical` for pinned facts and
+`executions` for the dated execution journal) lost notes after
+`IndexHandle.rebuild()` because the cache wipe + reload only
+walked the canonical category dirs.
+
+### Fixed
+
+- `DirectoryLayout.category_dirs` yields the canonical entries
+  *plus* every direct subdirectory of `memory/` (skipping dot
+  dirs and `_curated_knowledge`). Re-load picks up host
+  categories correctly.
+- `DirectoryLayout.category_of` returns the raw first-level
+  subdir name instead of folding non-canonical names back to
+  `root`. Hosts that rely on `category` to filter notes
+  (`provider.notes().list(category="critical")`) now get the
+  expected results.
+
 ## [1.17.0] — 2026-05-05
 
 Memory thin-adapter migration EXEC track. Six PRs (#178–#183) land
