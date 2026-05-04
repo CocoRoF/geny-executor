@@ -300,6 +300,58 @@ class _FilesystemNotesStore(NotesHandle):
         scored.sort(key=lambda pair: -pair[0])
         return [chunk for _, chunk in scored[:limit]]
 
+    async def load_pinned(
+        self,
+        *,
+        category: str = "critical",
+        max_chars: int = 3000,
+    ) -> str:
+        """Concatenate every note in `category` into a prompt-injectable
+        string, ordered by importance (CRITICAL → HIGH → MEDIUM → LOW)
+        and then by recency. Stops once the running char total reaches
+        `max_chars`.
+
+        Hosts use this for the system prompt's pinned-facts section
+        without having to walk `list(category=...)` + `read` + manual
+        char-budgeting themselves.
+        """
+        if max_chars <= 0:
+            return ""
+        async with self._lock:
+            await self._ensure_loaded()
+            pool = [
+                _clone(note)
+                for note in self._cache.values()
+                if (note.category or "") == category
+            ]
+
+        # Importance descending, then most-recently modified first.
+        def _key(note: Note) -> Tuple[float, str]:
+            modified = note.updated_at.isoformat() if note.updated_at else ""
+            return (-note.importance.boost, "" if modified is None else "")  # placeholder
+
+        pool.sort(
+            key=lambda n: (
+                -n.importance.boost,
+                -(n.updated_at.timestamp() if n.updated_at else 0.0),
+            )
+        )
+
+        parts: List[str] = []
+        used = 0
+        for note in pool:
+            block = note.body.strip()
+            if not block:
+                continue
+            header = f"## {note.title}" if note.title else ""
+            piece = f"{header}\n{block}".strip() if header else block
+            cost = len(piece) + (2 if parts else 0)  # blank-line separator
+            if used + cost > max_chars and parts:
+                break
+            parts.append(piece)
+            used += cost
+        return "\n\n".join(parts)
+
     # ── snapshot / restore helpers ─────────────────────────────────
 
     async def all(self) -> List[Note]:

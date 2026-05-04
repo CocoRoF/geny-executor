@@ -732,6 +732,12 @@ class NotesHandle(Protocol):
     async def search(
         self, text: str, *, limit: int = 5, importance_floor: Importance = Importance.LOW
     ) -> List[MemoryChunk]: ...
+    async def load_pinned(
+        self,
+        *,
+        category: str = "critical",
+        max_chars: int = 3000,
+    ) -> str: ...
 
 
 @runtime_checkable

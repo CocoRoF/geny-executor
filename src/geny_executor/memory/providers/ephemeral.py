@@ -352,6 +352,36 @@ class _NotesStore(NotesHandle):
         scored.sort(key=lambda pair: -pair[0])
         return [chunk for _, chunk in scored[:limit]]
 
+    async def load_pinned(
+        self,
+        *,
+        category: str = "critical",
+        max_chars: int = 3000,
+    ) -> str:
+        if max_chars <= 0:
+            return ""
+        pool = [n for n in self._notes.values() if (n.category or "") == category]
+        pool.sort(
+            key=lambda n: (
+                -n.importance.boost,
+                -(n.updated_at.timestamp() if n.updated_at else 0.0),
+            )
+        )
+        parts: List[str] = []
+        used = 0
+        for note in pool:
+            block = note.body.strip()
+            if not block:
+                continue
+            header = f"## {note.title}" if note.title else ""
+            piece = f"{header}\n{block}".strip() if header else block
+            cost = len(piece) + (2 if parts else 0)
+            if used + cost > max_chars and parts:
+                break
+            parts.append(piece)
+            used += cost
+        return "\n\n".join(parts)
+
     # used by snapshot/restore
     def all(self) -> List[Note]:
         return list(self._notes.values())
