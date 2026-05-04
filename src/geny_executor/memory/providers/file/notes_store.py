@@ -20,6 +20,7 @@ from typing import Any, Awaitable, Callable, Dict, Iterable, List, Optional, Set
 
 from geny_executor.memory.provider import (
     Importance,
+    MemoryHooks,
     Note,
     NoteDraft,
     NoteGraph,
@@ -65,6 +66,7 @@ class _FilesystemNotesStore(NotesHandle):
         tz: tzinfo,
         scope: Scope = Scope.SESSION,
         vector_indexer: Optional[VectorIndexer] = None,
+        hooks: Optional[MemoryHooks] = None,
     ) -> None:
         self._layout = layout
         self._tz = tz
@@ -74,6 +76,7 @@ class _FilesystemNotesStore(NotesHandle):
         self._loaded = False
         self._explicit_links: Dict[str, Set[str]] = {}
         self._vector_indexer = vector_indexer
+        self._hooks = hooks or MemoryHooks()
 
     def attach_vector_indexer(self, indexer: Optional[VectorIndexer]) -> None:
         """Wire (or detach) the auto-vector indexing callback.
@@ -139,11 +142,15 @@ class _FilesystemNotesStore(NotesHandle):
             self._refresh_backlinks()
             indexer = self._vector_indexer
             ref_for_index, body_for_index = note.ref, note.body
+            note_meta = note.as_meta()
         # Run auto-vector outside the write lock — embedding the body
         # is an HTTP round-trip and must never block other note ops.
         if indexer is not None and body_for_index:
             await self._safe_index(indexer, ref_for_index, body_for_index)
-        return note.as_meta()
+        await _fire_hook(
+            self._hooks.after_note_write, "after_note_write", note_meta,
+        )
+        return note_meta
 
     async def update(self, filename: str, patch: NotePatch) -> NoteMeta:
         async with self._lock:
@@ -175,9 +182,13 @@ class _FilesystemNotesStore(NotesHandle):
             self._refresh_backlinks()
             indexer = self._vector_indexer
             ref_for_index, body_for_index = current.ref, current.body
+            note_meta = current.as_meta()
         if indexer is not None and body_for_index:
             await self._safe_index(indexer, ref_for_index, body_for_index)
-        return current.as_meta()
+        await _fire_hook(
+            self._hooks.after_note_update, "after_note_update", note_meta,
+        )
+        return note_meta
 
     @staticmethod
     async def _safe_index(
@@ -601,3 +612,20 @@ def _clone(note: Optional[Note]) -> Optional[Note]:
         updated_at=note.updated_at,
         metadata=dict(note.metadata or {}),
     )
+
+
+async def _fire_hook(callback, name: str, *args) -> None:
+    """Run a `MemoryHooks.after_*` callback safely.
+
+    Failures are logged at debug level and swallowed — hooks are
+    business logic, never the source of memory-write failure. Hosts
+    that need a hook to be load-bearing should raise to a higher
+    layer themselves.
+    """
+    if callback is None:
+        return
+    try:
+        await callback(*args)
+    except Exception:  # noqa: BLE001
+        logger.debug("memory hook %s raised; skipping", name, exc_info=True)
+

@@ -30,6 +30,7 @@ from datetime import datetime, timezone
 from typing import (
     TYPE_CHECKING,
     Any,
+    Awaitable,
     Callable,
     Dict,
     List,
@@ -830,11 +831,30 @@ class MemoryProvider(Protocol):
 class MemoryHooks:
     """Policy callbacks consulted by the rewritten `MemoryStage`. Kept
     as a plain dataclass so test stubs can inline-construct one.
+
+    The ``after_*`` callbacks fire after the corresponding
+    ``MemoryProvider`` operation completes (record_turn,
+    record_execution, notes.write, notes.update). They run as
+    fire-and-forget tasks scheduled on the current event loop —
+    failures are logged but never block the primary memory write.
+    Hosts use these to layer business logic (DM bundle archiver,
+    conversation bucket router, VTuber LOGS emit, pin policy
+    decisions) on top of the executor's STM/LTM/notes plane without
+    maintaining a parallel pipeline path.
     """
 
     should_record_execution: Callable[["PipelineState"], bool] = lambda s: bool(s.final_text)
     should_reflect: Callable[["PipelineState"], bool] = lambda s: False
     should_auto_promote: Callable[[Insight], bool] = lambda i: i.should_auto_promote()
+    # Post-write callbacks. Default: None (no-op). Awaited inside a
+    # detached task by the provider; raise inside the callback to
+    # log + drop, never to abort the write.
+    after_record_turn: Optional[Callable[[Turn, RecordReceipt], "Awaitable[None]"]] = None
+    after_record_execution: Optional[
+        Callable[[ExecutionSummary, RecordReceipt], "Awaitable[None]"]
+    ] = None
+    after_note_write: Optional[Callable[[NoteMeta], "Awaitable[None]"]] = None
+    after_note_update: Optional[Callable[[NoteMeta], "Awaitable[None]"]] = None
 
 
 # ─────────────────────────────────────────────────────────────────────
