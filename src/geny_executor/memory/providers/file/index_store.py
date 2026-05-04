@@ -16,7 +16,7 @@ import asyncio
 import json
 from collections import Counter
 from datetime import tzinfo
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from geny_executor.memory.provider import NoteGraph, NoteMeta
 from geny_executor.memory.providers.file.layout import DirectoryLayout
@@ -75,6 +75,138 @@ class _FileIndexStore:
             await self._notes.clear_cache()
             payload = await self._compute()
             self._write_cache(payload)
+
+    async def build_vault_map(
+        self,
+        *,
+        recent_limit: int = 5,
+        top_tags: int = 10,
+        category_descriptions: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, Any]:
+        """Snapshot suitable for prompt-injection rendering.
+
+        The shape mirrors the legacy host vault-map: per-category
+        aggregates (file count + last_modified + optional host
+        description), top tags, recently modified notes, optional
+        MEMORY.md preview, plus totals.
+
+        ``category_descriptions`` is the host-supplied label map —
+        executor never has business meaning for a category, so the
+        host (Geny) injects "critical = always-pinned facts", etc.
+        """
+        descriptions = dict(category_descriptions or {})
+        payload = await self._cached_or_compute()
+        files = payload.get("files") or {}
+        tag_map = payload.get("tag_map") or {}
+
+        categories: Dict[str, Dict[str, Any]] = {}
+        for entry in files.values():
+            cat = entry.get("category") or "root"
+            slot = categories.setdefault(
+                cat,
+                {
+                    "files": 0,
+                    "last_modified": "",
+                    "description": descriptions.get(cat, ""),
+                },
+            )
+            slot["files"] += 1
+            modified = entry.get("modified") or ""
+            if modified > slot["last_modified"]:
+                slot["last_modified"] = modified
+
+        tag_pairs = sorted(
+            ((tag, len(names)) for tag, names in tag_map.items()),
+            key=lambda x: -x[1],
+        )[:top_tags]
+
+        recent = sorted(
+            files.values(),
+            key=lambda f: f.get("modified") or "",
+            reverse=True,
+        )[:recent_limit]
+        recent_view = [
+            {
+                "filename": f.get("filename"),
+                "title": f.get("title") or f.get("filename"),
+                "category": f.get("category") or "root",
+                "modified": f.get("modified", ""),
+            }
+            for f in recent
+        ]
+
+        # MEMORY.md preview — best-effort. Executor doesn't try to
+        # parse frontmatter; just strips a leading `---` block.
+        preview = ""
+        ltm_path = self._layout.main_ltm
+        if ltm_path.exists():
+            try:
+                text = ltm_path.read_text(encoding="utf-8")
+                if text.startswith("---"):
+                    end = text.find("\n---", 3)
+                    if end > 0:
+                        text = text[end + 4 :]
+                preview = text.strip()[:200]
+            except OSError:
+                preview = ""
+
+        return {
+            "categories": categories,
+            "top_tags": tag_pairs,
+            "recently_modified": recent_view,
+            "memory_md_preview": preview,
+            "total_files": payload.get("total_files", len(files)),
+            "generated_at": now_in(self._tz).isoformat(),
+        }
+
+    async def render_vault_map(
+        self,
+        *,
+        recent_limit: int = 5,
+        top_tags: int = 10,
+        category_descriptions: Optional[Dict[str, str]] = None,
+    ) -> str:
+        """Render the vault map as a markdown block ready for the
+        Static Layer of the system prompt.
+
+        Hosts that want a different shape can call ``build_vault_map``
+        and render their own markdown — this is the executor's
+        opinionated default (≤ 500 chars in typical use).
+        """
+        vmap = await self.build_vault_map(
+            recent_limit=recent_limit,
+            top_tags=top_tags,
+            category_descriptions=category_descriptions,
+        )
+        lines: List[str] = ["## Vault Map"]
+        cats = vmap.get("categories") or {}
+        if cats:
+            lines.append("- Categories:")
+            for cat, slot in sorted(cats.items()):
+                count = int(slot.get("files") or 0)
+                desc = (slot.get("description") or "").strip()
+                if desc:
+                    lines.append(f"  - `{cat}` ({count}) — {desc}")
+                else:
+                    lines.append(f"  - `{cat}` ({count})")
+            lines.append(
+                "  Use `memory_list(category=…)` to browse a folder, "
+                "`memory_read(filename=…)` for full content."
+            )
+        tags = vmap.get("top_tags") or []
+        if tags:
+            tag_summary = ", ".join(f"{t}({n})" for t, n in tags[:5])
+            lines.append(f"- Top tags: {tag_summary}")
+        recent = vmap.get("recently_modified") or []
+        if recent:
+            lines.append("- Recently modified:")
+            for r in recent:
+                lines.append(f"  - `{r['filename']}` — {r.get('title') or ''}")
+        preview = vmap.get("memory_md_preview") or ""
+        if preview:
+            single = preview.replace("\n", " ").strip()[:200]
+            lines.append(f"- MEMORY.md preview: {single}")
+        return "\n".join(lines)
 
     # ── internal ────────────────────────────────────────────────────
 

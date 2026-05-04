@@ -420,6 +420,86 @@ class _IndexCache:
     async def rebuild(self) -> None:
         self._notes._refresh_backlinks()  # type: ignore[attr-defined]
 
+    async def build_vault_map(
+        self,
+        *,
+        recent_limit: int = 5,
+        top_tags: int = 10,
+        category_descriptions: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, Any]:
+        descriptions = dict(category_descriptions or {})
+        notes = self._notes.all()
+        categories: Dict[str, Dict[str, Any]] = {}
+        for n in notes:
+            cat = n.category or "root"
+            slot = categories.setdefault(
+                cat,
+                {
+                    "files": 0,
+                    "last_modified": "",
+                    "description": descriptions.get(cat, ""),
+                },
+            )
+            slot["files"] += 1
+            modified = n.updated_at.isoformat() if n.updated_at else ""
+            if modified > slot["last_modified"]:
+                slot["last_modified"] = modified
+        tag_counter = await self.tag_counts()
+        tag_pairs = sorted(tag_counter.items(), key=lambda x: -x[1])[:top_tags]
+        recent = sorted(
+            notes, key=lambda n: n.updated_at or datetime.min, reverse=True,
+        )[:recent_limit]
+        recent_view = [
+            {
+                "filename": n.ref.filename,
+                "title": n.title or n.ref.filename,
+                "category": n.category or "root",
+                "modified": n.updated_at.isoformat() if n.updated_at else "",
+            }
+            for n in recent
+        ]
+        return {
+            "categories": categories,
+            "top_tags": tag_pairs,
+            "recently_modified": recent_view,
+            "memory_md_preview": "",
+            "total_files": len(notes),
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+    async def render_vault_map(
+        self,
+        *,
+        recent_limit: int = 5,
+        top_tags: int = 10,
+        category_descriptions: Optional[Dict[str, str]] = None,
+    ) -> str:
+        vmap = await self.build_vault_map(
+            recent_limit=recent_limit,
+            top_tags=top_tags,
+            category_descriptions=category_descriptions,
+        )
+        lines: List[str] = ["## Vault Map"]
+        cats = vmap.get("categories") or {}
+        if cats:
+            lines.append("- Categories:")
+            for cat, slot in sorted(cats.items()):
+                count = int(slot.get("files") or 0)
+                desc = (slot.get("description") or "").strip()
+                lines.append(
+                    f"  - `{cat}` ({count}) — {desc}" if desc else f"  - `{cat}` ({count})"
+                )
+        tags = vmap.get("top_tags") or []
+        if tags:
+            tag_summary = ", ".join(f"{t}({n})" for t, n in tags[:5])
+            lines.append(f"- Top tags: {tag_summary}")
+        recent = vmap.get("recently_modified") or []
+        if recent:
+            lines.append("- Recently modified:")
+            for r in recent:
+                lines.append(f"  - `{r['filename']}` — {r.get('title') or ''}")
+        return "\n".join(lines)
+
 
 # ─────────────────────────────────────────────────────────────────────
 # Provider

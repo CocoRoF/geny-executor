@@ -791,6 +791,20 @@ class IndexHandle(Protocol):
     async def tag_counts(self) -> Dict[str, int]: ...
     async def graph(self) -> NoteGraph: ...
     async def rebuild(self) -> None: ...
+    async def build_vault_map(
+        self,
+        *,
+        recent_limit: int = 5,
+        top_tags: int = 10,
+        category_descriptions: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, Any]: ...
+    async def render_vault_map(
+        self,
+        *,
+        recent_limit: int = 5,
+        top_tags: int = 10,
+        category_descriptions: Optional[Dict[str, str]] = None,
+    ) -> str: ...
 
 
 # ─────────────────────────────────────────────────────────────────────
