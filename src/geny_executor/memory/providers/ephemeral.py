@@ -71,9 +71,28 @@ class _STMStore:
 
     def __init__(self) -> None:
         self._turns: List[Turn] = []
+        # Events are stored separately so `recent`/`search` (which the
+        # protocol scopes to messages) don't see them. Hosts that need
+        # the event log can read `_events` directly.
+        self._events: List[Dict[str, Any]] = []
 
     async def append(self, turn: Turn) -> None:
         self._turns.append(turn)
+
+    async def append_event(
+        self,
+        name: str,
+        data: Optional[Dict[str, Any]] = None,
+        *,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        ts = datetime.now(timezone.utc).isoformat()
+        rec: Dict[str, Any] = {"type": "event", "event": str(name), "ts": ts}
+        if data:
+            rec["data"] = dict(data)
+        if metadata:
+            rec["metadata"] = dict(metadata)
+        self._events.append(rec)
 
     async def recent(self, n: int = 20) -> List[Turn]:
         if n <= 0:

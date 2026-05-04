@@ -41,11 +41,38 @@ class _SQLSTMStore:
             (turn.role, kind, payload, ts, meta),
         )
 
+    async def append_event(
+        self,
+        name: str,
+        data: Optional[dict] = None,
+        *,
+        metadata: Optional[dict] = None,
+    ) -> None:
+        """Append an event row alongside message rows.
+
+        Stored with ``type='event'`` and the event payload encoded
+        via ``_encode_content`` (kind=text or json) so existing
+        readers see a uniform row shape. `recent` / `search` filter
+        to ``type='message'`` so events don't leak into message
+        views.
+        """
+        ts = now_in(self._tz)
+        ts_str = ts.isoformat()
+        kind, payload = _encode_content(dict(data) if data else {})
+        meta = json.dumps(metadata, ensure_ascii=False) if metadata else None
+        await self._conn.execute(
+            """
+            INSERT INTO stm_turns (type, role, content_kind, content, ts, metadata_json)
+            VALUES ('event', ?, ?, ?, ?, ?)
+            """,
+            (str(name), kind, payload, ts_str, meta),
+        )
+
     async def recent(self, n: int = 20) -> List[Turn]:
         if n <= 0:
             return []
         rows = await self._conn.fetchall(
-            "SELECT * FROM stm_turns ORDER BY id DESC LIMIT ?",
+            "SELECT * FROM stm_turns WHERE type = 'message' ORDER BY id DESC LIMIT ?",
             (n,),
         )
         # Reverse so callers see chronological order
@@ -57,11 +84,12 @@ class _SQLSTMStore:
             return []
         # Case-insensitive substring on the raw `content` column. For
         # JSON-encoded structured content this still finds substring
-        # matches because the JSON form is searchable.
+        # matches because the JSON form is searchable. Events are
+        # filtered out — protocol scopes search to messages.
         rows = await self._conn.fetchall(
             """
             SELECT * FROM stm_turns
-            WHERE LOWER(content) LIKE ?
+            WHERE type = 'message' AND LOWER(content) LIKE ?
             ORDER BY id DESC LIMIT ?
             """,
             (f"%{needle.lower()}%", limit),

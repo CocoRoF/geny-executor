@@ -71,6 +71,37 @@ class _JSONLSTMStore:
             RecordReceipt(),
         )
 
+    async def append_event(
+        self,
+        name: str,
+        data: Optional[Dict[str, Any]] = None,
+        *,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Append a non-message event line to the STM jsonl.
+
+        Used by hosts that record tool calls / state transitions /
+        background-trigger fires inline with the conversation
+        transcript. The line shape mirrors Geny's legacy event
+        record (``type=event``) so downstream readers (web mirror,
+        operator dashboards) keep working unchanged.
+
+        ``recent`` / ``search`` skip event lines — those are
+        message-only views per the protocol.
+        """
+        ts = now_in(self._tz).isoformat()
+        rec: Dict[str, Any] = {"type": "event", "event": str(name), "ts": ts}
+        if data:
+            rec["data"] = dict(data)
+        if metadata:
+            rec["metadata"] = dict(metadata)
+        line = json.dumps(rec, ensure_ascii=False)
+        async with self._lock:
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            with self._path.open("a", encoding="utf-8") as fh:
+                fh.write(line + "\n")
+
+
     async def recent(self, n: int = 20) -> List[Turn]:
         if n <= 0:
             return []
