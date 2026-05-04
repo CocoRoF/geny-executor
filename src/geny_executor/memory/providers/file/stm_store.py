@@ -23,7 +23,7 @@ from datetime import datetime, tzinfo
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from geny_executor.memory.provider import Turn
+from geny_executor.memory.provider import MemoryHooks, RecordReceipt, Turn
 from geny_executor.memory.providers.file.timezone import now_in
 
 
@@ -39,10 +39,17 @@ class _JSONLSTMStore:
     cover multi-writer scenarios).
     """
 
-    def __init__(self, path: Path, *, tz: tzinfo) -> None:
+    def __init__(
+        self,
+        path: Path,
+        *,
+        tz: tzinfo,
+        hooks: Optional[MemoryHooks] = None,
+    ) -> None:
         self._path = path
         self._tz = tz
         self._lock = asyncio.Lock()
+        self._hooks = hooks or MemoryHooks()
 
     # ── NotesHandle contract ────────────────────────────────────────
 
@@ -53,6 +60,16 @@ class _JSONLSTMStore:
             self._path.parent.mkdir(parents=True, exist_ok=True)
             with self._path.open("a", encoding="utf-8") as fh:
                 fh.write(line + "\n")
+        # Fire after_record_turn hook outside the write lock so a
+        # slow business callback can't stall the next append. Default
+        # `RecordReceipt()` because STM-only writes don't have notes
+        # / vector counts to report.
+        await _fire_hook(
+            self._hooks.after_record_turn,
+            "after_record_turn",
+            turn,
+            RecordReceipt(),
+        )
 
     async def recent(self, n: int = 20) -> List[Turn]:
         if n <= 0:
@@ -196,3 +213,23 @@ def _turn_haystack(turn: Turn) -> str:
         return json.dumps(turn.content, ensure_ascii=False)
     except (TypeError, ValueError):
         return str(turn.content)
+
+
+async def _fire_hook(callback, name: str, *args) -> None:
+    """Run a `MemoryHooks.after_*` callback safely.
+
+    Failures are logged at debug level and swallowed — hooks are
+    business logic, never the source of memory-write failure. Hosts
+    that need a hook to be load-bearing should raise to a higher
+    layer themselves.
+    """
+    if callback is None:
+        return
+    try:
+        await callback(*args)
+    except Exception:  # noqa: BLE001
+        import logging
+
+        logging.getLogger(__name__).debug(
+            "memory hook %s raised; skipping", name, exc_info=True,
+        )

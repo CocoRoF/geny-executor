@@ -26,6 +26,7 @@ from geny_executor.memory.provider import (
     Layer,
     LTMHandle,
     MemoryDescriptor,
+    MemoryHooks,
     MemoryProvider,
     MemorySnapshot,
     NoteDraft,
@@ -75,6 +76,7 @@ class FileMemoryProvider(MemoryProvider):
         timezone_name: Optional[str] = None,
         embedding: Optional[EmbeddingDescriptor] = None,
         embedding_client: Optional[EmbeddingClient] = None,
+        hooks: Optional[MemoryHooks] = None,
     ) -> None:
         self._root = Path(root).resolve()
         self._scope = scope
@@ -84,10 +86,15 @@ class FileMemoryProvider(MemoryProvider):
         self._embedding = embedding or (
             embedding_client.descriptor if embedding_client is not None else None
         )
+        self._hooks = hooks or MemoryHooks()
         self._layout = DirectoryLayout(self._root)
-        self._stm = _JSONLSTMStore(self._layout.stm_jsonl, tz=self._tz)
+        self._stm = _JSONLSTMStore(
+            self._layout.stm_jsonl, tz=self._tz, hooks=self._hooks
+        )
         self._ltm = _MarkdownLTMStore(self._layout, tz=self._tz, scope=scope)
-        self._notes = _FilesystemNotesStore(self._layout, tz=self._tz, scope=scope)
+        self._notes = _FilesystemNotesStore(
+            self._layout, tz=self._tz, scope=scope, hooks=self._hooks
+        )
         self._index = _FileIndexStore(self._notes, layout=self._layout, tz=self._tz)
         self._vector = self._build_vector_store()
         # Auto-vector wiring — every successful note write/update
@@ -98,6 +105,15 @@ class FileMemoryProvider(MemoryProvider):
             self._notes.attach_vector_indexer(self._vector.index)
         self._initialized = False
         self._descriptor = self._build_descriptor()
+
+    def set_hooks(self, hooks: MemoryHooks) -> None:
+        """Swap the policy callbacks post-construction. Useful when
+        the host installs business hooks after the provider has been
+        wired into the pipeline.
+        """
+        self._hooks = hooks
+        self._stm._hooks = hooks
+        self._notes._hooks = hooks
 
     def _build_vector_store(self) -> Optional[_FileVectorStore]:
         if self._embedding_client is None:
@@ -158,6 +174,8 @@ class FileMemoryProvider(MemoryProvider):
     # ── cross-layer ─────────────────────────────────────────────────
 
     async def record_turn(self, turn: Turn) -> None:
+        # The STM store fires `after_record_turn` itself once the
+        # jsonl line lands — provider does not double-fire.
         await self._stm.append(turn)
 
     async def record_execution(self, summary: ExecutionSummary) -> RecordReceipt:
@@ -190,6 +208,15 @@ class FileMemoryProvider(MemoryProvider):
         await self._index.rebuild()
 
         receipt.files_updated = files
+        # Fire host's `after_record_execution` callback so business
+        # listeners (LOGS panel emit, post-execution summarisation
+        # triggers, etc.) layer on top without a parallel pipeline path.
+        await _fire_hook(
+            self._hooks.after_record_execution,
+            "after_record_execution",
+            summary,
+            receipt,
+        )
         return receipt
 
     async def reflect(self, ctx: ReflectionContext) -> Sequence[Insight]:
@@ -395,3 +422,14 @@ def _turn_to_text(turn: Turn) -> str:
     if isinstance(turn.content, str):
         return f"[{turn.role}] {turn.content}"
     return f"[{turn.role}] {turn.content!r}"
+
+
+async def _fire_hook(callback, name: str, *args) -> None:
+    """Run a `MemoryHooks.after_*` callback safely."""
+    if callback is None:
+        return
+    try:
+        await callback(*args)
+    except Exception:  # noqa: BLE001
+        logger.debug("memory hook %s raised; skipping", name, exc_info=True)
+
