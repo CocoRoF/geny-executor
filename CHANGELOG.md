@@ -4,6 +4,75 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.17.0] — 2026-05-05
+
+Memory thin-adapter migration EXEC track. Six PRs (#178–#183) land
+the executor side of Geny's path-A migration: every stage I/O
+dataclass gains a `metadata` extension channel, `MemoryHooks` gains
+post-write callbacks for hosts to layer business logic without a
+parallel pipeline path, the wikilink → backlink mismatch is fixed,
+and three new `Handle` helpers absorb the duplicated pinned-facts /
+vault-map / non-message-event paths Geny was carrying.
+
+### Added
+
+- **`metadata: Dict[str, Any]` extension field** on every stage
+  I/O dataclass that didn't already have one — `NoteRef` aside,
+  `NoteMeta` / `Note` / `NoteDraft` / `NotePatch` / `NoteGraph` /
+  `RecordReceipt` / `Insight` / `ReflectionContext` (replacing the
+  unused `extra`) / `RetrievalResult` / `MemorySnapshot`. Providers
+  store and round-trip the dict verbatim; hosts use a namespaced key
+  prefix (`geny.*`, etc.) to attach business hints. Disk persistence
+  on `FileMemoryProvider` uses a sidecar `<note>.md.meta.json` so
+  nested dicts survive the YAML frontmatter parser, with cleanup on
+  delete and on empty-metadata replace.
+- **`Turn.from_state_message` now lifts `message["metadata"]`**
+  onto `Turn.metadata`. Hosts that stamp pending metadata onto
+  `state.messages` see those fields land in STM without a parallel
+  write trail (closes the GenyDedupeStrategy duplication that drove
+  the migration).
+- **`MemoryHooks.after_record_turn` / `after_record_execution` /
+  `after_note_write` / `after_note_update`** — post-write callback
+  chain. `FileMemoryProvider` accepts `hooks=...` at construction
+  and exposes `set_hooks()` for late binding. Hooks fire outside
+  the asyncio lock so a slow business callback never stalls the
+  next write; hook exceptions are debug-logged and swallowed
+  (memory writes are authoritative).
+- **`STMHandle.append_event(name, data, *, metadata)`** — landing
+  zone for non-message events (tool calls, state transitions,
+  background-trigger fires) inline with the conversation
+  transcript. File / ephemeral / SQL providers all implement it;
+  message-only views (`recent` / `search`) skip event lines so
+  hosts can replace their own `_append_jsonl` helpers.
+- **`NotesHandle.load_pinned(*, category="critical", max_chars=3000)`**
+  — concatenates notes in a category sorted by importance then
+  recency, with char-budget cutoff. Replaces the host's manual
+  pinned-facts walker.
+- **`IndexHandle.build_vault_map(...)` / `render_vault_map(...)`**
+  — prompt-injectable Vault Map block. Hosts pass a
+  `category_descriptions` map; executor produces the markdown.
+  Default render shape mirrors the legacy host format
+  (Categories / Top tags / Recently modified / optional MEMORY.md
+  preview).
+
+### Fixed
+
+- **`_FilesystemNotesStore._refresh_backlinks`** keyed `link_map`
+  by the raw wikilink target ("target") while the cache keyed
+  notes by on-disk filename ("target.md"); `note.links_in` was
+  always empty. Normalise the lookup to probe both forms so
+  bare and full-filename wikilinks both produce backlinks.
+
+### Compatibility
+
+- All EXEC additions are opt-in. Hosts that ignore the new
+  `metadata` field, the new hooks, and the new helper methods
+  get the previous behaviour exactly. Existing `MemoryHooks`
+  callers don't need to set the `after_*` fields.
+- Note disk format gains a sidecar `.md.meta.json` only when a
+  caller passes a non-empty `metadata` on write/update —
+  notes without host extension are byte-identical to 1.16.0.
+
 ## [1.16.0] — 2026-05-04
 
 Memory v2 Phase 2d — `CuratedHandle` / `GlobalHandle` resolved at the
