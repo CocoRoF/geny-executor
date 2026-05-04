@@ -214,7 +214,12 @@ class CostModel:
 
 @dataclass
 class NoteMeta:
-    """Lightweight projection of a note for list/graph operations."""
+    """Lightweight projection of a note for list/graph operations.
+
+    `metadata` is a host-defined extension channel — providers store
+    and round-trip it verbatim, never inspect the contents. Use a
+    namespaced key prefix (e.g. ``geny.*``) to avoid collisions.
+    """
 
     ref: NoteRef
     title: str = ""
@@ -225,11 +230,18 @@ class NoteMeta:
     updated_at: Optional[datetime] = None
     size_bytes: int = 0
     backlinks: int = 0
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
 class Note:
-    """Full note: frontmatter + body + metadata."""
+    """Full note: frontmatter + body + metadata.
+
+    `frontmatter` is the disk YAML payload (serialised to the .md
+    header). `metadata` is the ephemeral host-extension channel —
+    not persisted to the YAML, but round-tripped through writes
+    and read responses for routing / business hints.
+    """
 
     ref: NoteRef
     title: str
@@ -242,6 +254,7 @@ class Note:
     links_in: List[str] = field(default_factory=list)
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
     def as_meta(self) -> NoteMeta:
         return NoteMeta(
@@ -254,6 +267,7 @@ class Note:
             updated_at=self.updated_at,
             size_bytes=len(self.body.encode("utf-8")),
             backlinks=len(self.links_in),
+            metadata=dict(self.metadata),
         )
 
 
@@ -261,6 +275,11 @@ class Note:
 class NoteDraft:
     """Input payload for `NotesHandle.write`. Provider assigns the
     canonical filename if `filename` is empty.
+
+    `frontmatter` is the disk YAML payload. `metadata` is the
+    ephemeral host-extension channel — not serialised, but
+    available to `MemoryHooks` and downstream callers for business
+    routing.
     """
 
     title: str
@@ -271,11 +290,17 @@ class NoteDraft:
     filename: str = ""  # empty → provider-generated slug
     frontmatter: Dict[str, Any] = field(default_factory=dict)
     scope: Scope = Scope.SESSION
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
 class NotePatch:
-    """Partial update payload. Unset fields are left untouched."""
+    """Partial update payload. Unset fields are left untouched.
+
+    `metadata` patches replace the existing extension dict (same
+    semantics as `frontmatter`). Pass an empty dict to clear, or
+    omit (None) to leave untouched.
+    """
 
     title: Optional[str] = None
     body: Optional[str] = None
@@ -284,14 +309,20 @@ class NotePatch:
     category: Optional[str] = None
     frontmatter: Optional[Dict[str, Any]] = None
     append_body: Optional[str] = None  # convenience: append to existing body
+    metadata: Optional[Dict[str, Any]] = None
 
 
 @dataclass
 class NoteGraph:
-    """Wikilink graph snapshot. Edge: (source_filename → target_filename)."""
+    """Wikilink graph snapshot. Edge: (source_filename → target_filename).
+
+    `metadata` carries optional host-side annotations (graph build
+    timestamp, derived stats, etc.).
+    """
 
     nodes: List[NoteMeta] = field(default_factory=list)
     edges: List[Tuple[str, str]] = field(default_factory=list)
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
     def neighbours(self, filename: str) -> List[str]:
         return [b for a, b in self.edges if a == filename]
@@ -324,9 +355,25 @@ class Turn:
 
     @classmethod
     def from_state_message(cls, message: Mapping[str, Any]) -> "Turn":
+        """Lift a `state.messages` entry into a `Turn`.
+
+        Honours an optional ``message["metadata"]`` dict — host code
+        (Geny's `_pending_message_metadata` stamp etc.) writes
+        InteractionEvent fields onto the message before stage 18 runs;
+        this method preserves that dict on `Turn.metadata` so the
+        executor's record_turn path can route it to STM without the
+        host having to maintain a parallel write trail.
+        """
+        raw_meta = message.get("metadata") or {}
+        meta_dict: Dict[str, Any]
+        if isinstance(raw_meta, Mapping):
+            meta_dict = dict(raw_meta)
+        else:
+            meta_dict = {}
         return cls(
             role=str(message.get("role", "user")),
             content=message.get("content", ""),
+            metadata=meta_dict,
         )
 
 
@@ -361,12 +408,16 @@ class ExecutionSummary:
 class RecordReceipt:
     """Result of `record_execution`. Drives the
     `memory.execution_recorded` event payload.
+
+    `metadata` is the host-extension channel for downstream hooks
+    (e.g. emit-event payload customisation, business audit fields).
     """
 
     notes_written: int = 0
     vector_chunks: int = 0
     files_updated: List[str] = field(default_factory=list)
     cost: Optional[CostEvent] = None
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
     def to_event(self) -> Dict[str, Any]:
         return {
@@ -381,6 +432,10 @@ class RecordReceipt:
 class Insight:
     """LLM-extracted memory insight. Auto-promotion checks
     `importance >= HIGH`.
+
+    `metadata` carries host extension (reflection prompt fingerprint,
+    confidence score, business labels) — never inspected by the
+    executor.
     """
 
     title: str
@@ -389,6 +444,7 @@ class Insight:
     tags: List[str] = field(default_factory=list)
     importance: Importance = Importance.MEDIUM
     ref: Optional[NoteRef] = None  # filled in once promoted
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
     def should_auto_promote(self) -> bool:
         return self.importance in (Importance.HIGH, Importance.CRITICAL)
@@ -404,12 +460,18 @@ class Insight:
 
 @dataclass
 class ReflectionContext:
-    """Input bundle for `MemoryProvider.reflect`."""
+    """Input bundle for `MemoryProvider.reflect`.
+
+    `metadata` is the host-extension channel for business hints
+    (current speaker persona, session phase, etc.). Replaces the
+    legacy ``extra`` field; the rename is intentional so every
+    stage I/O dataclass shares the ``metadata`` name.
+    """
 
     session_id: str
     recent_turns: List[Turn] = field(default_factory=list)
     user_focus: str = ""
-    extra: Dict[str, Any] = field(default_factory=dict)
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_state(cls, state: "PipelineState", *, focus: str = "") -> "ReflectionContext":
@@ -447,12 +509,17 @@ class RetrievalQuery:
 
 @dataclass
 class RetrievalResult:
-    """Result of a cross-layer query."""
+    """Result of a cross-layer query.
+
+    `metadata` is the host-extension channel for business stats
+    (e.g. counterpart filter applied, retrieval latency breakdown).
+    """
 
     chunks: List[MemoryChunk] = field(default_factory=list)
     layer_breakdown: Dict[Layer, int] = field(default_factory=dict)
     total_chars: int = 0
     cost: Optional[CostEvent] = None
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
     def as_prompt_block(self) -> str:
         """Render chunks into the single string the system prompt
@@ -491,6 +558,10 @@ class MemorySnapshot:
     """Portable export. `payload` is provider-specific (filesystem
     path, tarball bytes, JSON document, ...). Always carry a checksum
     so callers can verify integrity.
+
+    `metadata` carries host-extension fields (originating cycle id,
+    retention policy, business audit) — never inspected by the
+    executor.
     """
 
     provider: str
@@ -500,6 +571,7 @@ class MemorySnapshot:
     size_bytes: int = 0
     checksum: str = ""
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
     def to_event(self) -> Dict[str, Any]:
         return {

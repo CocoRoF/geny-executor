@@ -236,6 +236,7 @@ class _NotesStore(NotesHandle):
             links_out=self._extract_links_out(draft.body),
             created_at=now,
             updated_at=now,
+            metadata=dict(draft.metadata or {}),
         )
         self._notes[filename] = note
         self._refresh_backlinks()
@@ -259,6 +260,8 @@ class _NotesStore(NotesHandle):
             note.category = patch.category
         if patch.frontmatter is not None:
             note.frontmatter = dict(patch.frontmatter)
+        if patch.metadata is not None:
+            note.metadata = dict(patch.metadata)
         note.links_out = self._extract_links_out(note.body)
         note.updated_at = datetime.now(timezone.utc)
         self._refresh_backlinks()
@@ -664,6 +667,7 @@ def _note_to_dict(note: Note) -> Dict[str, Any]:
         "links_out": list(note.links_out),
         "created_at": note.created_at.isoformat() if note.created_at else None,
         "updated_at": note.updated_at.isoformat() if note.updated_at else None,
+        "metadata": dict(note.metadata),
     }
 
 
@@ -692,4 +696,5 @@ def _note_from_dict(d: Dict[str, Any], *, default_scope: Scope) -> Note:
         links_in=[],
         created_at=_parse_dt(d.get("created_at")),
         updated_at=_parse_dt(d.get("updated_at")),
+        metadata=dict(d.get("metadata", {})),
     )

@@ -132,6 +132,7 @@ class _FilesystemNotesStore(NotesHandle):
                 links_out=_extract_links(draft.body),
                 created_at=now,
                 updated_at=now,
+                metadata=dict(draft.metadata or {}),
             )
             self._write_to_disk(note)
             self._cache[filename] = note
@@ -165,6 +166,8 @@ class _FilesystemNotesStore(NotesHandle):
                 current.category = patch.category
             if patch.frontmatter is not None:
                 current.frontmatter = dict(patch.frontmatter)
+            if patch.metadata is not None:
+                current.metadata = dict(patch.metadata)
             current.links_out = _extract_links(current.body)
             current.updated_at = now_in(self._tz)
 
@@ -202,6 +205,13 @@ class _FilesystemNotesStore(NotesHandle):
             path = self._layout.note_path(note.category or "root", filename)
             try:
                 path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            # Drop the metadata sidecar alongside the note so a
+            # subsequent same-filename write doesn't pick up stale
+            # extension metadata.
+            try:
+                _metadata_sidecar_path(path).unlink(missing_ok=True)
             except OSError:
                 pass
             self._explicit_links.pop(filename, None)
@@ -357,6 +367,21 @@ class _FilesystemNotesStore(NotesHandle):
         header = frontmatter.dump(meta)
         body = note.body.rstrip() + "\n"
         path.write_text(header + body, encoding="utf-8")
+        # Host-extension metadata sidecar — JSON dump alongside the
+        # note. Empty dict → remove sidecar so we don't leave dead
+        # files behind after a metadata clear.
+        sidecar = _metadata_sidecar_path(path)
+        if note.metadata:
+            import json as _json
+            sidecar.write_text(
+                _json.dumps(note.metadata, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        else:
+            try:
+                sidecar.unlink(missing_ok=True)
+            except OSError:
+                pass
 
     def _load_note(self, path: Path) -> Optional[Note]:
         try:
@@ -389,6 +414,20 @@ class _FilesystemNotesStore(NotesHandle):
         rel = path.relative_to(self._layout.memory)
         # Notes directly under memory/ have rel.parent == "."
         filename = path.name if len(rel.parts) <= 1 else rel.parts[-1]
+        # Host-extension metadata is persisted in the sidecar JSON
+        # rather than the YAML frontmatter (the hand-rolled parser
+        # only handles flat scalar / list values). Read the sidecar if
+        # it exists; missing → empty dict.
+        host_metadata: Dict[str, Any] = {}
+        sidecar = _metadata_sidecar_path(path)
+        if sidecar.exists():
+            try:
+                import json as _json
+                decoded = _json.loads(sidecar.read_text(encoding="utf-8"))
+                if isinstance(decoded, dict):
+                    host_metadata = decoded
+            except (OSError, ValueError):
+                host_metadata = {}
         return Note(
             ref=NoteRef(
                 filename=filename,
@@ -414,12 +453,14 @@ class _FilesystemNotesStore(NotesHandle):
                     "modified",
                     "links_to",
                     "linked_from",
+                    "_metadata",
                 }
             },
             links_out=[str(t) for t in links_out],
             links_in=[],
             created_at=created,
             updated_at=modified,
+            metadata=host_metadata,
         )
 
 
@@ -445,7 +486,14 @@ def _extract_links(body: str) -> List[str]:
 
 
 def _note_to_frontmatter(note: Note, *, tz: tzinfo) -> Dict[str, Any]:
-    """Produce the YAML-like frontmatter mapping for `note`."""
+    """Produce the YAML-like frontmatter mapping for `note`.
+
+    The host-extension ``note.metadata`` is **not** embedded in the
+    YAML — the hand-rolled frontmatter parser only handles flat
+    scalar / list values, so a nested business dict would corrupt
+    on round-trip. Instead it is persisted to a sidecar JSON file
+    alongside the note (see `_metadata_sidecar_path`).
+    """
     created = note.created_at or now_in(tz)
     modified = note.updated_at or created
     meta: Dict[str, Any] = {
@@ -463,6 +511,16 @@ def _note_to_frontmatter(note: Note, *, tz: tzinfo) -> Dict[str, Any]:
         if k not in meta:
             meta[k] = v
     return meta
+
+
+def _metadata_sidecar_path(note_path: Path) -> Path:
+    """Return the sidecar JSON path that carries ``note.metadata``.
+
+    Sidecar lives next to the note (`<note>.md.meta.json`) so an
+    operator can spot it adjacent to the note in the file panel. The
+    file is owned by the executor; hand edits should be rare.
+    """
+    return note_path.with_suffix(note_path.suffix + ".meta.json")
 
 
 def _parse_importance(raw: Any) -> Importance:
@@ -511,4 +569,5 @@ def _clone(note: Optional[Note]) -> Optional[Note]:
         links_in=list(note.links_in),
         created_at=note.created_at,
         updated_at=note.updated_at,
+        metadata=dict(note.metadata or {}),
     )
