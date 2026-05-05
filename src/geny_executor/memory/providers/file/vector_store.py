@@ -25,12 +25,12 @@ backend.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import math
 import struct
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+from geny_executor.memory._locks import LoopAgnosticLock
 from geny_executor.memory.embedding.client import EmbeddingClient
 from geny_executor.memory.provider import (
     EmbeddingDescriptor,
@@ -67,7 +67,7 @@ class _FileVectorStore:
         self._layout = layout
         self._client = client
         self._notes_text_lookup = notes_text_lookup
-        self._lock = asyncio.Lock()
+        self._lock = LoopAgnosticLock()
         self._loaded = False
         self._vectors: List[List[float]] = []
         self._rows: List[Dict[str, Any]] = []

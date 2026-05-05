@@ -56,9 +56,7 @@ async def _promote(
     """
     note = await source.notes().read(ref.filename)
     if note is None:
-        raise KeyError(
-            f"cannot promote: {ref.filename!r} not found in source provider"
-        )
+        raise KeyError(f"cannot promote: {ref.filename!r} not found in source provider")
     meta = await target.notes().write(
         NoteDraft(
             title=note.title,

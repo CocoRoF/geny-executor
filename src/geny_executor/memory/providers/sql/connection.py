@@ -38,6 +38,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any, Iterable, List, Mapping, Optional, Sequence, Tuple, Union
 
+from geny_executor.memory._locks import LoopAgnosticLock
 from geny_executor.memory.providers.sql.schema import (
     Dialect,
     POSTGRES_DDL,
@@ -117,7 +118,7 @@ class _SQLiteConnection(_SQLConnection):
     def __init__(self, dsn: DSN) -> None:
         self._dsn = str(dsn)
         self._conn: Optional[sqlite3.Connection] = None
-        self._lock = asyncio.Lock()
+        self._lock = LoopAgnosticLock()
 
     # ── lifecycle ───────────────────────────────────────────────────
 
@@ -289,7 +290,7 @@ class _PostgresConnection(_SQLConnection):
     def __init__(self, dsn: DSN) -> None:
         self._dsn = str(dsn)
         self._conn: Any = None
-        self._lock = asyncio.Lock()
+        self._lock = LoopAgnosticLock()
 
     # ── lifecycle ───────────────────────────────────────────────────
 

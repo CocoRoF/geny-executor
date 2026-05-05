@@ -113,9 +113,7 @@ class GenyMemoryStrategy(MemoryUpdateStrategy):
         # so concrete hosts can decide where to pin the fact (e.g.
         # Geny pins it under ``memory/critical/``). Default ``None``
         # keeps the legacy behaviour: curated-only promotion.
-        promote_callback: Optional[
-            Callable[[Dict[str, Any], Any], None]
-        ] = None,
+        promote_callback: Optional[Callable[[Dict[str, Any], Any], None]] = None,
     ):
         self._mgr = memory_manager
         self._enable_reflection = enable_reflection

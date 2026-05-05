@@ -206,7 +206,8 @@ class ContextStage(Stage[Any, Any]):
             # sections so the agent can tell what's permanent from
             # what's situational.
             pinned_chunks = [
-                c for c in chunks
+                c
+                for c in chunks
                 if c.source == "pinned" or (c.metadata or {}).get("layer") == "pinned"
             ]
             other_chunks = [c for c in chunks if c not in pinned_chunks]
@@ -216,9 +217,7 @@ class ContextStage(Stage[Any, Any]):
                     # Pinned chunks usually carry pre-rendered prose;
                     # join with blank lines instead of the bullet
                     # form used for search results.
-                    state.metadata["memory_pinned"] = "\n\n".join(
-                        c.content for c in pinned_chunks
-                    )
+                    state.metadata["memory_pinned"] = "\n\n".join(c.content for c in pinned_chunks)
                 if other_chunks:
                     memory_text = "\n".join(
                         f"- [{c.source}] {c.key}: {c.content}" for c in other_chunks

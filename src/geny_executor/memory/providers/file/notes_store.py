@@ -10,7 +10,6 @@ output (or vice versa). No Geny code is imported.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import re
 import uuid
@@ -18,6 +17,7 @@ from datetime import datetime, tzinfo
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, Iterable, List, Optional, Set, Tuple
 
+from geny_executor.memory._locks import LoopAgnosticLock
 from geny_executor.memory.provider import (
     Importance,
     MemoryHooks,
@@ -71,7 +71,7 @@ class _FilesystemNotesStore(NotesHandle):
         self._layout = layout
         self._tz = tz
         self._scope = scope
-        self._lock = asyncio.Lock()
+        self._lock = LoopAgnosticLock()
         self._cache: Dict[str, Note] = {}
         self._loaded = False
         self._explicit_links: Dict[str, Set[str]] = {}
@@ -148,7 +148,9 @@ class _FilesystemNotesStore(NotesHandle):
         if indexer is not None and body_for_index:
             await self._safe_index(indexer, ref_for_index, body_for_index)
         await _fire_hook(
-            self._hooks.after_note_write, "after_note_write", note_meta,
+            self._hooks.after_note_write,
+            "after_note_write",
+            note_meta,
         )
         return note_meta
 
@@ -186,14 +188,14 @@ class _FilesystemNotesStore(NotesHandle):
         if indexer is not None and body_for_index:
             await self._safe_index(indexer, ref_for_index, body_for_index)
         await _fire_hook(
-            self._hooks.after_note_update, "after_note_update", note_meta,
+            self._hooks.after_note_update,
+            "after_note_update",
+            note_meta,
         )
         return note_meta
 
     @staticmethod
-    async def _safe_index(
-        indexer: VectorIndexer, ref: NoteRef, body: str
-    ) -> None:
+    async def _safe_index(indexer: VectorIndexer, ref: NoteRef, body: str) -> None:
         """Best-effort indexer call — markdown writes win on any
         embedding failure. Logs at WARNING so misconfigured embedding
         keys surface without breaking note CRUD.
@@ -320,9 +322,7 @@ class _FilesystemNotesStore(NotesHandle):
         async with self._lock:
             await self._ensure_loaded()
             pool = [
-                _clone(note)
-                for note in self._cache.values()
-                if (note.category or "") == category
+                _clone(note) for note in self._cache.values() if (note.category or "") == category
             ]
 
         # Importance descending, then most-recently modified first.
@@ -466,6 +466,7 @@ class _FilesystemNotesStore(NotesHandle):
         sidecar = _metadata_sidecar_path(path)
         if note.metadata:
             import json as _json
+
             sidecar.write_text(
                 _json.dumps(note.metadata, ensure_ascii=False, indent=2),
                 encoding="utf-8",
@@ -516,6 +517,7 @@ class _FilesystemNotesStore(NotesHandle):
         if sidecar.exists():
             try:
                 import json as _json
+
                 decoded = _json.loads(sidecar.read_text(encoding="utf-8"))
                 if isinstance(decoded, dict):
                     host_metadata = decoded
@@ -680,4 +682,3 @@ async def _fire_hook(callback, name: str, *args) -> None:
         await callback(*args)
     except Exception:  # noqa: BLE001
         logger.debug("memory hook %s raised; skipping", name, exc_info=True)
-

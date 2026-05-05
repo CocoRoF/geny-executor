@@ -12,12 +12,12 @@ the format that `_FilesystemNotesStore` writes.
 
 from __future__ import annotations
 
-import asyncio
 import json
 from collections import Counter
 from datetime import tzinfo
 from typing import Any, Dict, List, Optional, Tuple
 
+from geny_executor.memory._locks import LoopAgnosticLock
 from geny_executor.memory.provider import NoteGraph, NoteMeta
 from geny_executor.memory.providers.file.layout import DirectoryLayout
 from geny_executor.memory.providers.file.notes_store import _FilesystemNotesStore
@@ -37,7 +37,7 @@ class _FileIndexStore:
         self._notes = notes
         self._layout = layout
         self._tz = tz
-        self._lock = asyncio.Lock()
+        self._lock = LoopAgnosticLock()
 
     # ── IndexHandle contract ────────────────────────────────────────
 
@@ -91,9 +91,7 @@ class _FileIndexStore:
         result: List[Dict[str, Any]] = []
         seen: set = set()
         for cat_dir in self._layout.category_dirs():
-            cat_name = (
-                "root" if cat_dir == self._layout.memory else cat_dir.name
-            )
+            cat_name = "root" if cat_dir == self._layout.memory else cat_dir.name
             if cat_name in seen:
                 continue
             seen.add(cat_name)
@@ -101,12 +99,14 @@ class _FileIndexStore:
                 rel_path = str(cat_dir.relative_to(self._layout.root))
             except ValueError:
                 rel_path = str(cat_dir)
-            result.append({
-                "name": cat_name,
-                "file_count": files_by_cat.get(cat_name, 0),
-                "path": rel_path,
-                "exists": cat_dir.exists(),
-            })
+            result.append(
+                {
+                    "name": cat_name,
+                    "file_count": files_by_cat.get(cat_name, 0),
+                    "path": rel_path,
+                    "exists": cat_dir.exists(),
+                }
+            )
         return result
 
     async def build_vault_map(

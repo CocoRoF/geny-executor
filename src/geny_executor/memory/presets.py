@@ -275,7 +275,8 @@ class GenyPresets:
         # catalogue on top.
         full_prompt = (system_prompt or _DEFAULT_WORKER_PROMPT) + "\n\n" + _ADAPTIVE_PROMPT
         composed = _compose_persona_prompt(
-            full_prompt, host_memory_clause=host_memory_clause,
+            full_prompt,
+            host_memory_clause=host_memory_clause,
         )
         sys_builder = _build_system_builder(composed)
 

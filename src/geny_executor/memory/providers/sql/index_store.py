@@ -10,11 +10,11 @@ backends.
 
 from __future__ import annotations
 
-import asyncio
 from collections import Counter
 from datetime import tzinfo
 from typing import Any, Dict, List, Optional
 
+from geny_executor.memory._locks import LoopAgnosticLock
 from geny_executor.memory.provider import NoteGraph
 from geny_executor.memory.providers.file.timezone import now_in
 from geny_executor.memory.providers.sql.connection import _SQLConnection
@@ -34,7 +34,7 @@ class _SQLIndexStore:
         self._notes = notes
         self._conn = conn
         self._tz = tz
-        self._lock = asyncio.Lock()
+        self._lock = LoopAgnosticLock()
 
     # ── IndexHandle contract ────────────────────────────────────────
 
