@@ -314,11 +314,68 @@ class NotePatch:
 
 
 @dataclass
+class NoteSummary:
+    """Lightweight per-note summary for progressive-disclosure listings.
+
+    Returned by ``IndexHandle.list_notes`` — hosts use this to render
+    a category folder view (filename + title + first paragraph + tag
+    chips + size + modified) without parsing every note's body.
+    """
+
+    filename: str
+    title: str = ""
+    category: str = ""
+    tags: List[str] = field(default_factory=list)
+    importance: str = "medium"
+    char_count: int = 0
+    modified: str = ""
+    first_paragraph: str = ""
+
+
+@dataclass
+class OutlineNode:
+    """One heading in a markdown outline tree.
+
+    ``level`` is the markdown heading depth (1 → ``#``, 2 → ``##``, …).
+    ``line_start`` / ``line_end`` are 1-indexed line numbers in the
+    note body that bound this section's content (between this heading
+    and the next heading at the same or shallower level). Children
+    are nested headings of strictly greater depth.
+    """
+
+    level: int
+    heading: str
+    line_start: int
+    line_end: int
+    children: List["OutlineNode"] = field(default_factory=list)
+
+
+@dataclass
+class NoteOutline:
+    """Markdown outline of a single note.
+
+    Hosts call ``IndexHandle.read_outline(filename)`` after a
+    ``list_notes`` selection to see the heading tree, then
+    ``read_section(filename, heading)`` for the body of a chosen
+    heading. This is the third step of the progressive-disclosure
+    chain (categories → notes → outline → section).
+    """
+
+    filename: str
+    title: str = ""
+    headings: List[OutlineNode] = field(default_factory=list)
+
+
+@dataclass
 class NoteGraph:
     """Wikilink graph snapshot. Edge: (source_filename → target_filename).
 
     `metadata` carries optional host-side annotations (graph build
     timestamp, derived stats, etc.).
+
+    Query helpers (1-hop / k-hop / connected-component / linked-chain
+    / notes-with-tag) operate on the in-memory snapshot — hosts that
+    need fresh results re-snapshot via ``IndexHandle.graph()``.
     """
 
     nodes: List[NoteMeta] = field(default_factory=list)
@@ -327,6 +384,116 @@ class NoteGraph:
 
     def neighbours(self, filename: str) -> List[str]:
         return [b for a, b in self.edges if a == filename]
+
+    def k_hop(self, filename: str, k: int) -> List[str]:
+        """Every node reachable from ``filename`` in **at most** ``k``
+        hops, excluding ``filename`` itself. ``k=0`` returns ``[]``,
+        ``k=1`` is equivalent to ``neighbours``. Order: BFS level,
+        deterministic by edge order.
+        """
+        if k <= 0 or not filename:
+            return []
+        adj = self._adjacency()
+        seen: Set[str] = {filename}
+        frontier: List[str] = [filename]
+        out: List[str] = []
+        for _ in range(k):
+            next_frontier: List[str] = []
+            for node in frontier:
+                for nbr in adj.get(node, []):
+                    if nbr in seen:
+                        continue
+                    seen.add(nbr)
+                    out.append(nbr)
+                    next_frontier.append(nbr)
+            if not next_frontier:
+                break
+            frontier = next_frontier
+        return out
+
+    def connected_component(self, filename: str) -> Set[str]:
+        """Closure under the directed edge relation (treated as
+        undirected) starting from ``filename``. Includes the seed
+        node itself when it appears anywhere in the graph.
+        """
+        if not filename:
+            return set()
+        # Build undirected adjacency once per call.
+        adj_und: Dict[str, Set[str]] = {}
+        for src, tgt in self.edges:
+            adj_und.setdefault(src, set()).add(tgt)
+            adj_und.setdefault(tgt, set()).add(src)
+        if filename not in adj_und:
+            # Lone node — empty graph component unless it's a node
+            # known to the graph.
+            known = {n.ref.filename for n in self.nodes}
+            if filename in known:
+                return {filename}
+            return set()
+        seen: Set[str] = {filename}
+        stack: List[str] = [filename]
+        while stack:
+            node = stack.pop()
+            for nbr in adj_und.get(node, ()):
+                if nbr in seen:
+                    continue
+                seen.add(nbr)
+                stack.append(nbr)
+        return seen
+
+    def linked_chain(self, start: str, end: str) -> Optional[List[str]]:
+        """Shortest directed path from ``start`` to ``end`` (BFS).
+        Returns ``None`` if no path exists; ``[start]`` when
+        ``start == end``.
+        """
+        if not start or not end:
+            return None
+        if start == end:
+            return [start]
+        adj = self._adjacency()
+        prev: Dict[str, str] = {}
+        seen: Set[str] = {start}
+        frontier: List[str] = [start]
+        while frontier:
+            next_frontier: List[str] = []
+            for node in frontier:
+                for nbr in adj.get(node, []):
+                    if nbr in seen:
+                        continue
+                    seen.add(nbr)
+                    prev[nbr] = node
+                    if nbr == end:
+                        # Reconstruct path.
+                        path = [end]
+                        cur = end
+                        while cur != start:
+                            cur = prev[cur]
+                            path.append(cur)
+                        path.reverse()
+                        return path
+                    next_frontier.append(nbr)
+            frontier = next_frontier
+        return None
+
+    def notes_with_tag(self, tag: str) -> List[str]:
+        """Filenames of every node whose ``tags`` (case-insensitive)
+        contains ``tag``. Empty when no node carries the tag.
+        """
+        if not tag:
+            return []
+        needle = tag.lower()
+        out: List[str] = []
+        for n in self.nodes:
+            tags = getattr(n, "tags", None) or ()
+            if any(str(t).lower() == needle for t in tags):
+                out.append(n.ref.filename)
+        return out
+
+    def _adjacency(self) -> Dict[str, List[str]]:
+        adj: Dict[str, List[str]] = {}
+        for src, tgt in self.edges:
+            adj.setdefault(src, []).append(tgt)
+        return adj
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -795,6 +962,16 @@ class IndexHandle(Protocol):
     Distinct from the Notes graph because it includes provider-side
     materialised aggregates (tag counts, importance histogram, link
     graph, file inventory).
+
+    Supports a 4-step **progressive disclosure** read path so hosts
+    (or LLM agents) can drill from the high-level vault structure down
+    to a single section without paying for a full body load on every
+    step:
+
+    1. ``list_categories()``       — every category folder + file count
+    2. ``list_notes(category)``    — note summaries within one category
+    3. ``read_outline(filename)``  — heading tree of one note
+    4. ``read_section(file, hd)``  — body of one heading
     """
 
     async def snapshot(self) -> Dict[str, Any]: ...
@@ -802,6 +979,16 @@ class IndexHandle(Protocol):
     async def graph(self) -> NoteGraph: ...
     async def rebuild(self) -> None: ...
     async def list_categories(self) -> List[Dict[str, Any]]: ...
+    async def list_notes(
+        self,
+        *,
+        category: Optional[str] = None,
+        tag: Optional[str] = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> List[NoteSummary]: ...
+    async def read_outline(self, filename: str) -> Optional[NoteOutline]: ...
+    async def read_section(self, filename: str, heading: str) -> Optional[str]: ...
     async def build_vault_map(
         self,
         *,
@@ -1027,6 +1214,9 @@ __all__ = [
     "NoteDraft",
     "NotePatch",
     "NoteGraph",
+    "NoteSummary",
+    "NoteOutline",
+    "OutlineNode",
     # turn / reflection / execution
     "Turn",
     "ExecutionSummary",

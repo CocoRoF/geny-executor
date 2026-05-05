@@ -15,7 +15,7 @@ from datetime import tzinfo
 from typing import Any, Dict, List, Optional
 
 from geny_executor.memory._locks import LoopAgnosticLock
-from geny_executor.memory.provider import NoteGraph
+from geny_executor.memory.provider import NoteGraph, NoteOutline, NoteSummary
 from geny_executor.memory.providers.file.timezone import now_in
 from geny_executor.memory.providers.sql.connection import _SQLConnection
 from geny_executor.memory.providers.sql.notes_store import _SQLNotesStore
@@ -56,6 +56,62 @@ class _SQLIndexStore:
         # No materialised cache. The hook is preserved so callers can
         # treat the SQL provider exactly like the file provider.
         return None
+
+    async def list_notes(
+        self,
+        *,
+        category: Optional[str] = None,
+        tag: Optional[str] = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> List[NoteSummary]:
+        from geny_executor.memory._progressive import make_summary
+
+        notes = await self._notes.all()
+        tag_lower = tag.lower() if isinstance(tag, str) else None
+        filtered = []
+        for n in notes:
+            cat = n.category or "root"
+            if category is not None and cat != category:
+                continue
+            if tag_lower is not None:
+                tags_lower = {str(t).lower() for t in (n.tags or [])}
+                if tag_lower not in tags_lower:
+                    continue
+            modified = n.updated_at.isoformat() if n.updated_at else ""
+            filtered.append((modified, n))
+        filtered.sort(key=lambda pair: (pair[0], pair[1].ref.filename), reverse=True)
+        sliced = filtered[offset : offset + max(0, int(limit))]
+        return [
+            make_summary(
+                filename=n.ref.filename,
+                title=n.title,
+                category=n.category or "root",
+                tags=list(n.tags or []),
+                importance=n.importance.value
+                if hasattr(n.importance, "value")
+                else str(n.importance),
+                body=n.body or "",
+                modified=modified,
+            )
+            for modified, n in sliced
+        ]
+
+    async def read_outline(self, filename: str) -> Optional[NoteOutline]:
+        from geny_executor.memory._progressive import parse_outline
+
+        note = await self._notes.read(filename)
+        if note is None:
+            return None
+        return parse_outline(filename=filename, title=note.title, body=note.body or "")
+
+    async def read_section(self, filename: str, heading: str) -> Optional[str]:
+        from geny_executor.memory._progressive import extract_section
+
+        note = await self._notes.read(filename)
+        if note is None:
+            return None
+        return extract_section(note.body or "", heading)
 
     async def list_categories(self) -> List[Dict[str, Any]]:
         """Aggregate categories from the `notes` table. Empty-folder

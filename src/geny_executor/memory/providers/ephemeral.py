@@ -49,8 +49,10 @@ from geny_executor.memory.provider import (
     NoteDraft,
     NoteGraph,
     NoteMeta,
+    NoteOutline,
     NotePatch,
     NoteRef,
+    NoteSummary,
     NotesHandle,
     RecordReceipt,
     ReflectionContext,
@@ -441,6 +443,62 @@ class _IndexCache:
             {"name": name, "file_count": count, "path": f"memory/{name}", "exists": True}
             for name, count in sorted(counts.items())
         ]
+
+    async def list_notes(
+        self,
+        *,
+        category: Optional[str] = None,
+        tag: Optional[str] = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> List["NoteSummary"]:
+        from geny_executor.memory._progressive import make_summary
+
+        tag_lower = tag.lower() if isinstance(tag, str) else None
+        matches = []
+        for n in self._notes.all():
+            cat = n.category or "root"
+            if category is not None and cat != category:
+                continue
+            if tag_lower is not None:
+                tags_lower = {str(t).lower() for t in (n.tags or [])}
+                if tag_lower not in tags_lower:
+                    continue
+            modified = n.updated_at.isoformat() if n.updated_at else ""
+            matches.append((modified, n))
+        # Newest first by modified timestamp; stable secondary by filename.
+        matches.sort(key=lambda pair: (pair[0], pair[1].ref.filename), reverse=True)
+        sliced = matches[offset : offset + max(0, int(limit))]
+        return [
+            make_summary(
+                filename=n.ref.filename,
+                title=n.title,
+                category=n.category or "root",
+                tags=list(n.tags or []),
+                importance=n.importance.value
+                if hasattr(n.importance, "value")
+                else str(n.importance),
+                body=n.body or "",
+                modified=modified,
+            )
+            for modified, n in sliced
+        ]
+
+    async def read_outline(self, filename: str) -> Optional["NoteOutline"]:
+        from geny_executor.memory._progressive import parse_outline
+
+        for n in self._notes.all():
+            if n.ref.filename == filename:
+                return parse_outline(filename=filename, title=n.title, body=n.body or "")
+        return None
+
+    async def read_section(self, filename: str, heading: str) -> Optional[str]:
+        from geny_executor.memory._progressive import extract_section
+
+        for n in self._notes.all():
+            if n.ref.filename == filename:
+                return extract_section(n.body or "", heading)
+        return None
 
     async def build_vault_map(
         self,
