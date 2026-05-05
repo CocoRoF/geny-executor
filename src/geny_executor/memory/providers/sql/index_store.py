@@ -57,6 +57,23 @@ class _SQLIndexStore:
         # treat the SQL provider exactly like the file provider.
         return None
 
+    async def list_categories(self) -> List[Dict[str, Any]]:
+        """Aggregate categories from the `notes` table. Empty-folder
+        convention doesn't apply (SQL has no folder concept).
+        """
+        rows = await self._conn.fetchall(
+            "SELECT category, COUNT(*) AS n FROM notes GROUP BY category ORDER BY category"
+        )
+        return [
+            {
+                "name": (r["category"] or "root"),
+                "file_count": int(r["n"]),
+                "path": f"memory/{r['category'] or 'root'}",
+                "exists": True,
+            }
+            for r in rows
+        ]
+
     async def build_vault_map(
         self,
         *,
