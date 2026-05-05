@@ -1,4 +1,4 @@
-"""Stage 19: Summarize — real implementation (S9b.4).
+"""Stage 19: Summarize — turn-level + session-close summary writer.
 
 Runs the configured :class:`Summarizer` to produce a
 :class:`SummaryRecord`, lets the configured :class:`ImportanceScorer`
@@ -10,12 +10,19 @@ pipelines see no behaviour change. Hosts that want LTM index
 generation swap in :class:`RuleBasedSummarizer` (cheap, local) or
 plug their own LLM-driven summarizer.
 
-If the host attached a memory provider with a ``record_summary``
-async method (advisory contract — not all providers implement it),
-the stage forwards the record so LTM indexers can ingest it. The
-provider is sourced from ``state.session_runtime.memory_provider``
-when present; missing or non-callable attributes are silently
-ignored.
+Two provider hand-offs:
+
+1. **Per-turn forward** — if the attached provider exposes an
+   advisory ``record_summary(record)`` async method, every turn's
+   record is forwarded so LTM indexers can ingest it.
+
+2. **Session-close summary** (D1) — when the pipeline reaches a
+   terminal decision (``complete`` / ``error`` / ``escalate``), the
+   stage assembles the full ``summary_history`` into a markdown
+   block and writes it once to
+   ``provider.stm().write_summary(body)``. This is the canonical
+   ``transcripts/summary.md`` writer; hosts that previously kept
+   their own summary-md writer should drop it.
 """
 
 from __future__ import annotations
@@ -155,13 +162,12 @@ class SummarizeStage(Stage[Any, Any]):
         state.add_event("summary.written", record.to_dict())
 
         await self._maybe_forward_to_provider(record, state)
+        if state.loop_decision in _TERMINAL_DECISIONS:
+            await self._maybe_write_session_summary(history, state)
         return input
 
     async def _maybe_forward_to_provider(self, record: SummaryRecord, state: PipelineState) -> None:
-        runtime = getattr(state, "session_runtime", None)
-        if runtime is None:
-            return
-        provider = getattr(runtime, "memory_provider", None)
+        provider = self._get_provider(state)
         if provider is None:
             return
         record_summary = getattr(provider, "record_summary", None)
@@ -180,3 +186,99 @@ class SummarizeStage(Stage[Any, Any]):
             "summary.provider_recorded",
             {"turn_id": record.turn_id, "importance": record.importance.value},
         )
+
+    async def _maybe_write_session_summary(
+        self,
+        history: List[Any],
+        state: PipelineState,
+    ) -> None:
+        """Assemble the session's full summary and forward it once to
+        ``provider.stm().write_summary(markdown)`` (D1).
+
+        The pipeline reaches this branch when the loop decision turns
+        terminal — ``complete`` / ``error`` / ``escalate``. Earlier
+        turns simply append to ``state.shared['summary_history']``;
+        this method is the single session-close write.
+        """
+        provider = self._get_provider(state)
+        if provider is None or not history:
+            return
+        stm_factory = getattr(provider, "stm", None)
+        if stm_factory is None or not callable(stm_factory):
+            return
+        try:
+            stm_handle = stm_factory()
+        except Exception:  # noqa: BLE001
+            return
+        if stm_handle is None:
+            return
+        writer = getattr(stm_handle, "write_summary", None)
+        if writer is None or not callable(writer):
+            return
+        body = _compose_session_summary(history)
+        if not body:
+            return
+        try:
+            await writer(body)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("provider.stm().write_summary failed: %s", exc)
+            state.add_event(
+                "summary.session_close_error",
+                {"error": str(exc)},
+            )
+            return
+        state.add_event(
+            "summary.session_closed",
+            {
+                "chars": len(body),
+                "turns": len(history),
+                "decision": state.loop_decision,
+            },
+        )
+
+    @staticmethod
+    def _get_provider(state: PipelineState) -> Optional[Any]:
+        runtime = getattr(state, "session_runtime", None)
+        if runtime is None:
+            return None
+        return getattr(runtime, "memory_provider", None)
+
+
+_TERMINAL_DECISIONS = frozenset({"complete", "error", "escalate"})
+
+
+def _compose_session_summary(history: List[Any]) -> str:
+    """Render the accumulated turn-level summaries into a single
+    markdown block suitable for ``transcripts/summary.md``.
+
+    Format mirrors what most hosts expect: an ``## Session Summary``
+    heading, then a per-turn entry with importance / abstract / key
+    facts. ``history`` items are dicts produced by
+    ``SummaryRecord.to_dict()``.
+    """
+    if not history:
+        return ""
+    lines: List[str] = ["## Session Summary", ""]
+    for entry in history:
+        if not isinstance(entry, dict):
+            continue
+        turn_id = str(entry.get("turn_id", "?"))
+        importance = str(entry.get("importance", "medium"))
+        abstract = str(entry.get("abstract", "")).strip()
+        facts = entry.get("key_facts") or []
+        tags = entry.get("tags") or []
+        lines.append(f"### Turn {turn_id} ({importance})")
+        if abstract:
+            lines.append("")
+            lines.append(abstract)
+        if facts:
+            lines.append("")
+            lines.append("**Key facts:**")
+            for fact in facts:
+                lines.append(f"- {str(fact).strip()}")
+        if tags:
+            tag_str = ", ".join(f"`{t}`" for t in tags)
+            lines.append("")
+            lines.append(f"_Tags: {tag_str}_")
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
