@@ -119,6 +119,25 @@ class _SQLSTMStore:
         )
         return total - keep_last
 
+    # ── Session summary ─────────────────────────────────────────────
+
+    async def read_summary(self) -> Optional[str]:
+        row = await self._conn.fetchone("SELECT body FROM stm_summary WHERE id = 1")
+        if row is None:
+            return None
+        body = row.get("body") if isinstance(row, dict) else row["body"]
+        return body or None
+
+    async def write_summary(self, body: str) -> None:
+        # UPSERT pattern (works across sqlite >= 3.24 + Postgres).
+        await self._conn.execute(
+            (
+                "INSERT INTO stm_summary (id, body) VALUES (1, ?) "
+                "ON CONFLICT (id) DO UPDATE SET body = excluded.body"
+            ),
+            (body,),
+        )
+
     # ── snapshot helpers ────────────────────────────────────────────
 
     async def all_rows(self) -> List[dict]:

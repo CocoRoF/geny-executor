@@ -136,6 +136,16 @@ def _ddl(dialect: Dialect) -> Tuple[str, ...]:
             value TEXT NOT NULL
         )
         """,
+        # Singleton row holding the session summary (D1: stage 19
+        # writes once at session close). `id` is locked at 1 so the
+        # UPSERT in `_SQLSTMStore.write_summary` always touches the
+        # same row.
+        """
+        CREATE TABLE IF NOT EXISTS stm_summary (
+            id   INTEGER PRIMARY KEY,
+            body TEXT NOT NULL
+        )
+        """,
     )
 
 
@@ -157,6 +167,7 @@ POSTGRES_DDL: Tuple[str, ...] = build_ddl(Dialect.POSTGRES)
 # Identical across dialects.
 TABLES: Tuple[str, ...] = (
     "stm_turns",
+    "stm_summary",
     "ltm_documents",
     "notes",
     "note_tags",

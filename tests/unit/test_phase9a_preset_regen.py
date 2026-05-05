@@ -71,44 +71,32 @@ class TestPipelinePresetsScaffoldOptIn:
 # ── GenyPresets (memory/presets.py) include scaffolds ─────────────────
 
 
-class _StubMemoryManager:
-    """Bare-minimum MemoryManager surface for preset construction."""
+def _make_provider():
+    """Bare-minimum MemoryProvider for preset construction smoke."""
+    from geny_executor.memory.providers.ephemeral import EphemeralMemoryProvider
 
-    def __init__(self) -> None:
-        self.notes: list = []
-
-    async def get_recent_turns(self, *args, **kwargs):
-        return []
-
-    async def get_relevant(self, *args, **kwargs):
-        return []
-
-    async def append_turn(self, *args, **kwargs):
-        return None
-
-    async def reflect(self, *args, **kwargs):
-        return []
+    return EphemeralMemoryProvider()
 
 
 class TestGenyPresetsScaffoldOptIn:
     def test_worker_easy_includes_all_scaffolds(self):
         from geny_executor.memory.presets import GenyPresets
 
-        p = GenyPresets.worker_easy(api_key="k", memory_manager=_StubMemoryManager())
+        p = GenyPresets.worker_easy(api_key="k", provider=_make_provider())
         for order in SCAFFOLD_ORDERS:
             assert p.get_stage(order) is not None, f"worker_easy missing scaffold {order}"
 
     def test_worker_adaptive_includes_all_scaffolds(self):
         from geny_executor.memory.presets import GenyPresets
 
-        p = GenyPresets.worker_adaptive(api_key="k", memory_manager=_StubMemoryManager())
+        p = GenyPresets.worker_adaptive(api_key="k", provider=_make_provider())
         for order in SCAFFOLD_ORDERS:
             assert p.get_stage(order) is not None, f"worker_adaptive missing scaffold {order}"
 
     def test_vtuber_includes_all_scaffolds(self):
         from geny_executor.memory.presets import GenyPresets
 
-        p = GenyPresets.vtuber(api_key="k", memory_manager=_StubMemoryManager())
+        p = GenyPresets.vtuber(api_key="k", provider=_make_provider())
         for order in SCAFFOLD_ORDERS:
             assert p.get_stage(order) is not None, f"vtuber missing scaffold {order}"
 

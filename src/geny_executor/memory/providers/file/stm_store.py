@@ -146,6 +146,38 @@ class _JSONLSTMStore:
             tmp.replace(self._path)
             return total - keep_last
 
+    # ── Session summary ─────────────────────────────────────────────
+
+    async def read_summary(self) -> Optional[str]:
+        """Read ``transcripts/summary.md`` if it exists. Returns
+        ``None`` when no summary has been written yet (e.g. brand-new
+        session, or session-close hasn't fired).
+        """
+        summary_path = self._path.parent / "summary.md"
+        async with self._lock:
+            if not summary_path.exists():
+                return None
+            try:
+                text = summary_path.read_text(encoding="utf-8")
+            except OSError:
+                return None
+        return text or None
+
+    async def write_summary(self, body: str) -> None:
+        """Atomically write ``transcripts/summary.md``.
+
+        Called by Stage 19 Summarizer at session close (D1) — a single
+        once-per-session write, NOT a per-turn append. Safe to call
+        repeatedly; the file is overwritten in full each time.
+        """
+        summary_path = self._path.parent / "summary.md"
+        async with self._lock:
+            summary_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = summary_path.with_suffix(summary_path.suffix + ".tmp")
+            with tmp.open("w", encoding="utf-8") as fh:
+                fh.write(body)
+            tmp.replace(summary_path)
+
     # ── Housekeeping ────────────────────────────────────────────────
 
     async def enforce_line_cap(self) -> int:

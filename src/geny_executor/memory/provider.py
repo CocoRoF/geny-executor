@@ -686,7 +686,15 @@ class MemoryEvent(str, enum.Enum):
 
 @runtime_checkable
 class STMHandle(Protocol):
-    """Short-Term Memory plane. Append-only stream of turns + events."""
+    """Short-Term Memory plane. Append-only stream of turns + events.
+
+    The plane also exposes a session-summary slot — a single markdown
+    string written once at session close (see ``MemoryStage`` /
+    Stage 19 Summarizer) and read back on resume. Hosts that pre-1.20
+    wrote ``transcripts/summary.md`` directly should switch to
+    ``write_summary`` / ``read_summary`` so the plane stays the
+    single source of truth.
+    """
 
     async def append(self, turn: Turn) -> None: ...
     async def append_event(
@@ -699,6 +707,8 @@ class STMHandle(Protocol):
     async def recent(self, n: int = 20) -> List[Turn]: ...
     async def search(self, text: str, *, limit: int = 10) -> List[Turn]: ...
     async def truncate(self, *, keep_last: int) -> int: ...
+    async def read_summary(self) -> Optional[str]: ...
+    async def write_summary(self, body: str) -> None: ...
 
 
 @runtime_checkable
@@ -860,38 +870,117 @@ class MemoryProvider(Protocol):
 
 
 # ─────────────────────────────────────────────────────────────────────
-# 11. MemoryHooks — pluggable policy attached to a stage instance
+# 11. MemoryHooks — pluggable policy attached to a provider / stage
 # ─────────────────────────────────────────────────────────────────────
+
+
+# Default per-layer budget ratios for ``MemoryAwareRetriever``. Each
+# value is the maximum share of the total ``max_inject_chars`` budget
+# that the corresponding retrieval layer is allowed to consume. The
+# layers run in order so an early layer hitting its cap leaves the
+# rest of the budget for downstream layers — no layer is forced to
+# fill its full ratio.
+_DEFAULT_LAYER_BUDGET_RATIO: Dict[str, float] = {
+    "recent_turns": 0.40,
+    "session_summary": 0.10,
+    "pinned": 0.30,
+    "vault_map": 0.05,
+    "ltm_main": 0.20,
+    "vector": 0.40,
+    "keyword": 0.40,
+    "backlink": 0.20,
+    "curated": 0.20,
+}
+
+
+_DEFAULT_IMPORTANCE_BOOST: Dict[str, float] = {
+    "critical": 2.0,
+    "high": 1.5,
+    "medium": 1.0,
+    "low": 0.5,
+}
 
 
 @dataclass
 class MemoryHooks:
-    """Policy callbacks consulted by the rewritten `MemoryStage`. Kept
-    as a plain dataclass so test stubs can inline-construct one.
+    """Pluggable policy + callback bag for the executor's memory plane.
 
-    The ``after_*`` callbacks fire after the corresponding
-    ``MemoryProvider`` operation completes (record_turn,
-    record_execution, notes.write, notes.update). They run as
-    fire-and-forget tasks scheduled on the current event loop —
-    failures are logged but never block the primary memory write.
-    Hosts use these to layer business logic (DM bundle archiver,
-    conversation bucket router, VTuber LOGS emit, pin policy
-    decisions) on top of the executor's STM/LTM/notes plane without
-    maintaining a parallel pipeline path.
+    Attached to a ``MemoryProvider`` via ``provider.set_hooks(hooks)``.
+    The same instance is consulted by:
+
+    1. **Stage 18 MemoryStage** — `should_record_execution`,
+       `should_reflect`, `should_auto_promote` gate the
+       per-turn record / reflect / promote chain.
+    2. **Stage 18 post-write fan-out** — `after_record_turn`,
+       `after_record_execution`, `after_note_write`,
+       `after_note_update` fire fire-and-forget so hosts can layer
+       business logic (DM bundle archiver, conversation bucket
+       router, VTuber LOGS emit, pin policy decisions) on top of
+       the executor's STM/Notes/LTM plane.
+    3. **Stage 2 MemoryAwareRetriever** — every retrieval-policy
+       field below (`vault_descriptions`, `importance_boost`,
+       `layer_budget_ratio`, `pin_category`, `recent_turns`,
+       `slim_mode`, `enable_vector_search`, `max_results`,
+       `max_inject_chars`, `search_chars`, `vault_map_max_chars`)
+       is read live so hosts can adjust retrieval shape from a
+       single attach point.
+
+    Construction is a plain dataclass so tests inline-build one with
+    only the fields they care about.
     """
 
+    # ── Stage 18 gate callbacks ─────────────────────────────────────
     should_record_execution: Callable[["PipelineState"], bool] = lambda s: bool(s.final_text)
     should_reflect: Callable[["PipelineState"], bool] = lambda s: False
     should_auto_promote: Callable[[Insight], bool] = lambda i: i.should_auto_promote()
-    # Post-write callbacks. Default: None (no-op). Awaited inside a
-    # detached task by the provider; raise inside the callback to
-    # log + drop, never to abort the write.
+
+    # ── Stage 18 post-write callbacks (fire-and-forget) ─────────────
     after_record_turn: Optional[Callable[[Turn, RecordReceipt], "Awaitable[None]"]] = None
     after_record_execution: Optional[
         Callable[[ExecutionSummary, RecordReceipt], "Awaitable[None]"]
     ] = None
     after_note_write: Optional[Callable[[NoteMeta], "Awaitable[None]"]] = None
     after_note_update: Optional[Callable[[NoteMeta], "Awaitable[None]"]] = None
+
+    # ── Stage 2 retrieval policy ────────────────────────────────────
+    # Host-supplied category labels. Used by IndexHandle.render_vault_map
+    # so the rendered block matches the host's operator-prompt layout.
+    vault_descriptions: Dict[str, str] = field(default_factory=dict)
+    # Multiplicative score boost applied to keyword-search results.
+    # Indexed by `Importance` value. Boost > 1 promotes, < 1 demotes.
+    importance_boost: Dict[str, float] = field(
+        default_factory=lambda: dict(_DEFAULT_IMPORTANCE_BOOST)
+    )
+    # Multiplicative score boost applied by category. Empty dict disables.
+    category_boosts: Dict[str, float] = field(default_factory=dict)
+    # Per-layer fraction of `max_inject_chars`. See
+    # `_DEFAULT_LAYER_BUDGET_RATIO`. Hosts may override only the
+    # layers they want to clamp — missing keys fall back to defaults.
+    layer_budget_ratio: Dict[str, float] = field(
+        default_factory=lambda: dict(_DEFAULT_LAYER_BUDGET_RATIO)
+    )
+    # Notes category that holds always-pinned facts. Read by
+    # `NotesHandle.load_pinned(category=...)` and stamped on retrieved
+    # chunks as `metadata["host_layer"]`.
+    pin_category: str = "critical"
+    # STM tail size injected as the L0 chunk regardless of query overlap.
+    recent_turns: int = 6
+    # When True, MemoryAwareRetriever returns only L0/L1/L1.5/L1.7 and
+    # leaves heavy semantic / keyword layers to the host's progressive
+    # disclosure tools (memory_search / memory_read).
+    slim_mode: bool = False
+    # When True, the lightweight vault map is injected even outside slim mode.
+    always_render_vault_map: bool = True
+    # Cap applied to the rendered vault map block.
+    vault_map_max_chars: int = 500
+    # Vector search switches.
+    enable_vector_search: bool = True
+    # Per-layer max chunk count (vector / keyword / backlink).
+    max_results: int = 5
+    # Total character budget for one retrieval call.
+    max_inject_chars: int = 10000
+    # Cap on the query text actually sent to keyword/vector layers.
+    search_chars: int = 500
 
 
 # ─────────────────────────────────────────────────────────────────────

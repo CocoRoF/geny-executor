@@ -76,6 +76,7 @@ class _STMStore:
         # protocol scopes to messages) don't see them. Hosts that need
         # the event log can read `_events` directly.
         self._events: List[Dict[str, Any]] = []
+        self._summary: Optional[str] = None
 
     async def append(self, turn: Turn) -> None:
         self._turns.append(turn)
@@ -121,6 +122,12 @@ class _STMStore:
         dropped = len(self._turns) - keep_last
         self._turns = self._turns[-keep_last:]
         return dropped
+
+    async def read_summary(self) -> Optional[str]:
+        return self._summary
+
+    async def write_summary(self, body: str) -> None:
+        self._summary = body
 
     def all_turns(self) -> List[Turn]:
         return list(self._turns)

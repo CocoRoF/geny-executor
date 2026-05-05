@@ -76,10 +76,12 @@ from geny_executor.memory.providers import (
 from geny_executor.memory.composite import CompositeMemoryProvider, LayerRouting
 from geny_executor.memory.factory import MemoryProviderFactory
 
-# ── Legacy adapter (Phase 3 validation only) ────────────────────────
-from geny_executor.memory.retriever import GenyMemoryRetriever
-from geny_executor.memory.strategy import GenyMemoryStrategy, ReflectionResolver
-from geny_executor.memory.persistence import GenyPersistence
+# ── Stage 2 / Stage 18 generic plumbing ─────────────────────────────
+# Provider-driven retriever + strategy. Hosts attach a MemoryProvider
+# (typically a CompositeMemoryProvider) and pass a MemoryHooks bag
+# carrying retrieval policy + post-write callbacks.
+from geny_executor.memory.retriever import MemoryAwareRetriever
+from geny_executor.memory.strategy import ProviderDrivenStrategy
 from geny_executor.memory.presets import GenyPresets
 
 __all__ = [
@@ -130,10 +132,8 @@ __all__ = [
     "EmbeddingError",
     "LocalHashEmbeddingClient",
     "create_embedding_client",
-    # legacy adapter (validation fixture)
-    "GenyMemoryRetriever",
-    "GenyMemoryStrategy",
-    "ReflectionResolver",
-    "GenyPersistence",
+    # stage 2/18 generic plumbing
+    "MemoryAwareRetriever",
+    "ProviderDrivenStrategy",
     "GenyPresets",
 ]

@@ -1,683 +1,593 @@
-"""GenyMemoryRetriever — Geny-compatible memory retrieval.
+"""``MemoryAwareRetriever`` — provider-driven Stage 2 retrieval.
 
-Implements the MemoryRetriever interface (S02 Context) using Geny's
-SessionMemoryManager (or any duck-typed equivalent). Layer order:
+Replaces the legacy ``GenyMemoryRetriever`` (host-manager duck-type)
+with a generic implementation that talks to a ``MemoryProvider``
+directly. All retrieval policy lives in ``MemoryHooks`` (host attaches
+it via ``provider.set_hooks(hooks)`` and passes the same instance
+into the retriever); the retriever itself never touches host code.
 
-0. Recent STM tail (always, capped budget share).
-1. Session summary (short-term).
-1.5. Pinned facts — host-supplied "always-inject" content
-   (duck-typed ``mgr.load_pinned(max_chars)``). Empty when the host
-   does not implement it; non-empty when the host promotes
-   high-importance insights to a pinned surface.
-1.7. Vault map — host-supplied ``mgr.index_manager.render_vault_map()``
-   short index. Always injected when available (Memory v2 PR 12 cycle:
-   slim_mode is no longer the only switch — the lite map is cheap
-   enough to ship with every retrieve so the agent always has a
-   directory hint).
-2. MEMORY.md (long-term main).
-3. Vector semantic search (if enabled).
-4. Keyword-based memory recall (with importance weighting).
-5. Backlink context (linked notes).
-6. Curated Knowledge (optional).
+Layer order (mirrors plan §EXEC-1):
 
-The memory_manager is injected as a duck-typed dependency — any object
-that satisfies the expected interface works (Geny's SessionMemoryManager
-is the canonical implementation). Hosts that do not implement the
-optional surfaces (``load_pinned``, ``index_manager.render_vault_map``,
-``vector_memory``, ``read_note``, etc.) silently fall through; this
-keeps the retriever a *general* component and lets each host opt into
-the calls it can actually serve.
+    L0  recent_turns      ← STMHandle.recent(n=hooks.recent_turns)
+    L1  session_summary   ← STMHandle.read_summary()  (D1: written by stage 19 at session close)
+    L1.5 pinned           ← NotesHandle.load_pinned(category=hooks.pin_category, max_chars=…)
+    L1.7 vault_map        ← IndexHandle.render_vault_map(category_descriptions=hooks.vault_descriptions)
+    L2  ltm_main          ← LTMHandle.read_main()
+    L3  vector            ← VectorHandle.search(query, top_k=hooks.max_results)
+    L4  keyword           ← NotesHandle.search(query, …) + LTMHandle.search(query)
+    L5  backlink          ← NotesHandle.read(filename) + IndexHandle.graph()
+    L6  curated           ← provider.curated().notes().search(query, …)
+
+The retriever is **stateless w.r.t. host objects** — every host policy
+input arrives through ``hooks`` (a ``MemoryHooks`` instance shared
+with the provider). ``llm_gate`` is a free callable not part of the
+hooks bag because it is per-turn and not policy.
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Any, Awaitable, Callable, Dict, List, Optional
+from typing import Awaitable, Callable, Dict, List, Optional
 
 from geny_executor.core.state import PipelineState
+from geny_executor.memory.provider import MemoryHooks, MemoryProvider
 from geny_executor.stages.s02_context.interface import MemoryRetriever
 from geny_executor.stages.s02_context.types import MemoryChunk
 
 logger = logging.getLogger(__name__)
 
-# Importance boost factors (mirrors Geny's MemoryInjectNode)
-_IMPORTANCE_BOOST = {
-    "critical": 2.0,
-    "high": 1.5,
-    "medium": 1.0,
-    "low": 0.5,
-}
+
+def _layer_cap(hooks: MemoryHooks, layer: str) -> int:
+    """Resolve the per-layer character cap from the hooks bag."""
+    ratio = hooks.layer_budget_ratio.get(layer, 0.0)
+    return max(0, int(hooks.max_inject_chars * float(ratio)))
 
 
-class GenyMemoryRetriever(MemoryRetriever):
-    """5-layer memory retrieval compatible with Geny's SessionMemoryManager.
+class MemoryAwareRetriever(MemoryRetriever):
+    """Provider-driven 6-layer memory retriever for Stage 2.
 
     Args:
-        memory_manager: Geny's SessionMemoryManager (or duck-typed equivalent).
-        enable_vector_search: Enable FAISS vector semantic search.
-        max_results: Maximum memory chunks per search type.
-        max_inject_chars: Total character budget for memory context.
-        search_chars: Character limit of input used for search query.
-        llm_gate: Optional async callable that decides if memory is needed.
-            Signature: ``async (query: str) -> bool``.
-            When None, memory is always retrieved.
-        curated_knowledge_manager: Optional CuratedKnowledgeManager for
-            curated knowledge injection.
-        recent_turns: Size of the L0 tail (STM transcript window) that
-            is always injected before semantic/keyword layers run. Set
-            to 0 to disable. Useful for trigger-style turns (idle
-            reflection, sub-worker auto-reports) whose query text has
-            no lexical overlap with the prior conversation — they would
-            otherwise miss the last few turns entirely.
+        provider: Live ``MemoryProvider`` (typically a
+            ``CompositeMemoryProvider``). All reads route through it.
+        hooks: ``MemoryHooks`` carrying the retrieval policy. Should
+            be the same instance the provider was attached with via
+            ``provider.set_hooks(hooks)`` — keeps every layer (stage
+            2 retrieval, stage 18 record, archivers) on the same
+            policy view.
+        llm_gate: Optional async callable that decides whether memory
+            is needed at all for this turn. Signature: ``async (query)
+            -> bool``. When ``False``, the retriever returns an empty
+            list. When ``None``, memory is always retrieved.
     """
 
     def __init__(
         self,
-        memory_manager: Any,
+        provider: MemoryProvider,
         *,
-        enable_vector_search: bool = True,
-        max_results: int = 5,
-        max_inject_chars: int = 10000,
-        search_chars: int = 500,
+        hooks: Optional[MemoryHooks] = None,
         llm_gate: Optional[Callable[[str], Awaitable[bool]]] = None,
-        curated_knowledge_manager: Any = None,
-        recent_turns: int = 6,
-        # Memory v2 PR 10 — slim mode (plan §5.2). When True, the
-        # retriever returns ONLY the lightweight layers (recent
-        # turns, session summary, pinned facts, vault map). Heavy
-        # layers (MEMORY.md body, vector top-k, keyword recall,
-        # backlinks, curated) are reserved for the agent's tool
-        # calls (memory_search / memory_read). Default is False so
-        # existing callers preserve legacy 6-layer behaviour until
-        # they explicitly opt in.
-        slim_mode: bool = False,
-        # Memory v2 PR 12 — pinned-facts layer. ``pin_budget_ratio``
-        # is the share of ``max_inject_chars`` reserved for the
-        # host-supplied pinned surface (``mgr.load_pinned(max_chars)``).
-        # Defaults to 0.30 — i.e. up to 30% of the budget is
-        # reserved for "must-always-be-known" facts the host has
-        # promoted (e.g. user preferences, persona-defining facts).
-        # Set to 0.0 to disable; the layer also no-ops automatically
-        # when the host does not implement ``load_pinned``.
-        pin_budget_ratio: float = 0.30,
-        # ``category_boosts`` — multiplicative score boost applied
-        # to L4 keyword-search results based on the entry's
-        # category. Pure policy: callers wire whatever weights they
-        # want (e.g. ``{"insights": 1.2, "projects": 1.2}``).
-        # Empty dict → no boost (legacy behaviour).
-        category_boosts: Optional[Dict[str, float]] = None,
-        # ``always_render_vault_map`` — when True, the small vault
-        # map (host's ``index_manager.render_vault_map()``) is
-        # injected even when ``slim_mode`` is False. Caps at
-        # ``vault_map_max_chars``. Default True — the map is small
-        # (~500 chars) and gives the agent a "what's in memory"
-        # signal regardless of search hits.
-        always_render_vault_map: bool = True,
-        vault_map_max_chars: int = 500,
-    ):
-        self._mgr = memory_manager
-        self._enable_vector = enable_vector_search
-        self._max_results = max_results
-        self._max_inject = max_inject_chars
-        self._search_chars = search_chars
+    ) -> None:
+        if provider is None:
+            raise ValueError("MemoryAwareRetriever requires a non-None provider")
+        self._provider = provider
+        self._hooks = hooks or MemoryHooks()
         self._llm_gate = llm_gate
-        self._curated = curated_knowledge_manager
-        self._recent_turns = recent_turns
-        self._slim_mode = slim_mode
-        self._pin_budget_ratio = max(0.0, min(0.7, float(pin_budget_ratio)))
-        self._category_boosts: Dict[str, float] = dict(category_boosts or {})
-        self._always_vault_map = bool(always_render_vault_map)
-        self._vault_map_max = max(0, int(vault_map_max_chars))
 
     @property
     def name(self) -> str:
-        return "geny_memory"
+        return "memory_aware"
 
     @property
     def description(self) -> str:
-        return "Geny-compatible 5-layer memory retrieval"
+        return "Provider-driven 6-layer memory retrieval (STM / LTM / Notes / Vector / Index)"
 
     async def retrieve(self, query: str, state: PipelineState) -> List[MemoryChunk]:
-        if not self._mgr or not query.strip():
-            self._emit_empty(state, query, reason="no_manager_or_query")
+        hooks = self._hooks
+        if not query or not query.strip():
+            self._emit_empty(state, query, reason="empty_query")
             return []
 
-        search_query = query[: self._search_chars].strip()
+        search_query = query[: hooks.search_chars].strip()
 
-        # LLM gate: let caller decide if memory is needed
         if self._llm_gate is not None:
             try:
-                needs_memory = await self._llm_gate(search_query)
-                if not needs_memory:
-                    logger.debug("geny_retriever: LLM gate skipped memory retrieval")
+                if not await self._llm_gate(search_query):
                     self._emit_empty(state, query, reason="llm_gate_skip")
                     return []
-            except Exception as exc:
-                logger.warning("geny_retriever: LLM gate failed (%s), proceeding", exc)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("memory_aware: llm_gate failed (%s); proceeding", exc)
 
         chunks: List[MemoryChunk] = []
-        total_chars = 0
-        budget = self._max_inject
-        # Per-layer chunk counts for the breakdown event. Indexed by
-        # layer name so PR 12 observability gives operators a
-        # readable distribution.
+        total = 0
+        budget = hooks.max_inject_chars
         breakdown: Dict[str, int] = {}
 
-        def _record(layer: str) -> None:
-            """Snapshot ``len(chunks)`` after a layer call so the
-            breakdown reflects how many chunks each layer added.
-            """
-            breakdown[layer] = sum(
-                1 for c in chunks if (c.metadata or {}).get("layer") == layer or c.source == layer
-            )
+        def _record(layer: str, before: int) -> None:
+            breakdown[layer] = sum(1 for c in chunks if (c.metadata or {}).get("layer") == layer)
+            del before  # parameter present for symmetry only
 
-        # 0. Recent turns (tail of the STM transcript). Always injected
-        #    before semantic/keyword layers run so trigger-style queries
-        #    (idle reflection, sub-worker auto-reports) still see the
-        #    last few conversation turns even when the query text has
-        #    zero lexical overlap with the prior dialogue.
-        if self._recent_turns > 0:
-            total_chars = self._load_recent_turns(chunks, total_chars, budget)
-            _record("recent_turns")
+        # ── L0: recent STM tail ─────────────────────────────────────
+        if hooks.recent_turns > 0:
+            before = total
+            total = await self._load_recent_turns(chunks, total, budget, hooks)
+            _record("recent_turns", before)
 
-        # 1. Session summary (short-term latest state)
-        total_chars = self._load_session_summary(chunks, total_chars, budget)
-        _record("session_summary")
+        # ── L1: session summary (D1: stage 19 writes at session close) ──
+        before = total
+        total = await self._load_session_summary(chunks, total, budget, hooks)
+        _record("session_summary", before)
 
-        # 1.5. Pinned facts — host's ``load_pinned`` duck-type. Runs
-        #      regardless of slim_mode because pinned content is the
-        #      "must-always-be-known" surface (plan §3 T1 tier).
-        total_chars = self._load_pinned_facts(chunks, total_chars, budget)
-        _record("pinned")
+        # ── L1.5: pinned facts (always-inject, host-policy category) ──
+        before = total
+        total = await self._load_pinned_facts(chunks, total, budget, hooks)
+        _record("pinned", before)
 
-        # 1.7. Vault map — small directory hint. In slim_mode this is
-        #      the only structural cue the agent gets. Outside slim
-        #      mode it's still injected when ``always_render_vault_map``
-        #      so the agent always knows what categories exist.
-        if self._slim_mode or self._always_vault_map:
-            total_chars = self._load_vault_map(chunks, total_chars, budget)
-            _record("vault_map")
+        # ── L1.7: vault map (lightweight directory hint) ────────────
+        if hooks.slim_mode or hooks.always_render_vault_map:
+            before = total
+            total = await self._load_vault_map(chunks, total, budget, hooks)
+            _record("vault_map", before)
 
-        if self._slim_mode:
-            # Memory v2 PR 10 — slim path: stop here and let the
-            # agent's progressive disclosure tools (memory_search /
-            # memory_read) do the rest. Plan §5.2.
-            self._emit_breakdown(state, query, breakdown, total_chars, len(chunks))
-            logger.info(
-                "geny_retriever: slim mode loaded %d chunks (%d chars) for session %s",
-                len(chunks),
-                total_chars,
-                state.session_id,
-            )
+        if hooks.slim_mode:
+            self._emit_breakdown(state, query, breakdown, total, len(chunks), slim=True)
             return chunks
 
-        # 2. MEMORY.md (persistent long-term notes)
-        total_chars = self._load_main_memory(chunks, total_chars, budget)
-        _record("long_term_main")
+        # ── L2: LTM main body ───────────────────────────────────────
+        before = total
+        total = await self._load_ltm_main(chunks, total, budget, hooks)
+        _record("ltm_main", before)
 
-        # 3. FAISS vector semantic search
-        if self._enable_vector:
-            total_chars = await self._load_vector_memory(chunks, search_query, total_chars, budget)
-            _record("vector")
+        # ── L3: vector semantic search ──────────────────────────────
+        if hooks.enable_vector_search:
+            before = total
+            total = await self._load_vector(chunks, search_query, total, budget, hooks)
+            _record("vector", before)
 
-        # 4. Keyword-based recall with importance weighting
-        total_chars = self._load_keyword_memory(chunks, search_query, total_chars, budget)
-        _record("keyword")
+        # ── L4: keyword search (notes + LTM) ────────────────────────
+        before = total
+        total = await self._load_keyword(chunks, search_query, total, budget, hooks)
+        _record("keyword", before)
 
-        # 5. Backlink context
-        total_chars = self._load_backlink_context(chunks, total_chars, budget)
-        _record("backlink")
+        # ── L5: backlink expansion (graph-driven) ───────────────────
+        before = total
+        total = await self._load_backlinks(chunks, total, budget, hooks)
+        _record("backlink", before)
 
-        # 6. Curated Knowledge (optional)
-        if self._curated:
-            total_chars = self._load_curated_knowledge(chunks, search_query, total_chars, budget)
-            _record("curated_knowledge")
+        # ── L6: curated knowledge (cross-scope) ─────────────────────
+        before = total
+        total = await self._load_curated(chunks, search_query, total, budget, hooks)
+        _record("curated", before)
 
-        self._emit_breakdown(state, query, breakdown, total_chars, len(chunks))
+        self._emit_breakdown(state, query, breakdown, total, len(chunks), slim=False)
         if not chunks:
             self._emit_empty(state, query, reason="no_layers_matched")
-
         logger.info(
-            "geny_retriever: loaded %d chunks (%d chars) for session %s",
+            "memory_aware: %d chunks (%d chars) for session %s",
             len(chunks),
-            total_chars,
+            total,
             state.session_id,
         )
         return chunks
 
-    # ── Layer 0: Recent STM turns (tail) ─────────────────────────────
+    # ── L0 ──────────────────────────────────────────────────────────
 
-    def _load_recent_turns(
+    async def _load_recent_turns(
         self,
         chunks: List[MemoryChunk],
         total: int,
         budget: int,
+        hooks: MemoryHooks,
     ) -> int:
-        """Inject the last N STM messages verbatim as a L0 chunk.
-
-        Bypasses semantic/keyword matching entirely — the goal is to
-        make sure trigger-driven turns (idle reflection, sub-worker
-        auto-reports) can always see the most recent conversation
-        regardless of lexical overlap with their query text.
-
-        Duck-typed: the memory manager must expose
-        ``short_term.get_recent(n)`` returning an iterable of entries
-        with ``.content`` and (optionally) ``.metadata["role"]``. Any
-        missing attribute quietly disables this layer.
-
-        Budget policy: capped at 40% of total so other layers still fit.
-        Messages are kept tail-first — we want the most recent turns.
-        """
         try:
-            stm = getattr(self._mgr, "short_term", None)
-            if stm is None:
-                return total
-            get_recent = getattr(stm, "get_recent", None)
-            if get_recent is None:
-                return total
-
-            recent = get_recent(self._recent_turns)
-            if not recent:
-                return total
-
-            lines: List[str] = []
-            for entry in recent:
-                role = "user"
-                meta = getattr(entry, "metadata", None)
-                if meta and isinstance(meta, dict):
-                    role = meta.get("role", role) or role
-                # Some implementations expose role directly on the entry.
-                role = getattr(entry, "role", role) or role
-
-                content = getattr(entry, "content", "") or ""
-                if not content.strip():
-                    continue
-                lines.append(f"[{role}] {content.strip()}")
-
-            if not lines:
-                return total
-
-            body = "\n".join(lines)
-            max_body = min(len(body), int(budget * 0.4))
-            if max_body < len(body):
-                body = body[-max_body:]  # keep the most recent tail
-
-            chunk_len = len(body)
-            if (total + chunk_len) > budget:
-                return total
-
-            chunks.append(
-                MemoryChunk(
-                    key="recent_turns",
-                    content=body,
-                    source="short_term",
-                    relevance_score=1.0,
-                    metadata={
-                        "layer": "recent_turns",
-                        "turns": len(lines),
-                    },
-                )
-            )
-            return total + chunk_len
-
-        except Exception:
-            logger.debug("geny_retriever: recent turns load failed", exc_info=True)
+            stm = self._provider.stm()
+            turns = await stm.recent(n=hooks.recent_turns)
+        except Exception:  # noqa: BLE001
+            logger.debug("memory_aware: stm.recent failed", exc_info=True)
+            return total
+        if not turns:
             return total
 
-    # ── Layer 1: Session Summary ─────────────────────────────────────
-
-    def _load_session_summary(self, chunks: List[MemoryChunk], total: int, budget: int) -> int:
-        try:
-            stm = getattr(self._mgr, "short_term", None)
-            if stm is None:
-                return total
-            summary = stm.get_summary()
-            if summary and (total + len(summary)) <= budget:
-                chunks.append(
-                    MemoryChunk(
-                        key="session_summary",
-                        content=summary,
-                        source="short_term",
-                        relevance_score=1.0,
-                        metadata={"layer": "session_summary"},
-                    )
-                )
-                return total + len(summary)
-        except Exception:
-            logger.debug("geny_retriever: session summary load failed", exc_info=True)
-        return total
-
-    # ── Layer 1.5: Pinned Facts (always-inject T1 surface) ──────────
-
-    def _load_pinned_facts(self, chunks: List[MemoryChunk], total: int, budget: int) -> int:
-        """Inject the host's "always-pinned" facts.
-
-        Duck-typed: the memory manager may expose
-        ``load_pinned(max_chars: int) -> Optional[object]``. The
-        returned object is expected to have ``.content`` (str) and
-        either ``.char_count`` (int) or be measurable via ``len()``.
-        Hosts that do not implement the method silently no-op so the
-        retriever stays generic.
-
-        Budget policy: capped at ``pin_budget_ratio`` of the total
-        char budget. This is the reserved surface for content the
-        host has decided must be in the prompt regardless of query.
-        """
-        if self._pin_budget_ratio <= 0.0:
-            return total
-        try:
-            loader = getattr(self._mgr, "load_pinned", None)
-            if loader is None:
-                return total
-            cap = max(0, int(budget * self._pin_budget_ratio))
-            if cap <= 0:
-                return total
-            pinned = loader(max_chars=cap)
-            if not pinned:
-                return total
-            content = getattr(pinned, "content", None)
-            if not isinstance(content, str) or not content.strip():
-                return total
-            char_count = getattr(pinned, "char_count", None)
-            if not isinstance(char_count, int) or char_count <= 0:
-                char_count = len(content)
-            if (total + char_count) > budget:
-                return total
-            chunks.append(
-                MemoryChunk(
-                    key="pinned_facts",
-                    content=content,
-                    source="pinned",
-                    relevance_score=2.0,
-                    metadata={
-                        "layer": "pinned",
-                        "char_count": char_count,
-                        "host_layer": getattr(pinned, "source", "pinned"),
-                    },
-                )
-            )
-            return total + char_count
-        except Exception:
-            logger.debug("geny_retriever: pinned facts load failed", exc_info=True)
+        lines: List[str] = []
+        for t in turns:
+            content = getattr(t, "content", "") or ""
+            if isinstance(content, list):
+                # text-only flatten
+                pieces = [
+                    str(b.get("text", ""))
+                    for b in content
+                    if isinstance(b, dict) and b.get("type") == "text"
+                ]
+                content = "\n".join(p for p in pieces if p)
+            if not content or not str(content).strip():
+                continue
+            role = getattr(t, "role", "user") or "user"
+            lines.append(f"[{role}] {str(content).strip()}")
+        if not lines:
             return total
 
-    # ── Layer 1.7: Vault Map (slim mode + always-on) ─────────────────
+        body = "\n".join(lines)
+        cap = _layer_cap(hooks, "recent_turns")
+        if cap and len(body) > cap:
+            body = body[-cap:]  # keep most-recent tail
+        if total + len(body) > budget:
+            return total
+        chunks.append(
+            MemoryChunk(
+                key="recent_turns",
+                content=body,
+                source="short_term",
+                relevance_score=1.0,
+                metadata={"layer": "recent_turns", "turns": len(lines)},
+            )
+        )
+        return total + len(body)
 
-    def _load_vault_map(self, chunks: List[MemoryChunk], total: int, budget: int) -> int:
-        """Inject the rendered vault map (~500 chars) so the agent
-        knows *where* to look without seeing the bodies. PR 9 + PR 10.
+    # ── L1 ──────────────────────────────────────────────────────────
 
-        Duck-typed: accepts a memory_manager that exposes
-        ``index_manager.render_vault_map()``. Silent skip when the
-        index manager is absent (no LTM yet) or when render fails.
+    async def _load_session_summary(
+        self,
+        chunks: List[MemoryChunk],
+        total: int,
+        budget: int,
+        hooks: MemoryHooks,
+    ) -> int:
+        """Read the host-managed `transcripts/summary.md`.
+
+        D1 decision: stage 19 writes this at session close. Outside a
+        session-close run the file may not exist — the call is then a
+        silent no-op via the protocol's optional ``read_summary``.
         """
         try:
-            idx_mgr = getattr(self._mgr, "index_manager", None)
-            if idx_mgr is None:
+            stm = self._provider.stm()
+            reader = getattr(stm, "read_summary", None)
+            if reader is None:
                 return total
-            render = getattr(idx_mgr, "render_vault_map", None)
-            if render is None:
-                return total
-            rendered = render() or ""
-            if not rendered:
-                return total
-            # Trim to ``vault_map_max_chars`` so the directory hint
-            # does not eat the whole budget. The map is a structural
-            # cue, not a body.
-            if self._vault_map_max and len(rendered) > self._vault_map_max:
-                rendered = rendered[: self._vault_map_max]
-            if total + len(rendered) > budget:
-                return total
-            chunks.append(
-                MemoryChunk(
-                    key="vault_map",
-                    content=rendered,
-                    source="vault_map",
-                    relevance_score=1.0,
-                    metadata={"layer": "vault_map"},
-                )
+            summary = await reader()
+        except Exception:  # noqa: BLE001
+            logger.debug("memory_aware: stm.read_summary failed", exc_info=True)
+            return total
+        if not summary:
+            return total
+        cap = _layer_cap(hooks, "session_summary") or budget
+        body = summary[:cap]
+        if total + len(body) > budget:
+            return total
+        chunks.append(
+            MemoryChunk(
+                key="session_summary",
+                content=body,
+                source="short_term",
+                relevance_score=1.0,
+                metadata={"layer": "session_summary"},
             )
-            return total + len(rendered)
-        except Exception:
-            logger.debug("geny_retriever: vault_map load failed", exc_info=True)
-        return total
+        )
+        return total + len(body)
 
-    # ── Layer 2: MEMORY.md ───────────────────────────────────────────
+    # ── L1.5 ────────────────────────────────────────────────────────
 
-    def _load_main_memory(self, chunks: List[MemoryChunk], total: int, budget: int) -> int:
+    async def _load_pinned_facts(
+        self,
+        chunks: List[MemoryChunk],
+        total: int,
+        budget: int,
+        hooks: MemoryHooks,
+    ) -> int:
+        cap = _layer_cap(hooks, "pinned")
+        if cap <= 0:
+            return total
         try:
-            ltm = getattr(self._mgr, "long_term", None)
-            if ltm is None:
-                return total
-            main_mem = ltm.load_main()
-            if main_mem and main_mem.content and (total + main_mem.char_count) <= budget:
-                chunks.append(
-                    MemoryChunk(
-                        key=main_mem.filename or "MEMORY.md",
-                        content=main_mem.content,
-                        source="long_term",
-                        relevance_score=1.0,
-                        metadata={
-                            "layer": "long_term_main",
-                            "char_count": main_mem.char_count,
-                        },
-                    )
-                )
-                return total + main_mem.char_count
-        except Exception:
-            logger.debug("geny_retriever: MEMORY.md load failed", exc_info=True)
-        return total
+            notes = self._provider.notes()
+            content = await notes.load_pinned(category=hooks.pin_category, max_chars=cap)
+        except Exception:  # noqa: BLE001
+            logger.debug("memory_aware: notes.load_pinned failed", exc_info=True)
+            return total
+        if not content or not str(content).strip():
+            return total
+        body = str(content)
+        if total + len(body) > budget:
+            return total
+        chunks.append(
+            MemoryChunk(
+                key="pinned_facts",
+                content=body,
+                source="pinned",
+                relevance_score=2.0,
+                metadata={
+                    "layer": "pinned",
+                    "host_layer": hooks.pin_category,
+                    "char_count": len(body),
+                },
+            )
+        )
+        return total + len(body)
 
-    # ── Layer 3: FAISS Vector Search ─────────────────────────────────
+    # ── L1.7 ────────────────────────────────────────────────────────
 
-    async def _load_vector_memory(
+    async def _load_vault_map(
+        self,
+        chunks: List[MemoryChunk],
+        total: int,
+        budget: int,
+        hooks: MemoryHooks,
+    ) -> int:
+        try:
+            idx = self._provider.index()
+            rendered = await idx.render_vault_map(
+                category_descriptions=hooks.vault_descriptions or None,
+            )
+        except Exception:  # noqa: BLE001
+            logger.debug("memory_aware: index.render_vault_map failed", exc_info=True)
+            return total
+        if not rendered:
+            return total
+        cap = hooks.vault_map_max_chars or _layer_cap(hooks, "vault_map") or budget
+        body = rendered[:cap]
+        if total + len(body) > budget:
+            return total
+        chunks.append(
+            MemoryChunk(
+                key="vault_map",
+                content=body,
+                source="vault_map",
+                relevance_score=1.0,
+                metadata={"layer": "vault_map"},
+            )
+        )
+        return total + len(body)
+
+    # ── L2 ──────────────────────────────────────────────────────────
+
+    async def _load_ltm_main(
+        self,
+        chunks: List[MemoryChunk],
+        total: int,
+        budget: int,
+        hooks: MemoryHooks,
+    ) -> int:
+        try:
+            ltm = self._provider.ltm()
+            body = await ltm.read_main()
+        except Exception:  # noqa: BLE001
+            logger.debug("memory_aware: ltm.read_main failed", exc_info=True)
+            return total
+        if not body or not str(body).strip():
+            return total
+        cap = _layer_cap(hooks, "ltm_main") or budget
+        text = str(body)[:cap]
+        if total + len(text) > budget:
+            return total
+        chunks.append(
+            MemoryChunk(
+                key="MEMORY.md",
+                content=text,
+                source="long_term",
+                relevance_score=1.0,
+                metadata={"layer": "ltm_main", "char_count": len(text)},
+            )
+        )
+        return total + len(text)
+
+    # ── L3 ──────────────────────────────────────────────────────────
+
+    async def _load_vector(
         self,
         chunks: List[MemoryChunk],
         query: str,
         total: int,
         budget: int,
+        hooks: MemoryHooks,
     ) -> int:
+        if budget - total <= 200:
+            return total
         try:
-            vmm = getattr(self._mgr, "vector_memory", None)
-            if vmm is None or not getattr(vmm, "enabled", False):
+            vec = self._provider.vector()
+            if vec is None:
                 return total
-
-            v_results = await vmm.search(query, top_k=self._max_results)
-            if not v_results:
-                return total
-
-            for vr in v_results:
-                text = getattr(vr, "text", "")
-                source_file = getattr(vr, "source_file", "vector")
-                score = getattr(vr, "score", 0.0)
-                chunk_len = len(text)
-
-                if (total + chunk_len) > budget:
-                    break
-
-                chunks.append(
-                    MemoryChunk(
-                        key=source_file,
-                        content=text,
-                        source="vector",
-                        relevance_score=score,
-                        metadata={
-                            "layer": "vector",
-                            "chunk_index": getattr(vr, "chunk_index", 0),
-                        },
-                    )
+            hits = await vec.search(query, top_k=hooks.max_results)
+        except Exception:  # noqa: BLE001
+            logger.debug("memory_aware: vector.search failed", exc_info=True)
+            return total
+        if not hits:
+            return total
+        already = {c.key for c in chunks}
+        for h in hits:
+            text = h.content or ""
+            if not text or h.key in already:
+                continue
+            if total + len(text) > budget:
+                break
+            chunks.append(
+                MemoryChunk(
+                    key=h.key,
+                    content=text,
+                    source="vector",
+                    relevance_score=h.relevance_score,
+                    metadata={"layer": "vector", **(h.metadata or {})},
                 )
-                total += chunk_len
-
-        except Exception:
-            logger.debug("geny_retriever: vector search failed", exc_info=True)
+            )
+            total += len(text)
+            already.add(h.key)
         return total
 
-    # ── Layer 4: Keyword Search + Importance Weighting ───────────────
+    # ── L4 ──────────────────────────────────────────────────────────
 
-    def _load_keyword_memory(
+    async def _load_keyword(
         self,
         chunks: List[MemoryChunk],
         query: str,
         total: int,
         budget: int,
+        hooks: MemoryHooks,
     ) -> int:
-        remaining = budget - total
-        if remaining <= 200:
+        if budget - total <= 200:
             return total
 
+        # NotesHandle.search and LTMHandle.search both return
+        # ``List[MemoryChunk]`` per the protocol. Boost fields live on
+        # the chunk's ``metadata``.
+        results: List[MemoryChunk] = []
         try:
-            results = self._mgr.search(query, max_results=self._max_results)
-            if not results:
-                return total
+            notes = self._provider.notes()
+            results.extend(list(await notes.search(query, limit=hooks.max_results)))
+        except Exception:  # noqa: BLE001
+            logger.debug("memory_aware: notes.search failed", exc_info=True)
+        try:
+            ltm = self._provider.ltm()
+            ltm_hits = await ltm.search(query, limit=hooks.max_results)
+            results.extend(list(ltm_hits or []))
+        except Exception:  # noqa: BLE001
+            logger.debug("memory_aware: ltm.search failed", exc_info=True)
 
-            # Apply importance boost (mirrors Geny's MemoryInjectNode)
-            query_words = set(query.lower().split())
-            for r in results:
-                entry = getattr(r, "entry", r)
-                importance = getattr(entry, "importance", "medium") or "medium"
-                r.score *= _IMPORTANCE_BOOST.get(importance, 1.0)
+        if not results:
+            return total
 
-                tags = getattr(entry, "tags", None) or []
-                if tags and query_words:
-                    tag_words = {t.lower() for t in tags}
-                    overlap = len(query_words & tag_words)
-                    r.score *= 1.0 + 0.3 * overlap
+        query_words = {w for w in query.lower().split() if w}
+        for r in results:
+            meta = r.metadata or {}
+            importance = str(meta.get("importance", "medium")).lower()
+            base = float(r.relevance_score or 0.0)
+            base *= float(hooks.importance_boost.get(importance, 1.0))
 
-                # Category boost — pure policy via the host-supplied
-                # ``category_boosts`` mapping. Defaults to no boost
-                # so legacy behaviour is preserved.
-                if self._category_boosts:
-                    category = getattr(entry, "category", None) or (
-                        getattr(entry, "metadata", {}) or {}
-                    ).get("category")
-                    if isinstance(category, str):
-                        boost = self._category_boosts.get(category)
-                        if boost is not None:
-                            r.score *= float(boost)
+            tags = meta.get("tags") or []
+            if tags and query_words:
+                tag_words = {str(t).lower() for t in tags}
+                base *= 1.0 + 0.3 * len(query_words & tag_words)
 
-            results.sort(key=lambda r: r.score, reverse=True)
+            if hooks.category_boosts:
+                cat = meta.get("category")
+                if isinstance(cat, str):
+                    boost = hooks.category_boosts.get(cat)
+                    if boost is not None:
+                        base *= float(boost)
+            r.relevance_score = base
 
-            already_loaded = {c.key for c in chunks}
+        results.sort(key=lambda c: c.relevance_score, reverse=True)
 
-            for r in results:
-                entry = getattr(r, "entry", r)
-                filename = getattr(entry, "filename", None) or "keyword_result"
-                if filename in already_loaded:
-                    continue
-
-                snippet = getattr(r, "snippet", "") or getattr(entry, "content", "")
-                chunk_len = len(snippet)
-
-                if (total + chunk_len) > budget:
-                    break
-
-                chunks.append(
-                    MemoryChunk(
-                        key=filename,
-                        content=snippet,
-                        source=getattr(entry, "source", {}).value
-                        if hasattr(getattr(entry, "source", None), "value")
-                        else str(getattr(entry, "source", "keyword")),
-                        relevance_score=r.score,
-                        metadata={
-                            "layer": "keyword",
-                            "importance": getattr(entry, "importance", "medium"),
-                        },
-                    )
+        already = {c.key for c in chunks}
+        for r in results:
+            text = r.content or ""
+            if not text:
+                continue
+            if r.key in already:
+                continue
+            if total + len(text) > budget:
+                break
+            chunks.append(
+                MemoryChunk(
+                    key=r.key,
+                    content=text,
+                    source=r.source or "keyword",
+                    relevance_score=r.relevance_score,
+                    metadata={"layer": "keyword", **(r.metadata or {})},
                 )
-                total += chunk_len
-                already_loaded.add(filename)
-
-        except Exception:
-            logger.debug("geny_retriever: keyword search failed", exc_info=True)
+            )
+            total += len(text)
+            already.add(r.key)
         return total
 
-    # ── Layer 5: Backlink Context ────────────────────────────────────
+    # ── L5 ──────────────────────────────────────────────────────────
 
-    def _load_backlink_context(self, chunks: List[MemoryChunk], total: int, budget: int) -> int:
-        remaining = budget - total
-        if remaining <= 200 or not chunks:
+    async def _load_backlinks(
+        self,
+        chunks: List[MemoryChunk],
+        total: int,
+        budget: int,
+        hooks: MemoryHooks,
+    ) -> int:
+        if budget - total <= 200 or not chunks:
             return total
-
         try:
-            read_note = getattr(self._mgr, "read_note", None)
-            if read_note is None:
-                return total
+            notes = self._provider.notes()
+            graph = await notes.graph()
+        except Exception:  # noqa: BLE001
+            logger.debug("memory_aware: notes.graph failed", exc_info=True)
+            return total
+        edges = getattr(graph, "edges", None) or []
+        if not edges:
+            return total
+        # Build adjacency from edges (tuples of (src, tgt))
+        adj: Dict[str, List[str]] = {}
+        for e in edges:
+            try:
+                src, tgt = e[0], e[1]
+            except (TypeError, IndexError, KeyError):
+                continue
+            adj.setdefault(str(src), []).append(str(tgt))
 
-            already_loaded = {c.key for c in chunks}
-
-            for chunk in list(chunks):  # iterate copy
-                note = read_note(chunk.key)
+        already = {c.key for c in chunks}
+        seeds = [c.key for c in list(chunks)]
+        for seed in seeds:
+            for tgt in adj.get(seed, []):
+                if tgt in already:
+                    continue
+                try:
+                    note = await notes.read(tgt)
+                except Exception:  # noqa: BLE001
+                    continue
                 if note is None:
                     continue
-
-                meta = note.get("metadata") or {}
-                for linked_fn in meta.get("links_to", []):
-                    if linked_fn in already_loaded:
-                        continue
-
-                    linked_note = read_note(linked_fn)
-                    if linked_note is None:
-                        continue
-
-                    body = (linked_note.get("body") or "")[:800]
-                    if not body:
-                        continue
-
-                    if (total + len(body)) > budget:
-                        return total
-
-                    chunks.append(
-                        MemoryChunk(
-                            key=linked_fn,
-                            content=body,
-                            source="backlink",
-                            relevance_score=0.5,
-                            metadata={
-                                "layer": "backlink",
-                                "linked_from": chunk.key,
-                            },
-                        )
+                body = (getattr(note, "body", "") or "")[:800]
+                if not body:
+                    continue
+                if total + len(body) > budget:
+                    return total
+                chunks.append(
+                    MemoryChunk(
+                        key=tgt,
+                        content=body,
+                        source="backlink",
+                        relevance_score=0.5,
+                        metadata={"layer": "backlink", "linked_from": seed},
                     )
-                    total += len(body)
-                    already_loaded.add(linked_fn)
-
-        except Exception:
-            logger.debug("geny_retriever: backlink load failed", exc_info=True)
+                )
+                total += len(body)
+                already.add(tgt)
         return total
 
-    # ── Layer 6: Curated Knowledge ───────────────────────────────────
+    # ── L6 ──────────────────────────────────────────────────────────
 
-    def _load_curated_knowledge(
+    async def _load_curated(
         self,
         chunks: List[MemoryChunk],
         query: str,
         total: int,
         budget: int,
+        hooks: MemoryHooks,
     ) -> int:
-        remaining = budget - total
-        if remaining <= 200 or self._curated is None:
+        if budget - total <= 200:
             return total
-
         try:
-            ck_text = self._curated.inject_context(query, max_chars=remaining)
-            if ck_text:
-                chunks.append(
-                    MemoryChunk(
-                        key="curated_knowledge",
-                        content=ck_text,
-                        source="curated_knowledge",
-                        relevance_score=0.8,
-                        metadata={"layer": "curated_knowledge"},
-                    )
+            curated = self._provider.curated()
+            if curated is None:
+                return total
+            curated_notes = curated.notes()
+            hits = await curated_notes.search(query, limit=hooks.max_results)
+        except Exception:  # noqa: BLE001
+            logger.debug("memory_aware: curated search failed", exc_info=True)
+            return total
+        if not hits:
+            return total
+        already = {c.key for c in chunks}
+        for h in hits:
+            text = h.content or ""
+            if not text or h.key in already:
+                continue
+            if total + len(text) > budget:
+                break
+            chunks.append(
+                MemoryChunk(
+                    key=h.key,
+                    content=text,
+                    source="curated",
+                    relevance_score=h.relevance_score,
+                    metadata={"layer": "curated", **(h.metadata or {})},
                 )
-                total += len(ck_text)
-        except Exception:
-            logger.debug("geny_retriever: curated knowledge failed", exc_info=True)
+            )
+            total += len(text)
+            already.add(h.key)
         return total
 
-    # ── Observability helpers ────────────────────────────────────────
+    # ── observability ───────────────────────────────────────────────
 
     def _emit_breakdown(
         self,
@@ -686,11 +596,9 @@ class GenyMemoryRetriever(MemoryRetriever):
         breakdown: Dict[str, int],
         total_chars: int,
         chunk_count: int,
+        *,
+        slim: bool,
     ) -> None:
-        """Emit ``memory.retrieve_breakdown`` so operators can see
-        which layers contributed chunks. Pure observability — no
-        behavioural effect.
-        """
         try:
             state.add_event(
                 "memory.retrieve_breakdown",
@@ -699,17 +607,13 @@ class GenyMemoryRetriever(MemoryRetriever):
                     "layers": dict(breakdown),
                     "total_chars": int(total_chars),
                     "chunk_count": int(chunk_count),
-                    "slim_mode": bool(self._slim_mode),
+                    "slim_mode": bool(slim),
                 },
             )
-        except Exception:
-            logger.debug("geny_retriever: breakdown emit failed", exc_info=True)
+        except Exception:  # noqa: BLE001
+            logger.debug("memory_aware: breakdown emit failed", exc_info=True)
 
     def _emit_empty(self, state: PipelineState, query: str, *, reason: str) -> None:
-        """Emit ``memory.retrieved_empty`` when the retriever returns
-        no chunks. Lets the host raise an alert / surface a metric
-        when the pinned + search layers all whiff.
-        """
         try:
             state.add_event(
                 "memory.retrieved_empty",
@@ -719,5 +623,8 @@ class GenyMemoryRetriever(MemoryRetriever):
                     "session_id": getattr(state, "session_id", ""),
                 },
             )
-        except Exception:
-            logger.debug("geny_retriever: empty emit failed", exc_info=True)
+        except Exception:  # noqa: BLE001
+            logger.debug("memory_aware: empty emit failed", exc_info=True)
+
+
+__all__ = ["MemoryAwareRetriever"]
