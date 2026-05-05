@@ -77,6 +77,12 @@ class _FilesystemNotesStore(NotesHandle):
         self._explicit_links: Dict[str, Set[str]] = {}
         self._vector_indexer = vector_indexer
         self._hooks = hooks or MemoryHooks()
+        # Index-refresh hook (set by FileMemoryProvider once
+        # _FileIndexStore is wired). Fired after every successful
+        # write / update / delete so hierarchical sidecars stay in
+        # lockstep with the on-disk markdown. Failures are non-fatal —
+        # the markdown write is authoritative.
+        self._index_refresh: Optional[Callable[[Optional[str]], Awaitable[None]]] = None
 
     def attach_vector_indexer(self, indexer: Optional[VectorIndexer]) -> None:
         """Wire (or detach) the auto-vector indexing callback.
@@ -86,6 +92,21 @@ class _FilesystemNotesStore(NotesHandle):
         construction order) and then plug the indexer in.
         """
         self._vector_indexer = indexer
+
+    def attach_index_refresh(
+        self,
+        callback: Optional[Callable[[Optional[str]], Awaitable[None]]],
+    ) -> None:
+        """Wire the index-sidecar refresh callback.
+
+        Called after every write / update / delete so the index store
+        can incrementally refresh its hierarchical sidecars
+        (``<root>/_index.json`` + ``<root>/_summary.json`` + per-category
+        ``<cat>/_index.json``). The callback receives the affected
+        category name (``"root"`` for direct-under-memory notes, the
+        category dir name otherwise, or ``None`` to refresh everything).
+        """
+        self._index_refresh = callback
 
     # ── NotesHandle contract ────────────────────────────────────────
 
@@ -154,6 +175,7 @@ class _FilesystemNotesStore(NotesHandle):
         # is an HTTP round-trip and must never block other note ops.
         if indexer is not None and body_for_index:
             await self._safe_index(indexer, ref_for_index, body_for_index)
+        await self._refresh_index_for(note.category)
         await _fire_hook(
             self._hooks.after_note_write,
             "after_note_write",
@@ -194,12 +216,28 @@ class _FilesystemNotesStore(NotesHandle):
             note_meta = current.as_meta()
         if indexer is not None and body_for_index:
             await self._safe_index(indexer, ref_for_index, body_for_index)
+        await self._refresh_index_for(current.category)
         await _fire_hook(
             self._hooks.after_note_update,
             "after_note_update",
             note_meta,
         )
         return note_meta
+
+    async def _refresh_index_for(self, category: Optional[str]) -> None:
+        """Best-effort hierarchical index refresh after a note change.
+
+        Failures are logged at debug level — the markdown write is
+        authoritative; sidecar drift gets cleaned up on the next
+        successful refresh.
+        """
+        cb = self._index_refresh
+        if cb is None:
+            return
+        try:
+            await cb(category)
+        except Exception:  # noqa: BLE001
+            logger.debug("index refresh callback failed for category=%r", category, exc_info=True)
 
     @staticmethod
     async def _safe_index(indexer: VectorIndexer, ref: NoteRef, body: str) -> None:
@@ -238,7 +276,9 @@ class _FilesystemNotesStore(NotesHandle):
             for tgts in self._explicit_links.values():
                 tgts.discard(filename)
             self._refresh_backlinks()
-            return True
+            deleted_category = note.category
+        await self._refresh_index_for(deleted_category)
+        return True
 
     async def link(self, source: str, target: str) -> bool:
         async with self._lock:

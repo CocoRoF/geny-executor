@@ -77,6 +77,7 @@ class FileMemoryProvider(MemoryProvider):
         embedding: Optional[EmbeddingDescriptor] = None,
         embedding_client: Optional[EmbeddingClient] = None,
         hooks: Optional[MemoryHooks] = None,
+        category_descriptions: Optional[Dict[str, str]] = None,
     ) -> None:
         self._root = Path(root).resolve()
         self._scope = scope
@@ -93,7 +94,16 @@ class FileMemoryProvider(MemoryProvider):
         self._notes = _FilesystemNotesStore(
             self._layout, tz=self._tz, scope=scope, hooks=self._hooks
         )
-        self._index = _FileIndexStore(self._notes, layout=self._layout, tz=self._tz)
+        self._index = _FileIndexStore(
+            self._notes,
+            layout=self._layout,
+            tz=self._tz,
+            category_descriptions=category_descriptions or self._hooks.vault_descriptions,
+        )
+        # Wire incremental sidecar refresh — every successful
+        # write/update/delete rewrites the affected category shard
+        # plus the root summary (EXEC-5 / D6).
+        self._notes.attach_index_refresh(self._index.refresh_for_category)
         self._vector = self._build_vector_store()
         # Auto-vector wiring — every successful note write/update
         # forwards the body to the vector store. The indexer is plugged
@@ -108,10 +118,16 @@ class FileMemoryProvider(MemoryProvider):
         """Swap the policy callbacks post-construction. Useful when
         the host installs business hooks after the provider has been
         wired into the pipeline.
+
+        Also refreshes ``IndexHandle._category_descriptions`` from
+        ``hooks.vault_descriptions`` so the next sidecar refresh
+        picks up the host's category labels.
         """
         self._hooks = hooks
         self._stm._hooks = hooks
         self._notes._hooks = hooks
+        if hooks.vault_descriptions:
+            self._index.set_category_descriptions(hooks.vault_descriptions)
 
     def _build_vector_store(self) -> Optional[_FileVectorStore]:
         if self._embedding_client is None:
