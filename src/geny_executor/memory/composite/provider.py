@@ -40,6 +40,7 @@ from geny_executor.memory.provider import (
     Layer,
     LTMHandle,
     MemoryDescriptor,
+    MemoryHooks,
     MemoryProvider,
     MemorySnapshot,
     NoteDraft,
@@ -100,6 +101,27 @@ class CompositeMemoryProvider(MemoryProvider):
     async def close(self) -> None:
         for delegate in self._routing.distinct_providers():
             await delegate.close()
+
+    def set_hooks(self, hooks: MemoryHooks) -> None:
+        """Forward `MemoryHooks` to every distinct scope provider.
+
+        The composite itself doesn't own STM/Notes — it only routes
+        layer calls to underlying scope providers (session, user_curated,
+        global). Hooks must reach the actual store layer where
+        ``after_record_turn`` / ``after_note_write`` actually fire,
+        so we install on every distinct delegate.
+        """
+        self._hooks = hooks
+        for delegate in self._routing.distinct_providers():
+            if hasattr(delegate, "set_hooks"):
+                try:
+                    delegate.set_hooks(hooks)
+                except Exception:  # noqa: BLE001
+                    # Hook installation is best-effort; a misbehaving
+                    # delegate must not abort the composite. Hosts that
+                    # need load-bearing behaviour can inspect each
+                    # delegate themselves.
+                    pass
 
     # ── layer handles ───────────────────────────────────────────────
 

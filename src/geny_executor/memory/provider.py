@@ -848,6 +848,15 @@ class MemoryProvider(Protocol):
     async def restore(self, snap: MemorySnapshot) -> None: ...
     async def promote(self, ref: NoteRef, to: Scope) -> NoteRef: ...
 
+    # Hook installation — every provider exposes this surface so hosts
+    # can attach `MemoryHooks.after_*` callbacks (and future hook
+    # bundles) without doing a `hasattr` dance. Composite providers
+    # forward to every distinct delegate; concrete providers route
+    # the hook bag to their own store layers (STM / Notes); providers
+    # that don't fire any hook yet (e.g. SQL backend) still implement
+    # the method as `self._hooks = hooks` so the contract holds.
+    def set_hooks(self, hooks: "MemoryHooks") -> None: ...
+
 
 # ─────────────────────────────────────────────────────────────────────
 # 11. MemoryHooks — pluggable policy attached to a stage instance

@@ -34,6 +34,7 @@ from geny_executor.memory.provider import (
     Layer,
     LTMHandle,
     MemoryDescriptor,
+    MemoryHooks,
     MemoryProvider,
     MemorySnapshot,
     NoteDraft,
@@ -112,7 +113,24 @@ class SQLMemoryProvider(MemoryProvider):
         self._index = _SQLIndexStore(self._notes, conn=self._conn, tz=self._tz)
         self._vector = self._build_vector_store()
         self._initialized = False
+        # Hook bag — the SQL backend doesn't fire `after_*` callbacks
+        # yet (deployed file provider drives the hook chain), but the
+        # attribute is held so the contract surface is uniform across
+        # provider impls. Future PR will plumb hooks into the SQL
+        # store layers when SQL backend gets production traffic.
+        self._hooks = MemoryHooks()
         self._descriptor = self._build_descriptor()
+
+    def set_hooks(self, hooks: "MemoryHooks") -> None:
+        """Hold the hook bag for contract-surface uniformity.
+
+        SQL backend currently doesn't fire `after_*` callbacks
+        (no STM/Notes-side hook plumbing yet). Future PR will plumb
+        hooks into `_SQLSTMStore` / `_SQLNotesStore` when SQL gets
+        production traffic; this attribute holds the host's bag so
+        the eventual plumbing is straightforward.
+        """
+        self._hooks = hooks
 
     def _build_vector_store(self) -> Optional[_SQLVectorStore]:
         if self._embedding_client is None:

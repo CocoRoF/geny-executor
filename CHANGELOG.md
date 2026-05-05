@@ -4,6 +4,38 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.17.2] — 2026-05-05
+
+Patch release. `MemoryProvider.set_hooks` is now part of the
+Protocol surface and implemented uniformly across every concrete
+provider. Geny's `_install_memory_hooks` was silently no-op'ing
+for every composite-backed deployment because only
+`FileMemoryProvider` had the method — the result was that
+`after_record_turn` / `after_note_write` etc. never fired in
+production, taking ConversationArchiver / DmArchiver with them.
+
+### Added
+
+- `MemoryProvider.set_hooks(hooks: MemoryHooks)` is now declared on
+  the Protocol — every implementation exposes it, no more
+  `hasattr` dances on the host side.
+- `CompositeMemoryProvider.set_hooks` forwards the hook bag to
+  every distinct scope provider (session, user_curated, global)
+  so callbacks reach the underlying file/sql/ephemeral store
+  layers where `after_*` actually fire.
+- `EphemeralMemoryProvider.set_hooks` and
+  `SQLMemoryProvider.set_hooks` hold the bag for contract-surface
+  uniformity; the SQL backend doesn't fire callbacks yet (deployed
+  file provider drives the chain), but the attribute is in place
+  so the future plumbing is straightforward.
+
+### Fixed
+
+- Composite-backed deployments lost `after_record_turn` chaining,
+  which silently disabled Geny's ConversationArchiver and
+  DmArchiver. With this patch the hook bag reaches the file
+  provider, archivers fire as designed.
+
 ## [1.17.1] — 2026-05-05
 
 Patch release. `_FilesystemNotesStore` now discovers
