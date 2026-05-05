@@ -421,6 +421,20 @@ class _IndexCache:
     async def rebuild(self) -> None:
         self._notes._refresh_backlinks()  # type: ignore[attr-defined]
 
+    async def list_categories(self) -> List[Dict[str, Any]]:
+        """In-memory enumeration of distinct categories present
+        on the cached notes. Empty-folder convention from the file
+        provider doesn't apply here (no real disk).
+        """
+        counts: Dict[str, int] = {}
+        for n in self._notes.all():
+            cat = n.category or "root"
+            counts[cat] = counts.get(cat, 0) + 1
+        return [
+            {"name": name, "file_count": count, "path": f"memory/{name}", "exists": True}
+            for name, count in sorted(counts.items())
+        ]
+
     async def build_vault_map(
         self,
         *,

@@ -76,6 +76,39 @@ class _FileIndexStore:
             payload = await self._compute()
             self._write_cache(payload)
 
+    async def list_categories(self) -> List[Dict[str, Any]]:
+        """Every direct subdirectory of `memory/` (canonical + host-defined),
+        with file_count from the snapshot. Empty folders are included
+        with `file_count=0` so hosts can render a category sidebar
+        before any note has been written.
+        """
+        snap = await self._cached_or_compute()
+        files_by_cat: Dict[str, int] = {}
+        for entry in (snap.get("files") or {}).values():
+            cat = entry.get("category") or "root"
+            files_by_cat[cat] = files_by_cat.get(cat, 0) + 1
+
+        result: List[Dict[str, Any]] = []
+        seen: set = set()
+        for cat_dir in self._layout.category_dirs():
+            cat_name = (
+                "root" if cat_dir == self._layout.memory else cat_dir.name
+            )
+            if cat_name in seen:
+                continue
+            seen.add(cat_name)
+            try:
+                rel_path = str(cat_dir.relative_to(self._layout.root))
+            except ValueError:
+                rel_path = str(cat_dir)
+            result.append({
+                "name": cat_name,
+                "file_count": files_by_cat.get(cat_name, 0),
+                "path": rel_path,
+                "exists": cat_dir.exists(),
+            })
+        return result
+
     async def build_vault_map(
         self,
         *,

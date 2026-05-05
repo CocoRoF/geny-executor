@@ -4,6 +4,25 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.18.0] — 2026-05-05
+
+Minor release. New `IndexHandle.list_categories` surface for
+hosts that need to render every category folder — including
+empty ones — without scanning the filesystem themselves.
+
+### Added
+
+- `IndexHandle.list_categories() -> List[Dict]` returning
+  `{name, file_count, path, exists}` per category. File provider
+  yields canonical NOTE_CATEGORIES first (empty `file_count: 0`
+  even before any note is written), then host-defined
+  subdirectories. Ephemeral / SQL providers aggregate from the
+  in-memory / table contents respectively. Composite delegates
+  to the underlying scope provider's index.
+- Hosts (Geny) build sub-index shards (`memory/<cat>/_index.json`)
+  on top of this surface as a sidecar — the executor's root
+  `_index.json` stays the single source for the file inventory.
+
 ## [1.17.2] — 2026-05-05
 
 Patch release. `MemoryProvider.set_hooks` is now part of the
