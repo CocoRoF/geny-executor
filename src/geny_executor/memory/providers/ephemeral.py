@@ -462,7 +462,9 @@ class _IndexCache:
         tag_counter = await self.tag_counts()
         tag_pairs = sorted(tag_counter.items(), key=lambda x: -x[1])[:top_tags]
         recent = sorted(
-            notes, key=lambda n: n.updated_at or datetime.min, reverse=True,
+            notes,
+            key=lambda n: n.updated_at or datetime.min,
+            reverse=True,
         )[:recent_limit]
         recent_view = [
             {

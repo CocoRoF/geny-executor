@@ -168,9 +168,7 @@ class GenyMemoryRetriever(MemoryRetriever):
             breakdown reflects how many chunks each layer added.
             """
             breakdown[layer] = sum(
-                1 for c in chunks
-                if (c.metadata or {}).get("layer") == layer
-                or c.source == layer
+                1 for c in chunks if (c.metadata or {}).get("layer") == layer or c.source == layer
             )
 
         # 0. Recent turns (tail of the STM transcript). Always injected
@@ -550,10 +548,9 @@ class GenyMemoryRetriever(MemoryRetriever):
                 # ``category_boosts`` mapping. Defaults to no boost
                 # so legacy behaviour is preserved.
                 if self._category_boosts:
-                    category = (
-                        getattr(entry, "category", None)
-                        or (getattr(entry, "metadata", {}) or {}).get("category")
-                    )
+                    category = getattr(entry, "category", None) or (
+                        getattr(entry, "metadata", {}) or {}
+                    ).get("category")
                     if isinstance(category, str):
                         boost = self._category_boosts.get(category)
                         if boost is not None:

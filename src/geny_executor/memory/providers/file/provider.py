@@ -88,9 +88,7 @@ class FileMemoryProvider(MemoryProvider):
         )
         self._hooks = hooks or MemoryHooks()
         self._layout = DirectoryLayout(self._root)
-        self._stm = _JSONLSTMStore(
-            self._layout.stm_jsonl, tz=self._tz, hooks=self._hooks
-        )
+        self._stm = _JSONLSTMStore(self._layout.stm_jsonl, tz=self._tz, hooks=self._hooks)
         self._ltm = _MarkdownLTMStore(self._layout, tz=self._tz, scope=scope)
         self._notes = _FilesystemNotesStore(
             self._layout, tz=self._tz, scope=scope, hooks=self._hooks
@@ -432,4 +430,3 @@ async def _fire_hook(callback, name: str, *args) -> None:
         await callback(*args)
     except Exception:  # noqa: BLE001
         logger.debug("memory hook %s raised; skipping", name, exc_info=True)
-

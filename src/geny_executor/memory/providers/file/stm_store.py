@@ -103,7 +103,6 @@ class _JSONLSTMStore:
             with self._path.open("a", encoding="utf-8") as fh:
                 fh.write(line + "\n")
 
-
     async def recent(self, n: int = 20) -> List[Turn]:
         if n <= 0:
             return []
@@ -264,5 +263,7 @@ async def _fire_hook(callback, name: str, *args) -> None:
         import logging
 
         logging.getLogger(__name__).debug(
-            "memory hook %s raised; skipping", name, exc_info=True,
+            "memory hook %s raised; skipping",
+            name,
+            exc_info=True,
         )
