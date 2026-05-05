@@ -1,9 +1,14 @@
-"""Hierarchical sidecar incremental refresh (EXEC-5).
+"""Hierarchical sidecar incremental refresh (EXEC-5 / 1.21.0).
 
-Verifies that the executor's ``_FileIndexStore`` keeps the per-category
-``<cat>/_index.json`` shards and the root ``_summary.json`` overview
-in lockstep with note writes/updates/deletes — the host no longer has
-to operate a parallel sidecar writer.
+Verifies that the executor's ``_FileIndexStore`` keeps:
+
+- ``<root>/_index.json`` — bounded folder-tree summary (no per-note metadata)
+- ``<cat>/_index.json``  — per-category shard with note-level detail
+
+in lockstep with note writes/updates/deletes. The host no longer has
+to operate a parallel sidecar writer; pre-1.21.0 the root file was a
+flat dump that grew unbounded plus a separate ``_summary.json`` that
+duplicated the folder summary at smaller scale.
 """
 
 from __future__ import annotations
@@ -143,10 +148,14 @@ def test_shard_reflects_update_metadata_change():
         assert "initial" not in shard["tag_counts"]
 
 
-# ── root summary ───────────────────────────────────────────────────
+# ── root folder-tree summary (1.21.0) ──────────────────────────────
 
 
-def test_root_summary_lists_every_category():
+def test_root_index_is_folder_summary_not_flat_dump():
+    """Root ``<memory>/_index.json`` is a folder-tree summary —
+    bounded by category count, NOT by note count. Per-note metadata
+    lives only inside category shards.
+    """
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
         p = _make_provider(
@@ -161,23 +170,27 @@ def test_root_summary_lists_every_category():
             )
 
         _run(go())
-        summary_path = root / "memory" / "_summary.json"
-        assert summary_path.exists()
-        summary = _read_json(summary_path)
-        names = {c["name"] for c in summary["categories"]}
-        # Canonical empty categories from NOTE_CATEGORIES appear (so
-        # the sidebar always shows them — Geny's UX requirement).
-        # ``critical`` is host-defined (not canonical) and only
-        # surfaces once the host writes a note into it.
+        root_index = _read_json(root / "memory" / "_index.json")
+        # Top-level keys are summary-shaped, NOT flat-dump-shaped.
+        assert "categories" in root_index
+        assert "category_descriptions" in root_index
+        assert "files" not in root_index, (
+            "root _index.json must NOT contain a per-note `files` dict"
+        )
+        assert "tag_map" not in root_index
+        assert "link_graph" not in root_index
+        # Category list contains the canonical entries with file counts.
+        names = {c["name"] for c in root_index["categories"]}
         for canonical in ("topics", "insights", "projects",
                           "daily", "dms", "conversations", "compactions"):
             assert canonical in names, f"missing canonical category: {canonical}"
-        topics = next(c for c in summary["categories"] if c["name"] == "topics")
+        topics = next(c for c in root_index["categories"] if c["name"] == "topics")
         assert topics["file_count"] == 1
         assert topics["description"] == "subject pages"
+        assert topics["path"] == "memory/topics"
 
 
-def test_root_summary_updates_count_on_delete():
+def test_root_index_updates_count_on_delete():
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
         p = _make_provider(root)
@@ -193,15 +206,38 @@ def test_root_summary_updates_count_on_delete():
             await p.notes().delete("t1.md")
 
         _run(go())
-        summary = _read_json(root / "memory" / "_summary.json")
-        topics = next(c for c in summary["categories"] if c["name"] == "topics")
+        root_index = _read_json(root / "memory" / "_index.json")
+        topics = next(c for c in root_index["categories"] if c["name"] == "topics")
         assert topics["file_count"] == 1
 
 
-# ── root flat index unaffected by hierarchical writes ──────────────
+def test_summary_json_not_written_in_1_21():
+    """Pre-1.21.0 the executor wrote ``<root>/_summary.json`` alongside
+    the flat root index. 1.21.0 collapses both into ``<root>/_index.json``.
+    The legacy summary file must NOT be created.
+    """
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        p = _make_provider(root)
+
+        async def go():
+            await p.initialize()
+            await p.notes().write(
+                NoteDraft(title="T1", body="b", category="topics", filename="t1.md")
+            )
+
+        _run(go())
+        legacy = root / "memory" / "_summary.json"
+        assert not legacy.exists(), (
+            "_summary.json was retired in 1.21.0; the folder summary "
+            "is now at <root>/_index.json"
+        )
 
 
-def test_root_flat_index_still_contains_all_files():
+def test_snapshot_returns_full_in_memory_view_without_disk_dump():
+    """``snapshot()`` returns the per-note view in memory (callers that
+    need it use this) — but the disk root index stays bounded.
+    """
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
         p = _make_provider(root)
@@ -214,14 +250,16 @@ def test_root_flat_index_still_contains_all_files():
             await p.notes().write(
                 NoteDraft(title="C1", body="b", category="critical", filename="c1.md")
             )
+            return await p.index().snapshot()
 
-        _run(go())
-        flat = _read_json(root / "memory" / "_index.json")
-        assert "t1.md" in flat["files"]
-        assert "c1.md" in flat["files"]
-        # Flat index is NOT a shard — must keep ``files`` (not just a
-        # category-scoped slice).
-        assert flat["files"]["t1.md"]["category"] == "topics"
+        snap = _run(go())
+        # In-memory snapshot has per-note `files` dict.
+        assert "t1.md" in snap["files"]
+        assert "c1.md" in snap["files"]
+        assert snap["files"]["t1.md"]["category"] == "topics"
+        # But the disk root index stays bounded.
+        root_index = _read_json(root / "memory" / "_index.json")
+        assert "files" not in root_index
 
 
 # ── set_hooks updates descriptions live ─────────────────────────────

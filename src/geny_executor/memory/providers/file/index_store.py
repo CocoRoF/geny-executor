@@ -28,26 +28,37 @@ from geny_executor.memory.providers.file.timezone import now_in
 
 
 class _FileIndexStore:
-    """Read-mostly view on the notes store with on-disk cache.
+    """Read-mostly view on the notes store.
 
-    The store owns the on-disk hierarchical sidecars:
+    The store owns three on-disk artefacts. **Progressive disclosure**
+    is the design intent — never put per-note metadata at the root so
+    the file size stays bounded as the vault grows.
 
-    - ``<root>/_index.json`` — flat canonical inventory (all files +
-      tag map + link graph). Updated on every write.
-    - ``<cat>/_index.json`` — per-category shard listing only that
-      category's notes + tag counts + canonical description. Updated
-      incrementally per affected category.
-    - ``<root>/_summary.json`` — folder-tree overview (every category
-      + file_count + description). Updated on every write because the
-      total + per-category counts shift.
+    - ``<root>/_index.json`` — **folder-tree summary**. Lists every
+      category folder with its file count, path, and the host-supplied
+      description. Bounded size: O(categories), not O(notes). Hosts
+      drill into ``<cat>/_index.json`` to get per-note metadata.
+    - ``<cat>/_index.json`` — **per-category shard**. Lists every
+      note in that one category with title / tags / importance /
+      first-paragraph preview. Updated incrementally per affected
+      category on every ``NotesStore.write/update/delete``.
+    - in-memory snapshot — full ``files`` / ``tag_map`` / ``link_graph``
+      computed on demand. Returned by ``snapshot()`` for callers that
+      need it (vault map, graph rendering, search). Not persisted —
+      keeping it off disk is what makes the root index bounded.
 
     Hosts inject ``category_descriptions`` at provider construction so
-    the canonical labels (Geny's "critical = always-pinned facts" etc.)
-    show up uniformly in every sidecar.
+    canonical labels (Geny's "critical = always-pinned facts" etc.)
+    show up uniformly in the root summary + each shard.
+
+    Pre-1.21.0 the store also wrote ``<root>/_index.json`` as a flat
+    dump of every file's metadata and ``<root>/_summary.json`` as the
+    folder summary. The flat dump grew unbounded; the summary
+    duplicated the data at smaller scale. 1.21.0 retires the flat
+    dump and renames the summary to ``<root>/_index.json``.
     """
 
     SUBINDEX_FILENAME = "_index.json"
-    SUMMARY_FILENAME = "_summary.json"
 
     def __init__(
         self,
@@ -73,21 +84,26 @@ class _FileIndexStore:
     # ── IndexHandle contract ────────────────────────────────────────
 
     async def snapshot(self) -> Dict[str, Any]:
+        """Return an in-memory snapshot of every file + tag_map +
+        link_graph. Not persisted — the on-disk root index is a
+        bounded folder-tree summary, not a per-note dump.
+
+        Callers that need per-note metadata across categories use
+        this snapshot directly (it stays in memory only). The disk
+        sidecars (root summary + per-category shards) are refreshed
+        as a side effect so a fresh ``snapshot()`` call also keeps
+        the disk view consistent.
+        """
         async with self._lock:
             payload = await self._compute()
-        self._write_cache(payload)
-        # snapshot() is a read-side operation that also refreshes the
-        # disk cache; piggy-back on it to refresh hierarchical sidecars
-        # so a fresh read sees consistent shards.
         self._write_hierarchical_sidecars(payload, category=None)
         return payload
 
     async def refresh_for_category(self, category: Optional[str]) -> None:
-        """Incrementally refresh the sidecars affected by a single
-        category change. Always rewrites:
+        """Incrementally refresh the on-disk sidecars affected by a
+        single category change. Rewrites:
 
-        - ``<root>/_index.json`` (flat — totals shift)
-        - ``<root>/_summary.json`` (folder tree — counts shift)
+        - ``<root>/_index.json`` (folder summary — counts shift)
         - ``<cat>/_index.json`` for the changed category
 
         Other category shards are left untouched. Called after every
@@ -95,7 +111,6 @@ class _FileIndexStore:
         """
         async with self._lock:
             payload = await self._compute()
-        self._write_cache(payload)
         self._write_hierarchical_sidecars(payload, category=category)
 
     async def tag_counts(self) -> Dict[str, int]:
@@ -125,7 +140,9 @@ class _FileIndexStore:
         async with self._lock:
             await self._notes.clear_cache()
             payload = await self._compute()
-            self._write_cache(payload)
+        # Keep on-disk sidecars consistent with the freshly-rebuilt
+        # in-memory snapshot.
+        self._write_hierarchical_sidecars(payload, category=None)
 
     async def list_notes(
         self,
@@ -351,13 +368,13 @@ class _FileIndexStore:
     # ── internal ────────────────────────────────────────────────────
 
     async def _cached_or_compute(self) -> Dict[str, Any]:
-        cached = self._read_cache()
-        if cached is not None:
-            return cached
+        """Return the in-memory snapshot. Pre-1.21.0 this read a flat
+        dump from ``<root>/_index.json``; 1.21.0 retired the flat dump
+        because it grew unbounded. The notes store keeps an in-memory
+        cache, so ``_compute`` is fast even on large vaults.
+        """
         async with self._lock:
-            payload = await self._compute()
-        self._write_cache(payload)
-        return payload
+            return await self._compute()
 
     async def _compute(self) -> Dict[str, Any]:
         notes = await self._notes.all()
@@ -394,23 +411,7 @@ class _FileIndexStore:
             "total_chars": sum(e["char_count"] for e in files.values()),
         }
 
-    def _read_cache(self) -> Dict[str, Any] | None:
-        path = self._layout.index_json
-        if not path.exists():
-            return None
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            return None
-        if not isinstance(data, dict):
-            return None
-        return data
-
-    def _write_cache(self, payload: Dict[str, Any]) -> None:
-        self._layout.memory.mkdir(parents=True, exist_ok=True)
-        _atomic_write_json(self._layout.index_json, payload)
-
-    # ── hierarchical sidecars (EXEC-5) ──────────────────────────────
+    # ── hierarchical sidecars (EXEC-5 / 1.21.0) ─────────────────────
 
     def _write_hierarchical_sidecars(
         self,
@@ -418,14 +419,21 @@ class _FileIndexStore:
         *,
         category: Optional[str],
     ) -> None:
-        """Write per-category ``<cat>/_index.json`` shards + the root
-        ``_summary.json`` overview.
+        """Write the bounded folder-tree summary at ``<root>/_index.json``
+        plus per-category ``<cat>/_index.json`` shards.
 
         ``category=None`` rewrites every category shard (used by full
-        ``snapshot()``); a specific value rewrites only that one shard
+        ``snapshot()``); a specific value rewrites only that shard
         (used by ``refresh_for_category`` per write/update/delete).
-        The root summary is always rewritten because totals shift on
-        any change.
+        The root summary is always rewritten because category counts
+        shift on any change.
+
+        **1.21.0 semantics**: root ``_index.json`` is the *folder-tree
+        summary* — bounded size O(categories), no per-note metadata.
+        Per-note metadata lives only inside category shards. Pre-1.21.0
+        the root file was a flat dump that grew unbounded and a separate
+        ``_summary.json`` carried the folder summary; both were collapsed
+        into a single root file in 1.21.0.
         """
         self._layout.memory.mkdir(parents=True, exist_ok=True)
 
@@ -436,7 +444,7 @@ class _FileIndexStore:
             by_cat.setdefault(cat, []).append(entry)
 
         # Discover canonical + on-disk categories so empty folders
-        # still receive an empty shard ("category exists" signal).
+        # still appear in the root summary ("category exists" signal).
         all_cats: Set[str] = set(by_cat.keys()) | {"root"}
         for cat_dir in self._layout.category_dirs():
             cat_name = "root" if cat_dir == self._layout.memory else cat_dir.name
@@ -446,17 +454,12 @@ class _FileIndexStore:
         if category is None:
             targets = sorted(all_cats)
         else:
-            # Always include ``root`` alongside the named category so
-            # the root sidecars stay consistent.
-            targets = sorted({category, "root"})
+            targets = [category]
 
         for cat in targets:
-            # root → the canonical flat ``_index.json`` already lives at
-            # ``<memory>/_index.json`` (written by ``_write_cache``).
-            # Per-category shards have the same filename inside their
-            # own folder; if we wrote a "root shard" we'd overwrite the
-            # flat index. Skip — root coverage stays in the flat index
-            # plus the root summary.
+            # Skip ``root`` — its slot is the folder-tree summary
+            # written below to ``<memory>/_index.json``. A per-note
+            # shard for root would clobber that summary (same filename).
             if cat == "root":
                 continue
             cat_files = by_cat.get(cat, [])
@@ -484,8 +487,9 @@ class _FileIndexStore:
             except OSError:
                 continue
 
-        # Always rewrite the root folder-tree summary.
-        summary = {
+        # Always rewrite the root folder-tree summary at ``<memory>/_index.json``.
+        # Bounded size — O(categories), not O(notes).
+        root_summary = {
             "version": "2",
             "categories": [
                 {
@@ -498,10 +502,11 @@ class _FileIndexStore:
                 for cat in sorted(all_cats)
             ],
             "category_descriptions": dict(self._category_descriptions),
+            "total_files": int(payload.get("total_files", 0) or 0),
             "generated_at": now_in(self._tz).isoformat(),
         }
         try:
-            _atomic_write_json(self._layout.memory / self.SUMMARY_FILENAME, summary)
+            _atomic_write_json(self._layout.memory / self.SUBINDEX_FILENAME, root_summary)
         except OSError:
             pass
 
