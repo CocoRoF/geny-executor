@@ -42,6 +42,7 @@ from geny_executor.memory.provider import (
     Insight,
     Layer,
     MemoryDescriptor,
+    MemoryHooks,
     MemoryProvider,
     MemorySnapshot,
     Note,
@@ -524,6 +525,11 @@ class EphemeralMemoryProvider(MemoryProvider):
         self._notes = _NotesStore(scope=scope)
         self._index = _IndexCache(self._notes)
         self._closed = False
+        # Hook bag — STM/Notes stores in this in-memory provider don't
+        # currently fire `after_*` callbacks (test fixture provider),
+        # but the attribute is held so a host that swaps providers can
+        # rely on `set_hooks` being callable on every implementation.
+        self._hooks = MemoryHooks()
         self._descriptor = MemoryDescriptor(
             name=self.NAME,
             version=self.VERSION,
@@ -558,6 +564,16 @@ class EphemeralMemoryProvider(MemoryProvider):
 
     async def close(self) -> None:
         self._closed = True
+
+    def set_hooks(self, hooks: "MemoryHooks") -> None:
+        """Hold the hook bag so the contract surface is uniform.
+
+        The in-memory STM / Notes stores in this fixture provider
+        don't currently fire `after_*` callbacks (would only be
+        useful for tests of the hook chain itself), but the
+        attribute is held so callers don't need a `hasattr` dance.
+        """
+        self._hooks = hooks
 
     # ── Layer handles ───────────────────────────────────────────────
     def stm(self) -> _STMStore:
