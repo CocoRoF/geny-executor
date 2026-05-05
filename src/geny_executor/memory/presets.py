@@ -1,26 +1,32 @@
-"""GenyPresets — Pre-configured pipelines for Geny execution modes.
+"""``GenyPresets`` — Provider-driven pre-configured pipelines.
 
-Provides two production presets that replace Geny's execution logic:
-  - worker: Autonomous agent with tools, loop, and full memory
-  - vtuber: Conversational agent with memory reflection
+Provides four production presets:
+  - worker_easy / worker_full / worker_adaptive: autonomous agents
+  - vtuber: conversational agent with persona
 
-Both presets integrate with Geny's SessionMemoryManager for
-5-layer memory retrieval and structured note persistence.
+All presets accept a ``MemoryProvider`` (typically a
+``CompositeMemoryProvider`` the host built once per session) plus an
+optional ``MemoryHooks`` instance carrying retrieval policy + post-write
+callbacks. Hosts that need to customize behaviour pass their own
+``hooks`` rather than swapping out the retriever / strategy.
 
-CRITICAL: Uses ComposablePromptBuilder (not StaticPromptBuilder)
-to ensure memory context from S02 Context is injected into the
-system prompt via MemoryContextBlock.
+CRITICAL: Uses ``ComposablePromptBuilder`` (not ``StaticPromptBuilder``)
+so memory context retrieved at Stage 2 is injected into the system
+prompt via ``MemoryContextBlock``.
 """
 
 from __future__ import annotations
 
-from typing import Any, Awaitable, Callable, Dict, List, Optional
+from typing import Awaitable, Callable, Optional
 
 from geny_executor.core.builder import PipelineBuilder
 from geny_executor.core.pipeline import Pipeline
-from geny_executor.memory.retriever import GenyMemoryRetriever
-from geny_executor.memory.strategy import GenyMemoryStrategy
-from geny_executor.memory.persistence import GenyPersistence
+from geny_executor.memory.provider import MemoryHooks, MemoryProvider
+from geny_executor.memory.retriever import MemoryAwareRetriever
+from geny_executor.memory.strategy import ProviderDrivenStrategy
+from geny_executor.stages.s18_memory.artifact.default.persistence import (
+    NullPersistence,
+)
 from geny_executor.tools.base import ToolContext
 from geny_executor.tools.registry import ToolRegistry
 
@@ -95,11 +101,12 @@ class GenyPresets:
     @staticmethod
     def worker_easy(
         api_key: str,
-        memory_manager: Any,
+        provider: MemoryProvider,
         *,
         model: str = "claude-sonnet-4-6",
         system_prompt: str = "",
-        max_inject_chars: int = 10000,
+        hooks: Optional[MemoryHooks] = None,
+        llm_gate: Optional[Callable[[str], Awaitable[bool]]] = None,
         host_memory_clause: Optional[str] = None,
     ) -> Pipeline:
         """Worker (easy) — single-turn Q&A with memory context.
@@ -110,21 +117,18 @@ class GenyPresets:
         Best for: simple questions that need memory context but no tools or loops.
 
         Args:
-            host_memory_clause: Concrete tool catalogue + ladder
-                description the host wants appended after the
-                executor's generic memory-usage clause. Hosts that
-                don't pass anything still get the policy half.
+            provider: Live ``MemoryProvider`` (typically composite).
+            hooks: Retrieval policy + post-write callbacks. When provided,
+                also installed onto the provider via ``set_hooks``.
+            llm_gate: Optional per-turn predicate; ``False`` skips memory.
+            host_memory_clause: Concrete tool catalogue + ladder description
+                the host wants appended after the executor's generic
+                memory-usage clause.
         """
-        retriever = GenyMemoryRetriever(
-            memory_manager,
-            max_inject_chars=max_inject_chars,
-            enable_vector_search=True,
-        )
-        strategy = GenyMemoryStrategy(
-            memory_manager,
-            enable_reflection=False,
-        )
-        persistence = GenyPersistence(memory_manager)
+        if hooks is not None:
+            provider.set_hooks(hooks)
+        retriever = MemoryAwareRetriever(provider, hooks=hooks, llm_gate=llm_gate)
+        strategy = ProviderDrivenStrategy(provider)
 
         composed = _compose_persona_prompt(
             system_prompt or _DEFAULT_WORKER_PROMPT,
@@ -141,7 +145,7 @@ class GenyPresets:
             .with_tool_review()
             .with_task_registry()
             .with_hitl()
-            .with_memory(strategy=strategy, persistence=persistence)
+            .with_memory(strategy=strategy, persistence=NullPersistence())
             .with_summarize()
             .with_persist()
             .build()
@@ -150,18 +154,15 @@ class GenyPresets:
     @staticmethod
     def worker_full(
         api_key: str,
-        memory_manager: Any,
+        provider: MemoryProvider,
         *,
         model: str = "claude-sonnet-4-6",
         system_prompt: str = "",
         tools: Optional[ToolRegistry] = None,
         tool_context: Optional[ToolContext] = None,
         max_turns: int = 50,
-        max_inject_chars: int = 10000,
-        enable_reflection: bool = True,
-        llm_reflect: Optional[Callable[[str, str], Awaitable[List[Dict[str, Any]]]]] = None,
+        hooks: Optional[MemoryHooks] = None,
         llm_gate: Optional[Callable[[str], Awaitable[bool]]] = None,
-        curated_knowledge_manager: Any = None,
         host_memory_clause: Optional[str] = None,
     ) -> Pipeline:
         """Worker (full) — autonomous agent with all stages.
@@ -171,22 +172,13 @@ class GenyPresets:
                        → Evaluate → Loop → Memory → Yield
 
         Best for: complex tasks that require tools, multi-turn loops,
-        and full memory integration.
+        and full memory integration. Reflection / promotion plumbing
+        lives on ``hooks.should_reflect`` / ``hooks.should_auto_promote``.
         """
-        retriever = GenyMemoryRetriever(
-            memory_manager,
-            max_inject_chars=max_inject_chars,
-            enable_vector_search=True,
-            llm_gate=llm_gate,
-            curated_knowledge_manager=curated_knowledge_manager,
-        )
-        strategy = GenyMemoryStrategy(
-            memory_manager,
-            enable_reflection=enable_reflection,
-            llm_reflect=llm_reflect,
-            curated_knowledge_manager=curated_knowledge_manager,
-        )
-        persistence = GenyPersistence(memory_manager)
+        if hooks is not None:
+            provider.set_hooks(hooks)
+        retriever = MemoryAwareRetriever(provider, hooks=hooks, llm_gate=llm_gate)
+        strategy = ProviderDrivenStrategy(provider)
 
         composed = _compose_persona_prompt(
             system_prompt or _DEFAULT_WORKER_PROMPT,
@@ -206,13 +198,13 @@ class GenyPresets:
             .with_hitl()
             .with_evaluate()
             .with_loop(max_turns=max_turns)
-            .with_memory(strategy=strategy, persistence=persistence)
+            .with_memory(strategy=strategy, persistence=NullPersistence())
             .with_summarize()
             .with_persist()
         )
 
         if tools:
-            tool_kwargs: Dict[str, Any] = {}
+            tool_kwargs: dict = {}
             if tool_context:
                 tool_kwargs["context"] = tool_context
             pipeline_builder = pipeline_builder.with_tools(registry=tools, **tool_kwargs)
@@ -222,7 +214,7 @@ class GenyPresets:
     @staticmethod
     def worker_adaptive(
         api_key: str,
-        memory_manager: Any,
+        provider: MemoryProvider,
         *,
         model: str = "claude-sonnet-4-6",
         system_prompt: str = "",
@@ -230,11 +222,8 @@ class GenyPresets:
         tool_context: Optional[ToolContext] = None,
         max_turns: int = 30,
         easy_max_turns: int = 1,
-        max_inject_chars: int = 10000,
-        enable_reflection: bool = True,
-        llm_reflect: Optional[Callable[[str, str], Awaitable[List[Dict[str, Any]]]]] = None,
+        hooks: Optional[MemoryHooks] = None,
         llm_gate: Optional[Callable[[str], Awaitable[bool]]] = None,
-        curated_knowledge_manager: Any = None,
         host_memory_clause: Optional[str] = None,
     ) -> Pipeline:
         """Worker (adaptive) — binary classify + autonomous execution.
@@ -242,9 +231,6 @@ class GenyPresets:
         Auto-classifies tasks on the first turn:
           - easy: 1-turn direct answer (no tools, minimal tokens)
           - not_easy: multi-turn loop with TODO decomposition + tool use
-
-        Replaces the old template-optimized-autonomous workflow graph
-        with a single Pipeline using BinaryClassifyEvaluation strategy.
 
         Active stages: Input → Context → System → Guard → Cache
                        → API → Token → Think → Parse → Tool
@@ -255,24 +241,11 @@ class GenyPresets:
             BinaryClassifyEvaluation,
         )
 
-        retriever = GenyMemoryRetriever(
-            memory_manager,
-            max_inject_chars=max_inject_chars,
-            enable_vector_search=True,
-            llm_gate=llm_gate,
-            curated_knowledge_manager=curated_knowledge_manager,
-        )
-        strategy = GenyMemoryStrategy(
-            memory_manager,
-            enable_reflection=enable_reflection,
-            llm_reflect=llm_reflect,
-            curated_knowledge_manager=curated_knowledge_manager,
-        )
-        persistence = GenyPersistence(memory_manager)
+        if hooks is not None:
+            provider.set_hooks(hooks)
+        retriever = MemoryAwareRetriever(provider, hooks=hooks, llm_gate=llm_gate)
+        strategy = ProviderDrivenStrategy(provider)
 
-        # Combine user prompt with adaptive execution instructions
-        # then layer the executor's memory policy + host's tool
-        # catalogue on top.
         full_prompt = (system_prompt or _DEFAULT_WORKER_PROMPT) + "\n\n" + _ADAPTIVE_PROMPT
         composed = _compose_persona_prompt(
             full_prompt,
@@ -298,13 +271,13 @@ class GenyPresets:
             .with_hitl()
             .with_evaluate(strategy=eval_strategy)
             .with_loop(max_turns=max_turns)
-            .with_memory(strategy=strategy, persistence=persistence)
+            .with_memory(strategy=strategy, persistence=NullPersistence())
             .with_summarize()
             .with_persist()
         )
 
         if tools:
-            tool_kwargs: Dict[str, Any] = {}
+            tool_kwargs: dict = {}
             if tool_context:
                 tool_kwargs["context"] = tool_context
             pipeline_builder = pipeline_builder.with_tools(registry=tools, **tool_kwargs)
@@ -314,16 +287,14 @@ class GenyPresets:
     @staticmethod
     def vtuber(
         api_key: str,
-        memory_manager: Any,
+        provider: MemoryProvider,
         *,
         model: str = "claude-sonnet-4-6",
         persona_prompt: str = "",
-        max_inject_chars: int = 8000,
-        enable_reflection: bool = True,
-        llm_reflect: Optional[Callable[[str, str], Awaitable[List[Dict[str, Any]]]]] = None,
         tools: Optional[ToolRegistry] = None,
         tool_context: Optional[ToolContext] = None,
-        curated_knowledge_manager: Any = None,
+        hooks: Optional[MemoryHooks] = None,
+        llm_gate: Optional[Callable[[str], Awaitable[bool]]] = None,
         host_memory_clause: Optional[str] = None,
     ) -> Pipeline:
         """VTuber — conversational agent with persona and memory reflection.
@@ -332,21 +303,12 @@ class GenyPresets:
                        → API → Token → Parse → [Tool] → Memory → Yield
 
         Best for: VTuber persona with conversation memory and
-        post-execution insight extraction.
+        post-execution insight extraction (driven by ``hooks.should_reflect``).
         """
-        retriever = GenyMemoryRetriever(
-            memory_manager,
-            max_inject_chars=max_inject_chars,
-            enable_vector_search=True,
-            curated_knowledge_manager=curated_knowledge_manager,
-        )
-        strategy = GenyMemoryStrategy(
-            memory_manager,
-            enable_reflection=enable_reflection,
-            llm_reflect=llm_reflect,
-            curated_knowledge_manager=curated_knowledge_manager,
-        )
-        persistence = GenyPersistence(memory_manager)
+        if hooks is not None:
+            provider.set_hooks(hooks)
+        retriever = MemoryAwareRetriever(provider, hooks=hooks, llm_gate=llm_gate)
+        strategy = ProviderDrivenStrategy(provider)
 
         composed = _compose_persona_prompt(
             persona_prompt or _DEFAULT_VTUBER_PROMPT,
@@ -365,13 +327,13 @@ class GenyPresets:
             .with_hitl()
             .with_evaluate()
             .with_loop(max_turns=10)
-            .with_memory(strategy=strategy, persistence=persistence)
+            .with_memory(strategy=strategy, persistence=NullPersistence())
             .with_summarize()
             .with_persist()
         )
 
         if tools:
-            tool_kwargs: Dict[str, Any] = {}
+            tool_kwargs: dict = {}
             if tool_context:
                 tool_kwargs["context"] = tool_context
             pipeline_builder = pipeline_builder.with_tools(registry=tools, **tool_kwargs)

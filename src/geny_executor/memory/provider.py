@@ -214,12 +214,46 @@ class CostModel:
 
 
 @dataclass
+class InteractionFields:
+    """Optional **first-class** interaction fields shared by every
+    note-shaped dataclass (``NoteDraft``, ``Note``, ``NoteMeta``)
+    and ``Turn``.
+
+    The decision (D4): event_id / linked_event_id / kind / direction
+    / counterpart_id / counterpart_role / session_id are common
+    enough to be promoted out of the host-extension ``metadata``
+    dict into typed optional fields. Hosts that don't use them set
+    them to ``None`` and pay nothing; hosts that do (Geny's
+    InteractionEvent stream, web-mirror dashboards, anyone wiring
+    cross-event references) get a typed surface and frontmatter
+    serialisation for free.
+
+    Truly host-specific keys (Geny's bucket router, VTuber LOGS
+    routing hints, etc.) stay on the ``metadata`` dict with a
+    ``geny.*`` prefix per the cross-cutting convention.
+    """
+
+    event_id: Optional[str] = None
+    linked_event_id: Optional[str] = None
+    kind: Optional[str] = None  # e.g. "user_chat", "agent_dm", "tool_run_summary"
+    direction: Optional[str] = None  # "inbound" | "outbound"
+    counterpart_id: Optional[str] = None
+    counterpart_role: Optional[str] = None  # "user" | "agent"
+    session_id: Optional[str] = None  # original session that produced the artefact
+
+
+@dataclass
 class NoteMeta:
     """Lightweight projection of a note for list/graph operations.
 
     `metadata` is a host-defined extension channel — providers store
     and round-trip it verbatim, never inspect the contents. Use a
     namespaced key prefix (e.g. ``geny.*``) to avoid collisions.
+
+    The interaction fields (``event_id``, ``linked_event_id``,
+    ``kind``, ``direction``, ``counterpart_id``, ``counterpart_role``,
+    ``session_id``) are first-class and serialised to frontmatter
+    when present. See ``InteractionFields``.
     """
 
     ref: NoteRef
@@ -232,6 +266,14 @@ class NoteMeta:
     size_bytes: int = 0
     backlinks: int = 0
     metadata: Dict[str, Any] = field(default_factory=dict)
+    # Interaction fields (D4 — promoted from metadata to typed surface)
+    event_id: Optional[str] = None
+    linked_event_id: Optional[str] = None
+    kind: Optional[str] = None
+    direction: Optional[str] = None
+    counterpart_id: Optional[str] = None
+    counterpart_role: Optional[str] = None
+    session_id: Optional[str] = None
 
 
 @dataclass
@@ -242,6 +284,10 @@ class Note:
     header). `metadata` is the ephemeral host-extension channel —
     not persisted to the YAML, but round-tripped through writes
     and read responses for routing / business hints.
+
+    Interaction fields (``event_id``, ``linked_event_id``, etc.) are
+    first-class and serialised to frontmatter under the
+    ``interaction.*`` namespace.
     """
 
     ref: NoteRef
@@ -256,6 +302,14 @@ class Note:
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
+    # Interaction fields (D4)
+    event_id: Optional[str] = None
+    linked_event_id: Optional[str] = None
+    kind: Optional[str] = None
+    direction: Optional[str] = None
+    counterpart_id: Optional[str] = None
+    counterpart_role: Optional[str] = None
+    session_id: Optional[str] = None
 
     def as_meta(self) -> NoteMeta:
         return NoteMeta(
@@ -269,6 +323,13 @@ class Note:
             size_bytes=len(self.body.encode("utf-8")),
             backlinks=len(self.links_in),
             metadata=dict(self.metadata),
+            event_id=self.event_id,
+            linked_event_id=self.linked_event_id,
+            kind=self.kind,
+            direction=self.direction,
+            counterpart_id=self.counterpart_id,
+            counterpart_role=self.counterpart_role,
+            session_id=self.session_id,
         )
 
 
@@ -281,6 +342,9 @@ class NoteDraft:
     ephemeral host-extension channel — not serialised, but
     available to `MemoryHooks` and downstream callers for business
     routing.
+
+    Interaction fields are first-class — providers serialise them
+    to ``interaction.*`` frontmatter keys when present.
     """
 
     title: str
@@ -292,6 +356,14 @@ class NoteDraft:
     frontmatter: Dict[str, Any] = field(default_factory=dict)
     scope: Scope = Scope.SESSION
     metadata: Dict[str, Any] = field(default_factory=dict)
+    # Interaction fields (D4)
+    event_id: Optional[str] = None
+    linked_event_id: Optional[str] = None
+    kind: Optional[str] = None
+    direction: Optional[str] = None
+    counterpart_id: Optional[str] = None
+    counterpart_role: Optional[str] = None
+    session_id: Optional[str] = None
 
 
 @dataclass
@@ -314,11 +386,68 @@ class NotePatch:
 
 
 @dataclass
+class NoteSummary:
+    """Lightweight per-note summary for progressive-disclosure listings.
+
+    Returned by ``IndexHandle.list_notes`` — hosts use this to render
+    a category folder view (filename + title + first paragraph + tag
+    chips + size + modified) without parsing every note's body.
+    """
+
+    filename: str
+    title: str = ""
+    category: str = ""
+    tags: List[str] = field(default_factory=list)
+    importance: str = "medium"
+    char_count: int = 0
+    modified: str = ""
+    first_paragraph: str = ""
+
+
+@dataclass
+class OutlineNode:
+    """One heading in a markdown outline tree.
+
+    ``level`` is the markdown heading depth (1 → ``#``, 2 → ``##``, …).
+    ``line_start`` / ``line_end`` are 1-indexed line numbers in the
+    note body that bound this section's content (between this heading
+    and the next heading at the same or shallower level). Children
+    are nested headings of strictly greater depth.
+    """
+
+    level: int
+    heading: str
+    line_start: int
+    line_end: int
+    children: List["OutlineNode"] = field(default_factory=list)
+
+
+@dataclass
+class NoteOutline:
+    """Markdown outline of a single note.
+
+    Hosts call ``IndexHandle.read_outline(filename)`` after a
+    ``list_notes`` selection to see the heading tree, then
+    ``read_section(filename, heading)`` for the body of a chosen
+    heading. This is the third step of the progressive-disclosure
+    chain (categories → notes → outline → section).
+    """
+
+    filename: str
+    title: str = ""
+    headings: List[OutlineNode] = field(default_factory=list)
+
+
+@dataclass
 class NoteGraph:
     """Wikilink graph snapshot. Edge: (source_filename → target_filename).
 
     `metadata` carries optional host-side annotations (graph build
     timestamp, derived stats, etc.).
+
+    Query helpers (1-hop / k-hop / connected-component / linked-chain
+    / notes-with-tag) operate on the in-memory snapshot — hosts that
+    need fresh results re-snapshot via ``IndexHandle.graph()``.
     """
 
     nodes: List[NoteMeta] = field(default_factory=list)
@@ -328,6 +457,116 @@ class NoteGraph:
     def neighbours(self, filename: str) -> List[str]:
         return [b for a, b in self.edges if a == filename]
 
+    def k_hop(self, filename: str, k: int) -> List[str]:
+        """Every node reachable from ``filename`` in **at most** ``k``
+        hops, excluding ``filename`` itself. ``k=0`` returns ``[]``,
+        ``k=1`` is equivalent to ``neighbours``. Order: BFS level,
+        deterministic by edge order.
+        """
+        if k <= 0 or not filename:
+            return []
+        adj = self._adjacency()
+        seen: Set[str] = {filename}
+        frontier: List[str] = [filename]
+        out: List[str] = []
+        for _ in range(k):
+            next_frontier: List[str] = []
+            for node in frontier:
+                for nbr in adj.get(node, []):
+                    if nbr in seen:
+                        continue
+                    seen.add(nbr)
+                    out.append(nbr)
+                    next_frontier.append(nbr)
+            if not next_frontier:
+                break
+            frontier = next_frontier
+        return out
+
+    def connected_component(self, filename: str) -> Set[str]:
+        """Closure under the directed edge relation (treated as
+        undirected) starting from ``filename``. Includes the seed
+        node itself when it appears anywhere in the graph.
+        """
+        if not filename:
+            return set()
+        # Build undirected adjacency once per call.
+        adj_und: Dict[str, Set[str]] = {}
+        for src, tgt in self.edges:
+            adj_und.setdefault(src, set()).add(tgt)
+            adj_und.setdefault(tgt, set()).add(src)
+        if filename not in adj_und:
+            # Lone node — empty graph component unless it's a node
+            # known to the graph.
+            known = {n.ref.filename for n in self.nodes}
+            if filename in known:
+                return {filename}
+            return set()
+        seen: Set[str] = {filename}
+        stack: List[str] = [filename]
+        while stack:
+            node = stack.pop()
+            for nbr in adj_und.get(node, ()):
+                if nbr in seen:
+                    continue
+                seen.add(nbr)
+                stack.append(nbr)
+        return seen
+
+    def linked_chain(self, start: str, end: str) -> Optional[List[str]]:
+        """Shortest directed path from ``start`` to ``end`` (BFS).
+        Returns ``None`` if no path exists; ``[start]`` when
+        ``start == end``.
+        """
+        if not start or not end:
+            return None
+        if start == end:
+            return [start]
+        adj = self._adjacency()
+        prev: Dict[str, str] = {}
+        seen: Set[str] = {start}
+        frontier: List[str] = [start]
+        while frontier:
+            next_frontier: List[str] = []
+            for node in frontier:
+                for nbr in adj.get(node, []):
+                    if nbr in seen:
+                        continue
+                    seen.add(nbr)
+                    prev[nbr] = node
+                    if nbr == end:
+                        # Reconstruct path.
+                        path = [end]
+                        cur = end
+                        while cur != start:
+                            cur = prev[cur]
+                            path.append(cur)
+                        path.reverse()
+                        return path
+                    next_frontier.append(nbr)
+            frontier = next_frontier
+        return None
+
+    def notes_with_tag(self, tag: str) -> List[str]:
+        """Filenames of every node whose ``tags`` (case-insensitive)
+        contains ``tag``. Empty when no node carries the tag.
+        """
+        if not tag:
+            return []
+        needle = tag.lower()
+        out: List[str] = []
+        for n in self.nodes:
+            tags = getattr(n, "tags", None) or ()
+            if any(str(t).lower() == needle for t in tags):
+                out.append(n.ref.filename)
+        return out
+
+    def _adjacency(self) -> Dict[str, List[str]]:
+        adj: Dict[str, List[str]] = {}
+        for src, tgt in self.edges:
+            adj.setdefault(src, []).append(tgt)
+        return adj
+
 
 # ─────────────────────────────────────────────────────────────────────
 # 4. Turn / Reflection / Execution
@@ -336,12 +575,26 @@ class NoteGraph:
 
 @dataclass
 class Turn:
-    """One conversational turn for STM recording."""
+    """One conversational turn for STM recording.
+
+    Interaction fields (``event_id``, ``linked_event_id``, etc.) are
+    first-class — STM stores serialise them onto the jsonl row so
+    cross-event references survive read-back. Truly host-specific
+    routing hints stay on ``metadata``.
+    """
 
     role: str  # "user" | "assistant" | "system" | "tool"
     content: Any  # str or Anthropic structured content
     timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     metadata: Dict[str, Any] = field(default_factory=dict)
+    # Interaction fields (D4 — promoted from metadata to typed surface)
+    event_id: Optional[str] = None
+    linked_event_id: Optional[str] = None
+    kind: Optional[str] = None
+    direction: Optional[str] = None
+    counterpart_id: Optional[str] = None
+    counterpart_role: Optional[str] = None
+    session_id: Optional[str] = None
 
     @property
     def bytes(self) -> int:
@@ -358,12 +611,20 @@ class Turn:
     def from_state_message(cls, message: Mapping[str, Any]) -> "Turn":
         """Lift a `state.messages` entry into a `Turn`.
 
-        Honours an optional ``message["metadata"]`` dict — host code
-        (Geny's `_pending_message_metadata` stamp etc.) writes
-        InteractionEvent fields onto the message before stage 18 runs;
-        this method preserves that dict on `Turn.metadata` so the
-        executor's record_turn path can route it to STM without the
-        host having to maintain a parallel write trail.
+        Honours an optional ``message["metadata"]`` dict. Hosts that
+        stamp interaction fields onto a message before stage 18 may
+        either:
+
+        - Use the typed keys directly on the message (``event_id``,
+          ``linked_event_id``, ``kind``, …) — promoted to the matching
+          ``Turn`` field.
+        - Or place them inside ``metadata["interaction"]`` /
+          ``metadata["geny.interaction.*"]`` — preserved on
+          ``Turn.metadata`` for downstream routing.
+
+        Either form survives the round-trip; STM stores serialise
+        the typed surface to dedicated jsonl columns so cross-event
+        traversal stays first-class.
         """
         raw_meta = message.get("metadata") or {}
         meta_dict: Dict[str, Any]
@@ -371,10 +632,34 @@ class Turn:
             meta_dict = dict(raw_meta)
         else:
             meta_dict = {}
+
+        def _take(name: str) -> Optional[str]:
+            # Prefer top-level key on the message, then a top-level
+            # key in metadata, then `metadata['interaction'][name]`.
+            v = message.get(name)
+            if isinstance(v, str) and v:
+                return v
+            v = meta_dict.get(name)
+            if isinstance(v, str) and v:
+                return v
+            inter = meta_dict.get("interaction")
+            if isinstance(inter, Mapping):
+                v = inter.get(name)
+                if isinstance(v, str) and v:
+                    return v
+            return None
+
         return cls(
             role=str(message.get("role", "user")),
             content=message.get("content", ""),
             metadata=meta_dict,
+            event_id=_take("event_id"),
+            linked_event_id=_take("linked_event_id"),
+            kind=_take("kind"),
+            direction=_take("direction"),
+            counterpart_id=_take("counterpart_id"),
+            counterpart_role=_take("counterpart_role"),
+            session_id=_take("session_id"),
         )
 
 
@@ -686,7 +971,15 @@ class MemoryEvent(str, enum.Enum):
 
 @runtime_checkable
 class STMHandle(Protocol):
-    """Short-Term Memory plane. Append-only stream of turns + events."""
+    """Short-Term Memory plane. Append-only stream of turns + events.
+
+    The plane also exposes a session-summary slot — a single markdown
+    string written once at session close (see ``MemoryStage`` /
+    Stage 19 Summarizer) and read back on resume. Hosts that pre-1.20
+    wrote ``transcripts/summary.md`` directly should switch to
+    ``write_summary`` / ``read_summary`` so the plane stays the
+    single source of truth.
+    """
 
     async def append(self, turn: Turn) -> None: ...
     async def append_event(
@@ -699,6 +992,8 @@ class STMHandle(Protocol):
     async def recent(self, n: int = 20) -> List[Turn]: ...
     async def search(self, text: str, *, limit: int = 10) -> List[Turn]: ...
     async def truncate(self, *, keep_last: int) -> int: ...
+    async def read_summary(self) -> Optional[str]: ...
+    async def write_summary(self, body: str) -> None: ...
 
 
 @runtime_checkable
@@ -785,6 +1080,16 @@ class IndexHandle(Protocol):
     Distinct from the Notes graph because it includes provider-side
     materialised aggregates (tag counts, importance histogram, link
     graph, file inventory).
+
+    Supports a 4-step **progressive disclosure** read path so hosts
+    (or LLM agents) can drill from the high-level vault structure down
+    to a single section without paying for a full body load on every
+    step:
+
+    1. ``list_categories()``       — every category folder + file count
+    2. ``list_notes(category)``    — note summaries within one category
+    3. ``read_outline(filename)``  — heading tree of one note
+    4. ``read_section(file, hd)``  — body of one heading
     """
 
     async def snapshot(self) -> Dict[str, Any]: ...
@@ -792,6 +1097,16 @@ class IndexHandle(Protocol):
     async def graph(self) -> NoteGraph: ...
     async def rebuild(self) -> None: ...
     async def list_categories(self) -> List[Dict[str, Any]]: ...
+    async def list_notes(
+        self,
+        *,
+        category: Optional[str] = None,
+        tag: Optional[str] = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> List[NoteSummary]: ...
+    async def read_outline(self, filename: str) -> Optional[NoteOutline]: ...
+    async def read_section(self, filename: str, heading: str) -> Optional[str]: ...
     async def build_vault_map(
         self,
         *,
@@ -860,38 +1175,117 @@ class MemoryProvider(Protocol):
 
 
 # ─────────────────────────────────────────────────────────────────────
-# 11. MemoryHooks — pluggable policy attached to a stage instance
+# 11. MemoryHooks — pluggable policy attached to a provider / stage
 # ─────────────────────────────────────────────────────────────────────
+
+
+# Default per-layer budget ratios for ``MemoryAwareRetriever``. Each
+# value is the maximum share of the total ``max_inject_chars`` budget
+# that the corresponding retrieval layer is allowed to consume. The
+# layers run in order so an early layer hitting its cap leaves the
+# rest of the budget for downstream layers — no layer is forced to
+# fill its full ratio.
+_DEFAULT_LAYER_BUDGET_RATIO: Dict[str, float] = {
+    "recent_turns": 0.40,
+    "session_summary": 0.10,
+    "pinned": 0.30,
+    "vault_map": 0.05,
+    "ltm_main": 0.20,
+    "vector": 0.40,
+    "keyword": 0.40,
+    "backlink": 0.20,
+    "curated": 0.20,
+}
+
+
+_DEFAULT_IMPORTANCE_BOOST: Dict[str, float] = {
+    "critical": 2.0,
+    "high": 1.5,
+    "medium": 1.0,
+    "low": 0.5,
+}
 
 
 @dataclass
 class MemoryHooks:
-    """Policy callbacks consulted by the rewritten `MemoryStage`. Kept
-    as a plain dataclass so test stubs can inline-construct one.
+    """Pluggable policy + callback bag for the executor's memory plane.
 
-    The ``after_*`` callbacks fire after the corresponding
-    ``MemoryProvider`` operation completes (record_turn,
-    record_execution, notes.write, notes.update). They run as
-    fire-and-forget tasks scheduled on the current event loop —
-    failures are logged but never block the primary memory write.
-    Hosts use these to layer business logic (DM bundle archiver,
-    conversation bucket router, VTuber LOGS emit, pin policy
-    decisions) on top of the executor's STM/LTM/notes plane without
-    maintaining a parallel pipeline path.
+    Attached to a ``MemoryProvider`` via ``provider.set_hooks(hooks)``.
+    The same instance is consulted by:
+
+    1. **Stage 18 MemoryStage** — `should_record_execution`,
+       `should_reflect`, `should_auto_promote` gate the
+       per-turn record / reflect / promote chain.
+    2. **Stage 18 post-write fan-out** — `after_record_turn`,
+       `after_record_execution`, `after_note_write`,
+       `after_note_update` fire fire-and-forget so hosts can layer
+       business logic (DM bundle archiver, conversation bucket
+       router, VTuber LOGS emit, pin policy decisions) on top of
+       the executor's STM/Notes/LTM plane.
+    3. **Stage 2 MemoryAwareRetriever** — every retrieval-policy
+       field below (`vault_descriptions`, `importance_boost`,
+       `layer_budget_ratio`, `pin_category`, `recent_turns`,
+       `slim_mode`, `enable_vector_search`, `max_results`,
+       `max_inject_chars`, `search_chars`, `vault_map_max_chars`)
+       is read live so hosts can adjust retrieval shape from a
+       single attach point.
+
+    Construction is a plain dataclass so tests inline-build one with
+    only the fields they care about.
     """
 
+    # ── Stage 18 gate callbacks ─────────────────────────────────────
     should_record_execution: Callable[["PipelineState"], bool] = lambda s: bool(s.final_text)
     should_reflect: Callable[["PipelineState"], bool] = lambda s: False
     should_auto_promote: Callable[[Insight], bool] = lambda i: i.should_auto_promote()
-    # Post-write callbacks. Default: None (no-op). Awaited inside a
-    # detached task by the provider; raise inside the callback to
-    # log + drop, never to abort the write.
+
+    # ── Stage 18 post-write callbacks (fire-and-forget) ─────────────
     after_record_turn: Optional[Callable[[Turn, RecordReceipt], "Awaitable[None]"]] = None
     after_record_execution: Optional[
         Callable[[ExecutionSummary, RecordReceipt], "Awaitable[None]"]
     ] = None
     after_note_write: Optional[Callable[[NoteMeta], "Awaitable[None]"]] = None
     after_note_update: Optional[Callable[[NoteMeta], "Awaitable[None]"]] = None
+
+    # ── Stage 2 retrieval policy ────────────────────────────────────
+    # Host-supplied category labels. Used by IndexHandle.render_vault_map
+    # so the rendered block matches the host's operator-prompt layout.
+    vault_descriptions: Dict[str, str] = field(default_factory=dict)
+    # Multiplicative score boost applied to keyword-search results.
+    # Indexed by `Importance` value. Boost > 1 promotes, < 1 demotes.
+    importance_boost: Dict[str, float] = field(
+        default_factory=lambda: dict(_DEFAULT_IMPORTANCE_BOOST)
+    )
+    # Multiplicative score boost applied by category. Empty dict disables.
+    category_boosts: Dict[str, float] = field(default_factory=dict)
+    # Per-layer fraction of `max_inject_chars`. See
+    # `_DEFAULT_LAYER_BUDGET_RATIO`. Hosts may override only the
+    # layers they want to clamp — missing keys fall back to defaults.
+    layer_budget_ratio: Dict[str, float] = field(
+        default_factory=lambda: dict(_DEFAULT_LAYER_BUDGET_RATIO)
+    )
+    # Notes category that holds always-pinned facts. Read by
+    # `NotesHandle.load_pinned(category=...)` and stamped on retrieved
+    # chunks as `metadata["host_layer"]`.
+    pin_category: str = "critical"
+    # STM tail size injected as the L0 chunk regardless of query overlap.
+    recent_turns: int = 6
+    # When True, MemoryAwareRetriever returns only L0/L1/L1.5/L1.7 and
+    # leaves heavy semantic / keyword layers to the host's progressive
+    # disclosure tools (memory_search / memory_read).
+    slim_mode: bool = False
+    # When True, the lightweight vault map is injected even outside slim mode.
+    always_render_vault_map: bool = True
+    # Cap applied to the rendered vault map block.
+    vault_map_max_chars: int = 500
+    # Vector search switches.
+    enable_vector_search: bool = True
+    # Per-layer max chunk count (vector / keyword / backlink).
+    max_results: int = 5
+    # Total character budget for one retrieval call.
+    max_inject_chars: int = 10000
+    # Cap on the query text actually sent to keyword/vector layers.
+    search_chars: int = 500
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -938,6 +1332,10 @@ __all__ = [
     "NoteDraft",
     "NotePatch",
     "NoteGraph",
+    "NoteSummary",
+    "NoteOutline",
+    "OutlineNode",
+    "InteractionFields",
     # turn / reflection / execution
     "Turn",
     "ExecutionSummary",

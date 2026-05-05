@@ -88,13 +88,12 @@ from geny_executor.llm_client import (
     ProviderBackedClient,
 )
 from geny_executor.memory import (
-    GenyMemoryRetriever,
-    GenyMemoryStrategy,
-    GenyPersistence,
     GenyPresets,
+    MemoryAwareRetriever,
+    ProviderDrivenStrategy,
 )
 
-__version__ = "1.12.0"
+__version__ = "1.20.0"
 
 __all__ = [
     # Core
@@ -175,9 +174,8 @@ __all__ = [
     "MutationKind",
     "MutationRecord",
     "MutationResult",
-    # Geny Memory Integration
-    "GenyMemoryRetriever",
-    "GenyMemoryStrategy",
-    "GenyPersistence",
+    # Memory plumbing (provider-driven)
+    "MemoryAwareRetriever",
+    "ProviderDrivenStrategy",
     "GenyPresets",
 ]

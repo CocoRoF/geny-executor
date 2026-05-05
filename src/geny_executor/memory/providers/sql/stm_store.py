@@ -30,15 +30,32 @@ class _SQLSTMStore:
     # ── STMHandle contract ──────────────────────────────────────────
 
     async def append(self, turn: Turn) -> None:
-        kind, payload = _encode_content(turn.content)
+        content_kind, payload = _encode_content(turn.content)
         ts = _normalise_ts(turn.timestamp, self._tz)
         meta = json.dumps(turn.metadata, ensure_ascii=False) if turn.metadata else None
         await self._conn.execute(
             """
-            INSERT INTO stm_turns (type, role, content_kind, content, ts, metadata_json)
-            VALUES ('message', ?, ?, ?, ?, ?)
+            INSERT INTO stm_turns (
+                type, role, content_kind, content, ts, metadata_json,
+                event_id, linked_event_id, kind, direction,
+                counterpart_id, counterpart_role, session_id
+            )
+            VALUES ('message', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (turn.role, kind, payload, ts, meta),
+            (
+                turn.role,
+                content_kind,
+                payload,
+                ts,
+                meta,
+                turn.event_id,
+                turn.linked_event_id,
+                turn.kind,
+                turn.direction,
+                turn.counterpart_id,
+                turn.counterpart_role,
+                turn.session_id,
+            ),
         )
 
     async def append_event(
@@ -119,6 +136,25 @@ class _SQLSTMStore:
         )
         return total - keep_last
 
+    # ── Session summary ─────────────────────────────────────────────
+
+    async def read_summary(self) -> Optional[str]:
+        row = await self._conn.fetchone("SELECT body FROM stm_summary WHERE id = 1")
+        if row is None:
+            return None
+        body = row.get("body") if isinstance(row, dict) else row["body"]
+        return body or None
+
+    async def write_summary(self, body: str) -> None:
+        # UPSERT pattern (works across sqlite >= 3.24 + Postgres).
+        await self._conn.execute(
+            (
+                "INSERT INTO stm_summary (id, body) VALUES (1, ?) "
+                "ON CONFLICT (id) DO UPDATE SET body = excluded.body"
+            ),
+            (body,),
+        )
+
     # ── snapshot helpers ────────────────────────────────────────────
 
     async def all_rows(self) -> List[dict]:
@@ -161,11 +197,29 @@ def _row_to_turn(row: Any) -> Turn:
         except (TypeError, ValueError):
             metadata = {}
     stamp = _parse_ts(row["ts"]) or now_in(_utc())
+
+    def _interaction(name: str) -> Optional[str]:
+        try:
+            value = row[name]
+        except (KeyError, IndexError):
+            return None
+        if value is None:
+            return None
+        value_str = str(value).strip()
+        return value_str or None
+
     return Turn(
         role=str(row["role"]),
         content=_decode_content(str(row["content_kind"]), str(row["content"])),
         timestamp=stamp,
         metadata=metadata,
+        event_id=_interaction("event_id"),
+        linked_event_id=_interaction("linked_event_id"),
+        kind=_interaction("kind"),
+        direction=_interaction("direction"),
+        counterpart_id=_interaction("counterpart_id"),
+        counterpart_role=_interaction("counterpart_role"),
+        session_id=_interaction("session_id"),
     )
 
 

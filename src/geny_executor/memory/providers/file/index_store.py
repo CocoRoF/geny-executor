@@ -13,19 +13,41 @@ the format that `_FilesystemNotesStore` writes.
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 from collections import Counter
 from datetime import tzinfo
-from typing import Any, Dict, List, Optional, Tuple
+from pathlib import Path
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 from geny_executor.memory._locks import LoopAgnosticLock
-from geny_executor.memory.provider import NoteGraph, NoteMeta
+from geny_executor.memory.provider import NoteGraph, NoteMeta, NoteOutline, NoteSummary
 from geny_executor.memory.providers.file.layout import DirectoryLayout
 from geny_executor.memory.providers.file.notes_store import _FilesystemNotesStore
 from geny_executor.memory.providers.file.timezone import now_in
 
 
 class _FileIndexStore:
-    """Read-mostly view on the notes store with on-disk cache."""
+    """Read-mostly view on the notes store with on-disk cache.
+
+    The store owns the on-disk hierarchical sidecars:
+
+    - ``<root>/_index.json`` — flat canonical inventory (all files +
+      tag map + link graph). Updated on every write.
+    - ``<cat>/_index.json`` — per-category shard listing only that
+      category's notes + tag counts + canonical description. Updated
+      incrementally per affected category.
+    - ``<root>/_summary.json`` — folder-tree overview (every category
+      + file_count + description). Updated on every write because the
+      total + per-category counts shift.
+
+    Hosts inject ``category_descriptions`` at provider construction so
+    the canonical labels (Geny's "critical = always-pinned facts" etc.)
+    show up uniformly in every sidecar.
+    """
+
+    SUBINDEX_FILENAME = "_index.json"
+    SUMMARY_FILENAME = "_summary.json"
 
     def __init__(
         self,
@@ -33,11 +55,20 @@ class _FileIndexStore:
         *,
         layout: DirectoryLayout,
         tz: tzinfo,
+        category_descriptions: Optional[Dict[str, str]] = None,
     ) -> None:
         self._notes = notes
         self._layout = layout
         self._tz = tz
         self._lock = LoopAgnosticLock()
+        self._category_descriptions: Dict[str, str] = dict(category_descriptions or {})
+
+    def set_category_descriptions(self, descriptions: Dict[str, str]) -> None:
+        """Late-set or replace the canonical description map. Called
+        when hosts switch hooks; the next sidecar refresh picks up
+        the new labels.
+        """
+        self._category_descriptions = dict(descriptions or {})
 
     # ── IndexHandle contract ────────────────────────────────────────
 
@@ -45,7 +76,27 @@ class _FileIndexStore:
         async with self._lock:
             payload = await self._compute()
         self._write_cache(payload)
+        # snapshot() is a read-side operation that also refreshes the
+        # disk cache; piggy-back on it to refresh hierarchical sidecars
+        # so a fresh read sees consistent shards.
+        self._write_hierarchical_sidecars(payload, category=None)
         return payload
+
+    async def refresh_for_category(self, category: Optional[str]) -> None:
+        """Incrementally refresh the sidecars affected by a single
+        category change. Always rewrites:
+
+        - ``<root>/_index.json`` (flat — totals shift)
+        - ``<root>/_summary.json`` (folder tree — counts shift)
+        - ``<cat>/_index.json`` for the changed category
+
+        Other category shards are left untouched. Called after every
+        ``NotesStore.write`` / ``update`` / ``delete``.
+        """
+        async with self._lock:
+            payload = await self._compute()
+        self._write_cache(payload)
+        self._write_hierarchical_sidecars(payload, category=category)
 
     async def tag_counts(self) -> Dict[str, int]:
         payload = await self._cached_or_compute()
@@ -75,6 +126,62 @@ class _FileIndexStore:
             await self._notes.clear_cache()
             payload = await self._compute()
             self._write_cache(payload)
+
+    async def list_notes(
+        self,
+        *,
+        category: Optional[str] = None,
+        tag: Optional[str] = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> List["NoteSummary"]:
+        from geny_executor.memory._progressive import make_summary
+
+        notes = await self._notes.all()
+        tag_lower = tag.lower() if isinstance(tag, str) else None
+        filtered = []
+        for n in notes:
+            cat = n.category or "root"
+            if category is not None and cat != category:
+                continue
+            if tag_lower is not None:
+                tags_lower = {str(t).lower() for t in (n.tags or [])}
+                if tag_lower not in tags_lower:
+                    continue
+            modified = n.updated_at.isoformat() if n.updated_at else ""
+            filtered.append((modified, n))
+        filtered.sort(key=lambda pair: (pair[0], pair[1].ref.filename), reverse=True)
+        sliced = filtered[offset : offset + max(0, int(limit))]
+        return [
+            make_summary(
+                filename=n.ref.filename,
+                title=n.title,
+                category=n.category or "root",
+                tags=list(n.tags or []),
+                importance=n.importance.value
+                if hasattr(n.importance, "value")
+                else str(n.importance),
+                body=n.body or "",
+                modified=modified,
+            )
+            for modified, n in sliced
+        ]
+
+    async def read_outline(self, filename: str) -> Optional["NoteOutline"]:
+        from geny_executor.memory._progressive import parse_outline
+
+        note = await self._notes.read(filename)
+        if note is None:
+            return None
+        return parse_outline(filename=filename, title=note.title, body=note.body or "")
+
+    async def read_section(self, filename: str, heading: str) -> Optional[str]:
+        from geny_executor.memory._progressive import extract_section
+
+        note = await self._notes.read(filename)
+        if note is None:
+            return None
+        return extract_section(note.body or "", heading)
 
     async def list_categories(self) -> List[Dict[str, Any]]:
         """Every direct subdirectory of `memory/` (canonical + host-defined),
@@ -301,13 +408,127 @@ class _FileIndexStore:
 
     def _write_cache(self, payload: Dict[str, Any]) -> None:
         self._layout.memory.mkdir(parents=True, exist_ok=True)
-        self._layout.index_json.write_text(
-            json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2),
-            encoding="utf-8",
-        )
+        _atomic_write_json(self._layout.index_json, payload)
+
+    # ── hierarchical sidecars (EXEC-5) ──────────────────────────────
+
+    def _write_hierarchical_sidecars(
+        self,
+        payload: Dict[str, Any],
+        *,
+        category: Optional[str],
+    ) -> None:
+        """Write per-category ``<cat>/_index.json`` shards + the root
+        ``_summary.json`` overview.
+
+        ``category=None`` rewrites every category shard (used by full
+        ``snapshot()``); a specific value rewrites only that one shard
+        (used by ``refresh_for_category`` per write/update/delete).
+        The root summary is always rewritten because totals shift on
+        any change.
+        """
+        self._layout.memory.mkdir(parents=True, exist_ok=True)
+
+        files = (payload.get("files") or {}).values()
+        by_cat: Dict[str, List[Dict[str, Any]]] = {}
+        for entry in files:
+            cat = entry.get("category") or "root"
+            by_cat.setdefault(cat, []).append(entry)
+
+        # Discover canonical + on-disk categories so empty folders
+        # still receive an empty shard ("category exists" signal).
+        all_cats: Set[str] = set(by_cat.keys()) | {"root"}
+        for cat_dir in self._layout.category_dirs():
+            cat_name = "root" if cat_dir == self._layout.memory else cat_dir.name
+            all_cats.add(cat_name)
+
+        targets: Iterable[str]
+        if category is None:
+            targets = sorted(all_cats)
+        else:
+            # Always include ``root`` alongside the named category so
+            # the root sidecars stay consistent.
+            targets = sorted({category, "root"})
+
+        for cat in targets:
+            # root → the canonical flat ``_index.json`` already lives at
+            # ``<memory>/_index.json`` (written by ``_write_cache``).
+            # Per-category shards have the same filename inside their
+            # own folder; if we wrote a "root shard" we'd overwrite the
+            # flat index. Skip — root coverage stays in the flat index
+            # plus the root summary.
+            if cat == "root":
+                continue
+            cat_files = by_cat.get(cat, [])
+            cat_dir = self._layout.memory / cat
+            try:
+                cat_dir.mkdir(parents=True, exist_ok=True)
+            except OSError:
+                continue
+            tag_counts: Dict[str, int] = {}
+            for f in cat_files:
+                for t in f.get("tags") or []:
+                    tag_counts[str(t)] = tag_counts.get(str(t), 0) + 1
+            shard_payload = {
+                "version": "2",
+                "category": cat,
+                "description": self._category_descriptions.get(cat, ""),
+                "file_count": len(cat_files),
+                "files": {f["filename"]: f for f in cat_files if f.get("filename")},
+                "tag_counts": tag_counts,
+                "last_rebuilt": now_in(self._tz).isoformat(),
+            }
+            shard_path = cat_dir / self.SUBINDEX_FILENAME
+            try:
+                _atomic_write_json(shard_path, shard_payload)
+            except OSError:
+                continue
+
+        # Always rewrite the root folder-tree summary.
+        summary = {
+            "version": "2",
+            "categories": [
+                {
+                    "name": cat,
+                    "file_count": len(by_cat.get(cat, [])),
+                    "path": ("memory" if cat == "root" else f"memory/{cat}"),
+                    "description": self._category_descriptions.get(cat, ""),
+                    "exists": True,
+                }
+                for cat in sorted(all_cats)
+            ],
+            "category_descriptions": dict(self._category_descriptions),
+            "generated_at": now_in(self._tz).isoformat(),
+        }
+        try:
+            _atomic_write_json(self._layout.memory / self.SUMMARY_FILENAME, summary)
+        except OSError:
+            pass
 
 
 # ── helpers ──────────────────────────────────────────────────────────
+
+
+def _atomic_write_json(path: Path, payload: Any) -> None:
+    """Tempfile + os.replace atomic JSON write — never leaves a
+    half-written sidecar visible to readers.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(
+        prefix=path.stem + ".",
+        suffix=".json.tmp",
+        dir=str(path.parent),
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh, ensure_ascii=False, sort_keys=True, indent=2)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def _summary(body: str, *, limit: int = 200) -> str:
