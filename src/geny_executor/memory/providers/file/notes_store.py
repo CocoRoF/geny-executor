@@ -136,6 +136,13 @@ class _FilesystemNotesStore(NotesHandle):
                 created_at=now,
                 updated_at=now,
                 metadata=dict(draft.metadata or {}),
+                event_id=draft.event_id,
+                linked_event_id=draft.linked_event_id,
+                kind=draft.kind,
+                direction=draft.direction,
+                counterpart_id=draft.counterpart_id,
+                counterpart_role=draft.counterpart_role,
+                session_id=draft.session_id,
             )
             self._write_to_disk(note)
             self._cache[filename] = note
@@ -523,6 +530,26 @@ class _FilesystemNotesStore(NotesHandle):
                     host_metadata = decoded
             except (OSError, ValueError):
                 host_metadata = {}
+        # Lift interaction fields out of frontmatter into typed slots.
+        interaction_values: Dict[str, Optional[str]] = {}
+        for fname in _INTERACTION_FIELDS:
+            raw = meta.get(f"interaction.{fname}")
+            if isinstance(raw, str) and raw.strip():
+                interaction_values[fname] = raw.strip()
+            else:
+                interaction_values[fname] = None
+        # Strip claimed keys from the carry-through frontmatter dict.
+        reserved = {
+            "title",
+            "tags",
+            "category",
+            "importance",
+            "created",
+            "modified",
+            "links_to",
+            "linked_from",
+            "_metadata",
+        } | {f"interaction.{f}" for f in _INTERACTION_FIELDS}
         return Note(
             ref=NoteRef(
                 filename=filename,
@@ -535,27 +562,19 @@ class _FilesystemNotesStore(NotesHandle):
             importance=importance,
             tags=[str(t) for t in tags],
             category=category_value,
-            frontmatter={
-                k: v
-                for k, v in meta.items()
-                if k
-                not in {
-                    "title",
-                    "tags",
-                    "category",
-                    "importance",
-                    "created",
-                    "modified",
-                    "links_to",
-                    "linked_from",
-                    "_metadata",
-                }
-            },
+            frontmatter={k: v for k, v in meta.items() if k not in reserved},
             links_out=[str(t) for t in links_out],
             links_in=[],
             created_at=created,
             updated_at=modified,
             metadata=host_metadata,
+            event_id=interaction_values["event_id"],
+            linked_event_id=interaction_values["linked_event_id"],
+            kind=interaction_values["kind"],
+            direction=interaction_values["direction"],
+            counterpart_id=interaction_values["counterpart_id"],
+            counterpart_role=interaction_values["counterpart_role"],
+            session_id=interaction_values["session_id"],
         )
 
 
@@ -580,6 +599,17 @@ def _extract_links(body: str) -> List[str]:
     return seen
 
 
+_INTERACTION_FIELDS: Tuple[str, ...] = (
+    "event_id",
+    "linked_event_id",
+    "kind",
+    "direction",
+    "counterpart_id",
+    "counterpart_role",
+    "session_id",
+)
+
+
 def _note_to_frontmatter(note: Note, *, tz: tzinfo) -> Dict[str, Any]:
     """Produce the YAML-like frontmatter mapping for `note`.
 
@@ -588,6 +618,11 @@ def _note_to_frontmatter(note: Note, *, tz: tzinfo) -> Dict[str, Any]:
     scalar / list values, so a nested business dict would corrupt
     on round-trip. Instead it is persisted to a sidecar JSON file
     alongside the note (see `_metadata_sidecar_path`).
+
+    Interaction fields (event_id / kind / counterpart_* / …) are
+    typed first-class on every note dataclass and serialised to
+    flat ``interaction.<name>`` keys here so a hand-edited note
+    keeps the cross-event references readable in the ``---`` block.
     """
     created = note.created_at or now_in(tz)
     modified = note.updated_at or created
@@ -601,10 +636,19 @@ def _note_to_frontmatter(note: Note, *, tz: tzinfo) -> Dict[str, Any]:
     }
     if note.links_out:
         meta["links_to"] = list(note.links_out)
-    # Preserve any caller-supplied frontmatter keys not already claimed
+    # Promote interaction fields onto frontmatter as `interaction.<name>`.
+    for fname in _INTERACTION_FIELDS:
+        value = getattr(note, fname, None)
+        if value is None:
+            continue
+        meta[f"interaction.{fname}"] = str(value)
+    # Preserve any caller-supplied frontmatter keys not already claimed.
     for k, v in (note.frontmatter or {}).items():
-        if k not in meta:
-            meta[k] = v
+        if k in meta:
+            continue
+        # Caller's dotted `interaction.*` keys also get rejected if the
+        # typed field already wrote them — typed wins.
+        meta[k] = v
     return meta
 
 
@@ -665,6 +709,13 @@ def _clone(note: Optional[Note]) -> Optional[Note]:
         created_at=note.created_at,
         updated_at=note.updated_at,
         metadata=dict(note.metadata or {}),
+        event_id=note.event_id,
+        linked_event_id=note.linked_event_id,
+        kind=note.kind,
+        direction=note.direction,
+        counterpart_id=note.counterpart_id,
+        counterpart_role=note.counterpart_role,
+        session_id=note.session_id,
     )
 
 

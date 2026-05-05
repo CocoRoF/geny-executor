@@ -210,12 +210,29 @@ class _JSONLSTMStore:
 # ── record <-> Turn converters ───────────────────────────────────────
 
 
+_TURN_INTERACTION_FIELDS: tuple = (
+    "event_id",
+    "linked_event_id",
+    "kind",
+    "direction",
+    "counterpart_id",
+    "counterpart_role",
+    "session_id",
+)
+
+
 def _turn_to_record(turn: Turn, tz: tzinfo) -> Dict[str, Any]:
     """Serialize a `Turn` into a JSONL record matching Geny's schema.
 
     `timestamp` is normalised into the provider's configured timezone
     and emitted as ISO-8601. Geny's reader expects `ts`, not
     `timestamp`, so we write `ts`.
+
+    Interaction fields (``event_id`` / ``linked_event_id`` / ``kind`` /
+    ``direction`` / ``counterpart_id`` / ``counterpart_role`` /
+    ``session_id``) — when present — land at the row's top level so
+    downstream readers (web mirror, Geny CLI, dashboards) can index
+    them without parsing ``metadata``.
     """
     stamp = turn.timestamp
     if stamp.tzinfo is None:
@@ -230,6 +247,11 @@ def _turn_to_record(turn: Turn, tz: tzinfo) -> Dict[str, Any]:
     }
     if turn.metadata:
         rec["metadata"] = dict(turn.metadata)
+    for fname in _TURN_INTERACTION_FIELDS:
+        value = getattr(turn, fname, None)
+        if value is None:
+            continue
+        rec[fname] = str(value)
     return rec
 
 
@@ -247,11 +269,26 @@ def _record_to_turn(raw: str) -> Optional[Turn]:
         return None
     ts_raw = rec.get("ts") or rec.get("timestamp")
     stamp = _parse_ts(ts_raw) or now_in(_utc())
+
+    def _interaction(name: str) -> Optional[str]:
+        value = rec.get(name)
+        if value is None:
+            return None
+        value_str = str(value).strip()
+        return value_str or None
+
     return Turn(
         role=str(rec.get("role", "user")),
         content=rec.get("content", ""),
         timestamp=stamp,
         metadata=dict(rec.get("metadata", {}) or {}),
+        event_id=_interaction("event_id"),
+        linked_event_id=_interaction("linked_event_id"),
+        kind=_interaction("kind"),
+        direction=_interaction("direction"),
+        counterpart_id=_interaction("counterpart_id"),
+        counterpart_role=_interaction("counterpart_role"),
+        session_id=_interaction("session_id"),
     )
 
 

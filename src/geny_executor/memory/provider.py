@@ -214,12 +214,46 @@ class CostModel:
 
 
 @dataclass
+class InteractionFields:
+    """Optional **first-class** interaction fields shared by every
+    note-shaped dataclass (``NoteDraft``, ``Note``, ``NoteMeta``)
+    and ``Turn``.
+
+    The decision (D4): event_id / linked_event_id / kind / direction
+    / counterpart_id / counterpart_role / session_id are common
+    enough to be promoted out of the host-extension ``metadata``
+    dict into typed optional fields. Hosts that don't use them set
+    them to ``None`` and pay nothing; hosts that do (Geny's
+    InteractionEvent stream, web-mirror dashboards, anyone wiring
+    cross-event references) get a typed surface and frontmatter
+    serialisation for free.
+
+    Truly host-specific keys (Geny's bucket router, VTuber LOGS
+    routing hints, etc.) stay on the ``metadata`` dict with a
+    ``geny.*`` prefix per the cross-cutting convention.
+    """
+
+    event_id: Optional[str] = None
+    linked_event_id: Optional[str] = None
+    kind: Optional[str] = None  # e.g. "user_chat", "agent_dm", "tool_run_summary"
+    direction: Optional[str] = None  # "inbound" | "outbound"
+    counterpart_id: Optional[str] = None
+    counterpart_role: Optional[str] = None  # "user" | "agent"
+    session_id: Optional[str] = None  # original session that produced the artefact
+
+
+@dataclass
 class NoteMeta:
     """Lightweight projection of a note for list/graph operations.
 
     `metadata` is a host-defined extension channel — providers store
     and round-trip it verbatim, never inspect the contents. Use a
     namespaced key prefix (e.g. ``geny.*``) to avoid collisions.
+
+    The interaction fields (``event_id``, ``linked_event_id``,
+    ``kind``, ``direction``, ``counterpart_id``, ``counterpart_role``,
+    ``session_id``) are first-class and serialised to frontmatter
+    when present. See ``InteractionFields``.
     """
 
     ref: NoteRef
@@ -232,6 +266,14 @@ class NoteMeta:
     size_bytes: int = 0
     backlinks: int = 0
     metadata: Dict[str, Any] = field(default_factory=dict)
+    # Interaction fields (D4 — promoted from metadata to typed surface)
+    event_id: Optional[str] = None
+    linked_event_id: Optional[str] = None
+    kind: Optional[str] = None
+    direction: Optional[str] = None
+    counterpart_id: Optional[str] = None
+    counterpart_role: Optional[str] = None
+    session_id: Optional[str] = None
 
 
 @dataclass
@@ -242,6 +284,10 @@ class Note:
     header). `metadata` is the ephemeral host-extension channel —
     not persisted to the YAML, but round-tripped through writes
     and read responses for routing / business hints.
+
+    Interaction fields (``event_id``, ``linked_event_id``, etc.) are
+    first-class and serialised to frontmatter under the
+    ``interaction.*`` namespace.
     """
 
     ref: NoteRef
@@ -256,6 +302,14 @@ class Note:
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
+    # Interaction fields (D4)
+    event_id: Optional[str] = None
+    linked_event_id: Optional[str] = None
+    kind: Optional[str] = None
+    direction: Optional[str] = None
+    counterpart_id: Optional[str] = None
+    counterpart_role: Optional[str] = None
+    session_id: Optional[str] = None
 
     def as_meta(self) -> NoteMeta:
         return NoteMeta(
@@ -269,6 +323,13 @@ class Note:
             size_bytes=len(self.body.encode("utf-8")),
             backlinks=len(self.links_in),
             metadata=dict(self.metadata),
+            event_id=self.event_id,
+            linked_event_id=self.linked_event_id,
+            kind=self.kind,
+            direction=self.direction,
+            counterpart_id=self.counterpart_id,
+            counterpart_role=self.counterpart_role,
+            session_id=self.session_id,
         )
 
 
@@ -281,6 +342,9 @@ class NoteDraft:
     ephemeral host-extension channel — not serialised, but
     available to `MemoryHooks` and downstream callers for business
     routing.
+
+    Interaction fields are first-class — providers serialise them
+    to ``interaction.*`` frontmatter keys when present.
     """
 
     title: str
@@ -292,6 +356,14 @@ class NoteDraft:
     frontmatter: Dict[str, Any] = field(default_factory=dict)
     scope: Scope = Scope.SESSION
     metadata: Dict[str, Any] = field(default_factory=dict)
+    # Interaction fields (D4)
+    event_id: Optional[str] = None
+    linked_event_id: Optional[str] = None
+    kind: Optional[str] = None
+    direction: Optional[str] = None
+    counterpart_id: Optional[str] = None
+    counterpart_role: Optional[str] = None
+    session_id: Optional[str] = None
 
 
 @dataclass
@@ -503,12 +575,26 @@ class NoteGraph:
 
 @dataclass
 class Turn:
-    """One conversational turn for STM recording."""
+    """One conversational turn for STM recording.
+
+    Interaction fields (``event_id``, ``linked_event_id``, etc.) are
+    first-class — STM stores serialise them onto the jsonl row so
+    cross-event references survive read-back. Truly host-specific
+    routing hints stay on ``metadata``.
+    """
 
     role: str  # "user" | "assistant" | "system" | "tool"
     content: Any  # str or Anthropic structured content
     timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     metadata: Dict[str, Any] = field(default_factory=dict)
+    # Interaction fields (D4 — promoted from metadata to typed surface)
+    event_id: Optional[str] = None
+    linked_event_id: Optional[str] = None
+    kind: Optional[str] = None
+    direction: Optional[str] = None
+    counterpart_id: Optional[str] = None
+    counterpart_role: Optional[str] = None
+    session_id: Optional[str] = None
 
     @property
     def bytes(self) -> int:
@@ -525,12 +611,20 @@ class Turn:
     def from_state_message(cls, message: Mapping[str, Any]) -> "Turn":
         """Lift a `state.messages` entry into a `Turn`.
 
-        Honours an optional ``message["metadata"]`` dict — host code
-        (Geny's `_pending_message_metadata` stamp etc.) writes
-        InteractionEvent fields onto the message before stage 18 runs;
-        this method preserves that dict on `Turn.metadata` so the
-        executor's record_turn path can route it to STM without the
-        host having to maintain a parallel write trail.
+        Honours an optional ``message["metadata"]`` dict. Hosts that
+        stamp interaction fields onto a message before stage 18 may
+        either:
+
+        - Use the typed keys directly on the message (``event_id``,
+          ``linked_event_id``, ``kind``, …) — promoted to the matching
+          ``Turn`` field.
+        - Or place them inside ``metadata["interaction"]`` /
+          ``metadata["geny.interaction.*"]`` — preserved on
+          ``Turn.metadata`` for downstream routing.
+
+        Either form survives the round-trip; STM stores serialise
+        the typed surface to dedicated jsonl columns so cross-event
+        traversal stays first-class.
         """
         raw_meta = message.get("metadata") or {}
         meta_dict: Dict[str, Any]
@@ -538,10 +632,34 @@ class Turn:
             meta_dict = dict(raw_meta)
         else:
             meta_dict = {}
+
+        def _take(name: str) -> Optional[str]:
+            # Prefer top-level key on the message, then a top-level
+            # key in metadata, then `metadata['interaction'][name]`.
+            v = message.get(name)
+            if isinstance(v, str) and v:
+                return v
+            v = meta_dict.get(name)
+            if isinstance(v, str) and v:
+                return v
+            inter = meta_dict.get("interaction")
+            if isinstance(inter, Mapping):
+                v = inter.get(name)
+                if isinstance(v, str) and v:
+                    return v
+            return None
+
         return cls(
             role=str(message.get("role", "user")),
             content=message.get("content", ""),
             metadata=meta_dict,
+            event_id=_take("event_id"),
+            linked_event_id=_take("linked_event_id"),
+            kind=_take("kind"),
+            direction=_take("direction"),
+            counterpart_id=_take("counterpart_id"),
+            counterpart_role=_take("counterpart_role"),
+            session_id=_take("session_id"),
         )
 
 
@@ -1217,6 +1335,7 @@ __all__ = [
     "NoteSummary",
     "NoteOutline",
     "OutlineNode",
+    "InteractionFields",
     # turn / reflection / execution
     "Turn",
     "ExecutionSummary",

@@ -61,13 +61,20 @@ def _ddl(dialect: Dialect) -> Tuple[str, ...]:
     return (
         f"""
         CREATE TABLE IF NOT EXISTS stm_turns (
-            id            {auto_pk},
-            type          TEXT    NOT NULL DEFAULT 'message',
-            role          TEXT    NOT NULL,
-            content_kind  TEXT    NOT NULL,
-            content       TEXT    NOT NULL,
-            ts            TEXT    NOT NULL,
-            metadata_json TEXT
+            id                {auto_pk},
+            type              TEXT    NOT NULL DEFAULT 'message',
+            role              TEXT    NOT NULL,
+            content_kind      TEXT    NOT NULL,
+            content           TEXT    NOT NULL,
+            ts                TEXT    NOT NULL,
+            metadata_json     TEXT,
+            event_id          TEXT,
+            linked_event_id   TEXT,
+            kind              TEXT,
+            direction         TEXT,
+            counterpart_id    TEXT,
+            counterpart_role  TEXT,
+            session_id        TEXT
         )
         """,
         "CREATE INDEX IF NOT EXISTS idx_stm_turns_id ON stm_turns(id)",
@@ -94,7 +101,14 @@ def _ddl(dialect: Dialect) -> Tuple[str, ...]:
             backend          TEXT,
             frontmatter_json TEXT,
             created_at       TEXT NOT NULL,
-            updated_at       TEXT NOT NULL
+            updated_at       TEXT NOT NULL,
+            event_id         TEXT,
+            linked_event_id  TEXT,
+            kind             TEXT,
+            direction        TEXT,
+            counterpart_id   TEXT,
+            counterpart_role TEXT,
+            session_id       TEXT
         )
         """,
         "CREATE INDEX IF NOT EXISTS idx_notes_category ON notes(category)",

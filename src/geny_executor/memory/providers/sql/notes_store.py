@@ -103,8 +103,10 @@ class _SQLNotesStore(NotesHandle):
             """
             INSERT INTO notes (
                 filename, title, body, importance, category, scope, backend,
-                frontmatter_json, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                frontmatter_json, created_at, updated_at,
+                event_id, linked_event_id, kind, direction,
+                counterpart_id, counterpart_role, session_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 filename,
@@ -117,6 +119,13 @@ class _SQLNotesStore(NotesHandle):
                 front,
                 ts,
                 ts,
+                draft.event_id,
+                draft.linked_event_id,
+                draft.kind,
+                draft.direction,
+                draft.counterpart_id,
+                draft.counterpart_role,
+                draft.session_id,
             ),
         )
         await self._replace_tags(filename, draft.tags)
@@ -136,6 +145,13 @@ class _SQLNotesStore(NotesHandle):
             updated_at=now,
             size_bytes=len(draft.body.encode("utf-8")),
             backlinks=await self._count_backlinks(filename),
+            event_id=draft.event_id,
+            linked_event_id=draft.linked_event_id,
+            kind=draft.kind,
+            direction=draft.direction,
+            counterpart_id=draft.counterpart_id,
+            counterpart_role=draft.counterpart_role,
+            session_id=draft.session_id,
         )
 
     async def update(self, filename: str, patch: NotePatch) -> NoteMeta:
@@ -405,6 +421,17 @@ class _SQLNotesStore(NotesHandle):
         importance = _parse_importance(row["importance"])
         scope = _parse_scope(row["scope"])
         front = _parse_json_dict(row["frontmatter_json"])
+
+        def _interaction(name: str) -> Optional[str]:
+            try:
+                value = row[name]
+            except (KeyError, IndexError):
+                return None
+            if value is None:
+                return None
+            value_str = str(value).strip()
+            return value_str or None
+
         return Note(
             ref=NoteRef(
                 filename=filename,
@@ -422,6 +449,13 @@ class _SQLNotesStore(NotesHandle):
             links_in=links_in,
             created_at=_parse_ts(row["created_at"]),
             updated_at=_parse_ts(row["updated_at"]),
+            event_id=_interaction("event_id"),
+            linked_event_id=_interaction("linked_event_id"),
+            kind=_interaction("kind"),
+            direction=_interaction("direction"),
+            counterpart_id=_interaction("counterpart_id"),
+            counterpart_role=_interaction("counterpart_role"),
+            session_id=_interaction("session_id"),
         )
 
 

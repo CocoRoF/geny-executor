@@ -266,6 +266,13 @@ class _NotesStore(NotesHandle):
             created_at=now,
             updated_at=now,
             metadata=dict(draft.metadata or {}),
+            event_id=draft.event_id,
+            linked_event_id=draft.linked_event_id,
+            kind=draft.kind,
+            direction=draft.direction,
+            counterpart_id=draft.counterpart_id,
+            counterpart_role=draft.counterpart_role,
+            session_id=draft.session_id,
         )
         self._notes[filename] = note
         self._refresh_backlinks()
