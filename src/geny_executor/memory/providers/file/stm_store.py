@@ -17,12 +17,12 @@ fsync-on-write and the ephemeral provider doesn't offer it either.
 
 from __future__ import annotations
 
-import asyncio
 import json
 from datetime import datetime, tzinfo
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from geny_executor.memory._locks import LoopAgnosticLock
 from geny_executor.memory.provider import MemoryHooks, RecordReceipt, Turn
 from geny_executor.memory.providers.file.timezone import now_in
 
@@ -33,10 +33,12 @@ MAX_STM_LINES = 2000
 class _JSONLSTMStore:
     """Append-only JSONL file backed STM.
 
-    Concurrency: all reads/writes are serialised through an asyncio
-    lock. Multiple coroutines in one process are safe; cross-process
-    access is not a goal for Phase 2a (Phase 2c SQL provider will
-    cover multi-writer scenarios).
+    Concurrency: all reads/writes are serialised through a
+    loop-agnostic lock so hosts that drive the store from a sync
+    bridge (multiple short-lived event loops) don't trigger
+    cross-loop ``Future attached to a different loop`` errors.
+    Cross-process access is not a goal here — SQL provider covers
+    multi-writer scenarios.
     """
 
     def __init__(
@@ -48,7 +50,7 @@ class _JSONLSTMStore:
     ) -> None:
         self._path = path
         self._tz = tz
-        self._lock = asyncio.Lock()
+        self._lock = LoopAgnosticLock()
         self._hooks = hooks or MemoryHooks()
 
     # ── NotesHandle contract ────────────────────────────────────────

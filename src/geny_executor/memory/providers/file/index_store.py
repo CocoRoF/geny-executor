@@ -12,12 +12,12 @@ the format that `_FilesystemNotesStore` writes.
 
 from __future__ import annotations
 
-import asyncio
 import json
 from collections import Counter
 from datetime import tzinfo
 from typing import Any, Dict, List, Optional, Tuple
 
+from geny_executor.memory._locks import LoopAgnosticLock
 from geny_executor.memory.provider import NoteGraph, NoteMeta
 from geny_executor.memory.providers.file.layout import DirectoryLayout
 from geny_executor.memory.providers.file.notes_store import _FilesystemNotesStore
@@ -37,7 +37,7 @@ class _FileIndexStore:
         self._notes = notes
         self._layout = layout
         self._tz = tz
-        self._lock = asyncio.Lock()
+        self._lock = LoopAgnosticLock()
 
     # ── IndexHandle contract ────────────────────────────────────────
 

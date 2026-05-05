@@ -15,13 +15,13 @@ The main file gets an evergreen bonus of 1.0 with no decay.
 
 from __future__ import annotations
 
-import asyncio
 import math
 import re
 from datetime import datetime, timedelta, tzinfo
 from pathlib import Path
 from typing import List, Optional, Tuple
 
+from geny_executor.memory._locks import LoopAgnosticLock
 from geny_executor.memory.provider import NoteRef, Scope
 from geny_executor.memory.providers.file.layout import DirectoryLayout
 from geny_executor.memory.providers.file.timezone import now_in
@@ -45,7 +45,7 @@ class _MarkdownLTMStore:
         self._layout = layout
         self._tz = tz
         self._scope = scope
-        self._lock = asyncio.Lock()
+        self._lock = LoopAgnosticLock()
 
     # ── LTMHandle contract ──────────────────────────────────────────
 

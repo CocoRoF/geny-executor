@@ -10,7 +10,6 @@ output (or vice versa). No Geny code is imported.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import re
 import uuid
@@ -18,6 +17,7 @@ from datetime import datetime, tzinfo
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, Iterable, List, Optional, Set, Tuple
 
+from geny_executor.memory._locks import LoopAgnosticLock
 from geny_executor.memory.provider import (
     Importance,
     MemoryHooks,
@@ -71,7 +71,7 @@ class _FilesystemNotesStore(NotesHandle):
         self._layout = layout
         self._tz = tz
         self._scope = scope
-        self._lock = asyncio.Lock()
+        self._lock = LoopAgnosticLock()
         self._cache: Dict[str, Note] = {}
         self._loaded = False
         self._explicit_links: Dict[str, Set[str]] = {}
