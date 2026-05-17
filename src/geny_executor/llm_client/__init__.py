@@ -8,6 +8,7 @@ credentials via :class:`CredentialBundle` (built from
 
 from geny_executor.llm_client.anthropic import AnthropicClient
 from geny_executor.llm_client.base import BaseClient, ClientCapabilities
+from geny_executor.llm_client.claude_code import ClaudeCodeCLIClient
 from geny_executor.llm_client.credentials import (
     ConfigError,
     CredentialBundle,
@@ -21,6 +22,7 @@ __all__ = [
     "APIResponse",
     "AnthropicClient",
     "BaseClient",
+    "ClaudeCodeCLIClient",
     "ClientCapabilities",
     "ClientRegistry",
     "ConfigError",

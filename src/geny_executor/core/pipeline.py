@@ -69,6 +69,44 @@ def _creds_to_client_kwargs(provider: str, creds: ProviderCredentials) -> Dict[s
             kwargs["default_headers"] = dict(creds.default_headers)
         return kwargs
 
+    if provider == "claude_code_cli":
+        extras = dict(creds.extras or {})
+        kwargs = {"api_key": creds.api_key}
+        if creds.binary_path:
+            kwargs["binary_path"] = creds.binary_path
+        # Map known extras to constructor kwargs; unknown extras pass through
+        # to ``extra_args`` (caller's escape hatch).
+        for key in (
+            "workspace_dir",
+            "workspace_root",
+            "settings_path",
+            "bare_mode",
+            "max_budget_usd",
+            "default_permission_mode",
+            "mcp_config",
+            "allow_tools",
+            "disallow_tools",
+            "extra_args",
+            "timeout_s",
+        ):
+            if key in extras:
+                # workspace_root is the settings-side name; the client takes workspace_dir
+                if key == "workspace_root":
+                    kwargs["workspace_dir"] = extras[key]
+                else:
+                    kwargs[key] = extras[key]
+        return kwargs
+
+    if provider == "copilot_cli":
+        extras = dict(creds.extras or {})
+        kwargs = {}
+        if creds.binary_path:
+            kwargs["gh_binary_path"] = creds.binary_path
+        for key in ("allow_tools", "cwd", "extra_args", "timeout_s"):
+            if key in extras:
+                kwargs[key] = extras[key]
+        return kwargs
+
     # API providers (anthropic / openai / google)
     kwargs = {"api_key": creds.api_key}
     if creds.base_url is not None:

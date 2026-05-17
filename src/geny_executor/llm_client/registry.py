@@ -68,7 +68,14 @@ def _vllm_factory() -> Type[BaseClient]:
     return VLLMClient
 
 
+def _claude_code_cli_factory() -> Type[BaseClient]:
+    from geny_executor.llm_client.claude_code import ClaudeCodeCLIClient
+
+    return ClaudeCodeCLIClient
+
+
 ClientRegistry.register("anthropic", _anthropic_factory)
 ClientRegistry.register("openai", _openai_factory)
 ClientRegistry.register("google", _google_factory)
 ClientRegistry.register("vllm", _vllm_factory)
+ClientRegistry.register("claude_code_cli", _claude_code_cli_factory)
