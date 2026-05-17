@@ -15,6 +15,8 @@ class TokenUsage:
     output_tokens: int = 0
     cache_creation_input_tokens: int = 0
     cache_read_input_tokens: int = 0
+    cost_usd: Optional[float] = None
+    duration_ms: Optional[int] = None
 
     @property
     def total_tokens(self) -> int:
@@ -25,6 +27,8 @@ class TokenUsage:
         self.output_tokens += other.output_tokens
         self.cache_creation_input_tokens += other.cache_creation_input_tokens
         self.cache_read_input_tokens += other.cache_read_input_tokens
+        self.cost_usd = _sum_optional(self.cost_usd, other.cost_usd)
+        self.duration_ms = _sum_optional(self.duration_ms, other.duration_ms)
         return self
 
     def __add__(self, other: TokenUsage) -> TokenUsage:
@@ -35,7 +39,15 @@ class TokenUsage:
                 self.cache_creation_input_tokens + other.cache_creation_input_tokens
             ),
             cache_read_input_tokens=(self.cache_read_input_tokens + other.cache_read_input_tokens),
+            cost_usd=_sum_optional(self.cost_usd, other.cost_usd),
+            duration_ms=_sum_optional(self.duration_ms, other.duration_ms),
         )
+
+
+def _sum_optional(a, b):  # type: ignore[no-untyped-def]
+    if a is None and b is None:
+        return None
+    return (a or 0) + (b or 0)
 
 
 @dataclass

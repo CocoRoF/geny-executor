@@ -32,6 +32,16 @@ class APIRequest:
 
     thinking: Optional[Dict[str, Any]] = None
 
+    #: Structured output request. Canonical shapes:
+    #:   {"type": "text"}                                       (default)
+    #:   {"type": "json_object"}
+    #:   {"type": "json_schema", "json_schema": {...}}
+    response_format: Optional[Dict[str, Any]] = None
+
+    #: Session continuity hint for backends that support it.
+    #:   {"session_id": "...", "resume": bool}
+    session_hint: Optional[Dict[str, Any]] = None
+
     metadata: Optional[Dict[str, Any]] = None
 
 
@@ -84,3 +94,7 @@ class APIResponse:
     @property
     def has_tool_calls(self) -> bool:
         return self.stop_reason == "tool_use" or bool(self.tool_calls)
+
+    @property
+    def cost_usd(self) -> Optional[float]:
+        return self.usage.cost_usd
