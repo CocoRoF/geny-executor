@@ -4,6 +4,123 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.0.0] — 2026-05-17
+
+**Major release.** The LLM client layer is generalised to support every
+"model-as-runner" backend behind a single capability-negotiating
+contract — the four existing vendor APIs (Anthropic / OpenAI / Google /
+vLLM) **plus two new CLI backends** (Claude Code, GitHub Copilot). The
+silent-divergence provider-location bug is closed; all credential flow is
+unified behind a single `CredentialBundle` channel.
+
+### Added
+
+- **`ClaudeCodeCLIClient`** (`llm_client.claude_code`) — subprocess-backed
+  client driving Anthropic's `claude` CLI. Streams via stream-json, drops
+  the fields the CLI doesn't accept, and propagates token usage / cost.
+  Capability flags advertise full feature coverage (thinking, tools,
+  structured_output, session_continuity, MCP passthrough, budget limit).
+- **`CopilotCLIClient`** (`llm_client.copilot`) — subprocess-backed client
+  driving `gh copilot -p`. Plain stdout text only (no streaming, no
+  tools); honest capability flags reflect that.
+- **`CredentialBundle` + `ProviderCredentials`** (`llm_client.credentials`)
+  — frozen dataclasses that carry per-provider credentials. `__repr__`
+  redacts api_key. `Pipeline.from_manifest{,_async}` now accepts
+  `credentials=` directly; `api_key=` remains a test/legacy convenience
+  that auto-wraps a single Anthropic key.
+- **`Pipeline._build_client_for(provider)`** — single-point client
+  construction that honours `_resolve_llm_client`'s attach > config
+  resolution order.
+- **`Stage.resolve_local_client(state)`** — per-stage `provider_override`
+  helper. The pipeline-wide client (built from Stage 6) is the default;
+  stages that set `config["provider_override"]` build their own client
+  from the same `CredentialBundle`.
+- **`PipelineState.credentials`** — frozen bundle reference mirrored from
+  the pipeline so stages can build local clients.
+- **Capability flags** (`ClientCapabilities` — 9 new fields):
+  `supports_structured_output`, `supports_session_continuity`,
+  `supports_mcp_passthrough`, `supports_budget_limit`,
+  `supports_token_usage`, `supports_cost_usage`, `is_subprocess`,
+  `requires_workspace`, `streaming_granularity`. Plus a `.supports(name)`
+  string-keyed lookup helper.
+- **`APIRequest`** — `response_format` (json_schema/json_object) and
+  `session_hint` (vendor session id resume).
+- **`TokenUsage`** — `cost_usd` and `duration_ms` with None-aware
+  aggregation in `__add__` / `__iadd__`.
+- **`APIResponse.cost_usd`** — proxy property over `usage.cost_usd`.
+- **`ErrorCategory`** — 5 new categories: `CLI_NOT_FOUND`,
+  `CLI_AUTH_FAILED`, `CLI_TIMEOUT`, `CLI_PROTOCOL_ERROR`,
+  `CLI_PERMISSION_DENIED`. New `is_fatal` property for unretryable
+  classes.
+- **`llm_client._cli_runtime`** — async subprocess primitives shared by
+  the two CLI clients: `CLIProcessRunner` (shell=False, new session,
+  timeout + kill-tree), `scrub_env`, `parse_stream_json_line`,
+  `detect_binary`, `aiter_bytes`. POSIX `start_new_session=True` enables
+  safe `killpg` on cancellation.
+- **`llm_client.translators._cli`** — canonical ↔ CLI helpers:
+  `claude_code_argv`, `thinking_to_effort`, `build_stream_json_stdin`,
+  `stream_json_line_to_canonical_event`, `parse_json_output_to_response`,
+  `assemble_response_from_stream_json`, `compose_copilot_prompt`,
+  `copilot_argv`, `parse_plain_text_to_response`.
+- **`Pipeline._creds_to_client_kwargs(provider, creds)`** — per-provider
+  constructor-kwarg mapping. Includes `workspace_root → workspace_dir`
+  remap for Claude Code.
+- **Manifest validator** — strict mode rejects `strategies['provider']`
+  and requires `config['provider']` on active Stage 6.
+- **Conformance harness** (`tests/llm_client/conformance/`) — provider-
+  agnostic contract tests with `@capability` skip decorator. Six provider
+  modules (anthropic / openai / google / vllm / claude_code_cli /
+  copilot_cli) plug into the same suite.
+- **Fake binaries** (`tests/_fixtures/`) — `fake_echo_cli`, `fake_claude`,
+  `fake_gh`. Drive scenarios via env vars so tests never touch a real
+  vendor service.
+
+### Changed
+
+- **`ClientRegistry.available()` returns 6 providers** (was 4).
+- **`Pipeline.from_manifest{,_async}`** prefers `credentials=CredentialBundle`;
+  the legacy `api_key=` kwarg is retained but auto-wraps into a bundle.
+- **`Pipeline._resolve_llm_client`** is single-source: attached client >
+  Stage 6 `config["provider"]` + bundle > None. The legacy
+  `ProviderBackedClient` auto-bridge fallback is gone.
+- **`APIStage`** strategy-slot `"provider"` is removed. Only `retry` and
+  `router` remain. The stage reads its provider via
+  `config["provider"]`. Constructor still accepts a legacy
+  `APIProvider` instance for direct-construction test fixtures, wrapped
+  internally by `_LegacyProviderAdapter`.
+- **`BaseClient._build_request`** also drops + emits `stop_sequences`
+  when the client lacks that capability.
+- **`fork`-mode skill default runner** uses `AnthropicClient` directly
+  (was `ProviderBackedClient`). A subsequent point release rewires this
+  through `CredentialBundle` for multi-provider fork-mode (Phase D4 of
+  the LLM backend upgrade plan).
+- Existing 4 providers (`anthropic` / `openai` / `google` / `vllm`)
+  declare all 16 capability flags explicitly with their honest values.
+
+### Removed
+
+- **`llm_client.bridge`** module (`ProviderBackedClient`). The inline
+  `_LegacyProviderAdapter` inside `APIStage` covers the one remaining
+  caller (test fixtures).
+- The implicit `strategies["provider"]` slot on the manifest. Manifests
+  using the legacy location are rejected at strict load with `ConfigError`.
+- The `_API_KEY_REQUIRING` set in `core.pipeline` (Stage 6 no longer
+  needs an `api_key` kwarg at instantiation time).
+
+### Migration notes for hosts
+
+- Replace `Pipeline.from_manifest_async(manifest, api_key=key, ...)` with
+  `Pipeline.from_manifest_async(manifest, credentials=CredentialBundle(
+      by_provider={"anthropic": ProviderCredentials(api_key=key), ...}
+  ), ...)`. The `api_key=` shape still works for one-provider Anthropic
+  setups but is now a thin convenience over the canonical channel.
+- If your manifest writer set `stages[6].strategies["provider"]`, move
+  the value to `stages[6].config["provider"]`. Strict load will surface
+  the mistake.
+- Don't import `geny_executor.llm_client.bridge.ProviderBackedClient` —
+  it's gone. The few legitimate consumers (fork-mode skill default
+  runner) have been switched.
+
 ## [1.18.0] — 2026-05-05
 
 Minor release. New `IndexHandle.list_categories` surface for
