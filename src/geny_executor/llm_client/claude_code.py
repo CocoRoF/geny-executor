@@ -127,16 +127,20 @@ class ClaudeCodeCLIClient(BaseClient):
             default_headers=None,
             event_sink=event_sink,
         )
-        # Binary resolution: explicit path → CLAUDE_CODE_BINARY env →
-        # shutil.which("claude"). None means we surface the failure on
-        # the first call (constructing the runner) so the client object
-        # is always returnable.
-        resolved = detect_binary("claude", binary_path) or os.environ.get(
-            "CLAUDE_CODE_BINARY", ""
-        )
-        if not resolved:
-            resolved = detect_binary("claude", None) or ""
-        self._binary = resolved
+        # Binary resolution.
+        # - When the caller passes an explicit ``binary_path`` we respect
+        #   their choice: if it points to a missing file we surface the
+        #   error at send time (CLI_NOT_FOUND) rather than silently using
+        #   a different ``claude`` on PATH.
+        # - When no override is given we try CLAUDE_CODE_BINARY then
+        #   shutil.which("claude").
+        if binary_path:
+            self._binary = detect_binary("claude", binary_path) or ""
+        else:
+            env_override = os.environ.get("CLAUDE_CODE_BINARY", "")
+            self._binary = (
+                detect_binary("claude", env_override) if env_override else None
+            ) or detect_binary("claude", None) or ""
         self._workspace_dir = workspace_dir
         self._settings_path = settings_path
         self._bare_mode = bare_mode
