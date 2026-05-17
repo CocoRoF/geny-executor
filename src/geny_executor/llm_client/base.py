@@ -41,8 +41,41 @@ class ClientCapabilities:
     supports_top_k: bool = False
     supports_system_prompt: bool = True
 
+    # --- Extended capabilities (CLI backends + JSON schema + sessions) ---
+
+    #: JSON-schema / json_object structured-output support.
+    supports_structured_output: bool = False
+
+    #: Vendor-side session id resume (e.g. claude --session-id / --resume).
+    supports_session_continuity: bool = False
+
+    #: Vendor accepts MCP server configuration passthrough.
+    supports_mcp_passthrough: bool = False
+
+    #: Vendor enforces a USD budget cap on the call (e.g. --max-budget-usd).
+    supports_budget_limit: bool = False
+
+    #: Token usage fields are populated on the response.
+    supports_token_usage: bool = True
+
+    #: Cost (usage.cost_usd) is populated on the response.
+    supports_cost_usage: bool = False
+
+    #: Implementation strategy hint — client spawns a subprocess.
+    is_subprocess: bool = False
+
+    #: Client requires a working directory / workspace path.
+    requires_workspace: bool = False
+
+    #: Streaming granularity: "token" | "message" | "none".
+    streaming_granularity: str = "token"
+
     #: Fields this client will silently drop when present on the request.
     drops: tuple[str, ...] = field(default=())
+
+    def supports(self, feature: str) -> bool:
+        """Lookup ``supports_<feature>`` flag by string name."""
+        return bool(getattr(self, f"supports_{feature}", False))
 
 
 class BaseClient(ABC):
@@ -169,7 +202,17 @@ class BaseClient(ABC):
         if tool_choice and not self.capabilities.supports_tool_choice:
             self._emit_unsupported("tool_choice")
 
+        # Stop-sequences negotiation — clients that drop stop_sequences
+        # signal it explicitly. (Not silently honored by all CLI backends.)
+        if model_config.stop_sequences and not self.capabilities.supports_stop_sequences:
+            self._emit_unsupported("stop_sequences")
+            request.stop_sequences = None
+
         return request
+
+    def supports(self, feature: str) -> bool:
+        """Capability lookup helper — proxy to ``self.capabilities.supports``."""
+        return self.capabilities.supports(feature)
 
     def _emit_unsupported(self, field_name: str) -> None:
         if self._event_sink is None:

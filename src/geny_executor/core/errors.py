@@ -17,6 +17,13 @@ class ErrorCategory(str, Enum):
     TERMINAL = "terminal"
     UNKNOWN = "unknown"
 
+    # --- CLI-backend specific categories ---
+    CLI_NOT_FOUND = "cli_not_found"
+    CLI_AUTH_FAILED = "cli_auth_failed"
+    CLI_TIMEOUT = "cli_timeout"
+    CLI_PROTOCOL_ERROR = "cli_protocol_error"
+    CLI_PERMISSION_DENIED = "cli_permission_denied"
+
     @property
     def is_recoverable(self) -> bool:
         return self in {
@@ -24,6 +31,19 @@ class ErrorCategory(str, Enum):
             ErrorCategory.TIMEOUT,
             ErrorCategory.NETWORK,
             ErrorCategory.SERVER_ERROR,
+            ErrorCategory.CLI_TIMEOUT,
+            ErrorCategory.CLI_PROTOCOL_ERROR,
+        }
+
+    @property
+    def is_fatal(self) -> bool:
+        """Categories where retry has no chance of recovery."""
+        return self in {
+            ErrorCategory.AUTH,
+            ErrorCategory.BAD_REQUEST,
+            ErrorCategory.CLI_NOT_FOUND,
+            ErrorCategory.CLI_AUTH_FAILED,
+            ErrorCategory.CLI_PERMISSION_DENIED,
         }
 
 
