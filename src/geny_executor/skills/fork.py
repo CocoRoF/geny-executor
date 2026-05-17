@@ -184,6 +184,127 @@ def make_default_fork_runner(
     return _runner
 
 
+def make_credential_bundle_fork_runner(
+    credentials: Any,
+    *,
+    fallback_provider: str = "anthropic",
+    fallback_model: str = _DEFAULT_FORK_MODEL,
+    max_tokens: int = _DEFAULT_FORK_MAX_TOKENS,
+) -> SkillForkRunner:
+    """Multi-provider fork runner backed by a :class:`CredentialBundle`.
+
+    The runner chooses its client based on ``skill.metadata.provider``
+    (falling back to ``fallback_provider``). Authentication flows through
+    the host-supplied :class:`CredentialBundle`, so a fork-mode skill
+    can run on any of the 6 registered providers — including the CLI
+    backends — without separately wiring API keys.
+
+    Returns a runner unconditionally; missing credentials surface at
+    invocation time as a :class:`ForkResult` with ``is_error=True``
+    rather than crashing at construction.
+    """
+    from geny_executor.core.config import ModelConfig
+    from geny_executor.core.pipeline import _creds_to_client_kwargs
+    from geny_executor.llm_client.credentials import ConfigError, CredentialBundle
+    from geny_executor.llm_client.registry import ClientRegistry
+
+    if not isinstance(credentials, CredentialBundle):
+        # Defensive: hosts wiring this runner pass a CredentialBundle.
+        credentials = CredentialBundle()
+
+    async def _runner(
+        *,
+        skill: "Skill",
+        rendered_body: str,
+        invoke_args: Dict[str, Any],
+        parent_context: ToolContext,
+    ) -> ForkResult:
+        provider = (
+            getattr(skill.metadata, "provider", None) or fallback_provider
+        )
+
+        try:
+            creds = credentials.require(provider)
+        except ConfigError as e:
+            return ForkResult(
+                content=(
+                    f"fork runner: provider {provider!r} has no configured "
+                    f"credentials in this session ({e})"
+                ),
+                metadata={"skill_id": skill.id, "provider": provider},
+                is_error=True,
+            )
+
+        try:
+            client_cls = ClientRegistry.get(provider)
+        except (KeyError, ValueError) as e:
+            return ForkResult(
+                content=f"fork runner: unknown provider {provider!r} ({e})",
+                metadata={"skill_id": skill.id, "provider": provider},
+                is_error=True,
+            )
+
+        client = client_cls(**_creds_to_client_kwargs(provider, creds))
+        model = skill.metadata.model_override or fallback_model
+        model_config = ModelConfig(model=model, max_tokens=max_tokens)
+
+        user_content = "Execute the skill following the system prompt."
+        if invoke_args:
+            import json as _json
+
+            user_content = (
+                user_content + "\n\nArguments:\n" + _json.dumps(invoke_args, indent=2)
+            )
+
+        try:
+            response = await client.create_message(
+                model_config=model_config,
+                messages=[{"role": "user", "content": user_content}],
+                system=rendered_body,
+                purpose=f"skill_fork:{skill.id}",
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "credential-bundle fork runner: skill=%s provider=%s API call failed: %s",
+                skill.id,
+                provider,
+                exc,
+            )
+            return ForkResult(
+                content=f"fork API call failed: {exc}",
+                metadata={"model": model, "provider": provider, "skill_id": skill.id},
+                is_error=True,
+            )
+
+        text_parts = []
+        for block in getattr(response, "content", None) or []:
+            if isinstance(block, dict):
+                if block.get("type") == "text":
+                    text_parts.append(block.get("text", ""))
+            else:
+                if getattr(block, "type", None) == "text":
+                    text_parts.append(getattr(block, "text", ""))
+
+        text = "\n".join(p for p in text_parts if p) or "(no text in fork response)"
+
+        usage = getattr(response, "usage", None)
+        meta: Dict[str, Any] = {
+            "model": model,
+            "provider": provider,
+            "skill_id": skill.id,
+        }
+        if usage is not None:
+            meta["input_tokens"] = getattr(usage, "input_tokens", 0)
+            meta["output_tokens"] = getattr(usage, "output_tokens", 0)
+            cost = getattr(usage, "cost_usd", None)
+            if cost is not None:
+                meta["cost_usd"] = cost
+
+        return ForkResult(content=text, metadata=meta)
+
+    return _runner
+
+
 __all__ = [
     "ForkResult",
     "SkillForkRunner",

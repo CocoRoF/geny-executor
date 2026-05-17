@@ -15,6 +15,33 @@ unified behind a single `CredentialBundle` channel.
 
 ### Added
 
+- **Multi-provider sub-agent system** (`stages.s12_agent.subagent_type`).
+  `SubagentTypeDescriptor` gains `provider`, `provider_credentials_extras`,
+  `parallel`, and `max_concurrent` fields. `SubAgentBuildContext` (frozen
+  dataclass) is now handed to every factory carrying the parent's
+  `CredentialBundle` + descriptor + session ids + workspace snapshot.
+  `PipelineFactory` signature changes from `Callable[[], Any]` to
+  `Callable[[SubAgentBuildContext], Pipeline | Awaitable[Pipeline]]`
+  (zero-arg legacy factories still work via TypeError fallback).
+  `SubagentTypeOrchestrator` now does mixed serial + parallel dispatch,
+  bounded by `asyncio.Semaphore(min(max_concurrent))` of each parallel
+  group.
+- **`Pipeline.attach_runtime(subagent_registry=...)`** + matching
+  kwarg on `from_manifest{,_async}`. Pipeline stores the registry; on
+  call it rebuilds the agent stage's orchestrator as
+  `SubagentTypeOrchestrator(registry)`. `PipelineState.subagent_registry`
+  mirrors the slot so sub-agent factories can reach it.
+- **`PipelineState.credentials`** + **`PipelineState.subagent_registry`**
+  — populated by `_init_state`. Sub-pipelines see the same bundle the
+  parent received.
+- **`SkillMetadata.provider`** — fork-mode skills can declare their
+  preferred provider so the new fork runner picks the right client.
+- **`make_credential_bundle_fork_runner(credentials, ...)`** in
+  `skills.fork` — multi-provider fork-mode runner. Routes via
+  `skill.metadata.provider` (falls back to `fallback_provider`),
+  builds the client via `ClientRegistry.get(...)` with credentials
+  from the bundle. Missing credentials surface as a structured
+  `ForkResult(is_error=True)` rather than crashing.
 - **`ClaudeCodeCLIClient`** (`llm_client.claude_code`) — subprocess-backed
   client driving Anthropic's `claude` CLI. Streams via stream-json, drops
   the fields the CLI doesn't accept, and propagates token usage / cost.
