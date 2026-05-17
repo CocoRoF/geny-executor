@@ -84,8 +84,10 @@ from geny_executor.llm_client import (
     BaseClient,
     ClientCapabilities,
     ClientRegistry,
+    ConfigError,
     ContentBlock,
-    ProviderBackedClient,
+    CredentialBundle,
+    ProviderCredentials,
 )
 from geny_executor.memory import (
     GenyPresets,
@@ -151,8 +153,10 @@ __all__ = [
     "BaseClient",
     "ClientCapabilities",
     "ClientRegistry",
+    "ConfigError",
     "ContentBlock",
-    "ProviderBackedClient",
+    "CredentialBundle",
+    "ProviderCredentials",
     # Errors
     "GenyExecutorError",
     "PipelineError",

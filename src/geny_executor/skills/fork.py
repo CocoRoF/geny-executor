@@ -120,11 +120,16 @@ def make_default_fork_runner(
     ) -> ForkResult:
         # Lazy imports — keep ``geny_executor.skills`` cheap to
         # import for hosts that never use fork mode.
+        # NOTE: This default runner is Anthropic-only by design — host
+        # apps that need multi-provider fork should wire their own runner
+        # using `CredentialBundle` + the appropriate client class. Phase
+        # D4 of the LLM backend upgrade cycle revisits this surface to
+        # promote multi-provider as the default.
         from geny_executor.core.config import ModelConfig
-        from geny_executor.llm_client import ProviderBackedClient
+        from geny_executor.llm_client import AnthropicClient
 
         model = skill.metadata.model_override or fallback_model
-        client = ProviderBackedClient(api_key=key)
+        client = AnthropicClient(api_key=key)
         model_config = ModelConfig(model=model, max_tokens=max_tokens)
 
         # The skill body is the system prompt; the user message tells

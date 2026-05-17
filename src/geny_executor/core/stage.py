@@ -308,6 +308,55 @@ class Stage(ABC, Generic[T_In, T_Out]):
             return self._stage_module
         return f"s{self.order:02d}_{self.name}"
 
+    def resolve_local_client(self, state: PipelineState) -> Any:
+        """Return the effective :class:`BaseClient` for this stage.
+
+        Preference:
+          1. ``self.config["provider_override"]`` — when set, build a
+             stage-local client from the credentials carried on
+             ``state.runtime`` (populated by ``Pipeline._init_state``).
+          2. ``state.llm_client`` — the pipeline-wide client built from
+             Stage 6's ``config["provider"]``.
+
+        Stage code that calls an LLM (S2 context, S11 tool_review, S14
+        evaluate, S18 memory reflection, S19 summarize) should reach for this
+        helper instead of ``state.llm_client`` directly so per-stage
+        provider overrides are honoured uniformly.
+        """
+        override = (self.config or {}).get("provider_override") if hasattr(self, "config") else None
+        # ``self.config`` is not implemented on every Stage today; use
+        # ``get_config()`` when available without forcing a contract change.
+        if override is None and hasattr(self, "get_config"):
+            try:
+                cfg = self.get_config() or {}
+            except Exception:
+                cfg = {}
+            override = cfg.get("provider_override")
+        if override:
+            cached = getattr(self, "_local_client_cache", None)
+            if cached is not None and cached[0] == override:
+                return cached[1]
+            credentials = state.credentials
+            if credentials is None:
+                # No bundle on state — fall through to the pipeline client.
+                return state.llm_client
+            from geny_executor.llm_client.credentials import ConfigError
+            from geny_executor.llm_client.registry import ClientRegistry
+
+            try:
+                creds = credentials.require(override)
+            except ConfigError:
+                # Missing credentials — fall back to pipeline client to
+                # avoid silent failure. Stage code may detect and surface.
+                return state.llm_client
+            client_cls = ClientRegistry.get(override)
+            from geny_executor.core.pipeline import _creds_to_client_kwargs
+
+            client = client_cls(**_creds_to_client_kwargs(override, creds))
+            self._local_client_cache = (override, client)
+            return client
+        return state.llm_client
+
     def resolve_model_config(self, state: PipelineState) -> ModelConfig:
         """Return the effective :class:`ModelConfig` for this stage.
 

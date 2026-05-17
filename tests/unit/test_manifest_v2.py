@@ -321,14 +321,18 @@ def test_blank_manifest_seeds_strategy_current_impls():
     """Each stage captures its artifact's default strategy picks so toggling
     active doesn't produce a manifest that fails to rehydrate.
 
-    The provider slot on s06_api must resolve to ``"anthropic"`` — the real
-    runtime default. Introspection historically injected a ``MockProvider``
-    to stay session-less, which bled into manifests and made new envs hit
-    the test-only mock at run time.
+    After Phase A3 the API stage's provider lives at
+    ``config["provider"]`` (single source of truth), not in
+    ``strategies``. Strategies now only carries retry/router.
     """
     m = EnvironmentManifest.blank_manifest("Blank Env")
     s06 = next(e for e in m.stage_entries() if e.order == 6)
-    assert s06.strategies.get("provider") == "anthropic"
+    assert s06.config.get("provider") == "anthropic"
+    # ``strategies`` no longer carries 'provider' — clean break from the
+    # legacy slot. retry/router remain.
+    assert "provider" not in s06.strategies
+    assert s06.strategies.get("retry") == "exponential_backoff"
+    assert s06.strategies.get("router") in {"passthrough", "adaptive"}
 
 
 def test_blank_manifest_metadata_has_no_base_preset():
@@ -464,21 +468,24 @@ def test_blank_manifest_builds_minimal_pipeline_via_from_manifest():
 
 def test_blank_manifest_rebuild_uses_real_provider_with_supplied_api_key():
     """Regression: a blank manifest rehydrated via ``Pipeline.from_manifest``
-    must land on AnthropicProvider carrying the caller's api_key. Earlier
-    snapshots recorded ``provider: mock`` (from introspection) and the
-    restore pass swapped in MockProvider at run time, so sessions silently
-    answered with ``"Mock response"`` instead of calling the real API.
+    must end up calling the real Anthropic API with the caller's api_key.
+
+    After Phase A3 the credential lives in the pipeline's
+    :class:`CredentialBundle` (auto-wrapped from the ``api_key=`` test
+    convenience kwarg). ``_resolve_llm_client`` builds an
+    :class:`AnthropicClient` from that bundle on demand.
     """
-    from geny_executor.stages.s06_api.artifact.default.providers import (
-        AnthropicProvider,
-    )
+    from geny_executor.llm_client import AnthropicClient
 
     m = EnvironmentManifest.blank_manifest("Blank")
     rebuilt = Pipeline.from_manifest(m, api_key="sk-test-key")
-    api_stage = rebuilt.get_stage(6)
-    provider = api_stage.get_strategy_slots()["provider"].strategy
-    assert isinstance(provider, AnthropicProvider)
-    assert provider._api_key == "sk-test-key"
+    # The bundle was auto-built from the api_key convenience kwarg.
+    creds = rebuilt._credentials.require("anthropic")
+    assert creds.api_key == "sk-test-key"
+    # And the resolved client lands on a real AnthropicClient — not the
+    # legacy MockProvider that used to leak through introspection.
+    client = rebuilt._resolve_llm_client()
+    assert isinstance(client, AnthropicClient)
 
 
 def test_blank_manifest_extra_activation_then_rebuild_succeeds():

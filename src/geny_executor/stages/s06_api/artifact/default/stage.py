@@ -25,12 +25,8 @@ from geny_executor.core.slot import StrategySlot
 from geny_executor.core.stage import Stage
 from geny_executor.core.state import PipelineState
 from geny_executor.core.config import ModelConfig
-from geny_executor.llm_client import BaseClient, ClientRegistry, ProviderBackedClient
+from geny_executor.llm_client import BaseClient, ClientCapabilities, ClientRegistry
 from geny_executor.stages.s06_api.interface import APIProvider, ModelRouter, RetryStrategy
-from geny_executor.stages.s06_api.artifact.default.providers import (
-    AnthropicProvider,
-    MockProvider,
-)
 from geny_executor.stages.s06_api.artifact.default.retry import (
     ExponentialBackoffRetry,
     NoRetry,
@@ -43,14 +39,65 @@ from geny_executor.stages.s06_api.artifact.default.router import (
 from geny_executor.stages.s06_api.types import APIRequest, APIResponse
 
 
-_BUILTIN_PROVIDER_NAMES = {"anthropic", "openai", "google", "vllm", "mock"}
+class _LegacyProviderAdapter(BaseClient):
+    """Test-only adapter that wraps a legacy :class:`APIProvider` as a
+    :class:`BaseClient`. Production code never constructs this; it exists
+    so that direct-construction tests (``APIStage(provider=MockProvider())``)
+    keep working without a CredentialBundle. The capability flags are
+    permissive so legacy provider fixtures aren't surprised by capability
+    drops."""
+
+    capabilities = ClientCapabilities(
+        supports_thinking=True,
+        supports_tools=True,
+        supports_streaming=True,
+        supports_tool_choice=True,
+        supports_stop_sequences=True,
+        supports_top_k=True,
+        supports_system_prompt=True,
+    )
+
+    def __init__(self, provider: APIProvider) -> None:
+        super().__init__(api_key="", base_url=None)
+        self._wrapped = provider
+        self.provider = getattr(provider, "name", "") or "bridge"
+
+    async def _send(self, request: APIRequest, *, purpose: str = "") -> APIResponse:
+        return await self._wrapped.create_message(request)
+
+    async def create_message_stream(
+        self,
+        *,
+        model_config: Any,
+        messages: List[Dict[str, Any]],
+        system: Any = "",
+        tools: Optional[List[Dict[str, Any]]] = None,
+        tool_choice: Optional[Dict[str, Any]] = None,
+        purpose: str = "",
+    ):
+        request = self._build_request(
+            model_config=model_config,
+            messages=messages,
+            system=system,
+            tools=tools,
+            tool_choice=tool_choice,
+            stream=True,
+        )
+        async for event in self._wrapped.create_message_stream(request):
+            yield event
 
 
 class APIStage(Stage[Any, APIResponse]):
     """Stage 6: API.
 
-    Routes through ``state.llm_client`` when present. Retains the retry
-    slot because retry is about error recovery, not vendor selection.
+    Routes LLM calls through ``state.llm_client``. The host (production
+    path) builds that client from the :class:`CredentialBundle` +
+    ``config["provider"]`` inside ``Pipeline.from_manifest``.
+
+    For direct-construction test fixtures, the constructor also accepts a
+    legacy :class:`APIProvider` instance via ``provider=``. In that case
+    the stage wraps it once in :class:`_LegacyProviderAdapter` and serves
+    it via ``state.llm_client`` when the pipeline did not pre-populate one.
     """
 
     def __init__(
@@ -65,38 +112,29 @@ class APIStage(Stage[Any, APIResponse]):
         stream: bool = True,
         timeout_ms: Optional[int] = None,
     ):
-        self._api_key = api_key
-        self._base_url = base_url
-        self._default_headers = default_headers or {}
         self._stream_default = stream
         self._timeout_ms = timeout_ms
-        self._local_client: Optional[BaseClient] = None
+        # Test-fixture conveniences. The production manifest path leaves
+        # these empty; ``state.llm_client`` built from
+        # ``Pipeline._resolve_llm_client`` carries the real credentials.
+        self._api_key = api_key
+        self._base_url = base_url
+        self._default_headers = dict(default_headers) if default_headers else {}
+        self._legacy_client: Optional[BaseClient] = None
 
-        provider_strategy: APIProvider
         if isinstance(provider, str):
             self._provider_name = provider or "anthropic"
-            provider_strategy = self._build_legacy_provider(self._provider_name)
-        elif provider is not None:
-            provider_strategy = provider
-            self._provider_name = getattr(provider, "name", "") or "anthropic"
-        elif api_key:
+        elif provider is None:
+            # No explicit provider — default to anthropic. If api_key was
+            # passed, the stage can locally build a real client at
+            # _resolve_client time.
             self._provider_name = "anthropic"
-            provider_strategy = AnthropicProvider(
-                api_key=api_key, base_url=base_url, default_headers=default_headers
-            )
         else:
-            raise ValueError("Either 'provider' or 'api_key' must be provided")
+            # Legacy / test-only path: an APIProvider instance.
+            self._provider_name = getattr(provider, "name", "") or "anthropic"
+            self._legacy_client = _LegacyProviderAdapter(provider)
 
         self._slots: Dict[str, StrategySlot] = {
-            "provider": StrategySlot(
-                name="provider",
-                strategy=provider_strategy,
-                registry={
-                    "anthropic": AnthropicProvider,
-                    "mock": MockProvider,
-                },
-                description="API provider (legacy slot — execution now routes through state.llm_client)",
-            ),
             "retry": StrategySlot(
                 name="retry",
                 strategy=retry or ExponentialBackoffRetry(),
@@ -117,48 +155,6 @@ class APIStage(Stage[Any, APIResponse]):
                 description="Adaptive model selection per call (passthrough = no override)",
             ),
         }
-
-    def _build_legacy_provider(self, name: str) -> APIProvider:
-        """Build a legacy ``APIProvider`` for the named vendor.
-
-        Only used when a bare string is passed; wraps the credentials the
-        stage already has. ``mock`` builds a :class:`MockProvider` for tests.
-        Other names defer to ``ClientRegistry`` on first use (via
-        ``_resolve_client``) and keep a trivial placeholder here.
-        """
-        if name == "mock":
-            return MockProvider()
-        if name == "anthropic":
-            return AnthropicProvider(
-                api_key=self._api_key,
-                base_url=self._base_url,
-                default_headers=self._default_headers,
-            )
-        try:
-            from geny_executor.stages.s06_api.artifact.openai.providers import OpenAIProvider
-        except Exception:
-            OpenAIProvider = None
-        try:
-            from geny_executor.stages.s06_api.artifact.google.providers import GoogleProvider
-        except Exception:
-            GoogleProvider = None
-        if name == "openai" and OpenAIProvider is not None:
-            return OpenAIProvider(
-                api_key=self._api_key,
-                base_url=self._base_url,
-                default_headers=self._default_headers,
-            )
-        if name == "google" and GoogleProvider is not None:
-            return GoogleProvider(api_key=self._api_key)
-        return AnthropicProvider(
-            api_key=self._api_key,
-            base_url=self._base_url,
-            default_headers=self._default_headers,
-        )
-
-    @property
-    def _provider(self) -> APIProvider:
-        return self._slots["provider"].strategy  # type: ignore[return-value]
 
     @property
     def _retry(self) -> RetryStrategy:
@@ -184,7 +180,12 @@ class APIStage(Stage[Any, APIResponse]):
         return self._slots
 
     def get_config_schema(self) -> ConfigSchema:
-        available = sorted(set(ClientRegistry.available()) | _BUILTIN_PROVIDER_NAMES)
+        # Production providers come from ClientRegistry. "mock" is kept as
+        # a schema-level option because round-trip serialization of test
+        # fixtures (APIStage(provider=MockProvider())) records it as the
+        # ``provider`` config value; strict schema validation would
+        # otherwise reject the manifest.
+        available = sorted(set(ClientRegistry.available()) | {"mock"})
         return ConfigSchema(
             name="api",
             fields=[
@@ -235,16 +236,10 @@ class APIStage(Stage[Any, APIResponse]):
             new_name = str(config["provider"]) or "anthropic"
             if new_name != self._provider_name:
                 self._provider_name = new_name
-                self._local_client = None
-                self._slots["provider"] = StrategySlot(
-                    name="provider",
-                    strategy=self._build_legacy_provider(new_name),
-                    registry=self._slots["provider"].registry,
-                    description=self._slots["provider"].description,
-                )
+                # Invalidate any legacy/local client tied to the old provider.
+                self._legacy_client = None
         if "base_url" in config:
             self._base_url = str(config["base_url"]) or None
-            self._local_client = None
         if "stream" in config:
             self._stream_default = bool(config["stream"])
         if "timeout_ms" in config:
@@ -292,26 +287,41 @@ class APIStage(Stage[Any, APIResponse]):
         """Return the effective :class:`BaseClient`.
 
         Preference:
-          1. ``state.llm_client`` when set — the host's shared client wins.
-          2. A stage-local fallback, built lazily from the stage's own
-             ``provider`` / ``api_key`` / ``base_url``. For legacy
-             ``APIProvider`` instances, wrap in :class:`ProviderBackedClient`.
-             For known string providers, build via :class:`ClientRegistry`.
+          1. ``state.llm_client`` populated by ``Pipeline._init_state`` (the
+             production manifest path) or ``Pipeline.attach_runtime``.
+          2. The legacy adapter built in ``__init__`` when a test-fixture
+             ``APIProvider`` was passed directly.
+          3. A locally-built client from this stage's ``provider`` /
+             ``api_key`` / ``base_url`` (test-fixture path: callers that
+             constructed the stage with ``APIStage(api_key=...)`` rely on
+             this).
+          4. Raise — the stage cannot make an LLM call without a client.
         """
         if state.llm_client is not None:
             return state.llm_client
-        if self._local_client is None:
-            if self._provider_name in ClientRegistry.available():
+        if self._legacy_client is not None:
+            state.llm_client = self._legacy_client
+            return self._legacy_client
+        if self._api_key or self._provider_name in ClientRegistry.available():
+            try:
                 client_cls = ClientRegistry.get(self._provider_name)
+            except (KeyError, ValueError):
+                client_cls = None
+            if client_cls is not None:
                 kwargs: Dict[str, Any] = {"api_key": self._api_key}
                 if self._base_url:
                     kwargs["base_url"] = self._base_url
                 if self._default_headers:
-                    kwargs["default_headers"] = self._default_headers
-                self._local_client = client_cls(**kwargs)
-            else:
-                self._local_client = ProviderBackedClient(self._provider)
-        return self._local_client
+                    kwargs["default_headers"] = dict(self._default_headers)
+                client = client_cls(**kwargs)
+                state.llm_client = client
+                return client
+        raise APIError(
+            "state.llm_client is None. Build the pipeline via "
+            "Pipeline.from_manifest(credentials=...) or attach a client "
+            "explicitly with Pipeline.attach_runtime(llm_client=...).",
+            category=ErrorCategory.BAD_REQUEST,
+        )
 
     async def execute(self, input: Any, state: PipelineState) -> APIResponse:
         cfg = self._route_model(state)
