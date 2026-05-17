@@ -338,6 +338,7 @@ class Pipeline:
         )
         self._attached_llm_client: Any = None  # set by attach_runtime; propagated in _init_state
         self._credentials: CredentialBundle = CredentialBundle()  # set by from_manifest_async
+        self._subagent_registry: Any = None  # set by attach_runtime; populates state + agent stage
         self._attached_session_runtime: Any = None  # v0.30.0 plugin slot; propagated in _init_state
         # S9c.1 Pipeline.resume: token → asyncio.Future[HITLDecision].
         # The HITL stage's PipelineResumeRequester registers a future
@@ -399,6 +400,7 @@ class Pipeline:
         *,
         credentials: Optional[CredentialBundle] = None,
         api_key: Optional[str] = None,
+        subagent_registry: Optional[Any] = None,
         strict: bool = True,
         adhoc_providers: Sequence["AdhocToolProvider"] = (),
         tool_registry: Optional["ToolRegistry"] = None,
@@ -533,6 +535,10 @@ class Pipeline:
                 if getattr(stage, "_registry") is not registry:
                     stage._registry = registry
 
+        if subagent_registry is not None:
+            pipeline._subagent_registry = subagent_registry
+            pipeline._wire_subagent_orchestrator(subagent_registry)
+
         return pipeline
 
     @classmethod
@@ -542,6 +548,7 @@ class Pipeline:
         *,
         credentials: Optional[CredentialBundle] = None,
         api_key: Optional[str] = None,
+        subagent_registry: Optional[Any] = None,
         strict: bool = True,
         adhoc_providers: Sequence["AdhocToolProvider"] = (),
         tool_registry: Optional["ToolRegistry"] = None,
@@ -592,6 +599,7 @@ class Pipeline:
             manifest,
             credentials=credentials,
             api_key=api_key,
+            subagent_registry=subagent_registry,
             strict=strict,
             adhoc_providers=adhoc_providers,
             tool_registry=registry,
@@ -671,6 +679,7 @@ class Pipeline:
         mcp_manager: Optional[Any] = None,
         permission_rules: Optional[Any] = None,
         permission_mode: Optional[str] = None,
+        subagent_registry: Optional[Any] = None,
     ) -> None:
         """Inject session-scoped runtime objects into a manifest-built pipeline.
 
@@ -824,6 +833,31 @@ class Pipeline:
             registry = self._tool_registry
             if registry is not None:
                 self._reseed_registry_from_mcp(mcp_manager, registry)
+
+        if subagent_registry is not None:
+            # Hosts wire a SubagentTypeRegistry that Stage 12's
+            # ``subagent_type`` orchestrator consumes. We store it on the
+            # pipeline (propagated to ``state.subagent_registry`` in
+            # ``_init_state``) and, when the agent stage is registered,
+            # rebuild its orchestrator slot so the registry is bound.
+            self._subagent_registry = subagent_registry
+            self._wire_subagent_orchestrator(subagent_registry)
+
+    def _wire_subagent_orchestrator(self, registry: Any) -> None:
+        """Set the agent stage's orchestrator to a SubagentTypeOrchestrator
+        bound to ``registry``. No-op when the pipeline has no agent stage."""
+        agent_stage = next((s for s in self._stages.values() if s.name == "agent"), None)
+        if agent_stage is None:
+            return
+        from geny_executor.stages.s12_agent.subagent_type import (
+            SubagentTypeOrchestrator,
+        )
+
+        slots = agent_stage.get_strategy_slots()
+        slot = slots.get("orchestrator")
+        if slot is None:
+            return
+        slot.strategy = SubagentTypeOrchestrator(registry)
 
     def _reseed_registry_from_mcp(self, manager: Any, registry: Any) -> None:
         """Register a freshly attached MCP manager's tools into ``registry``.
@@ -1228,6 +1262,8 @@ class Pipeline:
         self._config.apply_to_state(state)
         if state.credentials is None:
             state.credentials = self._credentials
+        if state.subagent_registry is None and self._subagent_registry is not None:
+            state.subagent_registry = self._subagent_registry
         if state.llm_client is None:
             state.llm_client = self._resolve_llm_client()
         if state.session_runtime is None and self._attached_session_runtime is not None:
