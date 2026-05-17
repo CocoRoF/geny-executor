@@ -25,6 +25,7 @@ This module ships:
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import logging
 import uuid
@@ -205,9 +206,39 @@ class SubagentTypeOrchestrator(AgentOrchestrator):
         if not state.delegate_requests:
             return AgentResult(delegated=False)
 
-        sub_results: List[Dict[str, Any]] = []
+        # Split requests into a serial group (parallel=False) and a
+        # parallel group (parallel=True). Unknown agent_types go through
+        # the serial path so the failure record is produced in the same
+        # deterministic order as the request list.
+        serial: List[Dict[str, Any]] = []
+        parallel: List[Tuple[Dict[str, Any], SubagentTypeDescriptor]] = []
         for raw in state.delegate_requests:
+            agent_type = str(raw.get("agent_type") or "").strip()
+            desc = self._registry.get(agent_type)
+            if desc is not None and desc.parallel:
+                parallel.append((raw, desc))
+            else:
+                serial.append(raw)
+
+        sub_results: List[Dict[str, Any]] = []
+        # Serial first — preserves input order for deterministic logs.
+        for raw in serial:
             sub_results.append(await self._dispatch_one(state, raw))
+
+        # Parallel fan-out — bounded by min(max_concurrent) of the group.
+        if parallel:
+            cap = min(max(d.max_concurrent, 1) for _, d in parallel)
+            sem = asyncio.Semaphore(cap)
+
+            async def _bounded(raw_req: Dict[str, Any]) -> Dict[str, Any]:
+                async with sem:
+                    return await self._dispatch_one(state, raw_req)
+
+            parallel_results = await asyncio.gather(
+                *(_bounded(raw) for raw, _ in parallel),
+                return_exceptions=False,
+            )
+            sub_results.extend(parallel_results)
 
         # Existing Stage 11 contract: requests are consumed once.
         state.delegate_requests = []
