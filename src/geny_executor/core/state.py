@@ -171,6 +171,13 @@ class PipelineState:
     # ── LLM client (injected by Pipeline.attach_runtime; None for non-LLM pipelines) ──
     llm_client: Optional[Any] = field(default=None, repr=False)
 
+    # ── Credential bundle (set by Pipeline._init_state from the bundle
+    # passed to from_manifest_async). Stage code uses this for
+    # ``provider_override`` to build a stage-local client of a different
+    # provider. ``None`` when the pipeline was not constructed via
+    # ``from_manifest`` (manual ``register_stage`` style). ──
+    credentials: Optional[Any] = field(default=None, repr=False)
+
     # ── Plugin-supplied session runtime container (v0.30.0) ──
     # Free-shape carrier for host-side session-scoped objects (e.g.
     # creature state, persona providers, emitter chains). The executor

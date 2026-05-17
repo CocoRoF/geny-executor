@@ -152,24 +152,33 @@ def test_from_manifest_respects_artifact_selection():
 
 
 def test_from_manifest_strict_raises_without_api_key():
+    """Phase A3 contract: missing api_key no longer crashes ``from_manifest``
+    in strict mode. Strict mode validates the manifest schema + the manifest's
+    provider locations, but does not require credentials at build time —
+    they're checked when the pipeline runs."""
     source = _template_pipeline()
     snap = PipelineMutator(source).snapshot()
     manifest = EnvironmentManifest.from_snapshot(snap, name="no-key-env")
 
-    with pytest.raises(ValueError):
-        Pipeline.from_manifest(manifest, api_key=None, strict=True)
+    # No raise expected — pipeline builds with an empty CredentialBundle.
+    rebuilt = Pipeline.from_manifest(manifest, api_key=None, strict=True)
+    assert rebuilt.get_stage(6) is not None
+    # The bundle is empty: require() would raise on access, but build does not.
+    assert rebuilt._credentials.has("anthropic") is False
 
 
 def test_from_manifest_non_strict_drops_broken_stages():
+    """Phase A3 contract: ``Pipeline.from_manifest`` no longer rejects a
+    Stage 6 without an api_key — credentials are checked at execute time
+    via ``state.llm_client``. The stage is constructed cleanly and the
+    pipeline is fully populated.
+    """
     source = _template_pipeline()
     snap = PipelineMutator(source).snapshot()
     manifest = EnvironmentManifest.from_snapshot(snap, name="non-strict-env")
 
     rebuilt = Pipeline.from_manifest(manifest, api_key=None, strict=False)
-    # s06_api requires api_key and should have been skipped
-    assert rebuilt.get_stage(6) is None
-    # Stages that don't need credentials still registered.
-    # Sub-phase 9a (S9a.3) renumbered yield 16 → 21.
+    assert rebuilt.get_stage(6) is not None
     assert rebuilt.get_stage(1) is not None
     assert rebuilt.get_stage(21) is not None
 

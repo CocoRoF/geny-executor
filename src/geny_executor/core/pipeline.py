@@ -14,6 +14,12 @@ from geny_executor.core.stage import Stage, StageDescription
 from geny_executor.core.state import PipelineState
 from geny_executor.events.bus import EventBus
 from geny_executor.events.types import PipelineEvent
+from geny_executor.llm_client.credentials import (
+    ConfigError,
+    CredentialBundle,
+    ProviderCredentials,
+)
+from geny_executor.llm_client.registry import ClientRegistry
 
 if TYPE_CHECKING:
     from geny_executor.core.environment import EnvironmentManifest, StageManifestEntry
@@ -25,33 +31,76 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-# Stages whose default/openai/google artifacts require an ``api_key`` kwarg.
-# Other artifacts (mock, etc.) construct without credentials.
-_API_KEY_REQUIRING = {
-    ("s06_api", "default"),
-    ("s06_api", "openai"),
-    ("s06_api", "google"),
-}
-
-
-def _pipeline_config_from_manifest(
-    manifest: "EnvironmentManifest", *, api_key: Optional[str]
-) -> PipelineConfig:
+def _pipeline_config_from_manifest(manifest: "EnvironmentManifest") -> PipelineConfig:
     """Build a :class:`PipelineConfig` from manifest pipeline+model blocks.
 
     The manifest stores ``pipeline`` and ``model`` as plain dicts; reunite
     them into the nested ``PipelineConfig(model=ModelConfig(...))`` shape the
-    runtime expects. An explicit ``api_key`` kwarg wins over anything
-    embedded in the manifest.
+    runtime expects.
+
+    Credentials no longer flow through ``PipelineConfig.api_key`` — they live
+    in the :class:`CredentialBundle` passed to ``from_manifest_async`` and are
+    consulted by ``_resolve_llm_client`` based on
+    ``stages[6].config["provider"]``.
     """
     raw = dict(manifest.pipeline or {})
     if manifest.model:
         # ``pipeline.model`` (if present) loses to the top-level ``model``
         # block — the latter is the canonical location in v2 manifests.
         raw["model"] = dict(manifest.model)
-    if api_key is not None:
-        raw["api_key"] = api_key
+    # Drop any stale api_key the legacy manifest format may have embedded.
+    raw.pop("api_key", None)
     return PipelineConfig.from_dict(raw)
+
+
+def _creds_to_client_kwargs(provider: str, creds: ProviderCredentials) -> Dict[str, Any]:
+    """Map ``ProviderCredentials`` into vendor-shaped kwargs for client construction.
+
+    Each provider's client takes a slightly different constructor surface;
+    this is the single place those shapes are encoded.
+    """
+    if provider == "vllm":
+        kwargs: Dict[str, Any] = {}
+        if creds.api_key:
+            kwargs["api_key"] = creds.api_key
+        if creds.base_url is not None:
+            kwargs["base_url"] = creds.base_url
+        if creds.default_headers is not None:
+            kwargs["default_headers"] = dict(creds.default_headers)
+        return kwargs
+
+    # API providers (anthropic / openai / google)
+    kwargs = {"api_key": creds.api_key}
+    if creds.base_url is not None:
+        kwargs["base_url"] = creds.base_url
+    if creds.default_headers is not None:
+        kwargs["default_headers"] = dict(creds.default_headers)
+    return kwargs
+
+
+def _validate_manifest_provider_locations(manifest: "EnvironmentManifest") -> None:
+    """Reject manifests that store provider in the legacy ``strategies`` slot.
+
+    The single source of truth is ``stages[6].config["provider"]``. Manifests
+    with ``strategies["provider"]`` are rejected at strict load time so the
+    silent-divergence class of bug is impossible.
+    """
+    for entry in manifest.stage_entries():
+        strategies = entry.strategies or {}
+        if "provider" in strategies:
+            raise ConfigError(
+                f"Stage {entry.order} ({entry.name!r}) uses legacy "
+                f"strategies['provider']={strategies['provider']!r}. "
+                "Move it to config['provider']; strategies['provider'] is no "
+                "longer recognised."
+            )
+        if entry.name == "api" and entry.active:
+            cfg = entry.config or {}
+            if not cfg.get("provider"):
+                raise ConfigError(
+                    "Stage 6 ('api') is active but no provider is configured. "
+                    "Set stages[6].config['provider'] (e.g. 'anthropic')."
+                )
 
 
 def _mcp_configs_from_manifest(manifest: "EnvironmentManifest") -> Dict[str, Any]:
@@ -171,23 +220,18 @@ def _register_external_tools(
         registry.register(tool)
 
 
-def _stage_kwargs_for_entry(entry: "StageManifestEntry", *, api_key: str) -> Dict[str, Any]:
+def _stage_kwargs_for_entry(entry: "StageManifestEntry") -> Dict[str, Any]:
     """Minimum kwargs required to instantiate *entry* via ``create_stage``.
 
-    Most stages take no constructor args; API artifacts need ``api_key``
-    when the manifest did not wire in a provider directly. Short-name
-    stage identifiers ("api") are resolved to their module name before the
-    lookup, so manifests written either way work uniformly.
+    Stage 6 ('api') now reads its provider from ``entry.config["provider"]``
+    (set via ``update_config`` post-construction). It no longer needs an
+    ``api_key`` at construction time — credentials flow through
+    ``state.llm_client`` resolved by ``Pipeline._resolve_llm_client``.
     """
-    from geny_executor.core.artifact import _resolve_stage_module
-
-    try:
-        module_name = _resolve_stage_module(entry.name)
-    except ValueError:
-        module_name = entry.name
-    key = (module_name, entry.artifact)
-    if key in _API_KEY_REQUIRING and api_key:
-        return {"api_key": api_key}
+    cfg = dict(entry.config or {})
+    if entry.name == "api":
+        provider = cfg.get("provider", "anthropic")
+        return {"provider": str(provider)}
     return {}
 
 
@@ -255,6 +299,7 @@ class Pipeline:
             False  # flips once run()/run_stream() begins; gates attach_runtime
         )
         self._attached_llm_client: Any = None  # set by attach_runtime; propagated in _init_state
+        self._credentials: CredentialBundle = CredentialBundle()  # set by from_manifest_async
         self._attached_session_runtime: Any = None  # v0.30.0 plugin slot; propagated in _init_state
         # S9c.1 Pipeline.resume: token → asyncio.Future[HITLDecision].
         # The HITL stage's PipelineResumeRequester registers a future
@@ -314,6 +359,7 @@ class Pipeline:
         cls,
         manifest: "EnvironmentManifest",
         *,
+        credentials: Optional[CredentialBundle] = None,
         api_key: Optional[str] = None,
         strict: bool = True,
         adhoc_providers: Sequence["AdhocToolProvider"] = (),
@@ -322,65 +368,69 @@ class Pipeline:
         """Construct a ready-to-run Pipeline from an :class:`EnvironmentManifest`.
 
         Steps:
-          1. Build a :class:`PipelineConfig` from ``manifest.pipeline`` and
-             ``manifest.model``. A caller-supplied ``api_key`` (kwarg) wins
-             over whatever is inside the manifest — manifests are templates
-             and credentials usually live outside them.
-          2. Instantiate each ``active`` stage via
-             :func:`~geny_executor.core.artifact.create_stage` with the
-             recorded ``artifact`` name. Stages whose artifact requires an
-             ``api_key`` (e.g. ``s06_api/default``) receive it here.
-          3. Run :meth:`PipelineMutator.restore` over
-             ``manifest.to_snapshot()`` to apply strategies, strategy
-             configs, stage configs, chain ordering, tool bindings, and
-             model overrides.
-          4. When ``strict`` is true, every stage's config is validated
-             against its ``ConfigSchema`` and instantiation failures
-             propagate. When false, broken stages are silently skipped so
-             a partial environment still yields a runnable pipeline.
+          1. Validate the manifest — Stage 6 must declare a provider via
+             ``config["provider"]``; ``strategies["provider"]`` is rejected
+             (clean break from the legacy slot).
+          2. Build a :class:`PipelineConfig` from ``manifest.pipeline`` and
+             ``manifest.model``.
+          3. Instantiate each ``active`` stage via
+             :func:`~geny_executor.core.artifact.create_stage`. Stage 6
+             receives its ``provider`` string from the manifest entry's
+             ``config["provider"]``.
+          4. Run :meth:`PipelineMutator.restore` to apply per-stage configs,
+             chain ordering, tool bindings, and model overrides.
+          5. Store the ``credentials`` bundle on the pipeline. It is
+             consulted by ``_resolve_llm_client`` when building the
+             ``state.llm_client`` for Stage 6 (and by sub-pipelines for
+             their own providers).
 
         Args:
             manifest: The environment template to materialize.
-            api_key: Credential injected into API-backed stage constructors.
-                When omitted, the value (if any) embedded in
-                ``manifest.pipeline`` is used instead.
+            credentials: Single-channel credential bundle. The required
+                provider (Stage 6) must have an entry; otherwise
+                ``ConfigError`` is raised at strict load.
             strict: Fail on stage instantiation / schema errors versus
                 dropping the offending stage.
             adhoc_providers: Host-supplied
                 :class:`~geny_executor.tools.providers.AdhocToolProvider`
-                implementations. The pipeline walks
-                ``manifest.tools.external`` and registers the first
-                provider that claims each name into ``tool_registry``.
-                Names that no provider claims are skipped with a
-                warning. Pass an empty sequence (default) to disable the
-                external-provider path.
-            tool_registry: Existing registry to populate with
-                provider-backed tools. When omitted a fresh empty
-                registry is created. Attached to the returned pipeline
-                as ``pipeline.tool_registry`` so callers can reach it
-                without re-plumbing.
+                implementations.
+            tool_registry: Existing registry to populate.
 
         Returns:
             A :class:`Pipeline` with every registered stage reflecting the
-            manifest's template state. The returned pipeline is ready for
-            ``.run()`` once a tool registry and runtime state are attached.
+            manifest's template state.
         """
         from geny_executor.core.artifact import create_stage
         from geny_executor.core.mutation import PipelineMutator
         from geny_executor.tools.registry import ToolRegistry
 
-        pipeline_config = _pipeline_config_from_manifest(manifest, api_key=api_key)
+        if strict:
+            _validate_manifest_provider_locations(manifest)
+
+        # Build the effective credential bundle. The canonical input is the
+        # ``credentials`` kwarg. ``api_key`` is accepted as a test/legacy
+        # convenience that auto-wraps a single Anthropic key. Pass both
+        # and ``credentials`` wins.
+        if credentials is None:
+            if api_key:
+                credentials = CredentialBundle(by_provider={
+                    "anthropic": ProviderCredentials(api_key=api_key),
+                })
+            else:
+                credentials = CredentialBundle()
+
+        pipeline_config = _pipeline_config_from_manifest(manifest)
         pipeline = cls(pipeline_config)
+        pipeline._credentials = credentials
 
         registry = tool_registry if tool_registry is not None else ToolRegistry()
 
         entries = sorted(manifest.stage_entries(), key=lambda e: e.order)
-        effective_key = api_key if api_key is not None else pipeline_config.api_key
 
         for entry in entries:
             if not entry.active:
                 continue
-            kwargs = _stage_kwargs_for_entry(entry, api_key=effective_key)
+            kwargs = _stage_kwargs_for_entry(entry)
             try:
                 stage = create_stage(entry.name, entry.artifact, **kwargs)
             except Exception:
@@ -452,6 +502,7 @@ class Pipeline:
         cls,
         manifest: "EnvironmentManifest",
         *,
+        credentials: Optional[CredentialBundle] = None,
         api_key: Optional[str] = None,
         strict: bool = True,
         adhoc_providers: Sequence["AdhocToolProvider"] = (),
@@ -501,6 +552,7 @@ class Pipeline:
 
         pipeline = cls.from_manifest(
             manifest,
+            credentials=credentials,
             api_key=api_key,
             strict=strict,
             adhoc_providers=adhoc_providers,
@@ -1136,6 +1188,8 @@ class Pipeline:
         if not state.pipeline_id:
             state.pipeline_id = uuid.uuid4().hex[:12]
         self._config.apply_to_state(state)
+        if state.credentials is None:
+            state.credentials = self._credentials
         if state.llm_client is None:
             state.llm_client = self._resolve_llm_client()
         if state.session_runtime is None and self._attached_session_runtime is not None:
@@ -1148,30 +1202,48 @@ class Pipeline:
 
         Preference order:
         1. An ``llm_client`` explicitly passed to :meth:`attach_runtime`.
-        2. During the PR-3→PR-4 bridge: wrap the ``APIProvider`` already
-           held by an ``s06_api`` stage so ``state.llm_client`` is non-None
-           for callers that rely on it (memory-side prototypes, Geny's
-           integration path).
-        3. ``None`` — pipelines without an LLM leg simply report a
-           ``None`` client; stages that need one assert at execute time.
+        2. The Stage 6 ``config["provider"]`` resolved via
+           :class:`ClientRegistry` + the host-supplied
+           :class:`CredentialBundle`.
+        3. ``None`` — pipelines built without a credential bundle (manual
+           ``register_stage`` flow, or no api stage) simply report a
+           ``None`` client. Stages that need a client surface that at
+           execute time (Stage 6 raises an APIError).
         """
         if self._attached_llm_client is not None:
             return self._attached_llm_client
-        for stage in self._stages.values():
-            if stage.name != "api":
-                continue
-            provider = getattr(stage, "_provider", None) or getattr(stage, "provider", None)
-            if provider is None:
-                slots = stage.get_strategy_slots() if hasattr(stage, "get_strategy_slots") else {}
-                provider_slot = slots.get("provider")
-                if provider_slot is not None:
-                    provider = provider_slot.strategy
-            if provider is None:
-                continue
-            from geny_executor.llm_client.bridge import ProviderBackedClient
+        api_stage = next((s for s in self._stages.values() if s.name == "api"), None)
+        if api_stage is None:
+            return None
+        provider_name = getattr(api_stage, "_provider_name", "")
+        if not provider_name:
+            cfg = api_stage.get_config() if hasattr(api_stage, "get_config") else {}
+            provider_name = str(cfg.get("provider", "") or "")
+        if not provider_name:
+            return None
+        # If the host did not supply credentials for this provider, leave
+        # the client as None. APIStage._resolve_client may still recover
+        # via its legacy_client (test fixtures) before surfacing an error.
+        if not self._credentials.has(provider_name):
+            return None
+        try:
+            return self._build_client_for(provider_name)
+        except ConfigError:
+            return None
 
-            return ProviderBackedClient(provider)
-        return None
+    def _build_client_for(self, provider: str) -> Any:
+        """Build a fresh :class:`BaseClient` for *provider* using the
+        bundle stored on this pipeline. Raises :class:`ConfigError` when
+        either the provider is unknown or its credentials are missing."""
+        if provider not in ClientRegistry.available():
+            raise ConfigError(
+                f"Unknown LLM provider {provider!r}. "
+                f"Registered: {sorted(ClientRegistry.available())}"
+            )
+        creds = self._credentials.require(provider)
+        client_cls = ClientRegistry.get(provider)
+        kwargs = _creds_to_client_kwargs(provider, creds)
+        return client_cls(**kwargs)
 
     async def _try_run_stage(self, order: int, current: Any, state: PipelineState) -> Any:
         """Run a stage if it exists and should not be bypassed."""
