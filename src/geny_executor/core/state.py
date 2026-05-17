@@ -178,6 +178,12 @@ class PipelineState:
     # ``from_manifest`` (manual ``register_stage`` style). ──
     credentials: Optional[Any] = field(default=None, repr=False)
 
+    # ── Sub-agent registry (set by Pipeline._init_state from the value
+    # passed to ``Pipeline.attach_runtime(subagent_registry=...)``). The
+    # Stage 12 ``subagent_type`` orchestrator consumes this; factories
+    # may also reach it for nested wiring (intentionally rare). ──
+    subagent_registry: Optional[Any] = field(default=None, repr=False)
+
     # ── Plugin-supplied session runtime container (v0.30.0) ──
     # Free-shape carrier for host-side session-scoped objects (e.g.
     # creature state, persona providers, emitter chains). The executor
