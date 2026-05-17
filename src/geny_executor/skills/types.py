@@ -95,6 +95,10 @@ class SkillMetadata:
     version: Optional[str] = None
     allowed_tools: Tuple[str, ...] = ()
     model_override: Optional[str] = None
+    # Phase D4 — fork-mode skills can name their preferred provider
+    # so the runner picks the right client class via ClientRegistry.
+    # ``None`` means "inherit from parent" (handled by the runner).
+    provider: Optional[str] = None
     execution_mode: str = "inline"
     # PR-B.4.1 — richer schema. All optional with defaults so existing
     # SKILL.md files load unchanged. ``category`` slots the skill into
