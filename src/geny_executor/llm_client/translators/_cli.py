@@ -7,9 +7,9 @@ to:
   - Assemble a canonical :class:`APIResponse` from CLI output.
   - Map streaming stream-json line types to canonical event dicts.
 
-Phase B1 lands the Claude Code half of this module. Phase C1 will add the
-``gh copilot`` helpers (``copilot_argv``, ``compose_copilot_prompt``,
-``parse_plain_text_to_response``).
+Claude Code helpers landed in Phase B1; ``gh copilot`` helpers
+(``compose_copilot_prompt``, ``copilot_argv``, ``parse_plain_text_to_response``)
+land here in Phase C1.
 """
 
 from __future__ import annotations
@@ -459,4 +459,107 @@ async def assemble_response_from_stream_json(
         model=resolved_model,
         message_id=message_id,
         raw=final_obj,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Copilot CLI: prompt composition
+# ---------------------------------------------------------------------------
+
+
+def compose_copilot_prompt(system: Any, messages: List[Dict[str, Any]]) -> str:
+    """Flatten a canonical (system + messages) into one ``-p`` argument.
+
+    The Copilot CLI accepts a single prompt string. Conversation history
+    is encoded as Markdown-style turns so the model can still see prior
+    turns. The system prompt is prepended as a ``## System`` section
+    when present.
+    """
+    parts: List[str] = []
+    if system:
+        if isinstance(system, str):
+            sys_text = system
+        elif isinstance(system, list):
+            sys_text = "\n".join(
+                str(b.get("text", "")) for b in system if isinstance(b, dict) and b.get("type") == "text"
+            )
+        else:
+            sys_text = str(system)
+        if sys_text:
+            parts.append(f"## System\n{sys_text}")
+
+    for m in messages:
+        role = str(m.get("role", "user")).capitalize()
+        content = m.get("content", "")
+        if isinstance(content, list):
+            chunks: List[str] = []
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                btype = block.get("type", "")
+                if btype == "text":
+                    chunks.append(str(block.get("text", "")))
+                elif btype == "tool_result":
+                    chunks.append(f"[tool_result]\n{block.get('content', '')}")
+            content_text = "\n".join(chunks)
+        else:
+            content_text = str(content)
+        if content_text:
+            parts.append(f"## {role}\n{content_text}")
+
+    return "\n\n".join(parts)
+
+
+# ---------------------------------------------------------------------------
+# Copilot CLI: argv builder
+# ---------------------------------------------------------------------------
+
+
+def copilot_argv(
+    *,
+    allow_tools: Sequence[str] = (),
+    extra_args: Sequence[str] = (),
+) -> List[str]:
+    """Build the argv list for ``gh copilot`` (excluding the binary).
+
+    The caller is expected to invoke the result as ``gh copilot ...`` —
+    i.e. ``argv[0]`` is *not* prepended here. ``-p <prompt>`` is appended
+    by the client after computing the prompt via
+    :func:`compose_copilot_prompt`.
+
+    Only the flags the CLI actually accepts are emitted:
+      - ``-p``: single prompt (added by the client, not here)
+      - ``--allow-tool '<scope>'``: repeated, one flag per scope
+      - any ``extra_args`` for escape-hatch use.
+    """
+    argv: List[str] = ["copilot"]
+    for scope in allow_tools:
+        if scope:
+            argv += ["--allow-tool", str(scope)]
+    if extra_args:
+        argv += list(extra_args)
+    return argv
+
+
+# ---------------------------------------------------------------------------
+# Copilot CLI: stdout → APIResponse
+# ---------------------------------------------------------------------------
+
+
+def parse_plain_text_to_response(text: str, *, model: str = "default") -> APIResponse:
+    """Wrap plain stdout text into a canonical :class:`APIResponse`.
+
+    Copilot CLI does not return JSON in print mode, so we cannot recover
+    structured usage / cost. The response carries the text in a single
+    block, ``stop_reason="end_turn"``, and an empty TokenUsage with
+    ``supports_token_usage=False`` advertised at the client level.
+    """
+    content_text = text.strip("\n")
+    return APIResponse(
+        content=[ContentBlock(type="text", text=content_text)],
+        stop_reason="end_turn",
+        usage=TokenUsage(),
+        model=model,
+        message_id="",
+        raw=text,
     )
