@@ -2,6 +2,8 @@
 
 from geny_executor.stages.s12_agent.interface import AgentOrchestrator, SubPipelineFactory
 from geny_executor.stages.s12_agent.subagent_type import (
+    PipelineFactory,
+    SubAgentBuildContext,
     SubagentTypeDescriptor,
     SubagentTypeOrchestrator,
     SubagentTypeRegistry,
@@ -23,6 +25,8 @@ __all__ = [
     "EvaluatorOrchestrator",
     "SubPipelineFactory",
     "DefaultSubPipelineFactory",
+    "PipelineFactory",
+    "SubAgentBuildContext",
     "SubagentTypeDescriptor",
     "SubagentTypeOrchestrator",
     "SubagentTypeRegistry",
