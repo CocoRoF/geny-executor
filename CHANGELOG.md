@@ -4,6 +4,31 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.0.1] — 2026-05-18
+
+Patch release. Fixes a crash when a manifest names ``"subagent_type"``
+as the Stage 12 orchestrator strategy.
+
+### Fixed
+
+- ``SubagentTypeOrchestrator.__init__`` now accepts ``registry=None``
+  and falls back to an empty :class:`SubagentTypeRegistry`. The
+  ``StrategySlot`` machinery zero-arg-constructs the orchestrator
+  during ``PipelineMutator.restore``, before
+  ``Pipeline._wire_subagent_orchestrator`` has had a chance to bind
+  the real registry. In 2.0.0 that crashed with
+  ``__init__() missing 1 required positional argument: 'registry'``;
+  in 2.0.1 the temporary empty instance is harmless — every delegate
+  request lands as ``"unknown_agent_type"`` until the wire step
+  replaces the orchestrator with one bound to the host's registry.
+
+### Migration
+
+None. Hosts that already pass ``subagent_registry=`` to
+``Pipeline.from_manifest_async`` keep their existing behaviour; the
+fix only matters during the brief window between strategy restore
+and post-restore wiring.
+
 ## [2.0.0] — 2026-05-17
 
 **Major release.** The LLM client layer is generalised to support every

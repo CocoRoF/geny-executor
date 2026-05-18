@@ -183,8 +183,16 @@ class SubagentTypeOrchestrator(AgentOrchestrator):
     the same way.
     """
 
-    def __init__(self, registry: SubagentTypeRegistry):
-        self._registry = registry
+    def __init__(self, registry: Optional[SubagentTypeRegistry] = None):
+        # ``registry`` is logically required, but accepting ``None`` lets
+        # zero-arg construction work — which the ``StrategySlot`` machinery
+        # uses while restoring a manifest that names ``"subagent_type"`` as
+        # the orchestrator. The pipeline immediately replaces this instance
+        # with one bound to the real registry via
+        # ``Pipeline._wire_subagent_orchestrator``; until that runs, the
+        # orchestrator behaves as if no descriptors are registered (every
+        # delegate request lands as an "unknown_agent_type" failure).
+        self._registry = registry if registry is not None else SubagentTypeRegistry()
 
     @property
     def name(self) -> str:
