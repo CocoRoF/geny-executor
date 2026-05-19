@@ -4,6 +4,48 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.0.4] — 2026-05-19
+
+Patch release. Fixes Claude Code (CLI) sessions failing on the second
+turn with::
+
+    Error: CLI '/usr/bin/claude' exited with code 1:
+    Error: Expected message role 'user', got 'assistant'
+
+### Fixed
+
+- ``build_stream_json_stdin`` now flattens canonical Anthropic-style
+  multi-turn message history into a **single synthetic ``type:user``
+  envelope** with a markdown preamble. Claude Code's
+  ``--input-format stream-json`` strictly requires every envelope's
+  ``message.role`` to be ``"user"``; the previous builder forwarded
+  the canonical role through (assistant / tool turns embedded with
+  their original role kept) which the CLI rejected.
+- The collapsed envelope preserves enough fidelity for the LLM to
+  reconstruct the conversation:
+    * ``### User`` / ``### Assistant`` markdown headers for text
+      turns,
+    * ``[Tool call: name(input_json)]`` for assistant tool_use
+      blocks,
+    * ``[Tool result] ...`` / ``[Tool error] ...`` for user
+      tool_result blocks,
+    * thinking blocks dropped (CLI does its own ``--effort`` thinking
+      on the new turn).
+- Single-turn fast path (one user message only) emits the canonical
+  envelope unchanged so simple invocations stay byte-for-byte
+  identical to the legacy path.
+
+### Why
+
+Provider-neutral output contract was already restored in 2.0.3
+(StreamJsonAccumulator). The remaining asymmetry was on the
+**input** side: every provider (anthropic / openai / google / vllm /
+claude_code_cli / copilot_cli) must accept the same canonical
+message list shape and translate internally to whatever the
+underlying surface wants. The CLI's stream-json input grammar is
+strict user-only; the executor owns the translation so hosts never
+see the difference.
+
 ## [2.0.3] — 2026-05-19
 
 Patch release. Fixes empty assistant output (`output_len=0`) when
