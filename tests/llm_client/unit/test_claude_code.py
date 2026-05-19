@@ -234,6 +234,34 @@ async def test_create_message_stream_yields_text_deltas() -> None:
     assert any(e.get("type") == "result" for e in events)
 
 
+@pytest.mark.asyncio
+async def test_create_message_stream_message_complete_carries_response() -> None:
+    """Regression: the terminal ``message_complete`` event must carry an
+    assembled ``APIResponse`` in ``chunk["response"]``. The s06_api
+    stage's streaming consumer raises ``Stream ended without
+    message_complete`` when this field is missing — that was the
+    Claude-Code-as-Stage-6 outage symptom.
+    """
+    c = _client(text="hello world")
+    completes = []
+    async for evt in c.create_message_stream(
+        model_config=ModelConfig(model="sonnet"),
+        messages=[{"role": "user", "content": "go"}],
+    ):
+        if evt.get("type") == "message_complete":
+            completes.append(evt)
+
+    # Exactly one terminal envelope, populated.
+    assert len(completes) == 1
+    final = completes[0]
+    assert "response" in final, "message_complete must include the response"
+    resp = final["response"]
+    assert resp.text == "hello world"
+    assert resp.stop_reason == "end_turn"
+    assert resp.usage.cost_usd is not None
+    assert resp.model  # resolved from the system envelope or model_config
+
+
 # ---------------------------------------------------------------------------
 # Argv shape verification via the echo scenario
 # ---------------------------------------------------------------------------
