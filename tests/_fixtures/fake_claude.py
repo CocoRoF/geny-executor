@@ -105,6 +105,68 @@ def _auth_fail(argv: List[str]) -> int:
     return 1
 
 
+def _ok_message_form(argv: List[str]) -> int:
+    """Real Claude Code 2.x stream-json shape (no ``--include-partial-messages``).
+
+    The CLI puts the entire assistant message inside one ``assistant``
+    envelope's ``message.content[]`` instead of streaming deltas. The
+    parser must accumulate text from this shape just as well as from
+    the delta variant.
+    """
+    text = os.environ.get("FAKE_CLAUDE_TEXT", "hello world")
+    _emit_line({
+        "type": "system", "subtype": "init",
+        "session_id": "fake-msg-1", "model": "claude-sonnet-4-6",
+    })
+    _emit_line({
+        "type": "assistant",
+        "message": {
+            "id": "msg_fake_form_2",
+            "role": "assistant",
+            "type": "message",
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 7, "output_tokens": len(text)},
+            "content": [{"type": "text", "text": text}],
+        },
+    })
+    _emit_line({
+        "type": "result", "subtype": "success", "is_error": False,
+        "stop_reason": "end_turn",
+        "total_cost_usd": 0.0001,
+        "duration_ms": 250,
+        "usage": {"input_tokens": 7, "output_tokens": len(text)},
+    })
+    return 0
+
+
+def _message_form_auth_failed(argv: List[str]) -> int:
+    """Reproduce the "Not logged in" path the user hit on prod.
+
+    Claude Code emits the synthetic placeholder text inside a normal
+    ``assistant.message.content[]`` envelope BUT annotates the outer
+    line with ``error=authentication_failed``. The parser must raise
+    APIError(CLI_AUTH_FAILED) instead of returning the placeholder
+    text as the assistant's reply.
+    """
+    _emit_line({"type": "system", "subtype": "init", "session_id": "fake-na-1", "model": "claude-opus-4-7"})
+    _emit_line({
+        "type": "assistant",
+        "error": "authentication_failed",
+        "message": {
+            "id": "msg_na",
+            "role": "assistant",
+            "type": "message",
+            "stop_reason": "stop_sequence",
+            "content": [{"type": "text", "text": "Not logged in · Please run /login"}],
+        },
+    })
+    _emit_line({
+        "type": "result", "subtype": "success", "is_error": True,
+        "result": "Not logged in · Please run /login",
+    })
+    return 0
+
+
 def _permission_fail(argv: List[str]) -> int:
     sys.stderr.write("permission denied: tool Bash blocked by policy\n")
     return 1
@@ -135,6 +197,8 @@ SCENARIOS = {
     "ok_text": _ok_text,
     "ok_tool_use": _ok_tool_use,
     "ok_thinking": _ok_thinking,
+    "ok_message_form": _ok_message_form,
+    "message_form_auth_failed": _message_form_auth_failed,
     "auth_fail": _auth_fail,
     "permission_fail": _permission_fail,
     "crash": _crash,

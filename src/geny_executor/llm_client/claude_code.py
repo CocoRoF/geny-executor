@@ -42,17 +42,13 @@ from geny_executor.llm_client._cli_runtime import (
 )
 from geny_executor.llm_client.base import BaseClient, ClientCapabilities
 from geny_executor.llm_client.translators._cli import (
+    StreamJsonAccumulator,
     assemble_response_from_stream_json,
     build_stream_json_stdin,
     claude_code_argv,
     parse_json_output_to_response,
 )
-from geny_executor.llm_client.types import (
-    APIRequest,
-    APIResponse,
-    ContentBlock,
-    TokenUsage,
-)
+from geny_executor.llm_client.types import APIRequest, APIResponse
 
 
 __all__ = ["ClaudeCodeCLIClient"]
@@ -272,127 +268,50 @@ class ClaudeCodeCLIClient(BaseClient):
         stdin = build_stream_json_stdin(messages)
 
         from geny_executor.llm_client._cli_runtime import parse_stream_json_line
-        from geny_executor.llm_client.translators._cli import (
-            stream_json_line_to_canonical_event,
-        )
 
-        # Accumulator state — mirrors ``assemble_response_from_stream_json``
-        # so the final message_complete envelope carries the same
-        # APIResponse the non-streaming path produces.
-        import json as _json
-
-        text_buf: List[str] = []
-        thinking_buf: List[str] = []
-        tool_uses: List[Dict[str, Any]] = []
-        current_tool: Optional[Dict[str, Any]] = None
-        final_obj: Optional[Dict[str, Any]] = None
-        message_id = ""
-        stop_reason = "end_turn"
-        resolved_model = model_config.model
+        # Shared accumulator handles both stream-json shapes:
+        #   - delta form (``--include-partial-messages`` on, true streaming)
+        #   - full-message form (Claude Code 2.x default — content[]
+        #     arrives in one ``assistant`` envelope).
+        # Without the message-form branch, every assistant frame yielded
+        # zero text and the terminal APIResponse came back empty —
+        # exactly the symptom the user reported (``output_len=0``).
+        accum = StreamJsonAccumulator(model=model_config.model)
 
         try:
             async for raw in runner.stream(argv, stdin_iter=aiter_bytes(stdin)):
                 line_obj = parse_stream_json_line(raw)
                 if line_obj is None:
                     continue
-
-                # ── Accumulate for the terminal APIResponse ──
-                ltype = str(line_obj.get("type", ""))
-                if ltype == "system":
-                    message_id = str(
-                        line_obj.get("session_id")
-                        or line_obj.get("message_id")
-                        or message_id
-                    )
-                    resolved_model = str(line_obj.get("model") or resolved_model)
-                elif ltype == "assistant":
-                    delta = line_obj.get("delta") or {}
-                    dtype = str(delta.get("type", ""))
-                    if dtype == "text_delta":
-                        text_buf.append(str(delta.get("text", "")))
-                    elif dtype == "thinking_delta":
-                        thinking_buf.append(str(delta.get("text", "")))
-                    elif dtype == "input_json_delta":
-                        if current_tool is not None:
-                            current_tool.setdefault("_partial_json", "")
-                            current_tool["_partial_json"] += str(
-                                delta.get("partial_json", "")
-                            )
-                    else:
-                        cb = line_obj.get("content_block")
-                        if isinstance(cb, dict) and cb.get("type") == "tool_use":
-                            current_tool = {
-                                "id": cb.get("id"),
-                                "name": cb.get("name"),
-                                "input": cb.get("input") or {},
-                            }
-                elif ltype == "content_block_stop":
-                    if current_tool is not None:
-                        partial = current_tool.pop("_partial_json", "")
-                        if partial and not current_tool.get("input"):
-                            try:
-                                current_tool["input"] = _json.loads(partial)
-                            except _json.JSONDecodeError:
-                                current_tool["input"] = {"_raw": partial}
-                        tool_uses.append(current_tool)
-                        current_tool = None
-                elif ltype == "result":
-                    final_obj = line_obj
-                    stop_reason = str(line_obj.get("stop_reason", stop_reason))
-
-                # ── Yield the per-line canonical event ──
-                # Suppress the translator's bare ``message_complete``
-                # (it carries no response field) — we emit the
-                # populated version after the loop. Everything else
-                # passes through unchanged.
-                event = stream_json_line_to_canonical_event(line_obj)
-                if event is None:
+                if "__malformed__" in line_obj:
                     continue
-                if event.get("type") == "message_complete":
-                    continue
-                yield event
-
-            # ── Assemble + emit the terminal message_complete ──
-            blocks: List[ContentBlock] = []
-            if thinking_buf:
-                blocks.append(
-                    ContentBlock(type="thinking", thinking_text="".join(thinking_buf))
-                )
-            if text_buf:
-                blocks.append(ContentBlock(type="text", text="".join(text_buf)))
-            for tu in tool_uses:
-                blocks.append(
-                    ContentBlock(
-                        type="tool_use",
-                        tool_use_id=tu.get("id"),
-                        tool_name=tu.get("name"),
-                        tool_input=tu.get("input") or {},
+                # Surface CLI-side errors as APIError so the stage's
+                # retry/escalate path runs instead of silently producing
+                # an empty response.
+                if str(line_obj.get("type", "")) == "error":
+                    raise APIError(
+                        f"Claude Code CLI reported error: "
+                        f"{line_obj.get('message') or line_obj!r}",
+                        category=ErrorCategory.CLI_PROTOCOL_ERROR,
                     )
-                )
+                # Surface the authentication_failed annotation that the
+                # CLI emits on the assistant frame when no credential
+                # is available — without this we'd swallow the
+                # "Not logged in" placeholder text as the assistant's
+                # answer and call the session "successful".
+                if str(line_obj.get("error", "")) == "authentication_failed":
+                    raise APIError(
+                        "Claude Code CLI is not authenticated (claude --print "
+                        "returned error=authentication_failed). Sign in via "
+                        "Settings → LLM Backends → Claude Code (CLI).",
+                        category=ErrorCategory.CLI_AUTH_FAILED,
+                    )
 
-            usage_in: Dict[str, Any] = (final_obj or {}).get("usage", {}) or {}
-            usage = TokenUsage(
-                input_tokens=int(usage_in.get("input_tokens", 0) or 0),
-                output_tokens=int(usage_in.get("output_tokens", 0) or 0),
-                cache_creation_input_tokens=int(
-                    usage_in.get("cache_creation_input_tokens", 0) or 0
-                ),
-                cache_read_input_tokens=int(
-                    usage_in.get("cache_read_input_tokens", 0) or 0
-                ),
-                cost_usd=usage_in.get("cost_usd"),
-                duration_ms=(final_obj or {}).get("duration_ms"),
-            )
+                # Feed accumulator + stream canonical events to consumer.
+                for event in accum.feed(line_obj):
+                    yield event
 
-            response = APIResponse(
-                content=blocks,
-                stop_reason=stop_reason,
-                usage=usage,
-                model=resolved_model,
-                message_id=message_id,
-                raw=final_obj or {},
-            )
-            yield {"type": "message_complete", "response": response}
+            yield {"type": "message_complete", "response": accum.finalize()}
         except CLIBinaryNotFound as e:
             raise APIError(str(e), category=ErrorCategory.CLI_NOT_FOUND) from e
         except CLITimeout as e:
