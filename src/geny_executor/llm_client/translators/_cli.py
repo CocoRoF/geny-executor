@@ -250,6 +250,21 @@ def stream_json_line_to_canonical_event(line_obj: Dict[str, Any]) -> Optional[Di
                     "name": cb.get("name"),
                     "input": cb.get("input") or {},
                 }
+        # Full-message form (Claude Code 2.x default): collapse the
+        # entire content array to a single concatenated text_delta so
+        # legacy single-event consumers see SOME text. Callers that
+        # need per-block fidelity should use ``StreamJsonAccumulator``
+        # directly.
+        msg = line_obj.get("message") or {}
+        if isinstance(msg, dict):
+            parts: List[str] = []
+            for block in (msg.get("content") or []):
+                if isinstance(block, dict) and block.get("type") == "text":
+                    text = str(block.get("text", ""))
+                    if text:
+                        parts.append(text)
+            if parts:
+                return {"type": "text_delta", "text": "".join(parts)}
         return None
 
     if ltype == "content_block_stop":
@@ -339,6 +354,245 @@ def parse_json_output_to_response(stdout: bytes, *, model: str) -> APIResponse:
 # ---------------------------------------------------------------------------
 
 
+class StreamJsonAccumulator:
+    """Walk Claude Code stream-json lines and accumulate the final response.
+
+    Handles both shapes the CLI emits (the shape varies by version + by
+    ``--include-partial-messages``):
+
+    1. **Delta form** (true streaming, ``--include-partial-messages`` on):
+       ``{"type":"assistant","delta":{"type":"text_delta","text":"..."}}``
+       — one delta per token-ish chunk; ``content_block_stop`` terminates a
+       block.
+    2. **Message form** (default + observed on claude_code 2.1.144):
+       ``{"type":"assistant","message":{"content":[
+           {"type":"text","text":"..."},
+           {"type":"thinking","thinking":"..."},
+           {"type":"tool_use","id":"...","name":"...","input":{...}},
+         ],"stop_reason":"...","usage":{...}}}``
+       — the full assistant message arrives in one envelope.
+
+    The accumulator's ``feed(line)`` returns a list of canonical UI events
+    ({"type":"text_delta", ...} etc.) that callers stream to consumers,
+    while internally bookkeeping the state needed to call ``finalize()``
+    for the terminal :class:`APIResponse`.
+    """
+
+    def __init__(self, model: str) -> None:
+        self._text_buf: List[str] = []
+        self._thinking_buf: List[str] = []
+        self._tool_uses: List[Dict[str, Any]] = []
+        self._current_tool: Optional[Dict[str, Any]] = None
+        self._final_obj: Optional[Dict[str, Any]] = None
+        self._message_id = ""
+        self._stop_reason = "end_turn"
+        self._resolved_model = model
+
+    # ── Public ────────────────────────────────────────────────
+
+    def feed(self, line: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Update state from one stream-json line.
+
+        Returns the list of canonical UI events the line produced
+        (``text_delta`` / ``thinking_delta`` / ``tool_use`` / ...).
+        Caller is responsible for yielding them to its own consumer.
+        Empty list when the line is bookkeeping-only.
+        """
+        if not isinstance(line, dict) or "__malformed__" in line:
+            return []
+        ltype = str(line.get("type", ""))
+
+        if ltype == "system":
+            self._message_id = str(
+                line.get("session_id") or line.get("message_id") or self._message_id
+            )
+            self._resolved_model = str(line.get("model") or self._resolved_model)
+            return []
+
+        if ltype == "assistant":
+            return self._feed_assistant(line)
+
+        if ltype == "content_block_stop":
+            self._close_current_tool()
+            return [{"type": "content_block_stop"}]
+
+        if ltype == "message_stop":
+            # Suppressed at this layer — the streaming caller emits one
+            # populated ``message_complete`` after ``finalize()``.
+            return []
+
+        if ltype == "result":
+            self._final_obj = line
+            self._stop_reason = str(line.get("stop_reason", self._stop_reason))
+            # ``message`` form puts stop_reason on the assistant envelope
+            # too; keep whichever non-empty value won.
+            return [{"type": "result", "raw": line}]
+
+        if ltype == "error":
+            return [{"type": "error", "raw": line}]
+
+        return [{"type": "cli_unknown", "raw": line}]
+
+    def finalize(self) -> APIResponse:
+        """Build the canonical :class:`APIResponse` from accumulated state."""
+        # Flush any unclosed tool — the message form often skips
+        # ``content_block_stop`` entirely.
+        self._close_current_tool()
+
+        blocks: List[ContentBlock] = []
+        if self._thinking_buf:
+            blocks.append(
+                ContentBlock(type="thinking", thinking_text="".join(self._thinking_buf))
+            )
+        if self._text_buf:
+            blocks.append(ContentBlock(type="text", text="".join(self._text_buf)))
+        for tu in self._tool_uses:
+            blocks.append(
+                ContentBlock(
+                    type="tool_use",
+                    tool_use_id=tu.get("id"),
+                    tool_name=tu.get("name"),
+                    tool_input=tu.get("input") or {},
+                )
+            )
+
+        usage_in: Dict[str, Any] = (self._final_obj or {}).get("usage", {}) or {}
+        usage = TokenUsage(
+            input_tokens=int(usage_in.get("input_tokens", 0) or 0),
+            output_tokens=int(usage_in.get("output_tokens", 0) or 0),
+            cache_creation_input_tokens=int(
+                usage_in.get("cache_creation_input_tokens", 0) or 0
+            ),
+            cache_read_input_tokens=int(usage_in.get("cache_read_input_tokens", 0) or 0),
+            cost_usd=usage_in.get("cost_usd")
+            or (self._final_obj or {}).get("total_cost_usd"),
+            duration_ms=(self._final_obj or {}).get("duration_ms"),
+        )
+
+        return APIResponse(
+            content=blocks,
+            stop_reason=self._stop_reason,
+            usage=usage,
+            model=self._resolved_model,
+            message_id=self._message_id,
+            raw=self._final_obj or {},
+        )
+
+    # ── Internals ─────────────────────────────────────────────
+
+    def _feed_assistant(self, line: Dict[str, Any]) -> List[Dict[str, Any]]:
+        # Form 1 — delta (true streaming).
+        delta = line.get("delta") or {}
+        dtype = str(delta.get("type", ""))
+        if dtype == "text_delta":
+            text = str(delta.get("text", ""))
+            self._text_buf.append(text)
+            return [{"type": "text_delta", "text": text}] if text else []
+        if dtype == "thinking_delta":
+            text = str(delta.get("text", ""))
+            self._thinking_buf.append(text)
+            return [{"type": "thinking_delta", "text": text}] if text else []
+        if dtype == "input_json_delta":
+            partial = str(delta.get("partial_json", ""))
+            if self._current_tool is not None:
+                self._current_tool.setdefault("_partial_json", "")
+                self._current_tool["_partial_json"] += partial
+            return [{"type": "input_json_delta", "delta": partial}]
+        cb = line.get("content_block")
+        if isinstance(cb, dict) and cb.get("type") == "tool_use":
+            self._current_tool = {
+                "id": cb.get("id"),
+                "name": cb.get("name"),
+                "input": cb.get("input") or {},
+            }
+            return [
+                {
+                    "type": "tool_use",
+                    "id": cb.get("id"),
+                    "name": cb.get("name"),
+                    "input": cb.get("input") or {},
+                }
+            ]
+
+        # Form 2 — full message (default Claude Code 2.x output).
+        message = line.get("message") or {}
+        if isinstance(message, dict) and message.get("content"):
+            return self._feed_message(message)
+
+        return []
+
+    def _feed_message(self, message: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Process a full assistant message envelope's content array.
+
+        Emits synthetic per-block delta events so UI consumers see the
+        same canonical shape they would with true streaming, then
+        records the blocks for the eventual :class:`APIResponse`.
+        """
+        # Capture stop_reason / usage off the envelope if present —
+        # the ``message`` form lets the assistant frame carry these
+        # instead of waiting for the final ``result`` line.
+        sr = message.get("stop_reason")
+        if sr:
+            self._stop_reason = str(sr)
+        usage = message.get("usage")
+        if isinstance(usage, dict) and self._final_obj is None:
+            self._final_obj = {"usage": usage}
+        # Skip synthetic "Not logged in" messages — Claude Code emits
+        # them with ``error=authentication_failed`` and a placeholder
+        # text block. Surface as an APIError-friendly error event so
+        # callers raise instead of returning empty output.
+        # (Detected on the outer ``line``, but ``message`` is the
+        # carrier so we pass it through unchanged here.)
+
+        events: List[Dict[str, Any]] = []
+        content = message.get("content") or []
+        if not isinstance(content, list):
+            return events
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            btype = str(block.get("type", ""))
+            if btype == "text":
+                text = str(block.get("text", ""))
+                if text:
+                    self._text_buf.append(text)
+                    events.append({"type": "text_delta", "text": text})
+            elif btype == "thinking":
+                # Anthropic uses ``thinking`` field; some shims use ``text``.
+                text = str(block.get("thinking") or block.get("text") or "")
+                if text:
+                    self._thinking_buf.append(text)
+                    events.append({"type": "thinking_delta", "text": text})
+            elif btype == "tool_use":
+                tu = {
+                    "id": block.get("id"),
+                    "name": block.get("name"),
+                    "input": block.get("input") or {},
+                }
+                self._tool_uses.append(tu)
+                events.append(
+                    {
+                        "type": "tool_use",
+                        "id": tu["id"],
+                        "name": tu["name"],
+                        "input": tu["input"],
+                    }
+                )
+        return events
+
+    def _close_current_tool(self) -> None:
+        if self._current_tool is None:
+            return
+        partial = self._current_tool.pop("_partial_json", "")
+        if partial and not self._current_tool.get("input"):
+            try:
+                self._current_tool["input"] = json.loads(partial)
+            except json.JSONDecodeError:
+                self._current_tool["input"] = {"_raw": partial}
+        self._tool_uses.append(self._current_tool)
+        self._current_tool = None
+
+
 async def assemble_response_from_stream_json(
     stream: AsyncIterator[bytes],
     *,
@@ -346,120 +600,31 @@ async def assemble_response_from_stream_json(
 ) -> APIResponse:
     """Drain a stream-json output and return a canonical APIResponse.
 
-    Used by ``ClaudeCodeCLIClient._send`` when ``request.stream=True``. The
-    final ``result`` envelope carries usage + stop_reason; the accumulated
-    text / thinking / tool_use blocks come from intermediate ``assistant``
-    deltas.
+    Used by ``ClaudeCodeCLIClient._send`` when ``request.stream=True``.
+    Thin wrapper around :class:`StreamJsonAccumulator` so the
+    streaming + non-streaming consumer paths share one parser — Claude
+    Code's stream-json shape (delta vs full-message) varies by CLI
+    version and ``--include-partial-messages``, and we never want the
+    two paths to drift again.
     """
-    text_buf: List[str] = []
-    thinking_buf: List[str] = []
-    tool_uses: List[Dict[str, Any]] = []
-    current_tool: Optional[Dict[str, Any]] = None
-    final_obj: Optional[Dict[str, Any]] = None
-    message_id = ""
-    stop_reason = "end_turn"
-    resolved_model = model
-
     from geny_executor.llm_client._cli_runtime import parse_stream_json_line
 
+    accum = StreamJsonAccumulator(model=model)
     async for raw in stream:
         line = parse_stream_json_line(raw)
         if line is None:
             continue
         if "__malformed__" in line:
-            # Skip malformed lines — caller's CLIProtocolError path
-            # already runs on non-zero exits.
             continue
-        ltype = str(line.get("type", ""))
-
-        if ltype == "system":
-            # The first system envelope carries session metadata.
-            message_id = str(line.get("session_id") or line.get("message_id") or message_id)
-            resolved_model = str(line.get("model") or resolved_model)
-            continue
-
-        if ltype == "assistant":
-            delta = line.get("delta") or {}
-            dtype = str(delta.get("type", ""))
-            if dtype == "text_delta":
-                text_buf.append(str(delta.get("text", "")))
-                continue
-            if dtype == "thinking_delta":
-                thinking_buf.append(str(delta.get("text", "")))
-                continue
-            if dtype == "input_json_delta":
-                if current_tool is not None:
-                    current_tool.setdefault("_partial_json", "")
-                    current_tool["_partial_json"] += str(delta.get("partial_json", ""))
-                continue
-            cb = line.get("content_block")
-            if isinstance(cb, dict) and cb.get("type") == "tool_use":
-                current_tool = {
-                    "id": cb.get("id"),
-                    "name": cb.get("name"),
-                    "input": cb.get("input") or {},
-                }
-                continue
-
-        if ltype == "content_block_stop":
-            if current_tool is not None:
-                # Finalise the in-flight tool block. If we accumulated a
-                # partial_json buffer, try parsing it as the input.
-                partial = current_tool.pop("_partial_json", "")
-                if partial and not current_tool.get("input"):
-                    try:
-                        current_tool["input"] = json.loads(partial)
-                    except json.JSONDecodeError:
-                        current_tool["input"] = {"_raw": partial}
-                tool_uses.append(current_tool)
-                current_tool = None
-            continue
-
-        if ltype == "result":
-            final_obj = line
-            stop_reason = str(line.get("stop_reason", stop_reason))
-            continue
-
-        if ltype == "error":
+        # ``error`` envelopes from the CLI need to raise so the caller's
+        # CLIProtocolError path runs — match the prior behaviour exactly.
+        if str(line.get("type", "")) == "error":
             raise RuntimeError(
                 f"Claude Code CLI reported error: {line.get('message') or line!r}"
             )
+        accum.feed(line)
 
-    blocks: List[ContentBlock] = []
-    if thinking_buf:
-        blocks.append(ContentBlock(type="thinking", thinking_text="".join(thinking_buf)))
-    if text_buf:
-        blocks.append(ContentBlock(type="text", text="".join(text_buf)))
-    for tu in tool_uses:
-        blocks.append(
-            ContentBlock(
-                type="tool_use",
-                tool_use_id=tu.get("id"),
-                tool_name=tu.get("name"),
-                tool_input=tu.get("input") or {},
-            )
-        )
-
-    usage_in: Dict[str, Any] = {}
-    if final_obj:
-        usage_in = final_obj.get("usage", {}) or {}
-    usage = TokenUsage(
-        input_tokens=int(usage_in.get("input_tokens", 0) or 0),
-        output_tokens=int(usage_in.get("output_tokens", 0) or 0),
-        cache_creation_input_tokens=int(usage_in.get("cache_creation_input_tokens", 0) or 0),
-        cache_read_input_tokens=int(usage_in.get("cache_read_input_tokens", 0) or 0),
-        cost_usd=usage_in.get("cost_usd"),
-        duration_ms=(final_obj or {}).get("duration_ms"),
-    )
-
-    return APIResponse(
-        content=blocks,
-        stop_reason=stop_reason,
-        usage=usage,
-        model=resolved_model,
-        message_id=message_id,
-        raw=final_obj,
-    )
+    return accum.finalize()
 
 
 # ---------------------------------------------------------------------------

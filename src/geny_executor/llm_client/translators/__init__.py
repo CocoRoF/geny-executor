@@ -29,6 +29,7 @@ from geny_executor.llm_client.translators._canonical import (
     split_tool_uses,
 )
 from geny_executor.llm_client.translators._cli import (
+    StreamJsonAccumulator,
     assemble_response_from_stream_json,
     build_stream_json_stdin,
     claude_code_argv,
@@ -62,5 +63,6 @@ __all__ = [
     "split_tool_results",
     "split_tool_uses",
     "stream_json_line_to_canonical_event",
+    "StreamJsonAccumulator",
     "thinking_to_effort",
 ]

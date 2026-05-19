@@ -262,6 +262,61 @@ async def test_create_message_stream_message_complete_carries_response() -> None
     assert resp.model  # resolved from the system envelope or model_config
 
 
+@pytest.mark.asyncio
+async def test_create_message_stream_message_form_collects_text() -> None:
+    """Regression: when Claude Code emits the ``assistant.message.content[]``
+    shape (the 2.x default, no ``--include-partial-messages``), text
+    blocks must be accumulated into the terminal APIResponse. The
+    earlier accumulator only handled the delta shape so every session
+    came back with ``output_len=0`` even though the CLI did real work.
+    """
+    c = _client(scenario="ok_message_form", text="안녕하세요")
+    events = []
+    async for evt in c.create_message_stream(
+        model_config=ModelConfig(model="sonnet"),
+        messages=[{"role": "user", "content": "ㅎㅇ"}],
+    ):
+        events.append(evt)
+
+    text_deltas = [e for e in events if e.get("type") == "text_delta"]
+    assert text_deltas, "message form must produce at least one text_delta"
+    assert "".join(d["text"] for d in text_deltas) == "안녕하세요"
+
+    completes = [e for e in events if e.get("type") == "message_complete"]
+    assert len(completes) == 1
+    resp = completes[0]["response"]
+    assert resp.text == "안녕하세요"
+    assert resp.stop_reason == "end_turn"
+
+
+@pytest.mark.asyncio
+async def test_create_message_stream_authentication_failed_raises() -> None:
+    """Regression: the CLI emits an ``assistant`` envelope with
+    ``error=authentication_failed`` + placeholder text "Not logged
+    in" when no credential is available. The placeholder must not
+    be returned as the assistant's reply — raise APIError so the
+    pipeline surfaces the auth problem to the user."""
+    c = _client(scenario="message_form_auth_failed")
+    with pytest.raises(APIError) as exc_info:
+        async for _ in c.create_message_stream(
+            model_config=ModelConfig(model="sonnet"),
+            messages=[{"role": "user", "content": "hi"}],
+        ):
+            pass
+    assert exc_info.value.category == ErrorCategory.CLI_AUTH_FAILED
+
+
+@pytest.mark.asyncio
+async def test_send_streaming_message_form_text() -> None:
+    """Non-streaming caller via ``_send(stream=True)`` must also
+    collect text from the message form. Mirrors the streaming-from-
+    consumer-POV test above for the assembler path."""
+    c = _client(scenario="ok_message_form", text="배포 완료")
+    resp = await c._send(_make_request(stream=True))
+    assert resp.text == "배포 완료"
+    assert resp.stop_reason == "end_turn"
+
+
 # ---------------------------------------------------------------------------
 # Argv shape verification via the echo scenario
 # ---------------------------------------------------------------------------

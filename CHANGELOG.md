@@ -4,6 +4,38 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.0.3] — 2026-05-19
+
+Patch release. Fixes empty assistant output (`output_len=0`) when
+Claude Code (CLI) 2.x is the Stage 6 provider, and surfaces
+authentication failures as ``APIError`` instead of silently
+returning a "Not logged in" placeholder.
+
+### Fixed
+
+- ``ClaudeCodeCLIClient.create_message_stream`` /
+  ``assemble_response_from_stream_json`` now accumulate text from the
+  **full-message** stream-json shape Claude Code 2.x emits by
+  default (``{"type":"assistant","message":{"content":[...]}}``) in
+  addition to the **delta** shape (``--include-partial-messages``
+  on). The 2.0.2 fix unblocked the streaming control flow but only
+  parsed delta-form text, so every session came back with
+  ``output_len=0`` even though the CLI did real work for ~6s.
+- The CLI's ``assistant`` envelope occasionally carries
+  ``error="authentication_failed"`` with a placeholder ``"Not logged
+  in"`` text block. The streaming path now raises
+  ``APIError(category=CLI_AUTH_FAILED)`` so the host surfaces the
+  problem instead of returning the placeholder as the assistant's
+  reply.
+- Both parser paths now share one ``StreamJsonAccumulator`` so the
+  streaming + non-streaming consumers never drift apart again.
+
+### Added
+
+- ``StreamJsonAccumulator`` exported from
+  ``geny_executor.llm_client.translators`` for hosts that want to
+  pipe a custom stream-json source into the canonical response shape.
+
 ## [2.0.2] — 2026-05-19
 
 Patch release. Fixes streaming Stage 6 calls failing with
