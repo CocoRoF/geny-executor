@@ -4,6 +4,36 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.0.2] — 2026-05-19
+
+Patch release. Fixes streaming Stage 6 calls failing with
+``Stream ended without message_complete`` when ``claude_code_cli``
+was the selected provider.
+
+### Fixed
+
+- ``ClaudeCodeCLIClient.create_message_stream`` now emits a populated
+  ``{"type": "message_complete", "response": APIResponse}`` envelope
+  after the CLI exits. The previous implementation passed the
+  translator's bare ``{"type": "message_complete"}`` straight through,
+  with no ``response`` field — and the s06_api default stage's
+  ``_call_streaming`` reads exactly that field to build the assistant
+  message, so the streaming path raised
+  ``APIError("Stream ended without message_complete")`` for every
+  Claude Code (CLI) session. The streaming client now accumulates
+  text / thinking / tool_use blocks + the final ``result`` envelope's
+  usage as events flow, then yields one terminal envelope mirroring
+  the contract every SDK client (anthropic / openai / google) already
+  honours. Per-line ``text_delta`` / ``content_block_stop`` / ``result``
+  events still flow as before so downstream consumers that watch the
+  partial stream behave unchanged.
+
+### Migration
+
+None. Behaviour change is strictly additive — code that ignored
+``message_complete`` (or never selected ``claude_code_cli`` for s06)
+sees no observable difference.
+
 ## [2.0.1] — 2026-05-18
 
 Patch release. Fixes a crash when a manifest names ``"subagent_type"``
