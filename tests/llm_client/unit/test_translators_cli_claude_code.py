@@ -189,17 +189,97 @@ def test_stdin_envelope_one_user_message() -> None:
     ]
 
 
-def test_stdin_envelope_multi_turn() -> None:
+def test_stdin_envelope_multi_turn_always_user_role() -> None:
+    """Regression: every envelope's ``message.role`` MUST be ``"user"``.
+
+    Claude Code CLI 2.x rejects ``type:user`` envelopes that carry an
+    embedded ``message.role: assistant`` with::
+
+        Error: Expected message role 'user', got 'assistant'
+
+    The pre-fix builder forwarded canonical roles through and broke
+    every multi-turn iteration of an env that pinned ``claude_code_cli``
+    as the Stage 6 provider.
+    """
     out = build_stream_json_stdin([
         {"role": "user", "content": "q1"},
         {"role": "assistant", "content": "a1"},
         {"role": "user", "content": [{"type": "tool_result", "content": "ok"}]},
     ])
     envs = [json.loads(l) for l in out.strip().split(b"\n")]
+    # ONE synthetic envelope — multi-turn collapses to a single user
+    # message; the CLI reconstructs the conversation from its content.
+    assert len(envs) == 1
+    assert envs[0]["type"] == "user"
     assert envs[0]["message"]["role"] == "user"
-    assert envs[1]["message"]["role"] == "assistant"
-    assert envs[2]["message"]["role"] == "user"
-    assert envs[2]["message"]["content"][0]["type"] == "tool_result"
+
+
+def test_stdin_envelope_multi_turn_preserves_history_in_content() -> None:
+    """The collapsed envelope must carry enough fidelity that the LLM
+    can reconstruct the prior conversation: text turns, tool calls
+    (name + input), and tool results all show up in the flattened
+    content under markdown headers."""
+    out = build_stream_json_stdin([
+        {"role": "user", "content": "find the README"},
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": "Let me check."},
+                {
+                    "type": "tool_use",
+                    "id": "tu_1",
+                    "name": "Read",
+                    "input": {"path": "/repo/README.md"},
+                },
+            ],
+        },
+        {
+            "role": "user",
+            "content": [
+                {"type": "tool_result", "tool_use_id": "tu_1", "content": "# Hello"},
+            ],
+        },
+        {"role": "user", "content": "summarize it"},
+    ])
+    env = json.loads(out.strip())
+    text = env["message"]["content"]
+    assert "## Conversation so far" in text
+    assert "find the README" in text
+    assert "[Tool call: Read({" in text
+    assert "/repo/README.md" in text
+    assert "[Tool result] # Hello" in text
+    # The final user turn ("summarize it") is the "current input" and
+    # appears under "## Current input" without the per-turn header.
+    assert "## Current input" in text
+    assert text.rstrip().endswith("summarize it")
+
+
+def test_stdin_envelope_drops_thinking_and_handles_tool_errors() -> None:
+    """Thinking blocks from a prior provider don't replay on the CLI
+    — drop them. ``is_error: True`` tool_results render under a
+    "Tool error" tag so the LLM sees the failure semantics."""
+    out = build_stream_json_stdin([
+        {"role": "user", "content": "do X"},
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "thinking", "thinking": "secret reasoning"},
+                {"type": "text", "text": "trying X..."},
+                {"type": "tool_use", "id": "t1", "name": "Bash", "input": {"cmd": "x"}},
+            ],
+        },
+        {
+            "role": "user",
+            "content": [
+                {"type": "tool_result", "tool_use_id": "t1", "is_error": True, "content": "command failed"},
+            ],
+        },
+    ])
+    env = json.loads(out.strip())
+    text = env["message"]["content"]
+    assert "secret reasoning" not in text  # thinking dropped
+    assert "trying X..." in text
+    assert "[Tool error] command failed" in text
 
 
 def test_stdin_empty_messages_returns_empty_bytes() -> None:

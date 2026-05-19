@@ -173,29 +173,147 @@ def claude_code_argv(
 # ---------------------------------------------------------------------------
 
 
+def _render_block_for_history(block: Any) -> str:
+    """Render one Anthropic-style content block as readable text.
+
+    Used by ``build_stream_json_stdin`` when collapsing multi-turn
+    history into a single synthetic user envelope. Preserves enough
+    fidelity (tool name + input, tool result text) for the LLM to
+    reconstruct the conversation, while dropping shapes the CLI
+    cannot ingest (thinking blocks, images→placeholder)."""
+    if isinstance(block, str):
+        return block
+    if not isinstance(block, dict):
+        return str(block)
+    btype = str(block.get("type", ""))
+    if btype == "text":
+        return str(block.get("text", ""))
+    if btype == "thinking":
+        # Thinking traces from a prior provider don't replay on the
+        # CLI — drop them. The CLI does its own ``--effort`` thinking
+        # on the new turn.
+        return ""
+    if btype == "tool_use":
+        name = block.get("name", "tool")
+        try:
+            input_json = json.dumps(
+                block.get("input") or {}, ensure_ascii=False,
+            )
+        except (TypeError, ValueError):
+            input_json = str(block.get("input"))
+        return f"[Tool call: {name}({input_json})]"
+    if btype == "tool_result":
+        body = block.get("content")
+        if isinstance(body, list):
+            body = "\n".join(
+                _render_block_for_history(b) for b in body
+            ).strip()
+        elif body is None:
+            body = ""
+        is_error = bool(block.get("is_error"))
+        tag = "Tool error" if is_error else "Tool result"
+        return f"[{tag}] {body}"
+    if btype == "image":
+        return "[image attachment]"
+    return ""
+
+
+def _render_content_for_history(content: Any) -> str:
+    """Flatten a canonical ``content`` field (string or block list)
+    into one display-ready text run for history-preamble use."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        rendered = [
+            _render_block_for_history(b) for b in content
+        ]
+        return "\n".join(s for s in rendered if s).strip()
+    return str(content)
+
+
 def build_stream_json_stdin(messages: List[Dict[str, Any]]) -> bytes:
-    """Render canonical messages as Claude Code stream-json stdin.
+    """Render canonical Anthropic-style messages as Claude Code
+    stream-json stdin — **always as a single ``type:user`` envelope**.
 
-    Claude Code's ``--input-format stream-json`` expects newline-delimited
-    JSON envelopes of the shape::
+    Claude Code CLI's ``--input-format stream-json`` strictly requires
+    each envelope's ``message.role`` to be ``"user"``. The previous
+    implementation forwarded the canonical role through (assistant /
+    tool turns embedded in ``type:user`` envelopes with their original
+    role kept) which the CLI rejects with::
 
-        {"type": "user", "message": {"role": "user", "content": [...]}}
+        Error: Expected message role 'user', got 'assistant'
 
-    Tool-results / assistant turns from prior multi-turn history flow as
-    additional ``user``-typed entries with their original role embedded —
-    the CLI reconstructs the conversation from the envelopes.
+    For multi-turn pipelines (Geny's s06_api accumulates conversation
+    history across loop iterations) we collapse the whole history into
+    a single synthetic user envelope:
+
+      - The latest user message becomes the bulk of the prompt.
+      - All prior turns are rendered as a markdown preamble
+        (``### User`` / ``### Assistant`` / tool calls + results).
+      - The CLI receives one cohesive single-turn prompt with all
+        relevant context — same input contract whether the host is
+        running Geny's iterative loop or sending a one-shot query.
+
+    The single-turn fast-path (one user message only) emits the
+    canonical envelope unchanged so simple invocations stay byte-for-
+    byte identical to the legacy path.
     """
-    out_lines: List[str] = []
-    for m in messages:
-        role = str(m.get("role", "user"))
-        content = m.get("content", "")
+    if not messages:
+        return b""
+
+    # Single-turn fast path — preserve the canonical envelope shape.
+    if len(messages) == 1 and str(messages[0].get("role", "")) == "user":
         envelope = {
             "type": "user",
-            "message": {"role": role, "content": content},
+            "message": {"role": "user", "content": messages[0].get("content", "")},
         }
-        out_lines.append(json.dumps(envelope))
-    blob = "\n".join(out_lines)
-    return (blob + "\n").encode("utf-8") if blob else b""
+        return (json.dumps(envelope, ensure_ascii=False) + "\n").encode("utf-8")
+
+    # Multi-turn: flatten into a single synthetic user message. The
+    # CLI's ``--bare`` mode treats this as a regular prompt; the LLM
+    # reconstructs the conversation from the markdown structure.
+    parts: List[str] = []
+    last_user_idx = -1
+    for i, m in enumerate(messages):
+        if str(m.get("role", "")) == "user":
+            last_user_idx = i
+
+    for i, m in enumerate(messages):
+        role = str(m.get("role", "user"))
+        text = _render_content_for_history(m.get("content", ""))
+        if not text and role != "assistant":
+            continue
+        if role == "user":
+            # The final user turn is the "current input" — render it
+            # without a header so it reads as the actual question.
+            if i == last_user_idx:
+                parts.append(text)
+            else:
+                parts.append(f"### User\n{text}")
+        elif role == "assistant":
+            if text:
+                parts.append(f"### Assistant\n{text}")
+        elif role == "tool":
+            parts.append(f"### Tool result\n{text}")
+        else:
+            parts.append(f"### {role.capitalize()}\n{text}")
+
+    preamble = ""
+    current_input = parts[-1] if parts else ""
+    if len(parts) > 1:
+        preamble_parts = parts[:-1]
+        preamble = (
+            "## Conversation so far\n\n"
+            + "\n\n".join(preamble_parts)
+            + "\n\n## Current input\n"
+        )
+
+    flat = (preamble + current_input).strip()
+    envelope = {
+        "type": "user",
+        "message": {"role": "user", "content": flat},
+    }
+    return (json.dumps(envelope, ensure_ascii=False) + "\n").encode("utf-8")
 
 
 # ---------------------------------------------------------------------------
