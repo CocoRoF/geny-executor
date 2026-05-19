@@ -4,6 +4,72 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.0.5] — 2026-05-19
+
+Phase-I foundation for **MCP-wrapped tools on ``claude_code_cli``
+sessions** — surfaces the host's tool registry to the CLI's LLM
+without breaking the Stage 6 → Stage 10 → Stage 16 pipeline
+interface. Companion Geny PR ships the actual MCP bridge + tool
+endpoint that consume this wire.
+
+### Added
+
+- ``APIRequest.mcp_config: Optional[Dict[str, Any]]`` — per-request
+  MCP server configuration. CLI-based backends serialize this to
+  ``--mcp-config <json>``; SDK-based backends ignore it. Hosts use
+  this to expose their tool registry to the CLI's LLM without
+  going through the per-client static ``mcp_config_path``.
+
+### Changed
+
+- ``claude_code_argv`` now reads ``request.mcp_config`` with
+  precedence over the per-client kwarg. When *any* MCP config is
+  supplied (per-request or per-client) the argv builder also
+  emits:
+    * ``--tools ""`` — disable the CLI's built-in tool palette so
+      the LLM cannot hallucinate ``Bash`` / ``Read`` /
+      ``ToolSearch`` / etc. that the host has no executor for.
+      Skipped when the caller explicitly passed ``allow_tools`` so
+      "MCP + curated CLI built-ins" hybrid surfaces still work.
+    * ``--strict-mcp-config`` — ignore user-level and
+      project-level MCP configurations so the per-session bridge is
+      the sole surface. Prevents accidental leakage from a host's
+      ``~/.claude/...`` config files.
+- Legacy callers without any MCP config keep today's behaviour
+  exactly: no ``--tools "" disable``, no ``--strict-mcp-config``,
+  CLI built-ins available.
+
+### Why
+
+Stage 6 with provider ``claude_code_cli`` was the lone outlier in
+the otherwise provider-symmetric surface: every SDK client
+(anthropic / openai / google / vllm) accepts the canonical
+``APIRequest.tools`` and passes the schemas natively to the LLM.
+The CLI client dropped them on the floor — the LLM saw only the
+CLI's built-in palette and hallucinated against it whenever the
+host's intent referenced a Geny custom tool.
+
+The Stage 6 → Stage 10 interface is preserved. When the CLI uses
+MCP to call a host tool, the call is dispatched inside the CLI's
+agentic loop (via the bridge ↔ host HTTP endpoint) and the final
+``APIResponse`` carries only the assistant message — no
+``tool_use`` blocks for Stage 10 to dispatch. Stage 10 sees no
+``tool_use`` → naturally no-ops. Stage 16 sees no pending state →
+naturally finishes. Memory / persona / persistence stages run
+identically because the canonical ``APIResponse`` shape is the
+same. Anthropic API path keeps the per-iteration tool-dispatch
+loop; the CLI path collapses it inside one CLI invocation. Both
+produce identical canonical outputs.
+
+### Tests
+
+- ``test_argv_request_mcp_config_overrides_kwarg``
+- ``test_argv_host_mcp_disables_cli_builtins_and_strict``
+- ``test_argv_host_mcp_with_explicit_allow_tools_keeps_builtins``
+- ``test_argv_no_mcp_no_tools_flag`` (legacy back-compat)
+
+Full ``tests/llm_client/`` 193/193 pass.
+
 ## [2.0.4] — 2026-05-19
 
 Patch release. Fixes Claude Code (CLI) sessions failing on the second

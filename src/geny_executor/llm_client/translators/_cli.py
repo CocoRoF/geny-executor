@@ -139,12 +139,40 @@ def claude_code_argv(
     if settings_path:
         argv += ["--settings", settings_path]
 
-    # MCP config: accept dict (inline JSON), str path, or pre-serialized JSON.
-    if mcp_config is not None:
-        if isinstance(mcp_config, str):
-            argv += ["--mcp-config", mcp_config]
+    # MCP config — precedence:
+    #   1. ``request.mcp_config`` (per-request, set by host for
+    #      session-scoped MCP wraps). Phase I: Geny synthesizes a
+    #      per-session MCP config that bridges its tool registry to
+    #      the CLI so the LLM can call host tools via MCP.
+    #   2. ``mcp_config`` constructor kwarg (legacy per-client static
+    #      config from the LLM-backends settings card).
+    # Both flow to ``--mcp-config <json|path>``.
+    effective_mcp_config: Any = (
+        request.mcp_config if request.mcp_config is not None else mcp_config
+    )
+    has_host_mcp = bool(effective_mcp_config)
+    if has_host_mcp:
+        if isinstance(effective_mcp_config, str):
+            argv += ["--mcp-config", effective_mcp_config]
         else:
-            argv += ["--mcp-config", json.dumps(mcp_config)]
+            argv += [
+                "--mcp-config",
+                json.dumps(effective_mcp_config, ensure_ascii=False),
+            ]
+        # When the host exposes its own tool surface via MCP, disable
+        # the CLI's built-in tool palette so the LLM cannot hallucinate
+        # against ``Bash`` / ``Read`` / ``ToolSearch`` / etc. The CLI's
+        # ``--tools ""`` literal disables the entire built-in set per
+        # ``claude --help``. Caller-supplied ``allow_tools`` /
+        # ``disallow_tools`` (legacy CLI-built-in filters) are also
+        # forwarded earlier so a host that wants a mixed surface — MCP
+        # tools + a curated subset of CLI built-ins — can opt back in.
+        # ``--strict-mcp-config`` ignores any other MCP config sources
+        # (user-level / project-level) so the per-session bridge is
+        # the sole MCP surface the CLI sees.
+        if not allow_tools:
+            argv += ["--tools", ""]
+        argv += ["--strict-mcp-config"]
 
     # JSON schema (structured output).
     if request.response_format:
