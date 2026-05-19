@@ -137,6 +137,57 @@ def test_argv_mcp_config_path_passed_through() -> None:
     assert blob == "/tmp/mcp.json"
 
 
+def test_argv_request_mcp_config_overrides_kwarg() -> None:
+    """``APIRequest.mcp_config`` (per-request) wins over the
+    constructor kwarg (per-client static). Phase I uses this to
+    inject the per-session Geny tools bridge alongside any
+    settings-card-configured MCP servers."""
+    per_request = {"mcpServers": {"geny": {"type": "stdio", "command": "py"}}}
+    per_client = {"mcpServers": {"legacy": {"command": "x"}}}
+    argv = claude_code_argv(_req(mcp_config=per_request), mcp_config=per_client)
+    blob = argv[argv.index("--mcp-config") + 1]
+    assert json.loads(blob) == per_request  # per-request wins
+
+
+def test_argv_host_mcp_disables_cli_builtins_and_strict() -> None:
+    """When the host registers MCP servers, the CLI's built-in tool
+    palette is disabled (``--tools ""``) so the LLM only ever sees
+    MCP-advertised tools. ``--strict-mcp-config`` ignores any other
+    MCP configuration sources so the per-session bridge is the sole
+    surface. Together these eliminate the hallucination path where
+    the LLM tries to use ``Bash``/``ToolSearch``/etc. that the host
+    has no executor for."""
+    cfg = {"mcpServers": {"geny": {"type": "stdio", "command": "py"}}}
+    argv = claude_code_argv(_req(mcp_config=cfg))
+    # Disable built-ins.
+    idx = argv.index("--tools")
+    assert argv[idx + 1] == ""
+    # Strict mode.
+    assert "--strict-mcp-config" in argv
+
+
+def test_argv_host_mcp_with_explicit_allow_tools_keeps_builtins() -> None:
+    """``--allowedTools`` is the legacy whitelist of CLI built-ins.
+    If a caller explicitly supplies one alongside an MCP config they
+    want a mixed surface (custom MCP tools + a curated subset of CLI
+    built-ins). Don't override their choice."""
+    cfg = {"mcpServers": {"geny": {"type": "stdio", "command": "py"}}}
+    argv = claude_code_argv(_req(mcp_config=cfg), allow_tools=["Read"])
+    # No --tools "" disabler — caller picked allowedTools explicitly.
+    assert "--tools" not in argv
+    assert "--allowedTools" in argv
+
+
+def test_argv_no_mcp_no_tools_flag() -> None:
+    """Legacy callers without any MCP config keep today's behaviour:
+    CLI built-ins available, no ``--tools ""`` disable, no
+    ``--strict-mcp-config``."""
+    argv = claude_code_argv(_req())
+    assert "--tools" not in argv
+    assert "--strict-mcp-config" not in argv
+    assert "--mcp-config" not in argv
+
+
 def test_argv_response_format_json_schema_emits_flag() -> None:
     schema = {"type": "object", "properties": {"x": {"type": "string"}}}
     argv = claude_code_argv(
