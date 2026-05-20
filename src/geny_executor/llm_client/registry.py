@@ -74,15 +74,8 @@ def _claude_code_cli_factory() -> Type[BaseClient]:
     return ClaudeCodeCLIClient
 
 
-def _copilot_cli_factory() -> Type[BaseClient]:
-    from geny_executor.llm_client.copilot import CopilotCLIClient
-
-    return CopilotCLIClient
-
-
 ClientRegistry.register("anthropic", _anthropic_factory)
 ClientRegistry.register("openai", _openai_factory)
 ClientRegistry.register("google", _google_factory)
 ClientRegistry.register("vllm", _vllm_factory)
 ClientRegistry.register("claude_code_cli", _claude_code_cli_factory)
-ClientRegistry.register("copilot_cli", _copilot_cli_factory)

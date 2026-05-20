@@ -97,16 +97,6 @@ def _creds_to_client_kwargs(provider: str, creds: ProviderCredentials) -> Dict[s
                     kwargs[key] = extras[key]
         return kwargs
 
-    if provider == "copilot_cli":
-        extras = dict(creds.extras or {})
-        kwargs = {}
-        if creds.binary_path:
-            kwargs["gh_binary_path"] = creds.binary_path
-        for key in ("allow_tools", "cwd", "extra_args", "timeout_s"):
-            if key in extras:
-                kwargs[key] = extras[key]
-        return kwargs
-
     # API providers (anthropic / openai / google)
     kwargs = {"api_key": creds.api_key}
     if creds.base_url is not None:

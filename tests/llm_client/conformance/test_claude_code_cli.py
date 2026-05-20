@@ -110,16 +110,21 @@ class TestClaudeCodeCLIConformance(ConformanceTestSuite):
         assert resp.usage.duration_ms is not None
 
     @pytest.mark.asyncio
-    async def test_tool_use_round_trip(self) -> None:
+    async def test_tool_use_blocks_dropped(self) -> None:
+        """The CLI handles tool dispatch internally — ``tool_use``
+        blocks observed in its output are intentionally dropped from
+        the assembled response so host pipelines (Geny's Stage 10,
+        the canonical reference consumer) don't try to re-dispatch
+        them and ghost-error. ``stop_reason`` is preserved so callers
+        can still see the CLI ended in a tool turn. See
+        ``StreamJsonAccumulator.finalize`` for the full rationale."""
         client = self.make_client(scenario="ok_tool_use")
         resp = await client.create_message(
             model_config=ModelConfig(model="sonnet"),
             messages=[{"role": "user", "content": "read /tmp/x"}],
         )
-        assert resp.has_tool_calls is True
-        tu = resp.tool_calls[0]
-        assert tu.tool_name == "Read"
-        assert tu.tool_input == {"path": "/tmp/x"}
+        assert resp.tool_calls == []
+        assert resp.stop_reason == "tool_use"
 
     @pytest.mark.asyncio
     async def test_thinking_blocks_returned(self) -> None:

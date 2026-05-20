@@ -1,20 +1,22 @@
 """Canonical ↔ CLI translation helpers.
 
-Used by ``ClaudeCodeCLIClient`` (Phase B) and ``CopilotCLIClient`` (Phase C)
-to:
+Used by ``ClaudeCodeCLIClient`` (Phase B) to:
 
   - Build vendor-specific argv lists from a canonical :class:`APIRequest`.
   - Assemble a canonical :class:`APIResponse` from CLI output.
   - Map streaming stream-json line types to canonical event dicts.
 
-Claude Code helpers landed in Phase B1; ``gh copilot`` helpers
-(``compose_copilot_prompt``, ``copilot_argv``, ``parse_plain_text_to_response``)
-land here in Phase C1.
+The Phase-C ``gh copilot`` helpers (``compose_copilot_prompt``,
+``copilot_argv``, ``parse_plain_text_to_response``) were removed in
+2.0.6 along with the ``CopilotCLIClient`` itself — ``gh copilot``
+does not support streaming, tools, or MCP, so it could not host the
+pipeline's Stage-10 dispatch loop.
 """
 
 from __future__ import annotations
 
 import json
+import os
 from typing import Any, AsyncIterator, Dict, List, Optional, Sequence
 
 from geny_executor.core.state import TokenUsage
@@ -83,8 +85,19 @@ def claude_code_argv(
 
     # Output / input formats: always stream-json for streaming requests,
     # else json so we can parse a single object.
+    #
+    # ``--verbose`` is required by Claude Code CLI ≥ 2.1.x whenever
+    # ``--print`` is combined with ``--output-format=stream-json``;
+    # without it the CLI exits 1 with:
+    #
+    #     Error: When using --print, --output-format=stream-json
+    #     requires --verbose
+    #
+    # 2.0.6 emits it automatically alongside the stream-json switch so
+    # hosts don't have to thread an opt-in flag through their settings.
     if request.stream:
         argv += [
+            "--verbose",
             "--input-format", "stream-json",
             "--output-format", "stream-json",
             "--include-partial-messages",
@@ -92,8 +105,21 @@ def claude_code_argv(
     else:
         argv += ["--output-format", "json"]
 
+    # ``--bare`` skips OAuth + keychain reads (per ``claude --help``:
+    # "Anthropic auth is strictly ANTHROPIC_API_KEY or apiKeyHelper via
+    # --settings (OAuth and keychain are never read)"). That's correct
+    # for the API-key auth path but **wrong** for the subscription
+    # OAuth path — passing ``--bare`` without an API key crashes every
+    # subscription user with "Not logged in · Please run /login". 2.0.6
+    # auto-strips ``--bare`` when no API key is reachable in the
+    # spawning process's environment, so the same ``bare_mode=True``
+    # default works for both auth paths transparently. Callers that
+    # explicitly want OAuth even with an API key present can still
+    # pass ``bare_mode=False``.
     if bare_mode:
-        argv.append("--bare")
+        has_api_key = bool(os.environ.get("ANTHROPIC_API_KEY", "").strip())
+        if has_api_key:
+            argv.append("--bare")
 
     # Model: alias or pinned id.
     if request.model:
@@ -159,19 +185,18 @@ def claude_code_argv(
                 "--mcp-config",
                 json.dumps(effective_mcp_config, ensure_ascii=False),
             ]
-        # When the host exposes its own tool surface via MCP, disable
-        # the CLI's built-in tool palette so the LLM cannot hallucinate
-        # against ``Bash`` / ``Read`` / ``ToolSearch`` / etc. The CLI's
-        # ``--tools ""`` literal disables the entire built-in set per
-        # ``claude --help``. Caller-supplied ``allow_tools`` /
-        # ``disallow_tools`` (legacy CLI-built-in filters) are also
-        # forwarded earlier so a host that wants a mixed surface — MCP
-        # tools + a curated subset of CLI built-ins — can opt back in.
         # ``--strict-mcp-config`` ignores any other MCP config sources
         # (user-level / project-level) so the per-session bridge is
-        # the sole MCP surface the CLI sees.
-        if not allow_tools:
-            argv += ["--tools", ""]
+        # the sole MCP surface the CLI sees. The CLI's *built-in* tool
+        # palette (``Bash`` / ``Read`` / ``Write`` / ``Edit`` / …)
+        # stays available alongside the MCP surface — earlier
+        # executor versions auto-emitted ``--tools ""`` here to
+        # disable it (a defensive measure against the LLM
+        # hallucinating against unknown built-ins), but in practice
+        # most hosts *want* both surfaces (e.g. a Sub-Worker writing
+        # files via ``Write`` while delegating to MCP-wrapped host
+        # tools). Hosts that prefer the old MCP-only behaviour can
+        # pass ``extra_args=("--tools", "")`` explicitly.
         argv += ["--strict-mcp-config"]
 
     # JSON schema (structured output).
@@ -454,6 +479,11 @@ def parse_json_output_to_response(stdout: bytes, *, model: str) -> APIResponse:
     if not isinstance(obj, dict):
         raise ValueError("Claude Code json output is not an object")
 
+    # ``tool_use`` blocks in the json output are intentionally dropped
+    # for the same reason as ``StreamJsonAccumulator.finalize`` — the
+    # CLI handles tool dispatch internally and host pipelines should
+    # see only the final assistant text. See ``finalize``'s docstring
+    # for the full rationale.
     blocks: List[ContentBlock] = []
     for block in obj.get("content", []) or []:
         if not isinstance(block, dict):
@@ -464,15 +494,6 @@ def parse_json_output_to_response(stdout: bytes, *, model: str) -> APIResponse:
         elif btype == "thinking":
             blocks.append(
                 ContentBlock(type="thinking", thinking_text=block.get("text", ""))
-            )
-        elif btype == "tool_use":
-            blocks.append(
-                ContentBlock(
-                    type="tool_use",
-                    tool_use_id=block.get("id"),
-                    tool_name=block.get("name"),
-                    tool_input=block.get("input") or {},
-                )
             )
 
     usage_in = obj.get("usage", {}) or {}
@@ -580,9 +601,39 @@ class StreamJsonAccumulator:
         return [{"type": "cli_unknown", "raw": line}]
 
     def finalize(self) -> APIResponse:
-        """Build the canonical :class:`APIResponse` from accumulated state."""
+        """Build the canonical :class:`APIResponse` from accumulated state.
+
+        ``tool_use`` blocks observed during streaming are intentionally
+        **dropped** from the assembled response. Claude Code CLI 2.1.x
+        runs its agentic loop *internally* (LLM → tool → LLM → tool →
+        …); each intermediate turn arrives as its own ``"assistant"``
+        envelope and the accumulator collects every block from every
+        envelope into the shared buffers below. The CLI has already
+        dispatched those tool calls (via its own built-ins or via the
+        host's MCP bridge) and emitted the matching ``"user"``
+        ``tool_result`` envelopes in the same stream — so including the
+        ``tool_use`` blocks in the terminal :class:`APIResponse` would
+        push host pipelines (Geny's Stage 10, the canonical reference
+        consumer) into trying to re-dispatch tools they have no
+        registration for, producing instant ``ERROR (0 ms) — No
+        output`` ghost failures for every CLI tool call. Per the Phase
+        I design contract:
+
+            Stage 10 receives that assistant message, sees no
+            ``tool_use`` blocks (they were executed inside the CLI),
+            and naturally no-ops.
+
+        Hosts that *do* want the raw tool_use record can still recover
+        it from the per-line stream events the accumulator yields
+        through ``feed()`` (each ``tool_use`` block produces a
+        ``{"type": "tool_use", "id": ..., "name": ..., "input": ...}``
+        event).
+        """
         # Flush any unclosed tool — the message form often skips
-        # ``content_block_stop`` entirely.
+        # ``content_block_stop`` entirely. We still call this so the
+        # accumulator's internal state is consistent for callers that
+        # rely on ``_tool_uses`` directly; only the *response* blocks
+        # below skip them.
         self._close_current_tool()
 
         blocks: List[ContentBlock] = []
@@ -592,15 +643,6 @@ class StreamJsonAccumulator:
             )
         if self._text_buf:
             blocks.append(ContentBlock(type="text", text="".join(self._text_buf)))
-        for tu in self._tool_uses:
-            blocks.append(
-                ContentBlock(
-                    type="tool_use",
-                    tool_use_id=tu.get("id"),
-                    tool_name=tu.get("name"),
-                    tool_input=tu.get("input") or {},
-                )
-            )
 
         usage_in: Dict[str, Any] = (self._final_obj or {}).get("usage", {}) or {}
         usage = TokenUsage(
@@ -773,104 +815,9 @@ async def assemble_response_from_stream_json(
     return accum.finalize()
 
 
-# ---------------------------------------------------------------------------
-# Copilot CLI: prompt composition
-# ---------------------------------------------------------------------------
-
-
-def compose_copilot_prompt(system: Any, messages: List[Dict[str, Any]]) -> str:
-    """Flatten a canonical (system + messages) into one ``-p`` argument.
-
-    The Copilot CLI accepts a single prompt string. Conversation history
-    is encoded as Markdown-style turns so the model can still see prior
-    turns. The system prompt is prepended as a ``## System`` section
-    when present.
-    """
-    parts: List[str] = []
-    if system:
-        if isinstance(system, str):
-            sys_text = system
-        elif isinstance(system, list):
-            sys_text = "\n".join(
-                str(b.get("text", "")) for b in system if isinstance(b, dict) and b.get("type") == "text"
-            )
-        else:
-            sys_text = str(system)
-        if sys_text:
-            parts.append(f"## System\n{sys_text}")
-
-    for m in messages:
-        role = str(m.get("role", "user")).capitalize()
-        content = m.get("content", "")
-        if isinstance(content, list):
-            chunks: List[str] = []
-            for block in content:
-                if not isinstance(block, dict):
-                    continue
-                btype = block.get("type", "")
-                if btype == "text":
-                    chunks.append(str(block.get("text", "")))
-                elif btype == "tool_result":
-                    chunks.append(f"[tool_result]\n{block.get('content', '')}")
-            content_text = "\n".join(chunks)
-        else:
-            content_text = str(content)
-        if content_text:
-            parts.append(f"## {role}\n{content_text}")
-
-    return "\n\n".join(parts)
-
-
-# ---------------------------------------------------------------------------
-# Copilot CLI: argv builder
-# ---------------------------------------------------------------------------
-
-
-def copilot_argv(
-    *,
-    allow_tools: Sequence[str] = (),
-    extra_args: Sequence[str] = (),
-) -> List[str]:
-    """Build the argv list for ``gh copilot`` (excluding the binary).
-
-    The caller is expected to invoke the result as ``gh copilot ...`` —
-    i.e. ``argv[0]`` is *not* prepended here. ``-p <prompt>`` is appended
-    by the client after computing the prompt via
-    :func:`compose_copilot_prompt`.
-
-    Only the flags the CLI actually accepts are emitted:
-      - ``-p``: single prompt (added by the client, not here)
-      - ``--allow-tool '<scope>'``: repeated, one flag per scope
-      - any ``extra_args`` for escape-hatch use.
-    """
-    argv: List[str] = ["copilot"]
-    for scope in allow_tools:
-        if scope:
-            argv += ["--allow-tool", str(scope)]
-    if extra_args:
-        argv += list(extra_args)
-    return argv
-
-
-# ---------------------------------------------------------------------------
-# Copilot CLI: stdout → APIResponse
-# ---------------------------------------------------------------------------
-
-
-def parse_plain_text_to_response(text: str, *, model: str = "default") -> APIResponse:
-    """Wrap plain stdout text into a canonical :class:`APIResponse`.
-
-    Copilot CLI does not return JSON in print mode, so we cannot recover
-    structured usage / cost. The response carries the text in a single
-    block, ``stop_reason="end_turn"``, and an empty TokenUsage with
-    ``supports_token_usage=False`` advertised at the client level.
-    """
-    content_text = text.strip("\n")
-    return APIResponse(
-        content=[ContentBlock(type="text", text=content_text)],
-        stop_reason="end_turn",
-        usage=TokenUsage(),
-        model=model,
-        message_id="",
-        raw=text,
-    )
+# Copilot CLI helpers (compose_copilot_prompt / copilot_argv /
+# parse_plain_text_to_response) were removed in 2.0.6. ``gh copilot``
+# is one-shot text-in / text-out with no streaming, no tool round-trip,
+# and no MCP support, so it could not host the pipeline's Stage-10
+# dispatch loop. The ``CopilotCLIClient`` and its registry entry are
+# also gone — see the matching commit message.
