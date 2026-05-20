@@ -151,13 +151,15 @@ async def test_send_oneshot_ok_text() -> None:
 
 
 @pytest.mark.asyncio
-async def test_send_oneshot_tool_use() -> None:
+async def test_send_oneshot_tool_use_blocks_dropped() -> None:
+    """``tool_use`` blocks are dropped from the response — the CLI
+    dispatched them internally. ``stop_reason`` is preserved
+    verbatim so callers can still tell the CLI ended in a tool turn
+    (e.g. CLI hit max-iter mid-loop with pending tool calls). See
+    ``StreamJsonAccumulator.finalize`` for the full rationale."""
     c = _client(scenario="ok_tool_use")
     resp = await c._send(_make_request())
-    assert resp.has_tool_calls is True
-    tools = resp.tool_calls
-    assert tools[0].tool_name == "Read"
-    assert tools[0].tool_input == {"path": "/tmp/x"}
+    assert resp.tool_calls == []
     assert resp.stop_reason == "tool_use"
 
 
@@ -323,7 +325,11 @@ async def test_send_streaming_message_form_text() -> None:
 
 
 @pytest.mark.asyncio
-async def test_argv_carries_bare_and_workspace() -> None:
+async def test_argv_carries_bare_and_workspace(monkeypatch) -> None:
+    # ``--bare`` is auto-stripped on the OAuth path (no
+    # ANTHROPIC_API_KEY in env). Pin the API-key env so this argv
+    # surface test exercises the API-key path.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
     c = _client(scenario="echo_argv")
     resp = await c._send(_make_request(model="opus", system="rule X"))
     import json

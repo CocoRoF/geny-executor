@@ -55,7 +55,11 @@ def _req(**kwargs) -> APIRequest:
     return APIRequest(**base)
 
 
-def test_argv_non_stream_uses_json_output() -> None:
+def test_argv_non_stream_uses_json_output(monkeypatch) -> None:
+    # ``--bare`` is auto-stripped on the OAuth path (no ANTHROPIC_API_KEY
+    # in env). Pin the env so the test exercises the API-key path
+    # where ``--bare`` is expected.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
     argv = claude_code_argv(_req())
     assert "--print" in argv
     assert "--output-format" in argv
@@ -64,12 +68,27 @@ def test_argv_non_stream_uses_json_output() -> None:
     assert "--bare" in argv
 
 
-def test_argv_stream_uses_stream_json_io() -> None:
+def test_argv_stream_uses_stream_json_io_with_verbose() -> None:
+    # ``--verbose`` is required by Claude Code CLI ≥ 2.1.x whenever
+    # ``--print`` is combined with ``--output-format=stream-json``;
+    # the argv builder emits it automatically alongside the stream-json
+    # switch so hosts don't have to thread an opt-in flag.
     argv = claude_code_argv(_req(stream=True))
     assert "--input-format" in argv
     assert "--output-format" in argv
     assert "stream-json" in argv
     assert "--include-partial-messages" in argv
+    assert "--verbose" in argv
+
+
+def test_argv_bare_stripped_on_oauth_path(monkeypatch) -> None:
+    """When no ``ANTHROPIC_API_KEY`` is in the spawning process's env,
+    ``--bare`` is auto-stripped because the CLI's bare mode explicitly
+    disables OAuth ('OAuth and keychain are never read'), which crashes
+    every subscription user with 'Not logged in · Please run /login'."""
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    argv = claude_code_argv(_req(), bare_mode=True)
+    assert "--bare" not in argv
 
 
 def test_argv_includes_model_and_system_prompt() -> None:
@@ -149,33 +168,33 @@ def test_argv_request_mcp_config_overrides_kwarg() -> None:
     assert json.loads(blob) == per_request  # per-request wins
 
 
-def test_argv_host_mcp_disables_cli_builtins_and_strict() -> None:
-    """When the host registers MCP servers, the CLI's built-in tool
-    palette is disabled (``--tools ""``) so the LLM only ever sees
-    MCP-advertised tools. ``--strict-mcp-config`` ignores any other
-    MCP configuration sources so the per-session bridge is the sole
-    surface. Together these eliminate the hallucination path where
-    the LLM tries to use ``Bash``/``ToolSearch``/etc. that the host
-    has no executor for."""
+def test_argv_host_mcp_emits_strict_and_keeps_builtins() -> None:
+    """When the host registers MCP servers we emit
+    ``--strict-mcp-config`` so the per-session bridge is the only MCP
+    surface (no user-level or project-level MCP servers leak in). The
+    CLI's *built-in* tool palette (``Bash`` / ``Read`` / ``Write`` /
+    ``Edit`` / …) stays available alongside the MCP surface — most
+    hosts (e.g. Geny's Sub-Worker) want both: file/shell built-ins for
+    real work, MCP for host-delegated tools.
+
+    Earlier executor versions auto-emitted ``--tools ""`` here to
+    disable the built-in palette; 2.0.6 dropped that default. Hosts
+    that want the old MCP-only behaviour can pass
+    ``extra_args=("--tools", "")`` explicitly."""
     cfg = {"mcpServers": {"geny": {"type": "stdio", "command": "py"}}}
     argv = claude_code_argv(_req(mcp_config=cfg))
-    # Disable built-ins.
-    idx = argv.index("--tools")
-    assert argv[idx + 1] == ""
-    # Strict mode.
+    assert "--tools" not in argv
     assert "--strict-mcp-config" in argv
 
 
-def test_argv_host_mcp_with_explicit_allow_tools_keeps_builtins() -> None:
-    """``--allowedTools`` is the legacy whitelist of CLI built-ins.
-    If a caller explicitly supplies one alongside an MCP config they
-    want a mixed surface (custom MCP tools + a curated subset of CLI
-    built-ins). Don't override their choice."""
+def test_argv_host_mcp_with_explicit_allow_tools_emits_allowedtools() -> None:
+    """``--allowedTools`` is the permission-pattern allowlist for CLI
+    built-ins (e.g. ``Bash(git *)``). Pass it through verbatim when
+    the caller supplies one."""
     cfg = {"mcpServers": {"geny": {"type": "stdio", "command": "py"}}}
     argv = claude_code_argv(_req(mcp_config=cfg), allow_tools=["Read"])
-    # No --tools "" disabler — caller picked allowedTools explicitly.
-    assert "--tools" not in argv
     assert "--allowedTools" in argv
+    assert "--tools" not in argv
 
 
 def test_argv_no_mcp_no_tools_flag() -> None:
@@ -430,7 +449,16 @@ def test_parse_json_output_text_only() -> None:
     assert resp.usage.duration_ms == 800
 
 
-def test_parse_json_output_tool_use_round_trip() -> None:
+def test_parse_json_output_drops_tool_use_blocks() -> None:
+    """``tool_use`` blocks in the CLI's json output are intentionally
+    dropped from the assembled :class:`APIResponse` because the CLI
+    already dispatched them internally. Host pipelines should see
+    only the final assistant text — see ``finalize``'s docstring for
+    the full rationale. The stop_reason is preserved verbatim so
+    callers can still distinguish ``end_turn`` from ``tool_use`` for
+    telemetry / retry decisions; ``response.tool_calls`` (the actual
+    block list, which is what Stage 9 reads to populate
+    ``state.pending_tool_calls``) is empty so Stage 10 no-ops."""
     blob = json.dumps({
         "type": "result",
         "content": [
@@ -441,11 +469,9 @@ def test_parse_json_output_tool_use_round_trip() -> None:
         "usage": {"input_tokens": 5, "output_tokens": 0},
     }).encode("utf-8")
     resp = parse_json_output_to_response(blob, model="m")
-    assert resp.has_tool_calls is True
-    tools = resp.tool_calls
-    assert len(tools) == 1
-    assert tools[0].tool_name == "Read"
-    assert tools[0].tool_input == {"path": "/x"}
+    assert resp.tool_calls == []
+    assert resp.text == "checking..."
+    assert resp.stop_reason == "tool_use"
 
 
 def test_parse_json_output_malformed_raises() -> None:
@@ -483,7 +509,13 @@ async def test_assemble_simple_text_stream() -> None:
 
 
 @pytest.mark.asyncio
-async def test_assemble_tool_use_with_partial_json() -> None:
+async def test_assemble_drops_tool_use_blocks() -> None:
+    """Tool calls observed in the CLI's stream-json output are
+    intentionally dropped from the assembled :class:`APIResponse` —
+    the CLI dispatched them internally and host pipelines (e.g.
+    Geny's Stage 10) must NOT re-dispatch. See ``finalize``'s
+    docstring for the full rationale. The stop_reason is preserved
+    so callers can still see the CLI ended in a tool turn."""
     lines = [
         b'{"type": "system", "model": "claude-sonnet-4-6"}\n',
         b'{"type": "assistant", "content_block": {"type": "tool_use", "id": "t1", "name": "Read"}}\n',
@@ -498,10 +530,7 @@ async def test_assemble_tool_use_with_partial_json() -> None:
             yield l
 
     resp = await assemble_response_from_stream_json(gen(), model="default")
-    assert resp.has_tool_calls is True
-    tu = resp.tool_calls[0]
-    assert tu.tool_name == "Read"
-    assert tu.tool_input == {"path": "/x"}
+    assert resp.tool_calls == []
     assert resp.stop_reason == "tool_use"
 
 

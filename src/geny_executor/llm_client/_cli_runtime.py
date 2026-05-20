@@ -1,8 +1,10 @@
 """Async subprocess primitives shared by CLI-backed LLM clients.
 
 This module is the *only* place where ``asyncio.create_subprocess_exec`` is
-called inside ``llm_client/``. Both ``ClaudeCodeCLIClient`` (Phase B) and
-``CopilotCLIClient`` (Phase C) drive their work through these helpers.
+called inside ``llm_client/``. ``ClaudeCodeCLIClient`` (Phase B) drives its
+work through these helpers. (The Phase-C ``CopilotCLIClient`` was removed
+in 2.0.6 — see the commit message for the structural-incompatibility
+rationale.)
 
 Design rules
 ------------
