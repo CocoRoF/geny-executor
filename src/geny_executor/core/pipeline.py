@@ -8,7 +8,11 @@ import uuid
 from typing import TYPE_CHECKING, Any, AsyncIterator, Callable, Dict, List, Optional, Sequence
 
 from geny_executor.core.config import PipelineConfig
-from geny_executor.core.errors import StageError
+from geny_executor.core.errors import (
+    ExecutorErrorCode,
+    GenyExecutorError,
+    StageError,
+)
 from geny_executor.core.result import PipelineResult
 from geny_executor.core.stage import Stage, StageDescription
 from geny_executor.core.state import PipelineState
@@ -29,6 +33,33 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
+
+
+def _error_event_data(exc: Exception) -> Dict[str, Any]:
+    """Build a structured event payload for ``pipeline.error`` /
+    ``stage.error`` / similar terminal-failure events.
+
+    Carries:
+      - ``error``: stringified message (legacy field, preserved for
+        backward compat — every existing consumer reads this).
+      - ``code``: the stable :class:`ExecutorErrorCode` value when the
+        exception is a :class:`GenyExecutorError` subclass; otherwise
+        ``"exec.unknown"``. Hosts use this for i18n / telemetry
+        grouping without parsing the message text.
+      - ``exception_type``: fully qualified class name, useful for
+        ad-hoc filtering when no code is attached.
+
+    Stable since 2.1.0 — adding fields is non-breaking, removing
+    fields is a major-version change.
+    """
+    code_str = ExecutorErrorCode.EXEC_UNKNOWN.value
+    if isinstance(exc, GenyExecutorError) and exc.code is not None:
+        code_str = exc.code.value
+    return {
+        "error": str(exc),
+        "code": code_str,
+        "exception_type": f"{type(exc).__module__}.{type(exc).__name__}",
+    }
 
 
 def _pipeline_config_from_manifest(manifest: "EnvironmentManifest") -> PipelineConfig:
@@ -989,7 +1020,7 @@ class Pipeline:
             return result
 
         except Exception as e:
-            await self._emit("pipeline.error", data={"error": str(e)})
+            await self._emit("pipeline.error", data=_error_event_data(e))
             return PipelineResult.error_result(str(e), state)
 
     async def run_stream(
@@ -1048,7 +1079,7 @@ class Pipeline:
                     PipelineEvent(
                         type="pipeline.error",
                         data={
-                            "error": str(e),
+                            **_error_event_data(e),
                             "total_cost_usd": state.total_cost_usd,
                         },
                     )
@@ -1073,7 +1104,7 @@ class Pipeline:
             await task  # propagate any unexpected errors
 
         except Exception as e:
-            yield PipelineEvent(type="pipeline.error", data={"error": str(e)})
+            yield PipelineEvent(type="pipeline.error", data=_error_event_data(e))
 
         finally:
             state._event_listener = None
@@ -1343,7 +1374,7 @@ class Pipeline:
                 "stage.error",
                 stage=stage.name,
                 iteration=state.iteration,
-                data={"error": str(e)},
+                data=_error_event_data(e),
             )
             recovery = await stage.on_error(e, state)
             if recovery is not None:
