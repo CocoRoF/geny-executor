@@ -29,6 +29,7 @@ from geny_executor.core.errors import (
     APIError,
     ToolExecutionError,
     ErrorCategory,
+    ExecutorErrorCode,
     MutationError,
     MutationLocked,
 )
@@ -95,7 +96,7 @@ from geny_executor.memory import (
     ProviderDrivenStrategy,
 )
 
-__version__ = "2.0.6"
+__version__ = "2.1.0"
 
 __all__ = [
     # Core
@@ -165,6 +166,7 @@ __all__ = [
     "APIError",
     "ToolExecutionError",
     "ErrorCategory",
+    "ExecutorErrorCode",
     "MutationError",
     "MutationLocked",
     # Schema & Mutation

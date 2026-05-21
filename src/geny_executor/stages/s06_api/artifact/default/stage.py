@@ -19,7 +19,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any, AsyncIterator, Dict, List, Optional, Union
 
-from geny_executor.core.errors import APIError, ErrorCategory
+from geny_executor.core.errors import APIError, ErrorCategory, ExecutorErrorCode
 from geny_executor.core.schema import ConfigField, ConfigSchema
 from geny_executor.core.slot import StrategySlot
 from geny_executor.core.stage import Stage
@@ -321,6 +321,7 @@ class APIStage(Stage[Any, APIResponse]):
             "Pipeline.from_manifest(credentials=...) or attach a client "
             "explicitly with Pipeline.attach_runtime(llm_client=...).",
             category=ErrorCategory.BAD_REQUEST,
+            code=ExecutorErrorCode.EXEC_API_NO_CLIENT,
         )
 
     async def execute(self, input: Any, state: PipelineState) -> APIResponse:
@@ -429,6 +430,7 @@ class APIStage(Stage[Any, APIResponse]):
                     {
                         "attempt": attempt + 1,
                         "category": e.category.value,
+                        "code": e.code.value,
                         "delay": delay,
                     },
                 )
@@ -444,12 +446,17 @@ class APIStage(Stage[Any, APIResponse]):
                     {
                         "attempt": attempt + 1,
                         "category": category.value,
+                        "code": ExecutorErrorCode.from_category(category).value,
                         "delay": delay,
                     },
                 )
                 await asyncio.sleep(delay)
 
-        raise last_error or APIError("Max retries exceeded", category=ErrorCategory.UNKNOWN)
+        raise last_error or APIError(
+            "Max retries exceeded",
+            category=ErrorCategory.UNKNOWN,
+            code=ExecutorErrorCode.EXEC_API_RETRY_EXHAUSTED,
+        )
 
     async def _call_streaming_with_retry(
         self, client: BaseClient, cfg: Any, state: PipelineState
@@ -491,7 +498,11 @@ class APIStage(Stage[Any, APIResponse]):
                 )
                 await asyncio.sleep(delay)
 
-        raise last_error or APIError("Max retries exceeded", category=ErrorCategory.UNKNOWN)
+        raise last_error or APIError(
+            "Max retries exceeded",
+            category=ErrorCategory.UNKNOWN,
+            code=ExecutorErrorCode.EXEC_API_RETRY_EXHAUSTED,
+        )
 
     async def _call_streaming(
         self, client: BaseClient, cfg: Any, state: PipelineState
@@ -511,6 +522,7 @@ class APIStage(Stage[Any, APIResponse]):
             raise APIError(
                 "Stream ended without message_complete",
                 category=ErrorCategory.UNKNOWN,
+                code=ExecutorErrorCode.EXEC_API_STREAM_INCOMPLETE,
             )
         return response
 
