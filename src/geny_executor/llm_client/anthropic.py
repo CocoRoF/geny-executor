@@ -111,6 +111,56 @@ def _model_rejects_sampling_params(model: str) -> bool:
     )
 
 
+# ── ``thinking.type=enabled`` → ``adaptive`` migration ──────────────
+#
+# Opus 4.7 (verified 2026-06-04) rejects ``thinking.type=enabled``
+# and requires ``thinking.type=adaptive`` instead — the old
+# enabled-with-fixed-budget shape isn't valid for the new generation
+# of thinking-native models. The API error reads:
+#
+#   ``"thinking.type.enabled" is not supported for this model.
+#     Use "thinking.type.adaptive" and "output_config.effort"``.
+#
+# Under ``adaptive``, the model picks its own budget; the legacy
+# ``budget_tokens`` field is rejected as an extra input
+# (``thinking.adaptive.budget_tokens: Extra inputs are not permitted``).
+# Effort is *optional* — calls with bare ``{"type":"adaptive"}`` work.
+# Translate at the boundary so callers that ship the v1 thinking
+# shape continue to work against v2 models.
+_THINKING_ADAPTIVE_ONLY_PREFIXES: tuple[str, ...] = (
+    "claude-opus-4-7",
+)
+
+
+def _model_requires_adaptive_thinking(model: str) -> bool:
+    """True iff ``model`` only accepts ``thinking.type=adaptive``."""
+    return any(
+        model.startswith(prefix) for prefix in _THINKING_ADAPTIVE_ONLY_PREFIXES
+    )
+
+
+def _translate_thinking_to_adaptive(thinking: Dict[str, Any]) -> Dict[str, Any]:
+    """Migrate a v1 (``type=enabled``) thinking dict to the v2
+    (``type=adaptive``) shape Opus 4.7 demands.
+
+      * ``type`` flips to ``"adaptive"``.
+      * ``budget_tokens`` is dropped — the API rejects it under
+        adaptive (``thinking.adaptive.budget_tokens: Extra inputs are
+        not permitted``).
+      * Any other unrelated keys (``display`` etc.) pass through.
+
+    The kwarg ``output_config.effort`` is *not* added — bare
+    ``{"type":"adaptive"}`` works against the live API; the API
+    picks a default effort. Hosts that want to pin effort can do so
+    explicitly by setting it on ``model_config`` and threading it
+    through future plumbing.
+    """
+    out = dict(thinking)
+    out["type"] = "adaptive"
+    out.pop("budget_tokens", None)
+    return out
+
+
 # ── Last-line retry on a deprecation 400 ────────────────────────────
 #
 # Future Anthropic releases will deprecate more sampling params for
@@ -131,18 +181,42 @@ _DEPRECATION_MSG_TO_KWARG_KEY: Dict[str, str] = {
 def _retry_kwargs_after_deprecation(
     kwargs: Dict[str, Any], exc: BaseException,
 ) -> Optional[Dict[str, Any]]:
-    """If ``exc`` is the Anthropic deprecation 400 for a sampling
-    field we recognise, return a copy of ``kwargs`` with that field
-    removed. ``None`` means *don't retry* — let the caller re-raise.
+    """If ``exc`` is an Anthropic 400 we can self-heal, return a
+    rebuilt kwargs. ``None`` means *don't retry* — let the caller
+    re-raise.
 
-    Defends against future model deprecations the static prefix list
-    in ``_TEMPERATURE_DEPRECATED_PREFIXES`` doesn't know about yet.
-    Only retries once per send (the caller guarantees this by not
-    calling us recursively); if the retry also 400s the outer
-    handler classifies and raises.
+    Two recognised classes today:
+
+      1. **Sampling-param deprecation** — the API message names a
+         specific field (``temperature``, ``top_p``, ``top_k``) as
+         deprecated. Strip the field and retry.
+      2. **Thinking v1 → v2 migration** — the API rejects
+         ``thinking.type=enabled`` and asks for
+         ``thinking.type.adaptive``. Translate via
+         :func:`_translate_thinking_to_adaptive` and retry.
+
+    Defends against future model rollouts our static prefix lists
+    don't know about yet. Caller guarantees one retry per send (we
+    never recurse); a retry that also 400s gets classified + raised
+    by the outer handler.
     """
     msg = str(getattr(exc, "message", "") or exc)
     msg_lower = msg.lower()
+
+    # Class 2 — thinking v1→v2 migration. Run first because the
+    # diagnostic is structural (the request shape, not just one
+    # missing field).
+    if (
+        "thinking.type.enabled" in msg_lower
+        or "thinking.type.adaptive" in msg_lower
+    ) and isinstance(kwargs.get("thinking"), dict):
+        thinking = kwargs["thinking"]
+        if thinking.get("type") == "enabled":
+            retry = dict(kwargs)
+            retry["thinking"] = _translate_thinking_to_adaptive(thinking)
+            return retry
+
+    # Class 1 — sampling-param deprecation.
     for needle, key in _DEPRECATION_MSG_TO_KWARG_KEY.items():
         if needle in msg_lower and key in kwargs:
             retry = dict(kwargs)
@@ -366,6 +440,26 @@ class AnthropicClient(BaseClient):
                         "this sampling param unconditionally",
                         key, dropped, resolved_model,
                     )
+
+        # Thinking-shape migration — see
+        # ``_THINKING_ADAPTIVE_ONLY_PREFIXES`` at module top. Opus 4.7
+        # rejects ``thinking.type=enabled``; flip to ``adaptive`` (and
+        # drop the now-invalid ``budget_tokens``) at the boundary so
+        # ``ModelConfig`` callers that still emit the v1 shape
+        # continue to work against v2 models.
+        if (
+            "thinking" in kwargs
+            and isinstance(kwargs["thinking"], dict)
+            and kwargs["thinking"].get("type") == "enabled"
+            and _model_requires_adaptive_thinking(resolved_model)
+        ):
+            before = kwargs["thinking"]
+            kwargs["thinking"] = _translate_thinking_to_adaptive(before)
+            logger.info(
+                "anthropic: translated thinking.type=enabled → adaptive "
+                "(model=%r, dropped legacy budget_tokens=%r)",
+                resolved_model, before.get("budget_tokens"),
+            )
 
         return kwargs
 

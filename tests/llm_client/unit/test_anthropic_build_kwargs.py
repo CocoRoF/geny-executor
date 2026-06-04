@@ -165,8 +165,11 @@ def test_build_kwargs_keeps_sampling_params_when_thinking_absent() -> None:
 
 
 def test_build_kwargs_alias_resolution_and_thinking_drop_together() -> None:
-    """The two fixes are independent — combining them shouldn't trip
-    either path. This is the configuration Geny's VTuber env hits."""
+    """All three fixes layered: alias → canonical (2.1.1),
+    unconditional temperature drop (2.1.2), thinking shape migration
+    (2.1.3). This is the exact configuration Geny's VTuber env hits —
+    pinning ``opus`` with thinking enabled, the legacy v1
+    budget_tokens shape, and an explicit ``temperature``."""
     client = AnthropicClient(api_key="sk-mock")
     kwargs = client._build_kwargs(_req(
         model="opus",
@@ -175,7 +178,11 @@ def test_build_kwargs_alias_resolution_and_thinking_drop_together() -> None:
     ))
     assert kwargs["model"] == "claude-opus-4-7"
     assert "temperature" not in kwargs
-    assert kwargs["thinking"]["budget_tokens"] == 12000
+    # Opus 4.7 demands ``adaptive``; the migration drops the now-
+    # invalid ``budget_tokens`` (the API rejects it under adaptive
+    # as ``thinking.adaptive.budget_tokens: Extra inputs are not
+    # permitted``).
+    assert kwargs["thinking"] == {"type": "adaptive"}
 
 
 # ── 2.1.2 — Opus 4.7 unconditional sampling-param rejection ───────
@@ -318,4 +325,136 @@ def test_retry_kwargs_returns_none_when_field_already_absent() -> None:
         message = "temperature is deprecated for this model."
 
     kwargs = {"model": "claude-x", "max_tokens": 100}
+    assert _retry_kwargs_after_deprecation(kwargs, _Fake400()) is None
+
+
+# ── 2.1.3 — Opus 4.7 thinking.type=enabled → adaptive migration ───
+
+
+from geny_executor.llm_client.anthropic import (
+    _model_requires_adaptive_thinking,
+    _translate_thinking_to_adaptive,
+)
+
+
+def test_model_requires_adaptive_thinking_for_opus_4_7():
+    assert _model_requires_adaptive_thinking("claude-opus-4-7") is True
+    assert _model_requires_adaptive_thinking("claude-opus-4-7-20260101") is True
+
+
+@pytest.mark.parametrize(
+    "model",
+    ["claude-sonnet-4-6", "claude-haiku-4-5-20251001", "claude-opus-4-6"],
+)
+def test_model_requires_adaptive_thinking_false_for_v1_models(model: str) -> None:
+    assert _model_requires_adaptive_thinking(model) is False
+
+
+def test_translate_thinking_to_adaptive_flips_type_and_drops_budget():
+    out = _translate_thinking_to_adaptive(
+        {"type": "enabled", "budget_tokens": 4096},
+    )
+    assert out == {"type": "adaptive"}
+
+
+def test_translate_thinking_to_adaptive_preserves_unrelated_keys():
+    out = _translate_thinking_to_adaptive(
+        {"type": "enabled", "budget_tokens": 4096, "display": "summarized"},
+    )
+    assert out == {"type": "adaptive", "display": "summarized"}
+
+
+def test_build_kwargs_translates_thinking_for_opus_4_7() -> None:
+    """The exact failure we hit on 2026-06-04: VTuber's memory stage
+    pinned Opus 4.7 via the router with the legacy enabled-shape
+    thinking dict, and Anthropic returned
+    ``thinking.type.enabled is not supported for this model``."""
+    client = AnthropicClient(api_key="sk-mock")
+    kwargs = client._build_kwargs(_req(
+        model="claude-opus-4-7",
+        thinking={"type": "enabled", "budget_tokens": 8192},
+    ))
+    assert kwargs["thinking"] == {"type": "adaptive"}
+
+
+def test_build_kwargs_translates_thinking_after_alias_resolution() -> None:
+    """An env pinning the ``opus`` alias should also hit the
+    translation after the alias resolves to ``claude-opus-4-7``."""
+    client = AnthropicClient(api_key="sk-mock")
+    kwargs = client._build_kwargs(_req(
+        model="opus",
+        thinking={"type": "enabled", "budget_tokens": 4096},
+    ))
+    assert kwargs["model"] == "claude-opus-4-7"
+    assert kwargs["thinking"] == {"type": "adaptive"}
+
+
+def test_build_kwargs_does_not_translate_for_sonnet_4_6() -> None:
+    """Regression — only Opus 4.7 (and prefix variants) demand
+    ``adaptive``. Sonnet / Haiku still accept ``enabled``."""
+    client = AnthropicClient(api_key="sk-mock")
+    kwargs = client._build_kwargs(_req(
+        model="claude-sonnet-4-6",
+        thinking={"type": "enabled", "budget_tokens": 4096},
+    ))
+    assert kwargs["thinking"] == {"type": "enabled", "budget_tokens": 4096}
+
+
+def test_build_kwargs_leaves_adaptive_thinking_alone() -> None:
+    """If the caller already shipped ``adaptive``, don't reshape it."""
+    client = AnthropicClient(api_key="sk-mock")
+    kwargs = client._build_kwargs(_req(
+        model="claude-opus-4-7",
+        thinking={"type": "adaptive"},
+    ))
+    assert kwargs["thinking"] == {"type": "adaptive"}
+
+
+def test_build_kwargs_full_opus_combo() -> None:
+    """The full failure path the VTuber session hit: Opus 4.7 +
+    temperature + thinking.type=enabled + budget_tokens. All three
+    fixes (alias, sampling-param drop, thinking migration) layer
+    cleanly on the same call."""
+    client = AnthropicClient(api_key="sk-mock")
+    kwargs = client._build_kwargs(_req(
+        model="opus",
+        temperature=0.0,
+        thinking={"type": "enabled", "budget_tokens": 4096},
+    ))
+    assert kwargs["model"] == "claude-opus-4-7"
+    assert "temperature" not in kwargs
+    assert kwargs["thinking"] == {"type": "adaptive"}
+
+
+# ── 2.1.3 — Retry self-heals the thinking migration too ───────────
+
+
+def test_retry_kwargs_self_heals_thinking_enabled_400() -> None:
+    """An env shipping ``thinking.type=enabled`` against a future
+    adaptive-only model the prefix list doesn't know yet — the API
+    will tell us via the 400, and the retry path self-heals."""
+    class _Fake400:
+        message = (
+            '"thinking.type.enabled" is not supported for this model. '
+            'Use "thinking.type.adaptive" and "output_config.effort"'
+        )
+
+    kwargs = {
+        "model": "claude-future-thinking-v2",
+        "messages": [{"role": "user", "content": "x"}],
+        "max_tokens": 1024,
+        "thinking": {"type": "enabled", "budget_tokens": 2048},
+    }
+    retry = _retry_kwargs_after_deprecation(kwargs, _Fake400())
+    assert retry is not None
+    assert retry["thinking"] == {"type": "adaptive"}
+
+
+def test_retry_kwargs_returns_none_when_thinking_already_adaptive() -> None:
+    """If the request was already adaptive, the 400 message about
+    enabled must not trigger a useless retry."""
+    class _Fake400:
+        message = '"thinking.type.enabled" is not supported for this model.'
+
+    kwargs = {"model": "claude-x", "thinking": {"type": "adaptive"}, "max_tokens": 100}
     assert _retry_kwargs_after_deprecation(kwargs, _Fake400()) is None
