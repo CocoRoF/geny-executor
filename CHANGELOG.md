@@ -4,6 +4,48 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.1.2] — 2026-06-04
+
+Follow-up to 2.1.1 — closes the gap on Opus 4.7, the only Claude
+family that rejects sampling params unconditionally.
+
+### Fixed
+
+- **Unconditional `temperature` rejection on Opus 4.7.** Verified
+  against the live API on 2026-06-04: `claude-opus-4-7` returns
+  `400 \`temperature\` is deprecated for this model.` regardless of
+  whether `thinking` is set in the request. Haiku 4.5 / Sonnet 4.6
+  still accept it; only the Opus 4.7 family refuses it as a class.
+  Combined with `AdaptiveModelRouter` auto-promoting thinking-enabled
+  calls to Opus, even an env pinned at `claude-sonnet-4-6` could hit
+  this via the router's tier upgrade.
+
+  `AnthropicClient._build_kwargs` now drops `temperature`, `top_p`,
+  and `top_k` when the **resolved** model belongs to a known
+  unconditional-reject family. The set lives in
+  `_TEMPERATURE_DEPRECATED_PREFIXES` and is prefix-matched, so future
+  pinned variants (`claude-opus-4-7-20yyyymmdd`) need no code change.
+
+- **Retry-on-deprecation safety net.** When the API surfaces
+  `... is deprecated for this model.` for a sampling field we
+  recognise, `_send` and `create_message_stream` strip the offending
+  field and retry the call once. Future model deprecations the static
+  prefix list doesn't know about (Sonnet 5, Opus 5, …) self-heal
+  without a library bump. Backed by `_retry_kwargs_after_deprecation`
+  in `llm_client/anthropic.py`. Unrelated 400s pass through unchanged
+  so the retry path can't mask a real error.
+
+### Added
+
+- 14 new unit tests in
+  `tests/llm_client/unit/test_anthropic_build_kwargs.py` — prefix-match
+  invariants for the unconditional-reject set, thinking-absent Opus 4.7
+  path, retry-on-400 helper edge cases (canonical message, backticked
+  message, unrelated 400, field-already-absent no-op).
+
+The 2.1.1 paths (alias resolution + thinking-mode drop) are intact
+and still tested.
+
 ## [2.1.1] — 2026-06-01
 
 Anthropic Messages API robustness — two boundary fixes that prevented

@@ -27,7 +27,10 @@ import pytest
 from geny_executor.llm_client.anthropic import (
     AnthropicClient,
     _ANTHROPIC_MODEL_ALIASES,
+    _TEMPERATURE_DEPRECATED_PREFIXES,
+    _model_rejects_sampling_params,
     _resolve_anthropic_model,
+    _retry_kwargs_after_deprecation,
 )
 from geny_executor.llm_client.types import APIRequest
 
@@ -173,3 +176,146 @@ def test_build_kwargs_alias_resolution_and_thinking_drop_together() -> None:
     assert kwargs["model"] == "claude-opus-4-7"
     assert "temperature" not in kwargs
     assert kwargs["thinking"]["budget_tokens"] == 12000
+
+
+# ── 2.1.2 — Opus 4.7 unconditional sampling-param rejection ───────
+
+
+def test_model_rejects_sampling_params_for_opus_4_7():
+    assert _model_rejects_sampling_params("claude-opus-4-7") is True
+
+
+def test_model_rejects_sampling_params_for_dated_opus_4_7_variant():
+    """Prefix match covers future pinned variants without a code
+    change — ``claude-opus-4-7-20yyyymmdd`` for any date."""
+    assert _model_rejects_sampling_params("claude-opus-4-7-20260101") is True
+
+
+@pytest.mark.parametrize(
+    "model",
+    ["claude-sonnet-4-6", "claude-haiku-4-5-20251001", "claude-opus-4-6"],
+)
+def test_model_rejects_sampling_params_false_for_non_opus_4_7(model: str) -> None:
+    assert _model_rejects_sampling_params(model) is False
+
+
+def test_build_kwargs_drops_temperature_for_opus_4_7_without_thinking() -> None:
+    """The big one for 2.1.2 — Opus 4.7 refuses temperature
+    regardless of whether ``thinking`` is set. AdaptiveModelRouter
+    auto-promotes thinking calls to Opus, but a plain call to Opus
+    (e.g. memory_distill) must also drop temperature."""
+    client = AnthropicClient(api_key="sk-mock")
+    kwargs = client._build_kwargs(_req(
+        model="claude-opus-4-7",
+        temperature=0.0,
+        # no thinking
+    ))
+    assert "temperature" not in kwargs
+    assert kwargs["model"] == "claude-opus-4-7"
+
+
+def test_build_kwargs_drops_all_three_for_opus_4_7() -> None:
+    client = AnthropicClient(api_key="sk-mock")
+    kwargs = client._build_kwargs(_req(
+        model="claude-opus-4-7",
+        temperature=0.5,
+        top_p=0.9,
+        top_k=20,
+    ))
+    for blocked in ("temperature", "top_p", "top_k"):
+        assert blocked not in kwargs
+
+
+def test_build_kwargs_drops_temperature_after_alias_resolves_to_opus_4_7() -> None:
+    """An env that pins ``opus`` (alias) should drop temperature
+    after resolution to the canonical ``claude-opus-4-7``."""
+    client = AnthropicClient(api_key="sk-mock")
+    kwargs = client._build_kwargs(_req(
+        model="opus",
+        temperature=0.2,
+    ))
+    assert kwargs["model"] == "claude-opus-4-7"
+    assert "temperature" not in kwargs
+
+
+def test_sonnet_4_6_keeps_temperature_when_no_thinking() -> None:
+    """Regression — only Opus 4.7 (and prefix variants) belong in
+    ``_TEMPERATURE_DEPRECATED_PREFIXES``. Sonnet / Haiku still accept
+    temperature."""
+    client = AnthropicClient(api_key="sk-mock")
+    kwargs = client._build_kwargs(_req(
+        model="claude-sonnet-4-6",
+        temperature=0.7,
+    ))
+    assert kwargs["temperature"] == 0.7
+
+
+# ── 2.1.2 — Retry-on-deprecation safety net ───────────────────────
+
+
+def test_retry_kwargs_strips_temperature_on_known_400_message() -> None:
+    """The exact phrasing Anthropic sent on 2026-06-04 for Opus 4.7."""
+    class _Fake400:
+        message = (
+            "Error code: 400 - {'type': 'error', 'error': {'type': "
+            "'invalid_request_error', 'message': "
+            "'temperature is deprecated for this model.'}}"
+        )
+
+    kwargs = {
+        "model": "claude-opus-4-7",
+        "messages": [{"role": "user", "content": "x"}],
+        "max_tokens": 1024,
+        "temperature": 0.0,
+    }
+    retry = _retry_kwargs_after_deprecation(kwargs, _Fake400())
+    assert retry is not None
+    assert "temperature" not in retry
+    # Other fields survive
+    assert retry["model"] == "claude-opus-4-7"
+    assert retry["max_tokens"] == 1024
+
+
+def test_retry_kwargs_strips_backticked_field_name() -> None:
+    """Some Anthropic error payloads wrap the field name in
+    backticks (``\`temperature\` is deprecated``)."""
+    class _Fake400:
+        message = "`temperature` is deprecated for this model."
+
+    kwargs = {"model": "claude-opus-4-7", "temperature": 0.5, "max_tokens": 100}
+    retry = _retry_kwargs_after_deprecation(kwargs, _Fake400())
+    assert retry is not None
+    assert "temperature" not in retry
+
+
+def test_retry_kwargs_strips_top_p_when_that_is_the_deprecation() -> None:
+    class _Fake400:
+        message = "top_p is deprecated for this model."
+
+    kwargs = {"model": "claude-x", "top_p": 0.9, "temperature": 0.5, "max_tokens": 100}
+    retry = _retry_kwargs_after_deprecation(kwargs, _Fake400())
+    assert retry is not None
+    assert "top_p" not in retry
+    # Other sampling params survive — only the field named in the
+    # error message gets stripped.
+    assert retry["temperature"] == 0.5
+
+
+def test_retry_kwargs_returns_none_for_unrelated_error() -> None:
+    """Non-deprecation errors must not trigger the retry path —
+    let the caller re-raise with the original classification."""
+    class _SomeOther:
+        message = "rate limit exceeded"
+
+    kwargs = {"model": "claude-x", "temperature": 0.5, "max_tokens": 100}
+    assert _retry_kwargs_after_deprecation(kwargs, _SomeOther()) is None
+
+
+def test_retry_kwargs_returns_none_when_field_already_absent() -> None:
+    """Deprecation said temperature, but kwargs doesn't have it —
+    nothing to strip, so don't loop."""
+    class _Fake400:
+        message = "temperature is deprecated for this model."
+
+    kwargs = {"model": "claude-x", "max_tokens": 100}
+    assert _retry_kwargs_after_deprecation(kwargs, _Fake400()) is None
