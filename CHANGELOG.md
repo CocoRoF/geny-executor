@@ -4,6 +4,52 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.1.1] — 2026-06-01
+
+Anthropic Messages API robustness — two boundary fixes that prevented
+real-world env configs from talking to `api.anthropic.com`.
+
+### Fixed
+
+- **Model alias resolution at the API boundary.** `AnthropicClient`
+  now expands the short aliases the Anthropic CLI binary accepts —
+  `opus` / `sonnet` / `haiku` — to canonical model IDs
+  (`claude-opus-4-7` / `claude-sonnet-4-6` / `claude-haiku-4-5-20251001`)
+  before calling the SDK. Apps that share a model config between the
+  CLI surface (where the alias is valid) and the HTTP path (where it
+  is not) used to round-trip `404 model: opus` when a session pinned
+  `anthropic` as its Stage 6 provider after the env had been edited
+  on the CLI flow. Canonical IDs round-trip unchanged; unknown values
+  pass through (no silent rewrites for future-dated model IDs).
+
+- **Extended-thinking sampling-param compat.** When `thinking` is set
+  in the request, `AnthropicClient._build_kwargs` now drops
+  `temperature`, `top_p`, and `top_k` at the boundary — the
+  Messages API rejects all three as deprecated under thinking with
+  `400 temperature is deprecated for this model.`. The dropped value
+  is logged at INFO so an operator who set an explicit `temperature`
+  can see why it was silently ignored. Without `thinking`, all three
+  sampling params still pass through unchanged.
+
+Both fixes live in `src/geny_executor/llm_client/anthropic.py` as
+small pure helpers (`_resolve_anthropic_model`, the
+`_THINKING_INCOMPATIBLE_SAMPLING_KEYS` tuple) so they're easy to
+extend (add a future alias / a future incompatible key) without
+touching the dispatch path.
+
+The CLI surface
+(`llm_client.translators._cli` + `ClaudeCodeCLIClient`) is
+intentionally untouched — the `claude` binary handles aliases
+natively and `ClientCapabilities.drops` already strips temperature
+on the CLI path.
+
+### Added
+
+- 15 unit tests in `tests/llm_client/unit/test_anthropic_build_kwargs.py`
+  pinning the alias map, the canonical-passthrough, the
+  thinking-drops-all-three contract, and the combined-fix path
+  (alias + thinking + temperature) that Geny's VTuber env triggers.
+
 ## [2.0.5] — 2026-05-19
 
 Phase-I foundation for **MCP-wrapped tools on ``claude_code_cli``
