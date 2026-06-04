@@ -8,6 +8,7 @@ profile.
 
 from __future__ import annotations
 
+import logging
 from typing import Any, AsyncIterator, Dict, List, Optional
 
 from geny_executor.core.errors import APIError, ErrorCategory
@@ -15,6 +16,65 @@ from geny_executor.core.state import TokenUsage
 from geny_executor.llm_client.base import BaseClient, ClientCapabilities
 from geny_executor.llm_client.translators import canonical_messages_to_anthropic
 from geny_executor.llm_client.types import APIRequest, APIResponse, ContentBlock
+
+
+logger = logging.getLogger(__name__)
+
+
+# ── Alias resolution ────────────────────────────────────────────────
+#
+# The Anthropic Messages API only accepts canonical model IDs
+# (``claude-opus-4-7``, ``claude-sonnet-4-6``, ``claude-haiku-4-5-…``);
+# short aliases like ``opus`` / ``sonnet`` / ``haiku`` are only valid
+# on the ``claude`` CLI binary surface, not on the HTTP API. Apps
+# that share a model config between the CLI and HTTP paths (geny,
+# anyone wrapping us) routinely tripped on this: the env stores
+# ``opus`` from the CLI flow, the next session pins ``anthropic`` as
+# its Stage 6 provider, and the API returns
+# ``404 model: opus``.
+#
+# Resolve the well-known aliases to today's tier-leader canonical IDs
+# right before the SDK call. Pinned to specific versions on purpose —
+# silently floating an env's model id across releases would be a
+# nasty surprise. Bump the right-hand side here when shipping a new
+# default tier leader.
+_ANTHROPIC_MODEL_ALIASES: Dict[str, str] = {
+    "opus": "claude-opus-4-7",
+    "sonnet": "claude-sonnet-4-6",
+    "haiku": "claude-haiku-4-5-20251001",
+}
+
+
+def _resolve_anthropic_model(model: str) -> str:
+    """Return the canonical ID for a known short alias, otherwise the
+    input unchanged. Pure function — easy to unit-test in isolation."""
+    canonical = _ANTHROPIC_MODEL_ALIASES.get(model)
+    if canonical is None:
+        return model
+    if canonical != model:
+        logger.info(
+            "anthropic: model alias %r resolved to canonical %r",
+            model, canonical,
+        )
+    return canonical
+
+
+# ── Extended-thinking sampling-param compatibility ──────────────────
+#
+# The Anthropic Messages API rejects ``temperature``, ``top_p`` and
+# ``top_k`` when extended thinking is enabled — the sampler is fixed
+# by the thinking machinery. The error reads
+# ``temperature is deprecated for this model`` (despite being model-
+# agnostic when ``thinking`` is set).
+#
+# Drop the offending fields at the boundary. Logged at INFO so an
+# operator who explicitly chose a temperature can see why it was
+# silently ignored.
+_THINKING_INCOMPATIBLE_SAMPLING_KEYS: tuple[str, ...] = (
+    "temperature",
+    "top_p",
+    "top_k",
+)
 
 
 class AnthropicClient(BaseClient):
@@ -125,8 +185,13 @@ class AnthropicClient(BaseClient):
         # Anthropic Messages API rejects requests with
         # ``messages.0.content.0.image._meta: Extra inputs are not permitted``.
         sanitized_messages = canonical_messages_to_anthropic(request.messages)
+
+        # Alias resolution — see ``_ANTHROPIC_MODEL_ALIASES`` docstring.
+        # Pure function; no SDK call yet, so this is cheap.
+        resolved_model = _resolve_anthropic_model(request.model)
+
         kwargs: Dict[str, Any] = {
-            "model": request.model,
+            "model": resolved_model,
             "messages": sanitized_messages,
             "max_tokens": request.max_tokens,
         }
@@ -149,6 +214,23 @@ class AnthropicClient(BaseClient):
             kwargs["thinking"] = request.thinking
         if request.metadata:
             kwargs["metadata"] = request.metadata
+
+        # Extended-thinking sampling-param compatibility — see the
+        # ``_THINKING_INCOMPATIBLE_SAMPLING_KEYS`` block at module top.
+        # Anthropic rejects ``temperature``/``top_p``/``top_k`` when
+        # ``thinking`` is set; drop them silently at the boundary so
+        # an env with both ``thinking_enabled=True`` and an explicit
+        # ``temperature`` (the common combo Geny ships) still works.
+        if "thinking" in kwargs:
+            for key in _THINKING_INCOMPATIBLE_SAMPLING_KEYS:
+                if key in kwargs:
+                    dropped = kwargs.pop(key)
+                    logger.info(
+                        "anthropic: dropped %r=%r — extended thinking "
+                        "is enabled and the Messages API rejects this "
+                        "sampling param",
+                        key, dropped,
+                    )
 
         return kwargs
 
