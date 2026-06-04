@@ -4,6 +4,47 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.1.3] — 2026-06-04
+
+Same-day follow-up to 2.1.2 — fixes the *other* 400 Opus 4.7 returns:
+the v1 → v2 thinking-shape migration. After 2.1.2 dropped
+``temperature`` for Opus, the next call surfaced
+
+  ``"thinking.type.enabled" is not supported for this model. Use
+    "thinking.type.adaptive" and "output_config.effort"``
+
+— Opus 4.7 only accepts the new adaptive thinking shape; the legacy
+``{"type": "enabled", "budget_tokens": N}`` shape is gone, and even
+``thinking.adaptive.budget_tokens`` is rejected as an extra input.
+
+### Fixed
+
+- **``thinking.type=enabled`` → ``adaptive`` migration at the
+  boundary.** New ``_THINKING_ADAPTIVE_ONLY_PREFIXES`` (currently
+  ``{claude-opus-4-7}``) drives a small translator
+  (``_translate_thinking_to_adaptive``) that flips the ``type`` and
+  drops ``budget_tokens``. Unrelated keys (``display`` etc.) survive
+  intact. The bare ``{"type": "adaptive"}`` shape works against the
+  live API — adaptive lets the model pick its own effort, which is
+  what 2.1.3 ships; hosts that want to pin effort can extend the
+  translator later.
+
+- **Retry-on-deprecation self-heals future thinking migrations.**
+  ``_retry_kwargs_after_deprecation`` now recognises the
+  ``thinking.type.enabled is not supported`` 400 in addition to the
+  sampling-param deprecation set, and reapplies the translation. A
+  future Sonnet / Opus rollout that flips to adaptive-only without
+  matching our static prefix list will self-heal on the next call.
+
+### Added
+
+- 13 new unit tests covering the prefix-match invariants, the
+  translator's drop / preserve behaviour, the combined "alias →
+  canonical → drop temperature → migrate thinking" path Geny's
+  VTuber env hits, and the retry path for unknown future models.
+
+Full suite: 3269 passed, 8 skipped, no regressions.
+
 ## [2.1.2] — 2026-06-04
 
 Follow-up to 2.1.1 — closes the gap on Opus 4.7, the only Claude
