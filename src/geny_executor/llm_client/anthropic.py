@@ -77,6 +77,80 @@ _THINKING_INCOMPATIBLE_SAMPLING_KEYS: tuple[str, ...] = (
 )
 
 
+# ── Models that reject sampling params unconditionally ──────────────
+#
+# Some models (currently the Opus 4.7 family — the only one verified
+# against the live API in 2.1.2) reject ``temperature`` regardless of
+# whether ``thinking`` is set. The error reads
+# ``temperature is deprecated for this model.`` from
+# ``api.anthropic.com``. The model is designed around fixed-sampler
+# inference; the sampling kwargs become noise the API explicitly
+# refuses.
+#
+# The set is keyed by the **resolved** canonical ID (so aliases get
+# expanded first, see ``_resolve_anthropic_model``). Match is
+# prefix-based — ``"claude-opus-4-7"`` covers any future
+# ``claude-opus-4-7-20yyyymmdd`` pinned variant without needing an
+# update here.
+#
+# AdaptiveModelRouter auto-promotes to Opus when ``thinking_enabled``
+# is True (see ``stages/s06_api/artifact/default/router.py``), so an
+# env that never sees Opus in its config can still hit this code
+# path indirectly. The drop has to live at the boundary, not the
+# router.
+_TEMPERATURE_DEPRECATED_PREFIXES: tuple[str, ...] = (
+    "claude-opus-4-7",
+)
+
+
+def _model_rejects_sampling_params(model: str) -> bool:
+    """True iff ``model`` (canonical ID) belongs to a family that
+    unconditionally rejects ``temperature``/``top_p``/``top_k``."""
+    return any(
+        model.startswith(prefix) for prefix in _TEMPERATURE_DEPRECATED_PREFIXES
+    )
+
+
+# ── Last-line retry on a deprecation 400 ────────────────────────────
+#
+# Future Anthropic releases will deprecate more sampling params for
+# more models; the static prefix list above will go stale. When the
+# API surfaces the deprecation error we strip the offending field
+# and retry once. Captures the same exact 400 strings Anthropic emits
+# (sometimes wrapped in backticks, sometimes not).
+_DEPRECATION_MSG_TO_KWARG_KEY: Dict[str, str] = {
+    "temperature is deprecated": "temperature",
+    "`temperature` is deprecated": "temperature",
+    "top_p is deprecated": "top_p",
+    "`top_p` is deprecated": "top_p",
+    "top_k is deprecated": "top_k",
+    "`top_k` is deprecated": "top_k",
+}
+
+
+def _retry_kwargs_after_deprecation(
+    kwargs: Dict[str, Any], exc: BaseException,
+) -> Optional[Dict[str, Any]]:
+    """If ``exc`` is the Anthropic deprecation 400 for a sampling
+    field we recognise, return a copy of ``kwargs`` with that field
+    removed. ``None`` means *don't retry* — let the caller re-raise.
+
+    Defends against future model deprecations the static prefix list
+    in ``_TEMPERATURE_DEPRECATED_PREFIXES`` doesn't know about yet.
+    Only retries once per send (the caller guarantees this by not
+    calling us recursively); if the retry also 400s the outer
+    handler classifies and raises.
+    """
+    msg = str(getattr(exc, "message", "") or exc)
+    msg_lower = msg.lower()
+    for needle, key in _DEPRECATION_MSG_TO_KWARG_KEY.items():
+        if needle in msg_lower and key in kwargs:
+            retry = dict(kwargs)
+            retry.pop(key, None)
+            return retry
+    return None
+
+
 class AnthropicClient(BaseClient):
     """Real Anthropic API client using the official SDK."""
 
@@ -138,6 +212,26 @@ class AnthropicClient(BaseClient):
             raw_response = await client.messages.create(**kwargs)
             return self._parse_response(raw_response)
         except Exception as e:
+            # Retry-on-deprecation safety net. The static prefix list
+            # in ``_TEMPERATURE_DEPRECATED_PREFIXES`` will go stale as
+            # Anthropic deprecates more sampling params for more
+            # models. When the API explicitly tells us a sampling
+            # param is the problem, strip it and retry once. Beats
+            # a hard error on a model whose prefix we don't know yet.
+            retry_kwargs = _retry_kwargs_after_deprecation(kwargs, e)
+            if retry_kwargs is not None:
+                logger.info(
+                    "anthropic: retrying %s after deprecation 400 with "
+                    "%r dropped (model=%r)",
+                    purpose or "messages.create",
+                    sorted(set(kwargs) - set(retry_kwargs)),
+                    retry_kwargs.get("model"),
+                )
+                try:
+                    raw_response = await client.messages.create(**retry_kwargs)
+                    return self._parse_response(raw_response)
+                except Exception as inner:
+                    raise self._classify_error(inner) from inner
             raise self._classify_error(e) from e
 
     async def create_message_stream(
@@ -176,6 +270,32 @@ class AnthropicClient(BaseClient):
                     "response": self._parse_response(final),
                 }
         except Exception as e:
+            # Same retry-on-deprecation safety net as ``_send``. The
+            # SDK validates kwargs eagerly inside the ``stream``
+            # context manager, so the deprecation 400 surfaces before
+            # any tokens reach the caller — safe to retry once with
+            # the offending field dropped.
+            retry_kwargs = _retry_kwargs_after_deprecation(kwargs, e)
+            if retry_kwargs is not None:
+                logger.info(
+                    "anthropic: retrying %s after deprecation 400 with "
+                    "%r dropped (model=%r)",
+                    purpose or "messages.stream",
+                    sorted(set(kwargs) - set(retry_kwargs)),
+                    retry_kwargs.get("model"),
+                )
+                try:
+                    async with client.messages.stream(**retry_kwargs) as stream:
+                        async for text in stream.text_stream:
+                            yield {"type": "text_delta", "text": text}
+                        final = await stream.get_final_message()
+                        yield {
+                            "type": "message_complete",
+                            "response": self._parse_response(final),
+                        }
+                    return
+                except Exception as inner:
+                    raise self._classify_error(inner) from inner
             raise self._classify_error(e) from e
 
     def _build_kwargs(self, request: APIRequest) -> Dict[str, Any]:
@@ -230,6 +350,21 @@ class AnthropicClient(BaseClient):
                         "is enabled and the Messages API rejects this "
                         "sampling param",
                         key, dropped,
+                    )
+
+        # Model-level unconditional rejection — see
+        # ``_TEMPERATURE_DEPRECATED_PREFIXES`` at module top. Opus 4.7
+        # refuses ``temperature`` regardless of whether ``thinking`` is
+        # set; without this drop, ``AdaptiveModelRouter`` promoting a
+        # thinking-enabled call to Opus 4.7 would still 400.
+        if _model_rejects_sampling_params(resolved_model):
+            for key in _THINKING_INCOMPATIBLE_SAMPLING_KEYS:
+                if key in kwargs:
+                    dropped = kwargs.pop(key)
+                    logger.info(
+                        "anthropic: dropped %r=%r — model %r refuses "
+                        "this sampling param unconditionally",
+                        key, dropped, resolved_model,
                     )
 
         return kwargs
