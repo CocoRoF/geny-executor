@@ -424,6 +424,149 @@ def test_event_unknown_type() -> None:
 
 
 # ---------------------------------------------------------------------------
+# stream_event wire format (Claude Code CLI 2.1.x + --include-partial-messages)
+# ---------------------------------------------------------------------------
+
+
+def test_event_stream_event_content_block_delta_text() -> None:
+    """The wire format the CLI emits under partial-messages — must
+    surface the same canonical text_delta downstream consumers
+    already understand."""
+    line = {
+        "type": "stream_event",
+        "event": {
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {"type": "text_delta", "text": "우"},
+        },
+        "session_id": "s",
+        "uuid": "u",
+    }
+    assert stream_json_line_to_canonical_event(line) == {
+        "type": "text_delta",
+        "text": "우",
+    }
+
+
+def test_event_stream_event_content_block_delta_thinking() -> None:
+    line = {
+        "type": "stream_event",
+        "event": {
+            "type": "content_block_delta",
+            "index": 1,
+            "delta": {"type": "thinking_delta", "text": "hm"},
+        },
+    }
+    assert stream_json_line_to_canonical_event(line) == {
+        "type": "thinking_delta",
+        "text": "hm",
+    }
+
+
+def test_event_stream_event_content_block_start_tool_use() -> None:
+    line = {
+        "type": "stream_event",
+        "event": {
+            "type": "content_block_start",
+            "index": 2,
+            "content_block": {
+                "type": "tool_use",
+                "id": "id1",
+                "name": "Read",
+                "input": {"path": "/x"},
+            },
+        },
+    }
+    assert stream_json_line_to_canonical_event(line) == {
+        "type": "tool_use",
+        "id": "id1",
+        "name": "Read",
+        "input": {"path": "/x"},
+    }
+
+
+def test_event_stream_event_content_block_stop() -> None:
+    line = {"type": "stream_event", "event": {"type": "content_block_stop", "index": 0}}
+    assert stream_json_line_to_canonical_event(line) == {"type": "content_block_stop"}
+
+
+def test_event_stream_event_message_metadata_yields_none() -> None:
+    """``message_start`` / ``message_delta`` / ``message_stop`` are
+    metadata-only; no UI event is emitted."""
+    for etype in ("message_start", "message_delta", "message_stop"):
+        line = {"type": "stream_event", "event": {"type": etype}}
+        assert stream_json_line_to_canonical_event(line) is None
+
+
+# ---------------------------------------------------------------------------
+# StreamJsonAccumulator — stream_event flow
+# ---------------------------------------------------------------------------
+
+
+def test_accumulator_stream_event_yields_token_deltas() -> None:
+    """End-to-end: feeding a sequence of stream_event lines that
+    mirror the actual CLI output produces a list of text_delta events
+    matching the per-token chunks the CLI emitted."""
+    from geny_executor.llm_client.translators._cli import StreamJsonAccumulator
+
+    accum = StreamJsonAccumulator(model="claude-opus-4-7")
+    chunks = ["우", "주는 시간과 공간", "한 전체이다."]
+    emitted: list[dict] = []
+    for chunk in chunks:
+        line = {
+            "type": "stream_event",
+            "event": {
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {"type": "text_delta", "text": chunk},
+            },
+        }
+        emitted.extend(accum.feed(line))
+
+    assert [e["text"] for e in emitted] == chunks, emitted
+
+
+def test_accumulator_skips_duplicate_text_when_envelope_follows_stream() -> None:
+    """The CLI sends BOTH per-token stream_event lines AND a terminal
+    ``assistant`` envelope with the full text. The accumulator must
+    consume the deltas (so the UI streams) and skip the envelope's
+    text (so the final response isn't doubled)."""
+    from geny_executor.llm_client.translators._cli import StreamJsonAccumulator
+
+    accum = StreamJsonAccumulator(model="claude-opus-4-7")
+    accum.feed(
+        {
+            "type": "stream_event",
+            "event": {
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {"type": "text_delta", "text": "hello world"},
+            },
+        }
+    )
+    # Now the terminal envelope (would be a duplicate before the fix).
+    accum.feed(
+        {
+            "type": "assistant",
+            "message": {
+                "model": "claude-opus-4-7",
+                "id": "msg_x",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "hello world"}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 10, "output_tokens": 3},
+            },
+        }
+    )
+
+    resp = accum.finalize()
+    assert resp.text == "hello world", (
+        f"finalize text duplicated by envelope replay: {resp.text!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # parse_json_output_to_response
 # ---------------------------------------------------------------------------
 
