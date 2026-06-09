@@ -438,6 +438,48 @@ def stream_json_line_to_canonical_event(line_obj: Dict[str, Any]) -> Optional[Di
                 return {"type": "text_delta", "text": "".join(parts)}
         return None
 
+    if ltype == "stream_event":
+        # Claude Code CLI 2.1.x wrapper around the Anthropic Messages SSE
+        # event shape. Each ``stream_event`` line carries a single
+        # ``event`` dict whose ``type`` is one of message_start /
+        # content_block_start / content_block_delta / content_block_stop
+        # / message_delta / message_stop. This is the *only* form that
+        # actually streams token-by-token under
+        # ``--include-partial-messages``; without handling it, the
+        # parser falls through to the terminal ``assistant`` envelope
+        # (full-message form) which collapses everything into a single
+        # delta — exactly the "no streaming visible in the UI" bug.
+        ev = line_obj.get("event") or {}
+        if not isinstance(ev, dict):
+            return None
+        etype = str(ev.get("type", ""))
+        if etype == "content_block_delta":
+            delta = ev.get("delta") or {}
+            dtype = str(delta.get("type", ""))
+            if dtype == "text_delta":
+                return {"type": "text_delta", "text": delta.get("text", "")}
+            if dtype == "thinking_delta":
+                return {"type": "thinking_delta", "text": delta.get("text", "")}
+            if dtype == "input_json_delta":
+                return {"type": "input_json_delta", "delta": delta.get("partial_json", "")}
+            return None
+        if etype == "content_block_start":
+            cb = ev.get("content_block") or {}
+            if isinstance(cb, dict) and cb.get("type") == "tool_use":
+                return {
+                    "type": "tool_use",
+                    "id": cb.get("id"),
+                    "name": cb.get("name"),
+                    "input": cb.get("input") or {},
+                }
+            return None
+        if etype == "content_block_stop":
+            return {"type": "content_block_stop"}
+        # message_start / message_delta / message_stop carry usage +
+        # stop_reason metadata. Not text-bearing; let the accumulator
+        # record them silently.
+        return None
+
     if ltype == "content_block_stop":
         return {"type": "content_block_stop"}
     if ltype == "message_stop":
@@ -579,6 +621,9 @@ class StreamJsonAccumulator:
         if ltype == "assistant":
             return self._feed_assistant(line)
 
+        if ltype == "stream_event":
+            return self._feed_stream_event(line)
+
         if ltype == "content_block_stop":
             self._close_current_tool()
             return [{"type": "content_block_stop"}]
@@ -709,12 +754,125 @@ class StreamJsonAccumulator:
 
         return []
 
+    def _feed_stream_event(self, line: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Process a single Claude Code CLI ``stream_event`` line.
+
+        Claude Code CLI 2.1.x wraps the Anthropic Messages SSE event
+        shape inside a ``{"type":"stream_event","event":{...}}`` envelope
+        when ``--include-partial-messages`` is on. The accumulator turns
+        each one into the same canonical UI event the legacy ``assistant``
+        delta form produced, so downstream consumers (Geny's session
+        logger streaming pipe, Stage 10's tool dispatch, anything else
+        that reads ``feed()`` output) get token-level deltas without
+        having to learn the new wire format.
+
+        Mappings:
+          - ``message_start``        → record id + usage; no UI event
+          - ``content_block_start``  → tool_use carries the tool record
+          - ``content_block_delta``  → text_delta / thinking_delta /
+                                       input_json_delta
+          - ``content_block_stop``   → close current tool; emit stop
+          - ``message_delta``        → record stop_reason; no UI event
+          - ``message_stop``         → no UI event (caller emits the
+                                       final ``message_complete`` after
+                                       ``finalize()``)
+        """
+        ev = line.get("event") or {}
+        if not isinstance(ev, dict):
+            return []
+        etype = str(ev.get("type", ""))
+
+        if etype == "message_start":
+            msg = ev.get("message") or {}
+            if isinstance(msg, dict):
+                self._message_id = str(msg.get("id") or self._message_id)
+                self._resolved_model = str(msg.get("model") or self._resolved_model)
+                usage = msg.get("usage")
+                if isinstance(usage, dict) and self._final_obj is None:
+                    self._final_obj = {"usage": usage}
+            return []
+
+        if etype == "content_block_start":
+            cb = ev.get("content_block") or {}
+            if isinstance(cb, dict) and cb.get("type") == "tool_use":
+                self._current_tool = {
+                    "id": cb.get("id"),
+                    "name": cb.get("name"),
+                    "input": cb.get("input") or {},
+                }
+                return [
+                    {
+                        "type": "tool_use",
+                        "id": cb.get("id"),
+                        "name": cb.get("name"),
+                        "input": cb.get("input") or {},
+                    }
+                ]
+            return []
+
+        if etype == "content_block_delta":
+            delta = ev.get("delta") or {}
+            dtype = str(delta.get("type", ""))
+            if dtype == "text_delta":
+                text = str(delta.get("text", ""))
+                if text:
+                    self._text_buf.append(text)
+                    return [{"type": "text_delta", "text": text}]
+                return []
+            if dtype == "thinking_delta":
+                text = str(delta.get("text", ""))
+                if text:
+                    self._thinking_buf.append(text)
+                    return [{"type": "thinking_delta", "text": text}]
+                return []
+            if dtype == "input_json_delta":
+                partial = str(delta.get("partial_json", ""))
+                if self._current_tool is not None:
+                    self._current_tool.setdefault("_partial_json", "")
+                    self._current_tool["_partial_json"] += partial
+                return [{"type": "input_json_delta", "delta": partial}]
+            return []
+
+        if etype == "content_block_stop":
+            self._close_current_tool()
+            return [{"type": "content_block_stop"}]
+
+        if etype == "message_delta":
+            delta = ev.get("delta") or {}
+            if isinstance(delta, dict):
+                sr = delta.get("stop_reason")
+                if sr:
+                    self._stop_reason = str(sr)
+            # Some emitters tag usage on the message_delta event too.
+            usage = ev.get("usage")
+            if isinstance(usage, dict):
+                if self._final_obj is None:
+                    self._final_obj = {"usage": usage}
+                else:
+                    self._final_obj.setdefault("usage", usage)
+            return []
+
+        if etype == "message_stop":
+            return []
+
+        return []
+
     def _feed_message(self, message: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Process a full assistant message envelope's content array.
 
         Emits synthetic per-block delta events so UI consumers see the
         same canonical shape they would with true streaming, then
         records the blocks for the eventual :class:`APIResponse`.
+
+        ``stream_event``-form coexistence — Claude Code CLI 2.1.x with
+        ``--include-partial-messages`` emits BOTH per-token
+        ``stream_event`` lines AND a terminal ``assistant`` envelope
+        containing the same text in full. If we've already accumulated
+        text/thinking via the ``stream_event`` deltas, the envelope is
+        a duplicate and re-recording it would double every assistant
+        message. ``tool_use`` blocks are kept either way — tool calls
+        arrive via ``content_block_start``, not via deltas, so the
+        envelope is the canonical record for them.
         """
         # Capture stop_reason / usage off the envelope if present —
         # the ``message`` form lets the assistant frame carry these
@@ -725,12 +883,8 @@ class StreamJsonAccumulator:
         usage = message.get("usage")
         if isinstance(usage, dict) and self._final_obj is None:
             self._final_obj = {"usage": usage}
-        # Skip synthetic "Not logged in" messages — Claude Code emits
-        # them with ``error=authentication_failed`` and a placeholder
-        # text block. Surface as an APIError-friendly error event so
-        # callers raise instead of returning empty output.
-        # (Detected on the outer ``line``, but ``message`` is the
-        # carrier so we pass it through unchanged here.)
+
+        already_streamed = bool(self._text_buf) or bool(self._thinking_buf)
 
         events: List[Dict[str, Any]] = []
         content = message.get("content") or []
@@ -741,11 +895,15 @@ class StreamJsonAccumulator:
                 continue
             btype = str(block.get("type", ""))
             if btype == "text":
+                if already_streamed:
+                    continue
                 text = str(block.get("text", ""))
                 if text:
                     self._text_buf.append(text)
                     events.append({"type": "text_delta", "text": text})
             elif btype == "thinking":
+                if already_streamed:
+                    continue
                 # Anthropic uses ``thinking`` field; some shims use ``text``.
                 text = str(block.get("thinking") or block.get("text") or "")
                 if text:

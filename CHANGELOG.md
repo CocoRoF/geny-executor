@@ -4,6 +4,55 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.1.4] — 2026-06-09
+
+Fixes the long-standing "VTuber chat shows the whole answer in one
+go" symptom: Claude Code CLI 2.1.x emits true token-level streaming
+inside a ``{"type":"stream_event","event":{...}}`` wrapper when
+``--include-partial-messages`` is on, and the executor's stream-json
+parser never recognised that line type. Every consumer (Geny's
+session-logger streaming pipe, ``StreamJsonAccumulator.feed``, etc.)
+was driven by the terminal ``assistant`` envelope only — which
+carries the full message in a single block — so the UI saw one
+gigantic delta at the end of the call instead of token-by-token
+output.
+
+### Fixed
+
+- **``stream_event`` line type recognised end-to-end.**
+  ``stream_json_line_to_canonical_event`` now decodes
+  ``content_block_delta`` / ``content_block_start`` /
+  ``content_block_stop`` into the canonical ``text_delta`` /
+  ``thinking_delta`` / ``input_json_delta`` / ``tool_use`` /
+  ``content_block_stop`` shape downstream consumers already
+  understood. ``message_start`` / ``message_delta`` / ``message_stop``
+  are absorbed for usage + ``stop_reason`` bookkeeping but emit no
+  UI events (the terminal ``message_complete`` still comes from
+  ``finalize()``).
+- **``StreamJsonAccumulator._feed_stream_event``.** Mirrors the
+  module-level converter but threads usage / stop_reason / current
+  tool state onto the accumulator so ``finalize()`` produces the
+  same canonical ``APIResponse`` regardless of which wire shape the
+  CLI emitted.
+- **Duplicate-text guard in ``_feed_message``.** Claude Code CLI
+  emits BOTH the per-token ``stream_event`` lines AND a terminal
+  ``assistant`` envelope carrying the full text. Previously the
+  envelope replayed every token into ``_text_buf`` after the deltas
+  already populated it, doubling every assistant message. The
+  accumulator now skips the envelope's text / thinking when
+  stream-form deltas have already accumulated — ``tool_use`` blocks
+  are still consumed from the envelope (they arrive via
+  ``content_block_start``, not as deltas).
+
+### Tests
+
+- 9 new tests in
+  ``tests/llm_client/unit/test_translators_cli_claude_code.py``
+  covering all six ``stream_event`` sub-types + the end-to-end
+  delta-then-envelope sequence + the duplicate-text guard. Full
+  suite: 3276 passed.
+
+
 ## [2.1.3] — 2026-06-04
 
 Same-day follow-up to 2.1.2 — fixes the *other* 400 Opus 4.7 returns:
