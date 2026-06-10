@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import uuid
 from collections import deque
@@ -221,6 +222,144 @@ def _mcp_configs_from_manifest(manifest: "EnvironmentManifest") -> Dict[str, Any
             headers=dict(raw.get("headers", {})),
         )
     return configs
+
+
+def _provider_wants_mcp_passthrough(provider_name: str) -> bool:
+    """True when *provider_name*'s client class executes tools inside its
+    own subprocess AND can receive MCP servers via its own config channel.
+
+    The 2.2.1 incident this gates on: a manifest declared
+    ``tools.mcp_servers`` on a ``claude_code_cli`` environment. The
+    pipeline dutifully connected the server HOST-side (spawning the MCP
+    child inside the host process) and registered its tools into the
+    pipeline ToolRegistry — but Stage 10 never dispatches for subprocess
+    backends (the CLI runs its own agentic loop), and the CLI subprocess
+    only sees servers passed through ``--mcp-config``. Net effect: the
+    user attached an MCP server in the environment editor, the session
+    built cleanly, and the LLM had no idea the tools existed.
+
+    For such providers the manifest's MCP servers must be PASSED THROUGH
+    to the client instead of host-connected. Detection is class-level
+    (no client construction, no credentials needed): ``is_subprocess``
+    AND ``supports_mcp_passthrough`` on the registered capabilities.
+    Unknown/unregistered providers return False — the host-side path is
+    the safe default.
+    """
+    if not provider_name or provider_name not in ClientRegistry.available():
+        return False
+    try:
+        caps = ClientRegistry.get(provider_name).capabilities
+    except Exception:  # noqa: BLE001 — registry factories may raise on missing extras
+        return False
+    return bool(
+        getattr(caps, "is_subprocess", False) and getattr(caps, "supports_mcp_passthrough", False)
+    )
+
+
+def _mcp_servers_to_cli_config(
+    configs: Dict[str, Any],
+) -> tuple[Dict[str, Any], List[str]]:
+    """Translate manifest ``MCPServerConfig`` entries into the Claude Code
+    CLI's ``--mcp-config`` JSON shape.
+
+    Returns ``(cli_config, skipped_names)`` where ``cli_config`` is
+    ``{"mcpServers": {name: entry}}`` and ``skipped_names`` lists servers
+    whose transport could not be expressed (logged by the caller).
+
+    Shape mapping (per the CLI's documented mcp-config schema):
+      stdio      → {"type": "stdio", "command", "args", "env"}
+      sse        → {"type": "sse", "url", "headers"}
+      http       → {"type": "http", "url", "headers"}
+    """
+    servers: Dict[str, Any] = {}
+    skipped: List[str] = []
+    for name, cfg in configs.items():
+        transport = (getattr(cfg, "transport", "") or "stdio").lower()
+        if transport == "stdio":
+            entry: Dict[str, Any] = {
+                "type": "stdio",
+                "command": cfg.command,
+                "args": list(cfg.args or []),
+            }
+            if cfg.env:
+                entry["env"] = dict(cfg.env)
+        elif transport in ("sse", "http"):
+            entry = {"type": transport, "url": cfg.url}
+            if cfg.headers:
+                entry["headers"] = dict(cfg.headers)
+        else:
+            skipped.append(name)
+            continue
+        servers[name] = entry
+    return {"mcpServers": servers}, skipped
+
+
+def _merge_cli_mcp_config(
+    host_config: Any,
+    manifest_config: Dict[str, Any],
+) -> Any:
+    """Merge manifest-declared MCP servers into a host-supplied CLI
+    mcp-config.
+
+    Precedence: the HOST config wins on server-name collision — a host
+    that wires a session-scoped bridge (Geny's ``geny`` server) or
+    deliberately overrides a server keeps control. ``host_config`` may
+    be:
+
+    - ``None`` / empty → the manifest config is used as-is.
+    - a dict ``{"mcpServers": {...}}`` → key-merged.
+    - a file path (str) → the file is read and key-merged; on any read/
+      parse failure the host path is returned unchanged and the manifest
+      servers are dropped with a warning (the CLI accepts exactly one
+      ``--mcp-config``, so an unreadable host file cannot be merged
+      without guessing).
+    """
+    manifest_servers = dict(manifest_config.get("mcpServers", {}))
+    if not manifest_servers:
+        return host_config
+    if not host_config:
+        return {"mcpServers": manifest_servers}
+
+    if isinstance(host_config, str):
+        try:
+            with open(host_config, "r", encoding="utf-8") as fh:
+                loaded = json.load(fh)
+            if not isinstance(loaded, dict):
+                raise ValueError("mcp-config file is not a JSON object")
+            host_config = loaded
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "CLI MCP passthrough: host mcp_config path %r could not be "
+                "read/parsed — manifest-declared MCP servers %s will NOT "
+                "reach the CLI subprocess (the CLI accepts a single "
+                "--mcp-config).",
+                host_config,
+                sorted(manifest_servers),
+            )
+            return host_config
+
+    if not isinstance(host_config, dict):
+        logger.warning(
+            "CLI MCP passthrough: host mcp_config has unsupported type %s — "
+            "manifest MCP servers %s dropped.",
+            type(host_config).__name__,
+            sorted(manifest_servers),
+        )
+        return host_config
+
+    merged = dict(host_config)
+    host_servers = dict(merged.get("mcpServers", {}))
+    for name, entry in manifest_servers.items():
+        if name in host_servers:
+            logger.info(
+                "CLI MCP passthrough: server %r declared in both the host "
+                "mcp_config and the manifest — host definition wins.",
+                name,
+            )
+            continue
+        host_servers[name] = entry
+    merged["mcpServers"] = host_servers
+    return merged
 
 
 @dataclass
@@ -559,6 +698,12 @@ class Pipeline:
         self._event_taps: List[asyncio.Queue] = []
         self._mcp_manager: Any = None  # MCPManager | None — set by from_manifest_async
         self._tool_registry: Any = None  # ToolRegistry | None — set by from_manifest_async
+        # CLI MCP passthrough (2.2.1): manifest mcp_servers translated to
+        # the CLI's mcp-config shape, merged into the client's mcp_config
+        # at _build_client_for time. Empty for SDK providers (host-side
+        # MCPManager path) and for manifests without MCP servers.
+        self._cli_mcp_passthrough: Dict[str, Any] = {}
+        self._cli_mcp_passthrough_provider: str = ""
         # MemoryProvider built from the manifest's ``memory`` block
         # (2.2.0 Wave 3); None for hosts that wire memory themselves.
         self._memory_provider: Any = None
@@ -1202,19 +1347,59 @@ class Pipeline:
 
         configs = _mcp_configs_from_manifest(manifest)
         if configs:
-            try:
-                await manager.connect_all(configs)
-                adapters = await manager.discover_all()
-                for adapter in adapters:
-                    registry.register(adapter)
-            except BaseException:
-                # Unwind providers if MCP bring-up fails mid-flight so no
-                # half-started resources leak out.
-                from geny_executor.tools.provider import shutdown_providers
+            # ── CLI MCP passthrough (2.2.1) ───────────────────────────
+            # Subprocess backends (claude_code_cli) run their own agentic
+            # loop: Stage 10 never dispatches for them, so HOST-side MCP
+            # connections are invisible to the actual LLM — the only MCP
+            # channel that reaches it is the client's own --mcp-config.
+            # Connecting host-side here therefore spawned the MCP child
+            # for nothing while the user-attached server's tools never
+            # surfaced in the conversation (the 2.2.1 incident). When the
+            # manifest's Stage-6 provider is such a backend, hand the
+            # servers to the client instead of the manager; the merge
+            # into the client's mcp_config happens in _build_client_for
+            # (host-supplied config wins on name collisions, e.g. Geny's
+            # per-session bridge server).
+            primary_provider = ""
+            for entry in manifest.stage_entries():
+                if entry.name == "api" and entry.active:
+                    primary_provider = str((entry.config or {}).get("provider") or "")
+                    break
+            if _provider_wants_mcp_passthrough(primary_provider):
+                cli_config, skipped = _mcp_servers_to_cli_config(configs)
+                if skipped:
+                    logger.warning(
+                        "CLI MCP passthrough: server(s) %s have transports the "
+                        "CLI mcp-config cannot express — they will not reach "
+                        "the %s subprocess.",
+                        sorted(skipped),
+                        primary_provider,
+                    )
+                if cli_config.get("mcpServers"):
+                    pipeline._cli_mcp_passthrough = cli_config
+                    pipeline._cli_mcp_passthrough_provider = primary_provider
+                    logger.info(
+                        "CLI MCP passthrough: %d manifest MCP server(s) %s "
+                        "routed to the %s subprocess via --mcp-config "
+                        "(host-side connection skipped).",
+                        len(cli_config["mcpServers"]),
+                        sorted(cli_config["mcpServers"]),
+                        primary_provider,
+                    )
+            else:
+                try:
+                    await manager.connect_all(configs)
+                    adapters = await manager.discover_all()
+                    for adapter in adapters:
+                        registry.register(adapter)
+                except BaseException:
+                    # Unwind providers if MCP bring-up fails mid-flight so no
+                    # half-started resources leak out.
+                    from geny_executor.tools.provider import shutdown_providers
 
-                await shutdown_providers(started_providers)
-                await manager.disconnect_all()
-                raise
+                    await shutdown_providers(started_providers)
+                    await manager.disconnect_all()
+                    raise
 
         pipeline._mcp_manager = manager
         pipeline._tool_registry = registry
@@ -2592,6 +2777,26 @@ class Pipeline:
         creds = self._credentials.require(provider)
         client_cls = ClientRegistry.get(provider)
         kwargs = _creds_to_client_kwargs(provider, creds)
+        # CLI MCP passthrough (2.2.1): hand manifest-declared MCP servers
+        # to the subprocess client. Host-supplied mcp_config (e.g. Geny's
+        # per-session bridge) wins on name collision. Manifest-declared
+        # servers are also auto-allowed (``mcp__<server>``) — the
+        # operator attached them in the environment editor, and the CLI's
+        # --print mode has no human to answer a permission prompt, so
+        # without the allow entry the passthrough would be dead on
+        # arrival.
+        if provider == self._cli_mcp_passthrough_provider and self._cli_mcp_passthrough.get(
+            "mcpServers"
+        ):
+            kwargs["mcp_config"] = _merge_cli_mcp_config(
+                kwargs.get("mcp_config"), self._cli_mcp_passthrough
+            )
+            allow = list(kwargs.get("allow_tools", ()) or ())
+            for server_name in self._cli_mcp_passthrough["mcpServers"]:
+                entry = f"mcp__{server_name}"
+                if entry not in allow:
+                    allow.append(entry)
+            kwargs["allow_tools"] = tuple(allow)
         return client_cls(**kwargs)
 
     async def _try_run_stage(self, order: int, current: Any, state: PipelineState) -> Any:
