@@ -341,10 +341,35 @@ class APIStage(Stage[Any, APIResponse]):
             },
         )
 
-        if use_stream:
-            response = await self._call_streaming_with_retry(client, cfg, state)
-        else:
-            response = await self._call_with_retry(client, cfg, state)
+        try:
+            if use_stream:
+                response = await self._call_streaming_with_retry(client, cfg, state)
+            else:
+                response = await self._call_with_retry(client, cfg, state)
+        except APIError as e:
+            # Structured error envelope (2.2.0, audit §3.2 / Tier 1-1):
+            # before this event, a host UI that wanted "auth failed,
+            # category fatal, on the CLI backend" had to regex the
+            # exception string out of pipeline.error — Geny's
+            # llm_patches module existed solely to absorb that. The
+            # stable code/category land in the stream BEFORE the
+            # exception propagates, so transcripts always carry the
+            # classification even when a retry wrapper upstream
+            # swallows or rewraps the exception object itself.
+            error_payload: Dict[str, Any] = {
+                "code": e.code.value if e.code is not None else "exec.unknown",
+                "category": e.category.value,
+                "provider": getattr(client, "provider", ""),
+                "message": str(e),
+            }
+            # CLI-backed clients know their binary version after the
+            # first handshake; every 2.1.x CLI incident was version
+            # skew, so record it at the moment of failure when known.
+            cli_version = getattr(client, "_cli_version_value", None)
+            if cli_version:
+                error_payload["cli_version"] = str(cli_version)
+            state.add_event("api.error", error_payload)
+            raise
 
         state.last_api_response = response
 
@@ -543,9 +568,57 @@ class APIStage(Stage[Any, APIResponse]):
     async def _call_streaming(
         self, client: BaseClient, cfg: Any, state: PipelineState
     ) -> APIResponse:
+        """Drain the client's canonical chunk stream into state events.
+
+        Full chunk forwarding (2.2.0, audit §3.2 / Tier 1-1 — the
+        monkey-patch killer): pre-2.2.0 only ``text_delta`` and the
+        terminal ``message_complete`` survived this loop. Thinking
+        deltas, tool_use starts and input-json fragments — which every
+        client's ``create_message_stream`` already yielded — died here,
+        so both reference hosts monkey-patched this exact method to see
+        them. Every canonical chunk type now maps to a catalogued state
+        event (:class:`geny_executor.events.EventTypes`):
+
+        ============================  =================================
+        canonical chunk               state event
+        ============================  =================================
+        ``text_delta``                ``text.delta``
+        ``thinking_delta``            ``thinking.delta``
+        ``tool_use``                  ``api.tool_use`` (+
+                                      ``api.cli_tool_call`` when the
+                                      backend executes it itself)
+        ``input_json_delta``          ``api.input_json_delta``
+        ``content_block_stop``        ``api.content_block_stop``
+        ``tool_result``               ``api.tool_result``
+        ``message_complete``          (terminal — builds the response)
+        ============================  =================================
+
+        ``source`` payload field: ``"cli"`` when the client is
+        subprocess-backed (``capabilities.is_subprocess`` — e.g.
+        ``claude_code_cli``, whose internal agent loop executes tools
+        itself and whose tool_use blocks will NEVER reach Stage 10) vs
+        ``"api"`` (the model is *requesting* a tool; Stage 10 dispatch
+        + ``tool.execute_*`` events follow). ``api.cli_tool_call`` is
+        a deliberate companion duplicate of the CLI case so hosts that
+        only care about CLI-side dispatch (Geny's tool timeline) can
+        subscribe narrowly without filtering ``api.tool_use``.
+
+        Bookkeeping chunk types (``result``, ``cli_unknown``,
+        ``cli_malformed``) are intentionally NOT forwarded — wire
+        telemetry already reaches hosts via the client's
+        ``llm_client.unknown_wire_shape`` sink event.
+        """
         response: Optional[APIResponse] = None
         kwargs = self._call_kwargs(cfg, state)
         self._apply_timeout_kwarg(kwargs, client, state, "create_message_stream")
+
+        # CLI/subprocess backends run their own tool loop — a tool_use
+        # chunk from them is an *execution announcement*, not a request.
+        source = (
+            "cli"
+            if bool(getattr(getattr(client, "capabilities", None), "is_subprocess", False))
+            else "api"
+        )
 
         stream: AsyncIterator[Dict[str, Any]] = client.create_message_stream(**kwargs)
         async for chunk in stream:
@@ -554,6 +627,32 @@ class APIStage(Stage[Any, APIResponse]):
                 response = chunk["response"]
             elif chunk_type == "text_delta" and chunk.get("text"):
                 state.add_event("text.delta", {"text": chunk["text"]})
+            elif chunk_type == "thinking_delta" and chunk.get("text"):
+                state.add_event("thinking.delta", {"text": chunk["text"]})
+            elif chunk_type == "tool_use":
+                payload = {
+                    "id": chunk.get("id"),
+                    "name": chunk.get("name"),
+                    "input": chunk.get("input") or {},
+                    "source": source,
+                }
+                state.add_event("api.tool_use", payload)
+                if source == "cli":
+                    state.add_event("api.cli_tool_call", dict(payload))
+            elif chunk_type == "input_json_delta":
+                state.add_event("api.input_json_delta", {"delta": chunk.get("delta", "")})
+            elif chunk_type == "content_block_stop":
+                state.add_event("api.content_block_stop", {})
+            elif chunk_type == "tool_result":
+                state.add_event(
+                    "api.tool_result",
+                    {
+                        "tool_use_id": chunk.get("tool_use_id", ""),
+                        "content": chunk.get("content"),
+                        "is_error": bool(chunk.get("is_error", False)),
+                        "source": source,
+                    },
+                )
 
         if response is None:
             raise APIError(

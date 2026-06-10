@@ -40,13 +40,14 @@ class HookEvent(str, Enum):
     SESSION_START = "session_start"  # reserved — not yet emitted by the engine (as of 2.2.0)
     SESSION_END = "session_end"  # reserved — not yet emitted by the engine (as of 2.2.0)
 
-    # Pipeline lifecycle
-    PIPELINE_START = "pipeline_start"  # reserved — not yet emitted by the engine (as of 2.2.0)
-    PIPELINE_END = "pipeline_end"  # reserved — not yet emitted by the engine (as of 2.2.0)
+    # Pipeline lifecycle (fired by Pipeline.run/run_stream since 2.2.0)
+    PIPELINE_START = "pipeline_start"  # At run start, after state init
+    PIPELINE_END = "pipeline_end"  # At run end (success AND error paths)
 
-    # Stage boundaries (payload will include stage_order + name)
-    STAGE_ENTER = "stage_enter"  # reserved — not yet emitted by the engine (as of 2.2.0)
-    STAGE_EXIT = "stage_exit"  # reserved — not yet emitted by the engine (as of 2.2.0)
+    # Stage boundaries (fired by Pipeline._run_stage since 2.2.0;
+    # payload includes stage_order + stage_name)
+    STAGE_ENTER = "stage_enter"  # Before Stage.on_enter
+    STAGE_EXIT = "stage_exit"  # After successful Stage.on_exit
 
     # User turn
     USER_PROMPT_SUBMIT = "user_prompt_submit"  # reserved — not yet emitted (as of 2.2.0)
@@ -60,8 +61,8 @@ class HookEvent(str, Enum):
     PERMISSION_REQUEST = "permission_request"  # PermissionDecision.ASK fired
     PERMISSION_DENIED = "permission_denied"  # PermissionDecision.DENY fired
 
-    # Loop
-    LOOP_ITERATION_END = "loop_iteration_end"  # reserved — not yet emitted (as of 2.2.0)
+    # Loop (fired by Pipeline._run_phases since 2.2.0)
+    LOOP_ITERATION_END = "loop_iteration_end"  # After each loop-body pass
 
     # Environment
     CWD_CHANGED = "cwd_changed"  # reserved — not yet emitted by the engine (as of 2.2.0)
@@ -75,6 +76,11 @@ class HookEvent(str, Enum):
 
 FIRED_EVENTS: frozenset = frozenset(
     {
+        HookEvent.PIPELINE_START,
+        HookEvent.PIPELINE_END,
+        HookEvent.STAGE_ENTER,
+        HookEvent.STAGE_EXIT,
+        HookEvent.LOOP_ITERATION_END,
         HookEvent.PRE_TOOL_USE,
         HookEvent.POST_TOOL_USE,
         HookEvent.POST_TOOL_FAILURE,
@@ -93,10 +99,17 @@ contract that keeps docs and reality in lockstep. A grep-driven test
 (``tests/unit/test_hook_taxonomy.py``) fails the build when a new
 fire-site ships without updating this set (or vice versa).
 
-The tool-invocation trio fires from Stage 10's ``RegistryRouter``;
-the permission pair fires from the same dispatch path when the
-permission matrix returns DENY / ASK (2.2.0, audit §1-5 ASK→HITL
-plumbing).
+Fire-sites:
+  - the tool-invocation trio fires from Stage 10's ``RegistryRouter``;
+  - the permission pair fires from the same dispatch path when the
+    permission matrix returns DENY / ASK (2.2.0, audit §1-5 ASK→HITL
+    plumbing);
+  - the pipeline-lifecycle five (PIPELINE_START / PIPELINE_END /
+    STAGE_ENTER / STAGE_EXIT / LOOP_ITERATION_END) fire from
+    ``Pipeline`` itself when a hook runner was attached via
+    ``attach_runtime(hook_runner=...)`` (2.2.0 — previously the
+    classic dead-handler kinds). They are observational: their
+    outcomes cannot block execution, unlike the tool trio.
 """
 
 

@@ -17,6 +17,8 @@ from typing import Any, Dict, List
 
 import pytest
 
+from tests._fixtures.manifest_entries import required_stage_entries
+
 from geny_executor.hooks import (
     HookConfig,
     HookConfigEntry,
@@ -341,7 +343,7 @@ class TestPipelineAttachRuntime:
         from geny_executor.stages.s10_tool.artifact.default.stage import ToolStage
 
         # Build a manifest pipeline with a Tool stage in it.
-        manifest = EnvironmentManifest()
+        manifest = EnvironmentManifest(stages=required_stage_entries())
         # Manifest doesn't put a tool stage by default; register one.
         pipeline = await Pipeline.from_manifest_async(manifest)
         pipeline.register_stage(ToolStage(registry=ToolRegistry()))
@@ -366,7 +368,7 @@ class TestPipelineAttachRuntime:
         from geny_executor.core.pipeline import Pipeline
         from geny_executor.stages.s10_tool.artifact.default.stage import ToolStage
 
-        manifest = EnvironmentManifest()
+        manifest = EnvironmentManifest(stages=required_stage_entries())
         pipeline = await Pipeline.from_manifest_async(manifest)
         pipeline.register_stage(ToolStage(registry=ToolRegistry()))
 

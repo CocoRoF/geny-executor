@@ -247,11 +247,13 @@ class TestEnvironmentDiff:
         assert "metadata.name" in paths
 
     def test_nested_list_dict_diff(self):
+        # 2.2.0: stage lists are diffed keyed by ``order`` (audit §3.1),
+        # so the path carries the stable order, not the array index.
         a = {"stages": [{"order": 1, "name": "input", "active": True}]}
         b = {"stages": [{"order": 1, "name": "input", "active": False}]}
         diff = EnvironmentDiff.compute(a, b)
         assert diff.summary["changed"] == 1
-        assert "stages[0].active" in diff.entries[0].path
+        assert "stages[order=1].active" in diff.entries[0].path
 
     def test_list_length_diff(self):
         a = {"tags": ["a", "b"]}

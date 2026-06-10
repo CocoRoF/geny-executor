@@ -6,6 +6,32 @@ from dataclasses import dataclass, field
 from typing import Any, ClassVar, Dict, List, Optional, Set
 
 
+def _order_keyed(items: List[Any]) -> Optional[Dict[int, Dict[str, Any]]]:
+    """Return ``order → entry`` when *items* is an order-keyed entity list.
+
+    A list qualifies when it is non-empty, every element is a dict
+    carrying an int-able ``order`` key, and the orders are unique.
+    Stage manifest entries are the canonical case; the shape test is
+    structural so any future order-keyed list (and hosts' own payloads)
+    benefits without a schema registry.
+
+    Returns ``None`` when the list does not qualify — callers fall back
+    to the positional strategies.
+    """
+    if not items or not all(isinstance(x, dict) and "order" in x for x in items):
+        return None
+    keyed: Dict[int, Dict[str, Any]] = {}
+    for entry in items:
+        try:
+            order = int(entry["order"])
+        except (TypeError, ValueError):
+            return None
+        if order in keyed:
+            return None  # duplicate orders — positional fallback is honest
+        keyed[order] = entry
+    return keyed
+
+
 @dataclass
 class DiffEntry:
     """A single difference between two environment configs."""
@@ -115,8 +141,36 @@ class EnvironmentDiff:
                 entries.extend(sub.entries)
             elif isinstance(a[key], list) and isinstance(b[key], list):
                 if a[key] != b[key]:
-                    # For lists, compare element-by-element if same length and dicts
-                    if (
+                    # Order-keyed entity lists (stage manifest entries)
+                    # diff per-order rather than positionally. Before
+                    # 2.2.0 (audit §3.1), two stage lists of unequal
+                    # length collapsed into ONE opaque "changed" blob —
+                    # a 16-stage stored manifest diffed against the
+                    # 21-stage canonical layout reported nothing usable.
+                    # Keying by ``order`` makes added / removed /
+                    # changed stages individually addressable
+                    # (``stages[order=N].…`` paths), and stays correct
+                    # when one side reordered its array.
+                    a_keyed = _order_keyed(a[key])
+                    b_keyed = _order_keyed(b[key])
+                    if a_keyed is not None and b_keyed is not None:
+                        for order in sorted(set(a_keyed) | set(b_keyed)):
+                            entry_path = f"{path}[order={order}]"
+                            if order not in a_keyed:
+                                entries.append(
+                                    DiffEntry(entry_path, "added", new_value=b_keyed[order])
+                                )
+                            elif order not in b_keyed:
+                                entries.append(
+                                    DiffEntry(entry_path, "removed", old_value=a_keyed[order])
+                                )
+                            else:
+                                sub = cls.compute(
+                                    a_keyed[order], b_keyed[order], entry_path, ignore_keys
+                                )
+                                entries.extend(sub.entries)
+                    # Positional fallback: same length + all dicts.
+                    elif (
                         len(a[key]) == len(b[key])
                         and all(isinstance(x, dict) for x in a[key])
                         and all(isinstance(x, dict) for x in b[key])

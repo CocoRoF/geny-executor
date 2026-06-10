@@ -77,11 +77,57 @@ class MutationResult:
     record: Optional[MutationRecord] = None
 
 
+@dataclass
+class RestoreReport:
+    """What :meth:`PipelineMutator.restore` actually applied vs skipped.
+
+    Restore used to be warn-free AND report-free: every unknown slot,
+    unknown impl, and incompatible chain order hit a silent ``pass``,
+    so a manifest could "restore" with half its declarations dropped
+    and the only symptom was wrong runtime behaviour weeks later
+    (2.2.0, audit 2026-06-09 §2.1 — Geny prod's evaluator config was
+    lost exactly this way). ``restore(snapshot, report=True)`` returns
+    this instead of the legacy :class:`MutationResult` so callers can
+    inspect — or refuse to ship — a degraded restore.
+
+    Fields (all entries are human-readable target strings,
+    ``"stage:{order}.{name}"`` shaped, matching the change-log
+    ``target`` convention):
+      - ``configured``: targets applied successfully (slot strategies
+        swapped/configured, stage configs, chains, tool bindings,
+        model overrides).
+      - ``skipped_slots``: snapshot slots the live stage doesn't have.
+      - ``skipped_impls``: slots that exist but whose snapshot impl
+        could not be set (unknown implementation name).
+      - ``skipped_chains``: chains that don't exist on the live stage
+        or rejected the snapshot ordering.
+      - ``errors``: anything else that prevented application — e.g. a
+        snapshot entry marked active for a stage that is not
+        registered. Stage-construction failures never appear here
+        (restore does not build stages); see
+        ``Pipeline.dropped_stages`` for those.
+    """
+
+    configured: List[str] = field(default_factory=list)
+    skipped_slots: List[str] = field(default_factory=list)
+    skipped_impls: List[str] = field(default_factory=list)
+    skipped_chains: List[str] = field(default_factory=list)
+    errors: List[str] = field(default_factory=list)
+
+    @property
+    def has_skips(self) -> bool:
+        """True when any declaration in the snapshot failed to land."""
+        return bool(self.skipped_slots or self.skipped_impls or self.skipped_chains or self.errors)
+
+
 class PipelineMutator:
     """Controlled mutation layer over a :class:`Pipeline`.
 
-    All mutations are recorded in a change log and protected by a lock
-    so that stages currently executing cannot be mutated concurrently.
+    All mutations are recorded in a change log. Config/strategy/
+    structure mutations are additionally blocked with
+    :class:`MutationLocked` while the pipeline is executing a run
+    (``Pipeline.run_in_progress`` — engine-wired since 2.2.0); mutate
+    between turns.
 
     Usage::
 
@@ -158,6 +204,7 @@ class PipelineMutator:
     def update_model_config(self, changes: Dict[str, Any]) -> MutationResult:
         """Update model configuration fields (temperature, max_tokens, etc.)."""
         with self._lock:
+            self._check_run_lock()
             cfg = self._pipeline._config.model
             old_values: Dict[str, Any] = {}
             for key, value in changes.items():
@@ -178,6 +225,7 @@ class PipelineMutator:
     def update_pipeline_config(self, changes: Dict[str, Any]) -> MutationResult:
         """Update top-level pipeline configuration fields."""
         with self._lock:
+            self._check_run_lock()
             cfg = self._pipeline._config
             old_values: Dict[str, Any] = {}
             for key, value in changes.items():
@@ -452,6 +500,7 @@ class PipelineMutator:
     def bind_tool_to_stage(self, stage_order: int, tool_name: str) -> MutationResult:
         """Grant *stage_order* access to *tool_name*."""
         with self._lock:
+            self._check_run_lock()
             stage = self._get_stage(stage_order)
             stage.tool_binding.allow(tool_name)
             record = MutationRecord(
@@ -465,6 +514,7 @@ class PipelineMutator:
     def unbind_tool_from_stage(self, stage_order: int, tool_name: str) -> MutationResult:
         """Revoke *stage_order* access to *tool_name*."""
         with self._lock:
+            self._check_run_lock()
             stage = self._get_stage(stage_order)
             stage.tool_binding.block(tool_name)
             record = MutationRecord(
@@ -488,6 +538,7 @@ class PipelineMutator:
         nothing / blocks nothing.
         """
         with self._lock:
+            self._check_run_lock()
             stage = self._get_stage(stage_order)
             binding = stage.tool_binding
             binding.allowed = set(allowed) if allowed is not None else None
@@ -511,6 +562,7 @@ class PipelineMutator:
         Pass ``None`` to revert the stage to the pipeline-wide model.
         """
         with self._lock:
+            self._check_run_lock()
             stage = self._get_stage(stage_order)
             stage.model_override = model
             record = MutationRecord(
@@ -631,21 +683,48 @@ class PipelineMutator:
             description=description,
         )
 
-    def restore(self, snapshot: PipelineSnapshot) -> MutationResult:
+    def restore(self, snapshot: PipelineSnapshot, *, report: bool = False) -> Any:
         """Restore pipeline configuration from a snapshot.
 
         This restores strategy selections and configurations. It does NOT
         replace Stage instances themselves — stages must already be registered.
         v2 snapshots additionally restore chain ordering, tool_binding, and
         model_override; absent fields in v1 snapshots are no-ops.
+
+        Args:
+            snapshot: The configuration snapshot to replay.
+            report: When True, return a :class:`RestoreReport` detailing
+                every declaration that was applied vs skipped (2.2.0,
+                audit §2.1/§3.5 — restore's silent ``pass`` branches hid
+                real manifest drift in prod). When False (default), the
+                historical :class:`MutationResult` return is preserved
+                for back-compat. The skip/apply *behaviour* is identical
+                either way — only the visibility differs.
+
+        Run-lock exemption: unlike the other mutating operations this
+        method does NOT consult the run-in-progress lock — it is the
+        rollback primitive :meth:`batch` relies on and the wiring step
+        ``Pipeline.from_manifest`` runs at build time; gating it would
+        make a failed batch unrecoverable.
         """
         from geny_executor.core.config import ModelConfig
         from geny_executor.tools.stage_binding import StageToolBinding
+
+        outcome = RestoreReport()
 
         with self._lock:
             for stage_snap in snapshot.stages:
                 stage = self._pipeline.get_stage(stage_snap.order)
                 if stage is None:
+                    if stage_snap.is_active:
+                        # The snapshot says this slot should be live but
+                        # nothing is registered there — restore cannot
+                        # build stages, so the whole entry is dropped.
+                        outcome.errors.append(
+                            f"stage:{stage_snap.order} ({stage_snap.name}) is "
+                            "active in the snapshot but not registered on the "
+                            "pipeline"
+                        )
                     continue  # Cannot restore an unregistered stage
 
                 # Restore strategy selections. When the live slot already
@@ -658,38 +737,54 @@ class PipelineMutator:
                 slots = stage.get_strategy_slots()
                 for slot_name, impl_name in stage_snap.strategies.items():
                     slot_config = stage_snap.strategy_configs.get(slot_name)
+                    target = f"stage:{stage_snap.order}.{slot_name}"
                     slot = slots.get(slot_name)
                     if slot is not None and slot.current_impl == impl_name:
                         if slot_config and hasattr(slot.strategy, "configure"):
                             slot.strategy.configure(slot_config)
+                        outcome.configured.append(target)
                         continue
                     try:
                         stage.set_strategy(slot_name, impl_name, slot_config)
+                        outcome.configured.append(target)
                     except (KeyError, AttributeError):
-                        pass  # Skip unknown slots/impls silently
+                        # Same skip semantics as ever — but recorded.
+                        # KeyError from a missing slot vs a missing impl
+                        # is distinguished via the slots map we already
+                        # fetched (set_strategy raises KeyError for both).
+                        if slot is None:
+                            outcome.skipped_slots.append(target)
+                        else:
+                            outcome.skipped_impls.append(f"{target}→{impl_name}")
 
                 # Restore stage config
                 if stage_snap.stage_config:
                     stage.update_config(stage_snap.stage_config)
+                    outcome.configured.append(f"stage:{stage_snap.order}.config")
 
                 # Restore chain ordering (v2)
                 for chain_name, order in (stage_snap.chain_order or {}).items():
                     if not order:
                         continue
+                    target = f"stage:{stage_snap.order}.{chain_name}"
                     try:
                         stage.reorder_chain(chain_name, order)
+                        outcome.configured.append(target)
                     except (KeyError, ValueError):
-                        pass  # Unknown chain or incompatible order — skip silently
+                        # Unknown chain or incompatible order — recorded skip.
+                        outcome.skipped_chains.append(target)
 
                 # Restore tool binding (v2) — only apply when captured.
                 if stage_snap.tool_binding is not None:
                     stage.tool_binding = StageToolBinding.from_dict(stage_snap.tool_binding)
+                    outcome.configured.append(f"stage:{stage_snap.order}.tool_binding")
 
                 # Restore model override (v2) — only apply when captured. A None
                 # payload from a v1 snapshot doesn't clear the live override; use
                 # set_stage_model(order, None) for an explicit reset.
                 if stage_snap.model_override is not None:
                     stage.model_override = ModelConfig.from_dict(stage_snap.model_override)
+                    outcome.configured.append(f"stage:{stage_snap.order}.model_override")
 
             # Restore model config
             if snapshot.model_config:
@@ -713,6 +808,8 @@ class PipelineMutator:
                 new_value=snapshot.pipeline_name,
             )
             self._change_log.append(record)
+            if report:
+                return outcome
             return MutationResult(success=True, record=record)
 
     # ── Change log ──────────────────────────────────────────
@@ -726,13 +823,35 @@ class PipelineMutator:
         self._change_log.clear()
 
     # ── Execution lock ──────────────────────────────────────
+    #
+    # Two layers (2.2.0, audit §3.5 honesty pass):
+    #
+    # * ``Pipeline.run_in_progress`` — the REAL lock. Wired by the
+    #   engine around run()/run_stream() (including the streaming
+    #   background task) and consulted by every config/strategy/
+    #   structure mutation via ``_check_run_lock``. This is what makes
+    #   ``MutationLocked`` actually fire in production.
+    # * ``lock_stage`` / ``unlock_stage`` — legacy MANUAL per-stage
+    #   flags. The engine has never called them (the audit's "dead
+    #   lock" finding); they remain functional for hosts that want
+    #   finer-than-run-granularity freezes (e.g. pin stage 6 while an
+    #   operator edits other stages), and for back-compat. They are
+    #   NOT how the engine protects a running pipeline.
 
     def lock_stage(self, order: int) -> None:
-        """Mark a stage as currently executing (blocks mutations)."""
+        """Manually freeze a stage against mutations (host-side flag).
+
+        Legacy/manual API: the engine does NOT call this during
+        execution — run-time protection comes from the pipeline's
+        ``run_in_progress`` lock, which every mutating operation
+        checks automatically. Use this only to hold a stage frozen
+        across multiple turns (e.g. while an operator UI edits the
+        rest of the environment). Pair with :meth:`unlock_stage`.
+        """
         self._locked_stages.add(order)
 
     def unlock_stage(self, order: int) -> None:
-        """Mark a stage as no longer executing."""
+        """Release a manual :meth:`lock_stage` freeze."""
         self._locked_stages.discard(order)
 
     # ── Internal ────────────────────────────────────────────
@@ -747,8 +866,32 @@ class PipelineMutator:
             )
         return stage
 
+    def _check_run_lock(self) -> None:
+        """Raise :class:`MutationLocked` while the pipeline is executing a run.
+
+        2.2.0 (audit §3.5): this is the lock that actually fires. The
+        pipeline maintains ``run_in_progress`` around ``run()`` /
+        ``run_stream()`` (including the streaming background task), and
+        every config/strategy/structure mutation consults it here — a
+        mid-run swap would hand later stages different strategies than
+        earlier stages already executed with. :meth:`restore` is the
+        one deliberate exemption (see its docstring).
+        """
+        if getattr(self._pipeline, "run_in_progress", False):
+            raise MutationLocked(
+                "Pipeline is currently executing a run — mutations are "
+                "locked until the run finishes. Mutate between turns "
+                "(after run() returns / the run_stream iterator drains)."
+            )
+
     def _check_stage_lock(self, order: int) -> None:
-        """Raise if the stage is locked for execution."""
+        """Raise if mutation is locked — run in progress, or manual stage lock.
+
+        The run-in-progress check (2.2.0) is the engine-wired lock;
+        the per-stage set is the legacy manual API (see
+        :meth:`lock_stage`).
+        """
+        self._check_run_lock()
         if order in self._locked_stages:
             raise MutationLocked(
                 f"Stage {order} is currently executing and cannot be mutated",

@@ -12,6 +12,7 @@ from typing import Any, Dict, List
 import pytest
 
 from geny_executor.tools.base import Tool, ToolCapabilities, ToolContext, ToolResult
+from tests._fixtures.manifest_entries import required_stage_entries
 from geny_executor.tools.provider import (
     BuiltInToolProvider,
     ToolProvider,
@@ -257,7 +258,7 @@ class TestPipelineIntegration:
         from geny_executor.core.environment import EnvironmentManifest
         from geny_executor.core.pipeline import Pipeline
 
-        manifest = EnvironmentManifest()
+        manifest = EnvironmentManifest(stages=required_stage_entries())
         pipeline = await Pipeline.from_manifest_async(
             manifest,
             tool_providers=[
@@ -278,7 +279,7 @@ class TestPipelineIntegration:
         from geny_executor.core.environment import EnvironmentManifest
         from geny_executor.core.pipeline import Pipeline
 
-        manifest = EnvironmentManifest()
+        manifest = EnvironmentManifest(stages=required_stage_entries())
         trace: List[str] = []
         pipeline = await Pipeline.from_manifest_async(
             manifest,
@@ -294,6 +295,6 @@ class TestPipelineIntegration:
         from geny_executor.core.environment import EnvironmentManifest
         from geny_executor.core.pipeline import Pipeline
 
-        manifest = EnvironmentManifest()
+        manifest = EnvironmentManifest(stages=required_stage_entries())
         pipeline = await Pipeline.from_manifest_async(manifest)
         assert pipeline.tool_providers == []

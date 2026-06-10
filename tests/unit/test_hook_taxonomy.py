@@ -16,9 +16,16 @@ from geny_executor.hooks import FIRED_EVENTS, HookEvent
 
 SRC_ROOT = Path(__file__).resolve().parents[2] / "src" / "geny_executor"
 
-# What the engine emits as of 2.2.0: the Stage 10 tool-invocation trio
-# plus the permission pair fired from the same dispatch path.
+# What the engine emits as of 2.2.0: the Stage 10 tool-invocation trio,
+# the permission pair fired from the same dispatch path, and the
+# pipeline-lifecycle five fired by Pipeline itself (wave 2 — pipeline
+# start/end, stage enter/exit, loop iteration end).
 EXPECTED_FIRED = {
+    HookEvent.PIPELINE_START,
+    HookEvent.PIPELINE_END,
+    HookEvent.STAGE_ENTER,
+    HookEvent.STAGE_EXIT,
+    HookEvent.LOOP_ITERATION_END,
     HookEvent.PRE_TOOL_USE,
     HookEvent.POST_TOOL_USE,
     HookEvent.POST_TOOL_FAILURE,

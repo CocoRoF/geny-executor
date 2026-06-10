@@ -39,6 +39,17 @@ class PipelineResult:
     model: str = ""
     metadata: Dict[str, Any] = field(default_factory=dict)
 
+    # The PipelineState the run actually used (2.2.0, audit §3.3).
+    # When a host calls ``run(input)`` without passing a state, the
+    # pipeline builds one internally — and before this field existed
+    # that state (with the full conversation history) was simply
+    # dropped, which is how GAPT shipped a prod amnesia bug. Hosts
+    # recover it here and pass it to the next ``run()`` to continue
+    # the conversation. repr-suppressed (it drags clients/credentials)
+    # and excluded from equality; treat as a runtime handle, NOT part
+    # of the serializable result payload.
+    state: Optional[PipelineState] = field(default=None, repr=False, compare=False)
+
     @classmethod
     def from_state(cls, state: PipelineState) -> PipelineResult:
         """Create a result from final pipeline state."""
@@ -59,6 +70,7 @@ class PipelineResult:
             pipeline_id=state.pipeline_id,
             model=state.model,
             metadata=dict(state.metadata),
+            state=state,
         )
 
     @classmethod

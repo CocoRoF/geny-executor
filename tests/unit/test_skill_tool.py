@@ -6,6 +6,8 @@ from pathlib import Path
 
 import pytest
 
+from tests._fixtures.manifest_entries import required_stage_entries
+
 from geny_executor.skills import (
     Skill,
     SkillMetadata,
@@ -258,7 +260,7 @@ class TestPipelineIntegration:
         registry.register(_skill("refactor"))
         registry.register(_skill("deploy"))
 
-        manifest = EnvironmentManifest()
+        manifest = EnvironmentManifest(stages=required_stage_entries())
         pipeline = await Pipeline.from_manifest_async(
             manifest,
             tool_providers=[SkillToolProvider(registry)],

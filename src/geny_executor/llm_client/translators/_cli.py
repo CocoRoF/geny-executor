@@ -762,6 +762,9 @@ class StreamJsonAccumulator:
             # so it never inflates the unknown-shape counters.
             return []
 
+        if ltype == "user":
+            return self._feed_user(line)
+
         if ltype == "assistant":
             return self._feed_assistant(line)
 
@@ -882,6 +885,47 @@ class StreamJsonAccumulator:
                 self._cli_version or "unknown",
                 sample,
             )
+
+    def _feed_user(self, line: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Surface CLI-executed tool results from ``user`` envelopes.
+
+        Claude Code CLI 2.1.x runs its agentic loop internally; after
+        executing a tool it emits the matching ``tool_result`` as a
+        ``{"type": "user"}`` envelope in the same stream (the
+        :meth:`finalize` docstring has relied on this wire fact since
+        Phase I). Two flavours arrive here:
+
+        - the echo of OUR OWN stdin input (plain string / text-block
+          content) — bookkeeping-only, no event;
+        - ``tool_result`` blocks for tools the CLI dispatched itself —
+          each becomes a canonical ``{"type": "tool_result", ...}``
+          event so consumers (Stage 6's ``api.tool_result`` state
+          event, host tool timelines) can show what the CLI actually
+          ran, paired with the ``tool_use`` event that preceded it.
+
+        Handling ``user`` explicitly also fixes a telemetry bug
+        (2.2.0): the line type was missing from ``feed``'s dispatch
+        entirely, so every tool-using CLI session inflated
+        ``unknown_line_count`` — one ``llm_client.unknown_wire_shape``
+        warning per call and a spurious hard failure under
+        ``strict_wire=True``, for a line shape the parser's own
+        docstrings describe as expected.
+        """
+        message = line.get("message") or {}
+        content = message.get("content") if isinstance(message, dict) else None
+        events: List[Dict[str, Any]] = []
+        if isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "tool_result":
+                    events.append(
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": block.get("tool_use_id", ""),
+                            "content": block.get("content"),
+                            "is_error": bool(block.get("is_error", False)),
+                        }
+                    )
+        return events
 
     def _feed_assistant(self, line: Dict[str, Any]) -> List[Dict[str, Any]]:
         # Form 1 — delta (true streaming).
