@@ -3,7 +3,16 @@
 from __future__ import annotations
 
 from abc import abstractmethod
-from typing import Any, AsyncIterator, Dict, Optional, TYPE_CHECKING
+from typing import (
+    Any,
+    AsyncIterator,
+    Awaitable,
+    Callable,
+    Dict,
+    List,
+    Optional,
+    TYPE_CHECKING,
+)
 
 from geny_executor.core.errors import ErrorCategory
 from geny_executor.core.stage import Strategy
@@ -12,6 +21,17 @@ from geny_executor.stages.s06_api.types import APIRequest, APIResponse
 if TYPE_CHECKING:
     from geny_executor.core.config import ModelConfig
     from geny_executor.core.state import PipelineState
+    from geny_executor.llm_client import BaseClient
+
+#: One retry-wrapped client call. Built by ``APIStage.execute`` as a
+#: closure over the resolved client/model/stream mode; the argument is
+#: an optional list of *loop-local* messages appended after
+#: ``state.messages`` for this call only (the internal loop's pending
+#: tool exchanges — ``state.messages`` itself is not mutated mid-loop).
+#: Each invocation emits its own ``api.request`` / ``api.response``
+#: pair, so every inner call of an agentic loop is individually visible
+#: to hosts exactly like the single-call path always was.
+ToolLoopCall = Callable[[Optional[List[Dict[str, Any]]]], Awaitable[APIResponse]]
 
 
 class APIProvider(Strategy):
@@ -44,6 +64,46 @@ class RetryStrategy(Strategy):
     @property
     def max_retries(self) -> int:
         return 0
+
+
+class ToolLoopStrategy(Strategy):
+    """Decide WHERE the agentic tool loop runs for this stage's calls.
+
+    Two execution shapes exist for "the model wants tools" (2.3.0):
+
+    - **pipeline** — the stage makes exactly one client call and returns
+      the response verbatim, tool_use blocks included. Stage 9 parses
+      them, Stage 10 dispatches, Stage 16 loops the whole pipeline.
+      Full per-round-trip stage control (guards, token tracking,
+      review, evaluation) at the cost of re-running every stage per
+      tool round-trip.
+    - **internal** — the strategy resolves tool calls *inside* Stage 6
+      (call → dispatch → call …) and returns only the final response,
+      mirroring how the ``claude_code_cli`` backend's subprocess loop
+      already behaves (see ``StreamJsonAccumulator.finalize``).
+
+    The strategy never talks to the client directly — it drives the
+    stage-built :data:`ToolLoopCall` closure so every call shares the
+    stage's retry strategy, timeout plumbing, stream handling and
+    ``api.request``/``api.response``/``api.error`` event contract.
+    """
+
+    @abstractmethod
+    async def run(
+        self,
+        *,
+        call: ToolLoopCall,
+        client: "BaseClient",
+        state: "PipelineState",
+    ) -> APIResponse:
+        """Produce the response Stage 6 hands to the rest of the pipeline.
+
+        Implementations that resolve tool exchanges internally must
+        record those intermediate messages onto ``state.messages`` (in
+        order) before returning — the stage appends only the FINAL
+        assistant content, exactly as it does on the single-call path.
+        """
+        ...
 
 
 class ModelRouter(Strategy):

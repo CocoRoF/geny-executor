@@ -120,6 +120,17 @@ Five channels can influence what a run executes with. Highest wins; every channe
 
 Reading order at run start: `PipelineConfig.apply_to_state` stomps the state (4/5, as mutated by 2), then per-run overrides land on top (1). Runtime objects (3) are not state values — they are the live collaborators (clients, managers, strategies) the stages call into; the manifest names *which* to build, attach/refresh supply *the instances*.
 
+## Tool execution modes
+
+Stage 6's `tool_loop` strategy slot (2.3.0) decides WHERE the agentic loop runs — manifest-selectable per environment:
+
+| Strategy | Shape | Choose it when |
+|---|---|---|
+| `"pipeline"` (default) | One client call per pipeline iteration; tool_use blocks flow to Stage 9 → Stage 10 dispatch → Stage 16 loops the whole pipeline. | You want full per-round-trip stage control: guards re-checked, tokens tracked, review/evaluation run per tool exchange. The pre-2.3.0 behaviour, byte-identical. |
+| `"internal"` | Stage 6 resolves tool calls inside the stage (call → dispatch → call …) and returns only the final response — the execution shape the `claude_code_cli` backend has always had (its subprocess runs the loop; the terminal response carries no tool blocks, so Stage 9/10 naturally no-op). | You want CLI-parity efficiency: no Stage 2-5/7/14 re-run per tool round-trip. `strategy_configs: {"tool_loop": {"max_inner_turns": N, "parallel_tools": bool}}`. |
+
+The internal loop dispatches through `state.tool_dispatcher` — a thin handle over the registered Tool stage's own machinery (`ToolDispatcher`, `stages/s10_tool/dispatcher.py`): same `ToolRegistry` instance, same permission ladder (matrix → posture → ASK→HITL → hooks), same large-result persistence, same `tool.call_start`/`tool.call_complete` timing events. There is exactly one permission-decision implementation in the engine. Every inner call emits its own `api.request`/`api.response` pair plus `api.tool_use {source:"internal"}` / `api.tool_result` events; the returned response's usage is the sum over all inner calls, so Stage 7 prices the whole turn. Caps (`max_inner_turns`, the per-turn cost budget) emit `api.internal_loop_capped` and hand any leftover tool calls back to the pipeline path — graceful degradation, never dropped work. Subprocess backends and tool-less clients degrade to `"pipeline"` behaviour with a one-time warning.
+
 ## 2.2.0 surfaces
 
 The 2.2.0 cycle (audit 2026-06-09) promoted the patterns hosts had been hand-rolling into owned library APIs:

@@ -196,6 +196,16 @@ class PipelineState:
     pending_tool_calls: List[Dict[str, Any]] = field(default_factory=list)
     tool_results: List[Dict[str, Any]] = field(default_factory=list)
 
+    # ── Tool dispatch handle (2.3.0) ──
+    # Installed by ``Pipeline._init_state`` whenever a Tool stage is
+    # registered: a :class:`~geny_executor.stages.s10_tool.dispatcher.
+    # ToolDispatcher` wrapping that stage's registry + permission
+    # machinery. Consumed by Stage 6's ``tool_loop="internal"`` strategy
+    # so internally-resolved tool calls take the EXACT dispatch path
+    # Stage 10 would. Lifetime: refreshed every run (sticky across the
+    # run only); never serialized.
+    tool_dispatcher: Optional[Any] = field(default=None, repr=False, compare=False)
+
     # ── Agent orchestration ──
     delegate_requests: List[Dict[str, Any]] = field(default_factory=list)
     agent_results: List[Dict[str, Any]] = field(default_factory=list)
