@@ -8,13 +8,8 @@ from geny_executor.core.slot import StrategySlot
 from geny_executor.core.stage import Stage
 from geny_executor.core.state import PipelineState
 from geny_executor.stages.s14_evaluate.interface import EvaluationStrategy, QualityScorer
-from geny_executor.stages.s14_evaluate.artifact.adaptive.strategy import (
-    BinaryClassifyEvaluation,
-)
 from geny_executor.stages.s14_evaluate.artifact.default.strategies import (
-    AgentEvaluation,
-    CriteriaBasedEvaluation,
-    EvaluationChain,
+    EVALUATOR_REGISTRY,
     NoScorer,
     SignalBasedEvaluation,
     WeightedScorer,
@@ -38,17 +33,12 @@ class EvaluateStage(Stage[Any, Any]):
             "strategy": StrategySlot(
                 name="strategy",
                 strategy=strategy or SignalBasedEvaluation(),
-                registry={
-                    "signal_based": SignalBasedEvaluation,
-                    "criteria_based": CriteriaBasedEvaluation,
-                    "agent_evaluation": AgentEvaluation,
-                    "binary_classify": BinaryClassifyEvaluation,
-                    # Phase 7 S7.6 — sequential evaluator chain.
-                    # Construct via ``EvaluationChain([ev1, ev2, ...])``;
-                    # the slot's zero-arg swap path produces an empty
-                    # chain (which acts as a no-op verdict).
-                    "evaluation_chain": EvaluationChain,
-                },
+                # Shared with EvaluationChain.configure so a manifest's
+                # ``strategy_configs["strategy"]["evaluators"]`` accepts
+                # exactly the names this slot accepts — one registry,
+                # zero drift (audit §2.1: the prod chain went empty
+                # because configure dropped these names entirely).
+                registry=dict(EVALUATOR_REGISTRY),
                 description="Evaluation strategy",
             ),
             "scorer": StrategySlot(

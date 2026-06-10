@@ -17,6 +17,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
+from geny_executor.core.schema import ConfigField, ConfigSchema
 from geny_executor.core.state import PipelineState
 from geny_executor.stages.s14_evaluate.interface import EvaluationStrategy
 from geny_executor.stages.s14_evaluate.types import EvaluationResult
@@ -61,17 +62,69 @@ class BinaryClassifyEvaluation(EvaluationStrategy):
     def __init__(self, config: Optional[BinaryClassifyConfig] = None):
         self._config = config or BinaryClassifyConfig()
 
+    @classmethod
+    def config_schema(cls) -> ConfigSchema:
+        return ConfigSchema(
+            name="binary_classify",
+            fields=[
+                ConfigField(
+                    name="easy_max_turns",
+                    type="integer",
+                    label="Easy max turns",
+                    description="Turn cap applied once a task is classified easy.",
+                    default=1,
+                    min_value=1,
+                ),
+                ConfigField(
+                    name="not_easy_max_turns",
+                    type="integer",
+                    label="Not-easy max turns",
+                    description="Turn cap applied once a task is classified not_easy.",
+                    default=30,
+                    min_value=1,
+                ),
+            ],
+        )
+
+    @staticmethod
+    def _coerce_turns(key: str, value: Any) -> int:
+        # bool is an int subclass — reject it explicitly so a manifest
+        # typo like {"easy_max_turns": true} doesn't become max_turns=1.
+        if isinstance(value, bool):
+            raise ValueError(f"binary_classify: {key!r} must be an integer >= 1, got {value!r}")
+        try:
+            n = int(value)
+        except (TypeError, ValueError):
+            raise ValueError(
+                f"binary_classify: {key!r} must be an integer >= 1, got {value!r}"
+            ) from None
+        if n < 1:
+            raise ValueError(f"binary_classify: {key!r} must be an integer >= 1, got {value!r}")
+        return n
+
     def configure(self, config: Dict[str, Any]) -> None:
         """Apply ``{easy_max_turns, not_easy_max_turns}`` from a manifest.
 
         Manifest-restore calls this with the ``strategy_configs`` dict after
         the slot swaps to an instance built via ``cls()``. Unknown keys are
-        ignored so the manifest can evolve without breaking older strategies.
+        ignored so the manifest can evolve without breaking older strategies
+        (and so EvaluationChain can fan the same dict out to every wrapped
+        evaluator without each one rejecting its siblings' keys).
         """
+        easy = self._config.easy_max_turns
+        not_easy = self._config.not_easy_max_turns
         if "easy_max_turns" in config:
-            self._config.easy_max_turns = int(config["easy_max_turns"])
+            easy = self._coerce_turns("easy_max_turns", config["easy_max_turns"])
         if "not_easy_max_turns" in config:
-            self._config.not_easy_max_turns = int(config["not_easy_max_turns"])
+            not_easy = self._coerce_turns("not_easy_max_turns", config["not_easy_max_turns"])
+        self._config.easy_max_turns = easy
+        self._config.not_easy_max_turns = not_easy
+
+    def get_config(self) -> Dict[str, Any]:
+        return {
+            "easy_max_turns": self._config.easy_max_turns,
+            "not_easy_max_turns": self._config.not_easy_max_turns,
+        }
 
     @property
     def name(self) -> str:

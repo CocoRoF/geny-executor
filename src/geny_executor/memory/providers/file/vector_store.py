@@ -26,12 +26,13 @@ backend.
 from __future__ import annotations
 
 import json
+import logging
 import math
 import struct
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from geny_executor.memory._locks import LoopAgnosticLock
-from geny_executor.memory.embedding.client import EmbeddingClient
+from geny_executor.memory.embedding.client import EmbeddingClient, EmbeddingError
 from geny_executor.memory.provider import (
     EmbeddingDescriptor,
     Layer,
@@ -41,6 +42,15 @@ from geny_executor.memory.provider import (
 )
 from geny_executor.memory.providers.file.layout import DirectoryLayout
 from geny_executor.stages.s02_context.types import MemoryChunk
+
+logger = logging.getLogger(__name__)
+
+# Consecutive 'auth'-classified embedding failures before the store
+# trips its breaker. Three, not one, because a proxy or gateway can
+# emit a stray 401 during key rotation — but three in a row means the
+# key is genuinely dead and every further call is paid log spam (the
+# live prod incident retried + tracebacked on *every* note write).
+AUTH_TRIP_THRESHOLD = 3
 
 
 class _FileVectorStore:
@@ -55,6 +65,16 @@ class _FileVectorStore:
     A client swap that produces a different dimension is detected by
     `compatibility_check()` in the provider layer; this store itself
     refuses mixed-dimension inserts.
+
+    Auth breaker (2.2.0, audit §2.6): after `AUTH_TRIP_THRESHOLD`
+    consecutive 'auth'-classified embedding failures the store sets
+    ``vector_disabled`` and degrades silently for the rest of the
+    session — `index`/`index_batch` return 0, `search` returns [],
+    `reindex` returns an empty receipt, all without touching the
+    network. One warning is logged at trip time; recovery requires
+    fixing the credentials and restarting (mirrors the MCP NEEDS_AUTH
+    design — a dead key cannot heal mid-session, so retrying it on
+    every note write only spams logs and burns latency).
     """
 
     def __init__(
@@ -71,6 +91,11 @@ class _FileVectorStore:
         self._loaded = False
         self._vectors: List[List[float]] = []
         self._rows: List[Dict[str, Any]] = []
+        # ── auth breaker state ──────────────────────────────────────
+        self._consecutive_auth_failures = 0
+        self._disabled = False
+        self._disabled_reason: Optional[str] = None
+        self._transient_failure_seen = False
 
     # ── VectorHandle contract ───────────────────────────────────────
 
@@ -78,10 +103,22 @@ class _FileVectorStore:
     def descriptor(self) -> EmbeddingDescriptor:
         return self._client.descriptor
 
+    @property
+    def vector_disabled(self) -> bool:
+        """True once the auth breaker has tripped for this session."""
+        return self._disabled
+
+    @property
+    def disabled_reason(self) -> Optional[str]:
+        """The failure message that tripped the breaker (None while live)."""
+        return self._disabled_reason
+
     async def index(self, ref: NoteRef, text: str) -> int:
+        if self._disabled:
+            return 0
         async with self._lock:
             await self._ensure_loaded()
-            vec = (await self._client.embed([text]))[0]
+            vec = (await self._embed_guarded([text]))[0]
             self._validate_dim(vec)
             # Replace any existing row for the same filename
             removed = self._remove_by_filename(ref.filename)
@@ -91,12 +128,12 @@ class _FileVectorStore:
             return 1 if removed == 0 else 0
 
     async def index_batch(self, items: Sequence[Tuple[NoteRef, str]]) -> int:
-        if not items:
+        if not items or self._disabled:
             return 0
         async with self._lock:
             await self._ensure_loaded()
             texts = [text for _, text in items]
-            vectors = await self._client.embed(texts)
+            vectors = await self._embed_guarded(texts)
             added = 0
             for (ref, text), vec in zip(items, vectors):
                 self._validate_dim(vec)
@@ -115,13 +152,13 @@ class _FileVectorStore:
         top_k: int = 5,
         threshold: float = 0.0,
     ) -> List[MemoryChunk]:
-        if top_k <= 0 or not text:
+        if top_k <= 0 or not text or self._disabled:
             return []
         async with self._lock:
             await self._ensure_loaded()
             if not self._vectors:
                 return []
-            query_vec = (await self._client.embed([text]))[0]
+            query_vec = (await self._embed_guarded([text]))[0]
             self._validate_dim(query_vec)
             scored: List[Tuple[float, int]] = []
             for i, vec in enumerate(self._vectors):
@@ -154,6 +191,20 @@ class _FileVectorStore:
         If a plan is provided, we honour its `reason` in the returned
         receipt. Otherwise we infer a reason from the current state.
         """
+        if self._disabled:
+            # A full rebuild would re-fail once per source note with
+            # the same dead key — return an honest empty receipt
+            # instead of a burst of doomed API calls.
+            return ReindexPlan(
+                layer=Layer.VECTOR,
+                reason="vector indexing disabled for this session (auth breaker tripped)",
+                chunks_to_reindex=0,
+                requires_explicit_approval=False,
+                metadata={
+                    "vector_disabled": True,
+                    "disabled_reason": self._disabled_reason,
+                },
+            )
         async with self._lock:
             await self._ensure_loaded()
             source = list(self._rows)  # snapshot rows before we wipe
@@ -171,7 +222,7 @@ class _FileVectorStore:
                     refs.append(ref)
                     texts.append(text)
                 if texts:
-                    vectors = await self._client.embed(texts)
+                    vectors = await self._embed_guarded(texts)
                     for ref, text, vec in zip(refs, texts, vectors):
                         self._validate_dim(vec)
                         self._vectors.append(vec)
@@ -204,6 +255,68 @@ class _FileVectorStore:
             return removed > 0
 
     # ── internal ────────────────────────────────────────────────────
+
+    async def _embed_guarded(self, texts: Sequence[str]) -> List[List[float]]:
+        """Call ``client.embed`` with breaker bookkeeping.
+
+        Successes reset the consecutive-auth counter. Failures are
+        classified via ``EmbeddingError.category`` and re-raised — the
+        caller's error handling is unchanged; this layer only decides
+        whether the *next* call is allowed to happen at all, and owns
+        the log-level policy so the notes store's `_safe_index` no
+        longer needs per-write tracebacks:
+
+          * 'auth'      — counts toward the trip. Individual failures
+                          log at DEBUG; the trip itself logs the ONE
+                          warning this session will ever see.
+          * 'transient' — never trips. First occurrence logs a concise
+                          WARNING, repeats log at DEBUG (retry-next-
+                          time stays the policy, the operator already
+                          knows).
+          * 'quota'     — never trips (same logging as transient: a
+                          429 storm is operationally identical).
+          * 'unknown'   — never trips, resets the auth streak, and
+                          stays silent here so the caller's
+                          traceback-logging path keeps full fidelity
+                          for genuinely unexpected failures.
+        """
+        try:
+            vectors = await self._client.embed(texts)
+        except EmbeddingError as exc:
+            self._note_embed_failure(exc)
+            raise
+        self._consecutive_auth_failures = 0
+        return vectors
+
+    def _note_embed_failure(self, exc: EmbeddingError) -> None:
+        category = getattr(exc, "category", "unknown")
+        if category == "auth":
+            self._consecutive_auth_failures += 1
+            if self._consecutive_auth_failures >= AUTH_TRIP_THRESHOLD and not self._disabled:
+                self._disabled = True
+                self._disabled_reason = str(exc)
+                logger.warning(
+                    "vector indexing disabled for this session: %d consecutive "
+                    "auth failures (%s); re-enable by fixing credentials and "
+                    "restarting. Markdown writes continue unaffected.",
+                    self._consecutive_auth_failures,
+                    exc,
+                )
+            else:
+                logger.debug(
+                    "embedding auth failure %d/%d: %s",
+                    self._consecutive_auth_failures,
+                    AUTH_TRIP_THRESHOLD,
+                    exc,
+                )
+            return
+        self._consecutive_auth_failures = 0
+        if category in ("transient", "quota"):
+            if self._transient_failure_seen:
+                logger.debug("embedding %s failure (will retry next call): %s", category, exc)
+            else:
+                self._transient_failure_seen = True
+                logger.warning("embedding %s failure (will retry next call): %s", category, exc)
 
     async def _ensure_loaded(self) -> None:
         if self._loaded:

@@ -16,10 +16,13 @@ Reference models and dimensions (2026-01 cutoff):
 
 from __future__ import annotations
 
-import os
 from typing import Any, List, Optional, Sequence
 
-from geny_executor.memory.embedding.client import EmbeddingClient, EmbeddingError
+from geny_executor.memory.embedding.client import (
+    EmbeddingClient,
+    EmbeddingError,
+    _resolve_env_api_key,
+)
 from geny_executor.memory.provider import EmbeddingDescriptor
 
 
@@ -52,7 +55,9 @@ class VoyageEmbeddingClient(EmbeddingClient):
         transport: Optional[Any] = None,
     ) -> None:
         self._model = model
-        self._api_key = api_key or os.environ.get("VOYAGE_API_KEY", "")
+        # Explicit api_key wins; env ladder is the DEPRECATED fallback
+        # (one-time warning, see embedding/client.py — audit §2.6).
+        self._api_key = api_key or _resolve_env_api_key("voyage", "VOYAGE_API_KEY")
         self._dimension = dimension or _VOYAGE_DIMS.get(model, 0)
         self._base_url = base_url
         self._transport = transport
@@ -114,11 +119,42 @@ class VoyageEmbeddingClient(EmbeddingClient):
                 "VoyageEmbeddingClient needs httpx. It ships with anthropic>=0.52 "
                 "as a transitive dep; ensure your environment resolves it."
             ) from exc
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.post(url, headers=headers, json=body)
-            if resp.status_code != 200:
-                raise EmbeddingError(f"voyage embed HTTP {resp.status_code}: {resp.text[:200]}")
-            return resp.json()
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                resp = await client.post(url, headers=headers, json=body)
+        except httpx.HTTPError as exc:
+            # Connect failures / timeouts: retrying next write is the
+            # right policy, so classify as transient (never trips the
+            # vector layer's auth breaker).
+            raise EmbeddingError(
+                f"voyage embed transport failure: {exc}",
+                category="transient",
+            ) from exc
+        if resp.status_code != 200:
+            raise EmbeddingError(
+                f"voyage embed HTTP {resp.status_code}: {resp.text[:200]}",
+                category=_category_for_status(resp.status_code),
+            )
+        return resp.json()
+
+
+def _category_for_status(status: int) -> str:
+    """HTTP status → `EmbeddingError` category for the Voyage REST API.
+
+    401/403 means the bearer token is wrong — no amount of retrying
+    fixes it, so it must count toward the vector layer's trip-once
+    breaker. 429 is quota (retry later may work). 408/5xx are
+    transient server-side conditions. Anything else (404 model name
+    typo, 400 payload issue) stays 'unknown' so it keeps the
+    conservative traceback-logging path.
+    """
+    if status in (401, 403):
+        return "auth"
+    if status == 429:
+        return "quota"
+    if status == 408 or status >= 500:
+        return "transient"
+    return "unknown"
 
 
 __all__ = ["VoyageEmbeddingClient"]

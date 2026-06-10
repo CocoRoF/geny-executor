@@ -2,6 +2,7 @@
 
 Expected file shape (all sections optional):
 
+    default_posture: deny   # 2.2.0 — 'allow' | 'deny'; omitted → allow
     allow:
       - { tool: Read,   pattern: "*" }
       - { tool: Bash,   pattern: "git *", reason: "needed for CI" }
@@ -12,6 +13,12 @@ Expected file shape (all sections optional):
 
 Rules from a given file carry a single ``PermissionSource``; the caller
 tells the loader which source the file represents.
+
+``default_posture`` (2.2.0, audit §1-5) lives in the same file as the
+rules on purpose — the posture and the allowlist it guards are one
+policy and must travel together. ``parse_permission_policy`` /
+``load_permission_policy`` return both as a ``PermissionPolicy``; the
+older rules-only functions stay untouched for back-compat.
 
 YAML is optional: if PyYAML is not installed the loader falls back to
 ``json`` (same schema works as JSON), so basic deployments don't need
@@ -25,6 +32,8 @@ from typing import Any, Dict, List, Optional
 
 from geny_executor.permission.types import (
     PermissionBehavior,
+    PermissionPolicy,
+    PermissionPosture,
     PermissionRule,
     PermissionSource,
 )
@@ -101,6 +110,54 @@ def load_permission_rules(path: Path, *, source: PermissionSource) -> List[Permi
     return parse_permission_rules(data, source=source)
 
 
+def _parse_posture(data: Dict[str, Any], *, source_label: str) -> Optional[PermissionPosture]:
+    """Read the ``default_posture`` key. ``None`` when not declared.
+
+    Unknown values raise ``ValueError`` instead of warning-and-falling-
+    back: a typo'd ``deny`` silently becoming ``allow`` would be a
+    security downgrade masked behind a green load — the exact decoy-
+    field failure mode the 2026-06-09 audit catalogued. The field is
+    new in 2.2.0 so a hard error breaks no existing file.
+    """
+    raw = data.get("default_posture")
+    if raw is None:
+        return None
+    try:
+        return PermissionPosture(str(raw).strip().lower())
+    except ValueError:
+        raise ValueError(
+            f"{source_label}: invalid 'default_posture' {raw!r} — must be 'allow' or 'deny'"
+        ) from None
+
+
+def parse_permission_policy(data: Dict[str, Any], *, source: PermissionSource) -> PermissionPolicy:
+    """Convert a parsed dict into a :class:`PermissionPolicy` (rules + posture).
+
+    The 2.2.0 superset of :func:`parse_permission_rules` — same rule
+    sections, plus the optional top-level ``default_posture`` key. An
+    absent key yields the ``ALLOW`` back-compat posture with
+    ``posture_declared=False`` so hierarchical merging can tell
+    silence apart from an explicit choice.
+    """
+    rules = parse_permission_rules(data, source=source)
+    posture = _parse_posture(data, source_label=source.value)
+    if posture is None:
+        return PermissionPolicy(rules=rules)
+    return PermissionPolicy(rules=rules, default_posture=posture, posture_declared=True)
+
+
+def load_permission_policy(path: Path, *, source: PermissionSource) -> PermissionPolicy:
+    """Load and parse a permission file into a :class:`PermissionPolicy`.
+
+    Returns an empty allow-posture policy when the file doesn't exist
+    (absence is not an error — mirrors :func:`load_permission_rules`).
+    """
+    if not path.exists():
+        return PermissionPolicy()
+    data = _load_document(path)
+    return parse_permission_policy(data, source=source)
+
+
 def load_hierarchical_rules(
     *,
     cli_rules: Optional[List[PermissionRule]] = None,
@@ -127,3 +184,52 @@ def load_hierarchical_rules(
     if preset_rules:
         rules.extend(preset_rules)
     return rules
+
+
+def load_hierarchical_policy(
+    *,
+    cli_rules: Optional[List[PermissionRule]] = None,
+    local_path: Optional[Path] = None,
+    project_path: Optional[Path] = None,
+    user_path: Optional[Path] = None,
+    preset_rules: Optional[List[PermissionRule]] = None,
+) -> PermissionPolicy:
+    """Collect rules from every source AND resolve the effective posture.
+
+    The 2.2.0 policy-aware sibling of :func:`load_hierarchical_rules`
+    (which is preserved untouched). Rules are concatenated exactly as
+    before; the posture is taken from the **highest-priority file that
+    explicitly declares one** (LOCAL > PROJECT > USER, matching
+    ``SOURCE_PRIORITY``). Files that stay silent don't vote — a local
+    override file that only adds an allow rule must not accidentally
+    reset a project-level ``default_posture: deny`` back to allow.
+
+    No file declaring a posture → ``ALLOW`` with
+    ``posture_declared=False`` (the 2.x back-compat baseline; 3.0
+    flips this default — see :class:`PermissionPosture`).
+    """
+    rules = load_hierarchical_rules(
+        cli_rules=cli_rules,
+        local_path=local_path,
+        project_path=project_path,
+        user_path=user_path,
+        preset_rules=preset_rules,
+    )
+    # Highest-priority declared posture wins. CLI rules / preset rules
+    # are bare rule lists (no file to carry a posture), so only the
+    # three file tiers participate.
+    for path, source in (
+        (local_path, PermissionSource.LOCAL),
+        (project_path, PermissionSource.PROJECT),
+        (user_path, PermissionSource.USER),
+    ):
+        if path is None or not path.exists():
+            continue
+        policy = parse_permission_policy(_load_document(path), source=source)
+        if policy.posture_declared:
+            return PermissionPolicy(
+                rules=rules,
+                default_posture=policy.default_posture,
+                posture_declared=True,
+            )
+    return PermissionPolicy(rules=rules)

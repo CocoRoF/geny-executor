@@ -14,10 +14,13 @@ keep request bodies reasonable and allow resume on partial failures.
 from __future__ import annotations
 
 import asyncio
-import os
 from typing import List, Optional, Sequence
 
-from geny_executor.memory.embedding.client import EmbeddingClient, EmbeddingError
+from geny_executor.memory.embedding.client import (
+    EmbeddingClient,
+    EmbeddingError,
+    _resolve_env_api_key,
+)
 from geny_executor.memory.provider import EmbeddingDescriptor
 
 
@@ -46,7 +49,11 @@ class OpenAIEmbeddingClient(EmbeddingClient):
         client: Optional[object] = None,  # pre-built AsyncOpenAI, for tests
     ) -> None:
         self._model = model
-        self._api_key = api_key or os.environ.get("OPENAI_API_KEY", "")
+        # Explicit api_key (CredentialBundle 'embedding' channel via the
+        # factory, or direct construction) always wins. The env ladder is
+        # a DEPRECATED fallback reached only when nothing was passed —
+        # it logs a one-time migration warning (audit §2.6).
+        self._api_key = api_key or _resolve_env_api_key("openai", "OPENAI_API_KEY")
         self._dimension = dimension or _OPENAI_DIMS.get(model, 0)
         self._client = client
         self._descriptor = EmbeddingDescriptor(
@@ -72,7 +79,10 @@ class OpenAIEmbeddingClient(EmbeddingClient):
                 # `openai>=1.x` exposes `await client.embeddings.create(...)`
                 resp = await client.embeddings.create(input=batch, model=self._model)
             except Exception as exc:  # narrow is SDK-dependent
-                raise EmbeddingError(f"openai embed failed: {exc}") from exc
+                raise EmbeddingError(
+                    f"openai embed failed: {exc}",
+                    category=_classify_openai_error(exc),
+                ) from exc
             # SDK response: `data: List[Embedding(embedding: List[float])]`
             out.extend(item.embedding for item in resp.data)
         # Update descriptor dimension if we learned it at runtime
@@ -112,6 +122,35 @@ class OpenAIEmbeddingClient(EmbeddingClient):
             ) from exc
         self._client = AsyncOpenAI(api_key=self._api_key or None)
         return self._client
+
+
+def _classify_openai_error(exc: Exception) -> str:
+    """Map a typed `openai` SDK exception to an `EmbeddingError` category.
+
+    Uses the SDK's exception hierarchy rather than message text — the
+    Google client's ``str(e)`` substring matching is exactly the
+    anti-pattern the audit flagged ('400'-containing 500s misroute).
+    Falls back to ``'unknown'`` when the SDK isn't importable (the
+    caller injected a pre-built client object in tests) or the type
+    isn't one we recognise; ``'unknown'`` never trips the vector
+    layer's breaker, which is the safe default for a misjudged error.
+    """
+    try:
+        import openai  # type: ignore
+    except ImportError:
+        return "unknown"
+    # Order matters: AuthenticationError / PermissionDeniedError /
+    # RateLimitError all subclass APIStatusError; check the specific
+    # types before any status-code generalisation.
+    if isinstance(exc, (openai.AuthenticationError, openai.PermissionDeniedError)):
+        return "auth"
+    if isinstance(exc, openai.RateLimitError):
+        return "quota"
+    if isinstance(exc, (openai.APIConnectionError, openai.APITimeoutError)):
+        return "transient"
+    if isinstance(exc, openai.InternalServerError):
+        return "transient"
+    return "unknown"
 
 
 __all__ = ["OpenAIEmbeddingClient"]

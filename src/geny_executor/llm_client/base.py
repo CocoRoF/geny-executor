@@ -7,21 +7,66 @@ Implementations adapt a vendor SDK to the canonical :class:`APIRequest` /
   call without the caller needing to know which vendor is in use.
 - Drop unsupported fields rather than raising, emitting a
   ``llm_client.feature_unsupported`` event on ``event_sink`` if one was
-  provided.
+  provided. Fields declared in ``capabilities.drops`` are additionally
+  stripped + reported via ``llm_client.parameter_dropped`` (2.2.0 —
+  the list was decorative through 2.1.x, audit §3.5).
 - Translate vendor exceptions into
   :class:`geny_executor.core.errors.APIError` with a populated
   :class:`ErrorCategory` so upstream retry/classify logic does not need
   to branch on vendor.
+- Self-heal vendor drift where the error names the problem: the
+  ``_heal_request_kwargs`` hook + ``_invoke_with_heal`` wrapper retry a
+  rebuilt request exactly once and report via
+  ``llm_client.drift_healed`` + WARNING (2.2.0 — generalized from the
+  Anthropic 2.1.2/2.1.3 deprecation net).
 """
 
 from __future__ import annotations
 
+import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, AsyncIterator, Callable, Dict, List, Optional
+from typing import Any, AsyncIterator, Awaitable, Callable, Dict, List, Optional
 
 from geny_executor.core.config import ModelConfig
+from geny_executor.core.errors import APIError, ErrorCategory
 from geny_executor.llm_client.types import APIRequest, APIResponse
+
+
+logger = logging.getLogger(__name__)
+
+
+#: Lazily resolved ``<package>.__version__`` strings, cached per package so
+#: the provenance stamp on every response costs one import for the lifetime
+#: of the process. All four 2.1.x boundary incidents were version skew and
+#: the post-mortems had to reconstruct "which SDK was installed?" from pip
+#: freeze archaeology — record it on the response instead.
+_SDK_VERSION_CACHE: Dict[str, str] = {}
+
+
+def _resolve_sdk_version(package: str) -> str:
+    """Best-effort ``__version__`` lookup for an installed SDK module.
+
+    Never raises — a missing or broken package degrades to ``"unknown"``
+    (and the vendor call itself will surface the real ImportError with a
+    much better message). Cached forever: SDK versions cannot change
+    mid-process.
+    """
+    if not package:
+        return "unknown"
+    cached = _SDK_VERSION_CACHE.get(package)
+    if cached is not None:
+        return cached
+    version = "unknown"
+    try:
+        import importlib
+
+        module = importlib.import_module(package)
+        version = str(getattr(module, "__version__", "unknown") or "unknown")
+    except Exception:  # noqa: BLE001 — provenance must never fail a call
+        version = "unknown"
+    _SDK_VERSION_CACHE[package] = version
+    return version
 
 
 @dataclass(frozen=True)
@@ -70,7 +115,13 @@ class ClientCapabilities:
     #: Streaming granularity: "token" | "message" | "none".
     streaming_granularity: str = "token"
 
-    #: Fields this client will silently drop when present on the request.
+    #: Fields this client drops when present on the request. As of 2.2.0
+    #: this list is *authoritative*, not documentation: ``_build_request``
+    #: strips every listed field from the outgoing request and emits one
+    #: ``llm_client.parameter_dropped`` event per stripped field. The list
+    #: spent 2.1.x as a decoy (declared, serialized, consumed by nothing —
+    #: audit §3.5), which meant a manifest-pinned ``temperature`` on the
+    #: CLI backend was ignored in total silence.
     drops: tuple[str, ...] = field(default=())
 
     def supports(self, feature: str) -> bool:
@@ -208,7 +259,104 @@ class BaseClient(ABC):
             self._emit_unsupported("stop_sequences")
             request.stop_sequences = None
 
+        self._apply_declared_drops(
+            request,
+            model_config=model_config,
+            tools=tools,
+            tool_choice=tool_choice,
+        )
+
         return request
+
+    # Maps a ``capabilities.drops`` entry to the APIRequest attribute that
+    # carries it. Keyed by the *declaration* vocabulary (ModelConfig field
+    # names — ``thinking_enabled``, not ``thinking``) because that is what
+    # every shipped drops tuple already uses.
+    _DROP_FIELD_TO_REQUEST_ATTR: Dict[str, str] = {
+        "temperature": "temperature",
+        "top_p": "top_p",
+        "top_k": "top_k",
+        "max_tokens": "max_tokens",
+        "stop_sequences": "stop_sequences",
+        "thinking_enabled": "thinking",
+        "tools": "tools",
+        "tool_choice": "tool_choice",
+    }
+
+    def _apply_declared_drops(
+        self,
+        request: APIRequest,
+        *,
+        model_config: ModelConfig,
+        tools: Optional[List[Dict[str, Any]]],
+        tool_choice: Optional[Dict[str, Any]],
+    ) -> None:
+        """Enforce ``capabilities.drops`` — strip + report, never silence.
+
+        ``drops`` was dead metadata through 2.1.x (audit §3.5): the CLI
+        backend declared it drops ``temperature``/``max_tokens`` and then
+        nothing consumed the declaration, so an operator who pinned a
+        temperature in the environment manifest saw a green check and no
+        behaviour change. This converts the declaration into negotiation:
+        every declared field that the caller actually supplied is stripped
+        from the outgoing request and reported via one
+        ``llm_client.parameter_dropped`` event carrying the discarded value.
+
+        The pre-existing capability gates above (thinking/top_k/tool_choice/
+        stop_sequences) keep emitting ``llm_client.feature_unsupported`` —
+        hosts already key on those, and the two events answer different
+        questions ("this client can't" vs "this value went nowhere"). Each
+        field is stripped at most once and reported at most once per event
+        type, so no double emission.
+
+        Reads ``self.capabilities`` (not ``type(self).capabilities``) so
+        instance-level upgrades — ``VLLMClient.configure_capabilities`` on a
+        deployment whose model genuinely supports tools — can also amend the
+        drops list without subclassing.
+        """
+        declared = self.capabilities.drops
+        if not declared:
+            return
+
+        sources: Dict[str, Any] = {
+            "temperature": model_config.temperature,
+            "top_p": model_config.top_p,
+            "top_k": model_config.top_k,
+            "max_tokens": model_config.max_tokens,
+            "stop_sequences": model_config.stop_sequences,
+            "thinking_enabled": model_config.thinking_enabled,
+            "tools": tools,
+            "tool_choice": tool_choice,
+        }
+
+        seen: set[str] = set()
+        for field_name in declared:
+            if field_name in seen:
+                continue  # duplicate declaration — strip/report once
+            seen.add(field_name)
+            attr = self._DROP_FIELD_TO_REQUEST_ATTR.get(field_name)
+            if attr is None:
+                # Unknown vocabulary (future capability name, typo in a
+                # subclass). Nothing to strip on the request; stay quiet
+                # rather than spam — the conformance suite is the place
+                # that catches stale declarations.
+                continue
+            value = sources.get(field_name)
+            setattr(request, attr, None)
+            if self._drop_value_present(value):
+                self._emit_parameter_dropped(field_name, value)
+
+    @staticmethod
+    def _drop_value_present(value: Any) -> bool:
+        """Was the field meaningfully supplied? ``0.0`` temperature counts
+        (it is an explicit sampling choice); ``False``/empty/None do not."""
+        if value is None:
+            return False
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (list, tuple, dict, set)) and not value:
+            return False
+        return True
 
     def supports(self, feature: str) -> bool:
         """Capability lookup helper — proxy to ``self.capabilities.supports``."""
@@ -224,6 +372,150 @@ class BaseClient(ABC):
                 "field": field_name,
             }
         )
+
+    def _emit_parameter_dropped(self, field_name: str, value: Any) -> None:
+        """Report a value discarded by ``capabilities.drops`` negotiation."""
+        if self._event_sink is None:
+            return
+        self._event_sink(
+            {
+                "type": "llm_client.parameter_dropped",
+                "provider": self.provider,
+                "field": field_name,
+                "value": value,
+            }
+        )
+
+    # ── Vendor-drift self-heal (generalized from AnthropicClient, 2.2.0) ─
+    #
+    # Every provider keeps a static compatibility table of some kind
+    # (deprecated sampling params, renamed token-cap kwargs, …) and every
+    # static table goes stale the day the vendor ships a new model family.
+    # The 2.1.2–2.1.3 incidents established the pattern that works: when
+    # the vendor 400 *names the problem*, rebuild the request and retry
+    # exactly once. That mechanism was Anthropic-local; it now lives here
+    # so OpenAI's ``max_tokens → max_completion_tokens`` rename (already
+    # real in prod per the 2026-06-09 audit) gets the same safety net.
+
+    def _heal_request_kwargs(
+        self, kwargs: Dict[str, Any], exc: BaseException
+    ) -> Optional[Dict[str, Any]]:
+        """Provider hook: given the vendor-call kwargs that just failed and
+        the exception, return rebuilt kwargs to retry ONCE with, or ``None``
+        to let the caller classify + re-raise.
+
+        Contract for implementations:
+          * Pure — never mutate ``kwargs``; return a fresh dict.
+          * Conservative — only heal when the error message *names* the
+            offending field/shape. A guess that retries a hopeless request
+            doubles latency and cost on every failure.
+          * Idempotent-safe — callers guarantee a single retry per send, so
+            a heal whose retry also fails surfaces the second error.
+        """
+        return None
+
+    async def _invoke_with_heal(
+        self,
+        vendor_call: Callable[..., Awaitable[Any]],
+        kwargs: Dict[str, Any],
+        *,
+        purpose: str = "",
+    ) -> Any:
+        """Retry-once wrapper around an awaitable vendor call.
+
+        Runs ``vendor_call(**kwargs)``; on failure consults
+        :meth:`_heal_request_kwargs` and retries exactly once with the
+        rebuilt kwargs. Both failure paths raise through
+        :meth:`_classify_error` so callers keep the canonical
+        ``APIError`` contract. A successful heal is reported via
+        :meth:`_report_drift_healed` — loudly, because it means a static
+        compatibility table is stale and the next deploy should fix it
+        proactively instead of paying the extra round-trip forever.
+        """
+        try:
+            return await vendor_call(**kwargs)
+        except Exception as e:
+            retry_kwargs = self._heal_request_kwargs(kwargs, e)
+            if retry_kwargs is None:
+                raise self._classify_error(e) from e
+            try:
+                result = await vendor_call(**retry_kwargs)
+            except Exception as inner:
+                raise self._classify_error(inner) from inner
+            self._report_drift_healed(kwargs, retry_kwargs, e, purpose=purpose)
+            return result
+
+    def _report_drift_healed(
+        self,
+        kwargs: Dict[str, Any],
+        retry_kwargs: Dict[str, Any],
+        exc: BaseException,
+        *,
+        purpose: str = "",
+    ) -> None:
+        """Emit ``llm_client.drift_healed`` + a WARNING for a heal that the
+        vendor accepted.
+
+        WARNING, not INFO, on purpose: the retry masked the failure from
+        the caller, and INFO is exactly how the 2.1.x masked-degradation
+        incidents stayed invisible for weeks. Operators must learn that a
+        static prefix/needle table is stale while the heal is still
+        papering over it.
+        """
+        message = str(getattr(exc, "message", "") or exc)
+        model = retry_kwargs.get("model", kwargs.get("model", ""))
+        healed_fields = sorted(set(kwargs) - set(retry_kwargs))
+        healed_fields += sorted(
+            k
+            for k in retry_kwargs
+            if k in kwargs and retry_kwargs[k] != kwargs[k]
+        )
+        for field_name in healed_fields:
+            logger.warning(
+                "%s: request self-healed after vendor drift — %r rebuilt and "
+                "retried once (model=%r, purpose=%r). The static "
+                "compatibility tables are stale; original error: %s",
+                self.provider, field_name, model, purpose, message,
+            )
+            if self._event_sink is not None:
+                self._event_sink(
+                    {
+                        "type": "llm_client.drift_healed",
+                        "provider": self.provider,
+                        "model": model,
+                        "field": field_name,
+                        "message": message,
+                    }
+                )
+
+    def _classify_error(self, e: Exception) -> APIError:
+        """Translate a vendor exception into a canonical :class:`APIError`.
+
+        Base fallback so :meth:`_invoke_with_heal` works for any subclass;
+        SDK clients override with their vendor's typed exception chain.
+        """
+        if isinstance(e, APIError):
+            return e
+        return APIError(str(e), category=ErrorCategory.UNKNOWN, cause=e)
+
+    # ── Response provenance ──────────────────────────────────────────────
+
+    #: Importable module whose ``__version__`` identifies the SDK speaking
+    #: to this vendor (``"anthropic"``, ``"openai"``, ``"google.genai"``).
+    #: Subclasses set it so :meth:`_provenance` can stamp responses.
+    _sdk_module: str = ""
+
+    def _provenance(self) -> Dict[str, Any]:
+        """``{'provider': ..., 'sdk_version': ...}`` for ``APIResponse.raw``.
+
+        Every 2.1.x boundary incident was version skew; this is the
+        cheapest possible handshake — record which adapter + SDK produced
+        the response so post-mortems stop guessing.
+        """
+        return {
+            "provider": self.provider,
+            "sdk_version": _resolve_sdk_version(self._sdk_module),
+        }
 
     def configure(self, **kwargs: Any) -> None:
         """Apply provider-specific runtime configuration."""

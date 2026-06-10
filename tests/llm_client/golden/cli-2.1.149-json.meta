@@ -1,0 +1,8 @@
+{
+  "claude_code_version": "2.1.149 (Claude Code)",
+  "captured_at": "2026-06-10",
+  "provenance": "recorded locally against the real claude binary during 2.2.0 Wave 1 development",
+  "command": "claude --print --output-format json \"say hi in 3 words\"",
+  "expected_text": "Hi there, friend!",
+  "notes": "assistant text is the TOP-LEVEL 'result' string; cost is top-level 'total_cost_usd'; there is no content[] array and no usage.cost_usd (audit section 3.4)"
+}

@@ -16,11 +16,14 @@ pipeline's Stage-10 dispatch loop.
 from __future__ import annotations
 
 import json
-import os
-from typing import Any, AsyncIterator, Dict, List, Optional, Sequence
+import logging
+from typing import Any, AsyncIterator, Dict, List, Mapping, Optional, Sequence
 
 from geny_executor.core.state import TokenUsage
 from geny_executor.llm_client.types import APIRequest, APIResponse, ContentBlock
+
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -66,6 +69,8 @@ def claude_code_argv(
     request: APIRequest,
     *,
     bare_mode: bool = True,
+    auth_mode: str = "auto",
+    has_api_key: bool = False,
     permission_mode: str = "default",
     max_budget_usd: Optional[float] = None,
     settings_path: Optional[str] = None,
@@ -80,6 +85,16 @@ def claude_code_argv(
     ``--print`` mode honours. Fields the CLI does not accept (temperature,
     top_p, top_k, stop_sequences, tool_choice) are dropped silently by the
     caller via the standard capability-negotiation path.
+
+    ``auth_mode`` / ``has_api_key`` replace the process-env sniff that
+    earlier versions used to decide ``--bare`` (PR #868 history): the
+    builder read ``os.environ["ANTHROPIC_API_KEY"]`` from the *parent*
+    process — a variable the spawned CLI may never see (the runner scrubs
+    the child env) and one that says nothing about the credentials the
+    client was actually constructed with. The decision now flows from
+    :class:`ClaudeCodeCLIClient`, which knows its own ``_api_key`` and
+    declared ``auth_mode``; this builder is a pure function of its
+    arguments again.
     """
     argv: List[str] = ["--print"]
 
@@ -110,16 +125,22 @@ def claude_code_argv(
     # --settings (OAuth and keychain are never read)"). That's correct
     # for the API-key auth path but **wrong** for the subscription
     # OAuth path — passing ``--bare`` without an API key crashes every
-    # subscription user with "Not logged in · Please run /login". 2.0.6
-    # auto-strips ``--bare`` when no API key is reachable in the
-    # spawning process's environment, so the same ``bare_mode=True``
-    # default works for both auth paths transparently. Callers that
-    # explicitly want OAuth even with an API key present can still
-    # pass ``bare_mode=False``.
-    if bare_mode:
-        has_api_key = bool(os.environ.get("ANTHROPIC_API_KEY", "").strip())
-        if has_api_key:
-            argv.append("--bare")
+    # subscription user with "Not logged in · Please run /login".
+    #
+    # Resolution rules (2.2.0):
+    #   - ``auth_mode="api_key"``      → the host vouches for an API key
+    #     reaching the child env → ``--bare`` allowed.
+    #   - ``auth_mode="oauth"`` / ``"setup_token"`` → subscription-style
+    #     credential on disk → never ``--bare``.
+    #   - ``auth_mode="auto"`` (default) → resolves to ``api_key`` iff
+    #     the client itself holds a non-empty key (``has_api_key``).
+    # ``bare_mode=False`` keeps its historical meaning: never emit
+    # ``--bare``, even on the API-key path.
+    resolved_auth = auth_mode
+    if resolved_auth not in ("api_key", "oauth", "setup_token"):
+        resolved_auth = "api_key" if has_api_key else "oauth"
+    if bare_mode and resolved_auth == "api_key":
+        argv.append("--bare")
 
     # Model: alias or pinned id.
     if request.model:
@@ -400,6 +421,11 @@ def stream_json_line_to_canonical_event(line_obj: Dict[str, Any]) -> Optional[Di
         return None  # session preamble — the assembler consumes separately
     if ltype == "user":
         return None  # echo of our input
+    if ltype == "rate_limit_event":
+        # Quota telemetry the CLI emits before requesting (verified in the
+        # 2.1.149/2.1.162 golden captures under tests/llm_client/golden/).
+        # Bookkeeping-only — never text-bearing, never an error by itself.
+        return None
 
     if ltype == "assistant":
         # Delta variants: {"delta": {...}} or {"message": {"content": [...]}}.
@@ -459,7 +485,14 @@ def stream_json_line_to_canonical_event(line_obj: Dict[str, Any]) -> Optional[Di
             if dtype == "text_delta":
                 return {"type": "text_delta", "text": delta.get("text", "")}
             if dtype == "thinking_delta":
-                return {"type": "thinking_delta", "text": delta.get("text", "")}
+                # The Anthropic SSE shape carries the chunk under
+                # ``thinking`` (verified: golden capture, CLI 2.1.149);
+                # some shims used ``text``. Reading only ``text`` here
+                # silently dropped every thinking token — accept both.
+                return {
+                    "type": "thinking_delta",
+                    "text": delta.get("thinking") or delta.get("text", ""),
+                }
             if dtype == "input_json_delta":
                 return {"type": "input_json_delta", "delta": delta.get("partial_json", "")}
             return None
@@ -495,6 +528,45 @@ def stream_json_line_to_canonical_event(line_obj: Dict[str, Any]) -> Optional[Di
 
 
 # ---------------------------------------------------------------------------
+# Claude Code: result-envelope field extraction (shared by both parsers)
+# ---------------------------------------------------------------------------
+
+
+def _envelope_usage(obj: Mapping[str, Any]) -> TokenUsage:
+    """Extract :class:`TokenUsage` from a Claude Code result envelope.
+
+    The real CLI puts token counts under ``usage`` but the **cost** at the
+    *top level* as ``total_cost_usd`` (verified against the recorded
+    transcripts in ``tests/llm_client/golden/``); the invented pre-2.2.0
+    shape expected ``usage.cost_usd``. Both are read here, in one place,
+    because the streaming accumulator and the non-streaming parser used
+    to each carry their own copy of this logic and drifted (audit §3.4:
+    the non-streaming path never read ``total_cost_usd`` at all, so every
+    ``--output-format json`` call priced at $None while the same CLI's
+    stream-json output priced correctly).
+    """
+    usage_in = obj.get("usage", {}) or {}
+    cost = usage_in.get("cost_usd")
+    if cost is None:
+        cost = obj.get("total_cost_usd")
+    return TokenUsage(
+        input_tokens=int(usage_in.get("input_tokens", 0) or 0),
+        output_tokens=int(usage_in.get("output_tokens", 0) or 0),
+        cache_creation_input_tokens=int(
+            usage_in.get("cache_creation_input_tokens", 0) or 0
+        ),
+        cache_read_input_tokens=int(usage_in.get("cache_read_input_tokens", 0) or 0),
+        cost_usd=cost,
+        duration_ms=obj.get("duration_ms"),
+    )
+
+
+def _envelope_stop_reason(obj: Mapping[str, Any], default: str = "end_turn") -> str:
+    """Stop-reason off a result envelope, with a shared default."""
+    return str(obj.get("stop_reason") or default)
+
+
+# ---------------------------------------------------------------------------
 # Claude Code: assemble final APIResponse from JSON output
 # ---------------------------------------------------------------------------
 
@@ -502,16 +574,29 @@ def stream_json_line_to_canonical_event(line_obj: Dict[str, Any]) -> Optional[Di
 def parse_json_output_to_response(stdout: bytes, *, model: str) -> APIResponse:
     """Parse the single JSON object emitted by ``--output-format json``.
 
-    Claude Code's ``json`` output is roughly::
+    The **real** envelope (recorded from Claude Code 2.1.149, see
+    ``tests/llm_client/golden/cli-2.1.149-json.json``) carries the
+    assistant text as a *top-level string*, not a content array::
 
         {
-          "type": "result",
-          "message_id": "...",
+          "type": "result", "subtype": "success", "is_error": false,
+          "result": "Hi there, friend!",
           "stop_reason": "end_turn",
-          "content": [{"type": "text", "text": "..."}, ...],
-          "usage": {"input_tokens": ..., "output_tokens": ..., "cost_usd": ...},
-          "duration_ms": ...
+          "session_id": "...",
+          "total_cost_usd": 0.1507...,
+          "usage": {"input_tokens": ..., "output_tokens": ..., ...},
+          "duration_ms": 4900, "num_turns": 1, ...
         }
+
+    Earlier versions of this parser expected an invented shape with a
+    ``content[]`` block array and ``usage.cost_usd`` — so real CLI output
+    parsed to an *empty* response with no cost (audit §3.4). The
+    ``content[]`` branch is kept for back-compat with hosts that feed
+    pre-rendered envelopes through this function, but when it is absent
+    the top-level ``result`` string becomes the text block. Cost / usage
+    / stop_reason extraction is shared with
+    :meth:`StreamJsonAccumulator.finalize` via :func:`_envelope_usage` so
+    the two parsers cannot diverge again.
     """
     try:
         obj = json.loads(stdout.decode("utf-8", errors="replace"))
@@ -538,22 +623,20 @@ def parse_json_output_to_response(stdout: bytes, *, model: str) -> APIResponse:
                 ContentBlock(type="thinking", thinking_text=block.get("text", ""))
             )
 
-    usage_in = obj.get("usage", {}) or {}
-    usage = TokenUsage(
-        input_tokens=int(usage_in.get("input_tokens", 0) or 0),
-        output_tokens=int(usage_in.get("output_tokens", 0) or 0),
-        cache_creation_input_tokens=int(usage_in.get("cache_creation_input_tokens", 0) or 0),
-        cache_read_input_tokens=int(usage_in.get("cache_read_input_tokens", 0) or 0),
-        cost_usd=usage_in.get("cost_usd"),
-        duration_ms=obj.get("duration_ms"),
-    )
+    # Real-envelope path: no content[] array, the assistant text lives in
+    # the top-level ``result`` string.
+    if not blocks and isinstance(obj.get("result"), str) and obj["result"]:
+        blocks.append(ContentBlock(type="text", text=obj["result"]))
 
     return APIResponse(
         content=blocks,
-        stop_reason=str(obj.get("stop_reason", "end_turn")),
-        usage=usage,
-        model=str(obj.get("model", model)),
-        message_id=str(obj.get("message_id", "")),
+        stop_reason=_envelope_stop_reason(obj),
+        usage=_envelope_usage(obj),
+        model=str(obj.get("model", model) or model),
+        # The real envelope has no ``message_id`` — mirror the streaming
+        # accumulator, which falls back to the CLI session id so hosts
+        # get a stable correlation handle either way.
+        message_id=str(obj.get("message_id") or obj.get("session_id") or ""),
         raw=obj,
     )
 
@@ -585,9 +668,34 @@ class StreamJsonAccumulator:
     ({"type":"text_delta", ...} etc.) that callers stream to consumers,
     while internally bookkeeping the state needed to call ``finalize()``
     for the terminal :class:`APIResponse`.
+
+    Wire-shape telemetry (2.2.0, audit §2.2)
+    ----------------------------------------
+    Unknown / malformed lines are *counted*, sampled (bounded), and
+    surfaced — not just tagged and forgotten. The v2.1.4 incident
+    happened precisely because the parser tolerated an unfamiliar wire
+    shape (``stream_event``) by falling back to the terminal envelope:
+    nobody was told, and streaming silently degraded for weeks. The
+    detection cost was already paid; this class now spends it:
+
+    - first unknown line per instance → one rate-limited
+      ``logger.warning`` naming the unknown ``type`` and the CLI version
+      (when the caller supplied one),
+    - counts + first few raw samples are merged into
+      ``APIResponse.raw`` at ``finalize()`` so post-hoc diagnosis has the
+      evidence inline,
+    - callers (``ClaudeCodeCLIClient``) read the public count properties
+      to emit ``llm_client.unknown_wire_shape`` events and to enforce
+      ``strict_wire=True`` CI canaries.
     """
 
-    def __init__(self, model: str) -> None:
+    #: Bound on retained raw samples — enough for a bug report, small
+    #: enough that a hostile/buggy stream cannot balloon memory.
+    _SAMPLE_LIMIT = 3
+    #: Per-sample truncation (chars).
+    _SAMPLE_CHARS = 200
+
+    def __init__(self, model: str, *, cli_version: str = "") -> None:
         self._text_buf: List[str] = []
         self._thinking_buf: List[str] = []
         self._tool_uses: List[Dict[str, Any]] = []
@@ -596,8 +704,34 @@ class StreamJsonAccumulator:
         self._message_id = ""
         self._stop_reason = "end_turn"
         self._resolved_model = model
+        self._cli_version = cli_version
+        self._unknown_count = 0
+        self._malformed_count = 0
+        self._first_unknown_type: Optional[str] = None
+        self._unknown_samples: List[str] = []
+        self._warned_unknown = False
 
     # ── Public ────────────────────────────────────────────────
+
+    @property
+    def unknown_line_count(self) -> int:
+        """Lines whose ``type`` the parser did not recognise."""
+        return self._unknown_count
+
+    @property
+    def malformed_line_count(self) -> int:
+        """Lines that were not valid JSON objects at all."""
+        return self._malformed_count
+
+    @property
+    def first_unknown_type(self) -> Optional[str]:
+        """The ``type`` value of the first unknown line, if any."""
+        return self._first_unknown_type
+
+    @property
+    def unknown_samples(self) -> List[str]:
+        """Bounded raw samples of unknown / malformed lines."""
+        return list(self._unknown_samples)
 
     def feed(self, line: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Update state from one stream-json line.
@@ -607,7 +741,11 @@ class StreamJsonAccumulator:
         Caller is responsible for yielding them to its own consumer.
         Empty list when the line is bookkeeping-only.
         """
-        if not isinstance(line, dict) or "__malformed__" in line:
+        if not isinstance(line, dict):
+            return []
+        if "__malformed__" in line:
+            self._malformed_count += 1
+            self._record_unknown(kind="malformed", sample=str(line["__malformed__"]))
             return []
         ltype = str(line.get("type", ""))
 
@@ -616,6 +754,12 @@ class StreamJsonAccumulator:
                 line.get("session_id") or line.get("message_id") or self._message_id
             )
             self._resolved_model = str(line.get("model") or self._resolved_model)
+            return []
+
+        if ltype == "rate_limit_event":
+            # Quota telemetry the CLI emits before requesting (verified in
+            # the golden captures). Bookkeeping-only — deliberately known
+            # so it never inflates the unknown-shape counters.
             return []
 
         if ltype == "assistant":
@@ -643,6 +787,10 @@ class StreamJsonAccumulator:
         if ltype == "error":
             return [{"type": "error", "raw": line}]
 
+        self._unknown_count += 1
+        if self._first_unknown_type is None:
+            self._first_unknown_type = ltype or "<missing>"
+        self._record_unknown(kind="unknown", sample=json.dumps(line, ensure_ascii=False, default=str))
         return [{"type": "cli_unknown", "raw": line}]
 
     def finalize(self) -> APIResponse:
@@ -689,29 +837,51 @@ class StreamJsonAccumulator:
         if self._text_buf:
             blocks.append(ContentBlock(type="text", text="".join(self._text_buf)))
 
-        usage_in: Dict[str, Any] = (self._final_obj or {}).get("usage", {}) or {}
-        usage = TokenUsage(
-            input_tokens=int(usage_in.get("input_tokens", 0) or 0),
-            output_tokens=int(usage_in.get("output_tokens", 0) or 0),
-            cache_creation_input_tokens=int(
-                usage_in.get("cache_creation_input_tokens", 0) or 0
-            ),
-            cache_read_input_tokens=int(usage_in.get("cache_read_input_tokens", 0) or 0),
-            cost_usd=usage_in.get("cost_usd")
-            or (self._final_obj or {}).get("total_cost_usd"),
-            duration_ms=(self._final_obj or {}).get("duration_ms"),
-        )
+        # ``raw`` starts as a *copy* of the terminal result envelope —
+        # wire telemetry is merged in (not clobbered over it) so the
+        # original CLI fields stay readable for hosts that inspect raw.
+        raw_out: Dict[str, Any] = dict(self._final_obj or {})
+        if self._unknown_count or self._malformed_count:
+            raw_out["unknown_line_count"] = self._unknown_count
+            raw_out["malformed_line_count"] = self._malformed_count
+            raw_out["first_unknown_type"] = self._first_unknown_type
+            raw_out["unknown_samples"] = list(self._unknown_samples)
 
         return APIResponse(
             content=blocks,
-            stop_reason=self._stop_reason,
-            usage=usage,
+            stop_reason=_envelope_stop_reason(
+                self._final_obj or {}, default=self._stop_reason
+            ),
+            usage=_envelope_usage(self._final_obj or {}),
             model=self._resolved_model,
             message_id=self._message_id,
-            raw=self._final_obj or {},
+            raw=raw_out,
         )
 
     # ── Internals ─────────────────────────────────────────────
+
+    def _record_unknown(self, *, kind: str, sample: str) -> None:
+        """Bounded sample retention + once-per-instance warning.
+
+        One warning per accumulator instance (≈ one per CLI call), not
+        per line: a wire change typically affects *every* line of a
+        shape, and a per-line warning would flood logs at token rate —
+        the same failure mode the embedding 401-spam incident had.
+        """
+        if len(self._unknown_samples) < self._SAMPLE_LIMIT:
+            self._unknown_samples.append(sample[: self._SAMPLE_CHARS])
+        if not self._warned_unknown:
+            self._warned_unknown = True
+            logger.warning(
+                "Claude Code stream-json contained an unrecognised line "
+                "(kind=%s, type=%s, cli_version=%s). The line was tolerated, "
+                "but this usually means the CLI wire format moved — "
+                "sample: %.200s",
+                kind,
+                self._first_unknown_type or "<n/a>",
+                self._cli_version or "unknown",
+                sample,
+            )
 
     def _feed_assistant(self, line: Dict[str, Any]) -> List[Dict[str, Any]]:
         # Form 1 — delta (true streaming).
@@ -820,7 +990,12 @@ class StreamJsonAccumulator:
                     return [{"type": "text_delta", "text": text}]
                 return []
             if dtype == "thinking_delta":
-                text = str(delta.get("text", ""))
+                # Wire key is ``thinking`` on the real CLI (Anthropic SSE
+                # shape — verified in the 2.1.149 golden capture), ``text``
+                # on older shims. Reading only ``text`` dropped every
+                # thinking token and the terminal envelope then re-recorded
+                # the full thinking block, masking the loss entirely.
+                text = str(delta.get("thinking") or delta.get("text") or "")
                 if text:
                     self._thinking_buf.append(text)
                     return [{"type": "thinking_delta", "text": text}]
@@ -843,13 +1018,17 @@ class StreamJsonAccumulator:
                 sr = delta.get("stop_reason")
                 if sr:
                     self._stop_reason = str(sr)
-            # Some emitters tag usage on the message_delta event too.
+            # ``message_delta`` carries the *cumulative* usage (the
+            # message_start snapshot only has a couple of output tokens),
+            # so newer wins — verified against the 2.1.149 golden capture
+            # where message_start says output_tokens=7 and message_delta
+            # says 112. The terminal ``result`` line still overrides both.
             usage = ev.get("usage")
             if isinstance(usage, dict):
                 if self._final_obj is None:
                     self._final_obj = {"usage": usage}
                 else:
-                    self._final_obj.setdefault("usage", usage)
+                    self._final_obj["usage"] = usage
             return []
 
         if etype == "message_stop":
@@ -943,6 +1122,7 @@ async def assemble_response_from_stream_json(
     stream: AsyncIterator[bytes],
     *,
     model: str,
+    cli_version: str = "",
 ) -> APIResponse:
     """Drain a stream-json output and return a canonical APIResponse.
 
@@ -952,18 +1132,24 @@ async def assemble_response_from_stream_json(
     Code's stream-json shape (delta vs full-message) varies by CLI
     version and ``--include-partial-messages``, and we never want the
     two paths to drift again.
+
+    Malformed lines flow *into* the accumulator (which counts and
+    samples them) instead of being skipped at this layer — pre-2.2.0
+    they were dropped here before the telemetry could see them, which
+    is exactly the masking channel audit §2.2 calls out. Counts surface
+    via ``APIResponse.raw`` (``unknown_line_count`` etc.).
     """
     from geny_executor.llm_client._cli_runtime import parse_stream_json_line
 
-    accum = StreamJsonAccumulator(model=model)
+    accum = StreamJsonAccumulator(model=model, cli_version=cli_version)
     async for raw in stream:
         line = parse_stream_json_line(raw)
         if line is None:
             continue
-        if "__malformed__" in line:
-            continue
         # ``error`` envelopes from the CLI need to raise so the caller's
         # CLIProtocolError path runs — match the prior behaviour exactly.
+        # (Malformed lines have no ``type`` key, so they fall through to
+        # ``feed`` for counting.)
         if str(line.get("type", "")) == "error":
             raise RuntimeError(
                 f"Claude Code CLI reported error: {line.get('message') or line!r}"

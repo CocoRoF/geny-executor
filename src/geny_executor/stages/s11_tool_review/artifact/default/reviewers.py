@@ -18,6 +18,7 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, List, Tuple
 
+from geny_executor.core.schema import ConfigField, ConfigSchema
 from geny_executor.core.state import PipelineState
 from geny_executor.stages.s11_tool_review.interface import (
     SEVERITY_ERROR,
@@ -26,6 +27,19 @@ from geny_executor.stages.s11_tool_review.interface import (
     Reviewer,
     ToolReviewFlag,
 )
+
+
+def _require_str_list(reviewer: str, key: str, value: Any) -> List[str]:
+    """configure() validation shared by the reviewers: list of strings.
+
+    The reviewers' knobs are *security policy* (allowlists, destructive-tool
+    sets, secret patterns — audit §1-5: "policy via config, not hardcode").
+    A silently-coerced wrong type here would weaken policy without a trace,
+    so bad shapes fail loudly instead.
+    """
+    if not isinstance(value, list) or not all(isinstance(x, str) for x in value):
+        raise ValueError(f"{reviewer}: {key!r} must be a list of strings, got {value!r}")
+    return [str(x) for x in value]
 
 
 def _tool_call_id(call: Dict[str, Any]) -> str:
@@ -60,6 +74,39 @@ class SchemaReviewer(Reviewer):
     @property
     def name(self) -> str:
         return "schema"
+
+    @classmethod
+    def config_schema(cls) -> ConfigSchema:
+        return ConfigSchema(
+            name="schema",
+            fields=[
+                ConfigField(
+                    name="required_fields",
+                    type="object",
+                    label="Required fields per tool",
+                    description="Mapping of tool name → list of required input field names.",
+                    default={},
+                ),
+            ],
+        )
+
+    def configure(self, config: Dict[str, Any]) -> None:
+        if "required_fields" in config:
+            required = config["required_fields"]
+            if not isinstance(required, dict):
+                raise ValueError(
+                    f"schema: 'required_fields' must be an object of tool → field list, "
+                    f"got {type(required).__name__}"
+                )
+            parsed: Dict[str, Tuple[str, ...]] = {}
+            for tool, fields in required.items():
+                parsed[str(tool)] = tuple(
+                    _require_str_list("schema", f"required_fields[{tool!r}]", fields)
+                )
+            self._required = parsed
+
+    def get_config(self) -> Dict[str, Any]:
+        return {"required_fields": {k: list(v) for k, v in self._required.items()}}
 
     async def review(
         self,
@@ -111,11 +158,74 @@ class SensitivePatternReviewer(Reviewer):
     def __init__(self, patterns: List[Tuple[str, str]] | None = None) -> None:
         if patterns is None:
             patterns = list(_DEFAULT_SENSITIVE_PATTERNS)
-        self._compiled = [(label, re.compile(rx)) for label, rx in patterns]
+        # Keep the raw (label, regex) pairs alongside the compiled forms so
+        # get_config() can round-trip what was configured.
+        self._patterns: List[Tuple[str, str]] = [
+            (str(label), str(rx)) for label, rx in patterns
+        ]
+        self._compiled = [(label, re.compile(rx)) for label, rx in self._patterns]
 
     @property
     def name(self) -> str:
         return "sensitive"
+
+    @classmethod
+    def config_schema(cls) -> ConfigSchema:
+        return ConfigSchema(
+            name="sensitive",
+            fields=[
+                ConfigField(
+                    name="patterns",
+                    type="array",
+                    label="Secret patterns",
+                    description=(
+                        "List of [label, regex] pairs matched against the "
+                        "JSON-serialised tool input. Replaces the default set."
+                    ),
+                    default=[list(p) for p in _DEFAULT_SENSITIVE_PATTERNS],
+                ),
+            ],
+        )
+
+    def configure(self, config: Dict[str, Any]) -> None:
+        """Replace the secret-pattern set from a manifest entry.
+
+        Regexes are compiled HERE so a broken pattern fails at environment
+        apply time with the offending label in the message — not at review
+        time inside the failure-isolated stage loop, where it would just
+        sideline the reviewer for every turn (a silent policy hole).
+        """
+        if "patterns" in config:
+            raw = config["patterns"]
+            if not isinstance(raw, list):
+                raise ValueError(
+                    f"sensitive: 'patterns' must be a list of [label, regex] pairs, got {raw!r}"
+                )
+            parsed: List[Tuple[str, str]] = []
+            compiled: List[Tuple[str, Any]] = []
+            for entry in raw:
+                if (
+                    not isinstance(entry, (list, tuple))
+                    or len(entry) != 2
+                    or not all(isinstance(x, str) for x in entry)
+                ):
+                    raise ValueError(
+                        f"sensitive: each pattern must be a [label, regex] pair of "
+                        f"strings, got {entry!r}"
+                    )
+                label, rx = entry
+                try:
+                    compiled.append((label, re.compile(rx)))
+                except re.error as exc:
+                    raise ValueError(
+                        f"sensitive: pattern {label!r} is not a valid regex: {exc}"
+                    ) from exc
+                parsed.append((label, rx))
+            self._patterns = parsed
+            self._compiled = compiled
+
+    def get_config(self) -> Dict[str, Any]:
+        return {"patterns": [list(p) for p in self._patterns]}
 
     async def review(
         self,
@@ -180,6 +290,57 @@ class DestructiveResultReviewer(Reviewer):
     def name(self) -> str:
         return "destructive"
 
+    @classmethod
+    def config_schema(cls) -> ConfigSchema:
+        return ConfigSchema(
+            name="destructive",
+            fields=[
+                ConfigField(
+                    name="destructive_tools",
+                    type="array",
+                    item_type="string",
+                    label="Destructive tools",
+                    description="Tool names whose results are flagged as state-mutating.",
+                    default=list(_DEFAULT_DESTRUCTIVE_TOOLS),
+                ),
+                ConfigField(
+                    name="severity",
+                    type="select",
+                    label="Flag severity",
+                    description="Severity attached to each destructive-tool flag.",
+                    default=SEVERITY_INFO,
+                    options=[
+                        {"value": SEVERITY_INFO, "label": "info"},
+                        {"value": SEVERITY_WARN, "label": "warn"},
+                        {"value": SEVERITY_ERROR, "label": "error"},
+                    ],
+                ),
+            ],
+        )
+
+    def configure(self, config: Dict[str, Any]) -> None:
+        destructive = self._destructive
+        severity = self._severity
+        if "destructive_tools" in config:
+            destructive = frozenset(
+                _require_str_list("destructive", "destructive_tools", config["destructive_tools"])
+            )
+        if "severity" in config:
+            severity = config["severity"]
+            valid = (SEVERITY_INFO, SEVERITY_WARN, SEVERITY_ERROR)
+            if severity not in valid:
+                raise ValueError(
+                    f"destructive: 'severity' must be one of {list(valid)}, got {severity!r}"
+                )
+        self._destructive = destructive
+        self._severity = severity
+
+    def get_config(self) -> Dict[str, Any]:
+        return {
+            "destructive_tools": sorted(self._destructive),
+            "severity": self._severity,
+        }
+
     async def review(
         self,
         tool_calls: List[Dict[str, Any]],
@@ -243,6 +404,59 @@ class NetworkAuditReviewer(Reviewer):
     @property
     def name(self) -> str:
         return "network"
+
+    @classmethod
+    def config_schema(cls) -> ConfigSchema:
+        return ConfigSchema(
+            name="network",
+            fields=[
+                ConfigField(
+                    name="network_tools",
+                    type="array",
+                    item_type="string",
+                    label="Network tools",
+                    description="Tool names treated as performing network egress.",
+                    default=list(_DEFAULT_NETWORK_TOOLS),
+                ),
+                ConfigField(
+                    name="allowed_hosts",
+                    type="array",
+                    item_type="string",
+                    label="Allowed hosts",
+                    description=(
+                        "Egress allowlist. Non-empty → calls to other hosts are "
+                        "flagged 'error'. Empty = audit-only (every call flagged 'info')."
+                    ),
+                    default=[],
+                ),
+            ],
+        )
+
+    def configure(self, config: Dict[str, Any]) -> None:
+        """Apply the egress policy from a manifest entry.
+
+        ``allowed_hosts`` was the audit's (§1-5) headline example of
+        constructor-only security policy: the allowlist existed but no
+        environment edit could reach it, making "strict egress" de-facto
+        hardcode. An empty list keeps the audit-only behaviour.
+        """
+        network = self._network
+        allowed = self._allowed
+        if "network_tools" in config:
+            network = frozenset(
+                _require_str_list("network", "network_tools", config["network_tools"])
+            )
+        if "allowed_hosts" in config:
+            hosts = _require_str_list("network", "allowed_hosts", config["allowed_hosts"])
+            allowed = frozenset(h.lower() for h in hosts)
+        self._network = network
+        self._allowed = allowed
+
+    def get_config(self) -> Dict[str, Any]:
+        return {
+            "network_tools": sorted(self._network),
+            "allowed_hosts": sorted(self._allowed),
+        }
 
     @staticmethod
     def _extract_host(url_value: Any) -> str:
@@ -319,6 +533,62 @@ class SizeReviewer(Reviewer):
     @property
     def name(self) -> str:
         return "size"
+
+    @classmethod
+    def config_schema(cls) -> ConfigSchema:
+        return ConfigSchema(
+            name="size",
+            fields=[
+                ConfigField(
+                    name="warn_threshold_bytes",
+                    type="integer",
+                    label="Warn threshold (bytes)",
+                    description="Results at or above this size are flagged 'warn'.",
+                    default=50_000,
+                    min_value=0,
+                ),
+                ConfigField(
+                    name="error_threshold_bytes",
+                    type="integer",
+                    label="Error threshold (bytes)",
+                    description="Results at or above this size are flagged 'error'.",
+                    default=250_000,
+                    min_value=0,
+                ),
+            ],
+        )
+
+    def configure(self, config: Dict[str, Any]) -> None:
+        warn = self._warn
+        error = self._error
+        if "warn_threshold_bytes" in config:
+            v = config["warn_threshold_bytes"]
+            if isinstance(v, bool) or not isinstance(v, int) or v < 0:
+                raise ValueError(
+                    f"size: 'warn_threshold_bytes' must be a non-negative integer, got {v!r}"
+                )
+            warn = v
+        if "error_threshold_bytes" in config:
+            v = config["error_threshold_bytes"]
+            if isinstance(v, bool) or not isinstance(v, int) or v < 0:
+                raise ValueError(
+                    f"size: 'error_threshold_bytes' must be a non-negative integer, got {v!r}"
+                )
+            error = v
+        # Validate the merged pair — same invariant the constructor enforces.
+        if error < warn:
+            raise ValueError(
+                f"size: 'error_threshold_bytes' must be >= 'warn_threshold_bytes' "
+                f"(got {error} < {warn})"
+            )
+        self._warn = warn
+        self._error = error
+
+    def get_config(self) -> Dict[str, Any]:
+        return {
+            "warn_threshold_bytes": self._warn,
+            "error_threshold_bytes": self._error,
+        }
 
     @staticmethod
     def _content_size(result: Dict[str, Any]) -> int:

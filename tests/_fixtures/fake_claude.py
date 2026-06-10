@@ -8,11 +8,30 @@ Scenarios driven by the ``FAKE_CLAUDE_SCENARIO`` env var:
                          emits a 3-line stream-json sequence.
   - ``ok_tool_use``    — single tool_use response (json mode only).
   - ``ok_thinking``    — emits a thinking block + text (streaming).
+  - ``ok_stream_event``— the REAL 2.1.x wire shape under
+                         ``--include-partial-messages``: ``stream_event``
+                         lines (message_start / content_block_start /
+                         N content_block_delta / content_block_stop /
+                         message_delta / message_stop) PLUS the terminal
+                         ``assistant`` envelope carrying the full text,
+                         then ``result``. Mirrors the recorded golden
+                         transcripts in ``tests/llm_client/golden/``.
+  - ``ok_result_envelope`` — the REAL ``--output-format json`` envelope
+                         (top-level ``result`` string + ``total_cost_usd``,
+                         NO ``content[]`` array; audit §3.4).
+  - ``stream_unknown_lines`` — like ``ok_stream_event`` but interleaves a
+                         future/unknown line type and one malformed line,
+                         for wire-drift telemetry tests.
   - ``auth_fail``      — exit 1 with an auth-related stderr message.
   - ``permission_fail``— exit 1 with a permission-related stderr.
   - ``crash``          — exit 2 with generic stderr.
   - ``hang``           — sleep forever (callers must enforce timeout).
   - ``echo_argv``      — print argv as JSON; useful for shape assertions.
+
+``--version`` is answered before scenario dispatch (prints a fake
+version string and exits 0) because the real client performs a version
+handshake on first use — without this, the handshake would capture a
+scenario blob as the "version".
 
 The script never reads its stdin in a blocking way unless asked to,
 and only uses the standard library so it can run as the child binary
@@ -103,6 +122,140 @@ def _ok_thinking(argv: List[str]) -> int:
 def _auth_fail(argv: List[str]) -> int:
     sys.stderr.write("Error: not authenticated. Run `claude auth login`.\n")
     return 1
+
+
+def _ok_stream_event(argv: List[str]) -> int:
+    """Real Claude Code 2.1.x wire shape under ``--include-partial-messages``.
+
+    Structurally mirrors the recorded transcripts under
+    ``tests/llm_client/golden/`` (CLI 2.1.149 / 2.1.162): per-token
+    ``stream_event`` lines AND a terminal ``assistant`` envelope carrying
+    the same text in full, followed by the ``result`` line whose
+    assistant text lives in the top-level ``result`` string. The parser
+    must stream the deltas, skip the envelope duplicate, and price from
+    ``total_cost_usd``.
+    """
+    text = os.environ.get("FAKE_CLAUDE_TEXT", "hello stream")
+    sid = "fake-se-1"
+    _emit_line({
+        "type": "system", "subtype": "init", "session_id": sid,
+        "model": "claude-sonnet-4-6", "claude_code_version": "2.1.149",
+        "apiKeySource": "none", "uuid": "u-init",
+    })
+    _emit_line({
+        "type": "rate_limit_event",
+        "rate_limit_info": {"status": "allowed", "rateLimitType": "five_hour"},
+        "uuid": "u-rl", "session_id": sid,
+    })
+    _emit_line({
+        "type": "stream_event",
+        "event": {
+            "type": "message_start",
+            "message": {
+                "model": "claude-sonnet-4-6", "id": "msg_se_1",
+                "type": "message", "role": "assistant", "content": [],
+                "stop_reason": None,
+                "usage": {"input_tokens": 6, "output_tokens": 2},
+            },
+        },
+        "session_id": sid, "uuid": "u-ms", "ttft_ms": 100,
+    })
+    _emit_line({
+        "type": "stream_event",
+        "event": {"type": "content_block_start", "index": 0,
+                  "content_block": {"type": "text", "text": ""}},
+        "session_id": sid, "uuid": "u-cbs",
+    })
+    # Chunked deltas — multiple chunks so consumers can assert real streaming.
+    step = max(1, len(text) // 3)
+    for i in range(0, len(text), step):
+        _emit_line({
+            "type": "stream_event",
+            "event": {"type": "content_block_delta", "index": 0,
+                      "delta": {"type": "text_delta", "text": text[i:i + step]}},
+            "session_id": sid, "uuid": f"u-d{i}",
+        })
+    _emit_line({
+        "type": "assistant",
+        "message": {
+            "model": "claude-sonnet-4-6", "id": "msg_se_1", "type": "message",
+            "role": "assistant",
+            "content": [{"type": "text", "text": text}],
+            "stop_reason": None,
+            "usage": {"input_tokens": 6, "output_tokens": 2},
+        },
+        "session_id": sid, "uuid": "u-env",
+    })
+    _emit_line({
+        "type": "stream_event",
+        "event": {"type": "content_block_stop", "index": 0},
+        "session_id": sid, "uuid": "u-cbe",
+    })
+    _emit_line({
+        "type": "stream_event",
+        "event": {
+            "type": "message_delta",
+            "delta": {"stop_reason": "end_turn", "stop_sequence": None},
+            "usage": {"input_tokens": 6, "output_tokens": len(text)},
+        },
+        "session_id": sid, "uuid": "u-md",
+    })
+    _emit_line({
+        "type": "stream_event", "event": {"type": "message_stop"},
+        "session_id": sid, "uuid": "u-mstop",
+    })
+    _emit_line({
+        "type": "result", "subtype": "success", "is_error": False,
+        "duration_ms": 250, "num_turns": 1,
+        "result": text, "stop_reason": "end_turn", "session_id": sid,
+        "total_cost_usd": 0.0123,
+        "usage": {"input_tokens": 6, "output_tokens": len(text)},
+        "uuid": "u-res",
+    })
+    return 0
+
+
+def _stream_unknown_lines(argv: List[str]) -> int:
+    """``ok_stream_event`` plus wire drift: one future line type and one
+    malformed line. Exercises the §2.2 telemetry channel end to end."""
+    text = os.environ.get("FAKE_CLAUDE_TEXT", "drift")
+    sid = "fake-unk-1"
+    _emit_line({"type": "system", "subtype": "init", "session_id": sid,
+                "model": "claude-sonnet-4-6"})
+    _emit_line({"type": "telepathy_event", "payload": {"x": 1}, "uuid": "u-unk"})
+    sys.stdout.write("this is not json\n")
+    sys.stdout.flush()
+    _emit_line({
+        "type": "stream_event",
+        "event": {"type": "content_block_delta", "index": 0,
+                  "delta": {"type": "text_delta", "text": text}},
+        "session_id": sid, "uuid": "u-d0",
+    })
+    _emit_line({
+        "type": "result", "subtype": "success", "is_error": False,
+        "result": text, "stop_reason": "end_turn", "session_id": sid,
+        "total_cost_usd": 0.001,
+        "usage": {"input_tokens": 2, "output_tokens": 2},
+    })
+    return 0
+
+
+def _ok_result_envelope(argv: List[str]) -> int:
+    """Real ``--output-format json`` envelope (recorded shape, audit §3.4):
+    assistant text in the top-level ``result`` string, cost in
+    ``total_cost_usd`` — no ``content[]`` array, no ``usage.cost_usd``."""
+    text = os.environ.get("FAKE_CLAUDE_TEXT", "Hi there, friend!")
+    _emit_json({
+        "type": "result", "subtype": "success", "is_error": False,
+        "duration_ms": 4900, "duration_api_ms": 5997, "num_turns": 1,
+        "result": text, "stop_reason": "end_turn",
+        "session_id": "9102e3cd-1f77-42af-bb56-7bf9ac06365c",
+        "total_cost_usd": 0.15079925,
+        "usage": {"input_tokens": 2, "cache_creation_input_tokens": 24005,
+                  "cache_read_input_tokens": 0, "output_tokens": 10},
+        "permission_denials": [], "uuid": "02e5af70",
+    })
+    return 0
 
 
 def _ok_message_form(argv: List[str]) -> int:
@@ -198,6 +351,9 @@ SCENARIOS = {
     "ok_tool_use": _ok_tool_use,
     "ok_thinking": _ok_thinking,
     "ok_message_form": _ok_message_form,
+    "ok_stream_event": _ok_stream_event,
+    "ok_result_envelope": _ok_result_envelope,
+    "stream_unknown_lines": _stream_unknown_lines,
     "message_form_auth_failed": _message_form_auth_failed,
     "auth_fail": _auth_fail,
     "permission_fail": _permission_fail,
@@ -206,9 +362,19 @@ SCENARIOS = {
     "echo_argv": _echo_argv,
 }
 
+#: Reported by ``--version`` — matches the real CLI's output shape
+#: ("<semver> (Claude Code)") so version-parsing code sees a realistic
+#: string, while staying obviously fake in logs/assertions.
+FAKE_VERSION = "2.1.149-fake (Claude Code)"
+
 
 def main() -> int:
     argv = sys.argv[1:]
+    # Version handshake — answered before scenario dispatch, exactly like
+    # the real binary (a hung/odd scenario must not corrupt the probe).
+    if "--version" in argv:
+        sys.stdout.write(FAKE_VERSION + "\n")
+        return 0
     scenario = os.environ.get("FAKE_CLAUDE_SCENARIO", "ok_text")
     fn = SCENARIOS.get(scenario)
     if fn is None:

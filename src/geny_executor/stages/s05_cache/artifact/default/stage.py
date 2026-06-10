@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from typing import Any, Dict, Optional
 
 from geny_executor.core.schema import ConfigField, ConfigSchema
@@ -86,14 +87,48 @@ class CacheStage(Stage[Any, Any]):
     def should_bypass(self, state: PipelineState) -> bool:
         return isinstance(self._strategy, NoCacheStrategy)
 
+    def _build_cache_key(self, state: PipelineState) -> str:
+        """Derive the namespaced cache key for this turn's cached prefix.
+
+        Anthropic's prompt cache is content-addressed — there is no wire-level
+        key to send, so the prefix must NOT be injected into the prompt itself
+        (that would change what the model sees because of a caching knob).
+        Instead the key identifies the cached prefix for host-side accounting:
+        two sessions with identical system prompts but different
+        ``cache_prefix`` values produce distinct keys, so hit-rate dashboards
+        and cache-invalidation bookkeeping can be namespaced per tenant.
+
+        2026-06-09 audit ("validated-but-inert" table): ``cache_prefix`` was
+        accepted by the schema and never read anywhere — this is its wiring.
+        """
+        h = hashlib.sha256()
+        h.update(state.model.encode("utf-8"))
+        system = state.system
+        if isinstance(system, str):
+            h.update(system.encode("utf-8"))
+        elif isinstance(system, list):
+            for block in system:
+                if isinstance(block, dict):
+                    h.update(str(block.get("text", "")).encode("utf-8"))
+                elif isinstance(block, str):
+                    h.update(block.encode("utf-8"))
+        digest = h.hexdigest()[:16]
+        if self._cache_prefix:
+            return f"{self._cache_prefix}:{digest}"
+        return digest
+
     async def execute(self, input: Any, state: PipelineState) -> Any:
         self._strategy.apply_cache_markers(state)
+
+        cache_key = self._build_cache_key(state)
+        state.shared["cache_key"] = cache_key
 
         state.add_event(
             "cache.applied",
             {
                 "strategy": type(self._strategy).__name__,
                 "system_is_blocks": isinstance(state.system, list),
+                "cache_key": cache_key,
             },
         )
 

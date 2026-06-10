@@ -148,7 +148,26 @@ class FileMemoryProvider(MemoryProvider):
 
     @property
     def descriptor(self) -> MemoryDescriptor:
+        # Reflect the vector layer's auth-breaker state live so hosts
+        # inspecting the descriptor (status panels, health endpoints)
+        # see that vector ops are degraded without grepping logs —
+        # the breaker logs exactly once at trip time, so this is the
+        # only persistent surface for "why is search empty?".
+        if self._vector is not None:
+            self._descriptor.metadata["vector_disabled"] = self._vector.vector_disabled
+            if self._vector.disabled_reason:
+                self._descriptor.metadata["vector_disabled_reason"] = self._vector.disabled_reason
         return self._descriptor
+
+    @property
+    def vector_disabled(self) -> bool:
+        """True once the vector layer's auth breaker has tripped.
+
+        Markdown/notes writes keep working in that state; vector
+        index/search are session-long no-ops until the credentials
+        are fixed and the provider rebuilt (audit §2.6).
+        """
+        return self._vector is not None and self._vector.vector_disabled
 
     @property
     def root(self) -> Path:

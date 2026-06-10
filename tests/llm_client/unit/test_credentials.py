@@ -141,3 +141,80 @@ def test_bundle_repr_does_not_leak_api_key() -> None:
         "anthropic": ProviderCredentials(api_key="sk-supersecret"),
     })
     assert "sk-supersecret" not in repr(b)
+
+
+# ---------------------------------------------------------------------------
+# ProviderCredentials.auth_mode (2.2.0 — replaces the argv-builder env sniff)
+# ---------------------------------------------------------------------------
+
+
+def test_auth_mode_defaults_to_auto() -> None:
+    assert ProviderCredentials().auth_mode == "auto"
+
+
+def test_explicit_auth_mode_counts_as_credential_material() -> None:
+    """``auth_mode='oauth'`` is the host declaring a disk-resident
+    subscription credential exists — the bundle must report it as a
+    usable provider even though no key/url/binary is carried here."""
+    c = ProviderCredentials(auth_mode="oauth")
+    assert c.is_empty() is False
+
+    b = CredentialBundle(by_provider={"claude_code_cli": c})
+    assert b.has("claude_code_cli") is True
+    assert b.require("claude_code_cli") is c
+
+
+def test_auto_auth_mode_alone_is_still_empty() -> None:
+    """The default must not change emptiness semantics (back-compat)."""
+    assert ProviderCredentials(auth_mode="auto").is_empty() is True
+
+
+def test_auth_mode_visible_in_repr_without_leaking_key() -> None:
+    c = ProviderCredentials(api_key="sk-secret", auth_mode="api_key")
+    r = repr(c)
+    assert "auth_mode='api_key'" in r
+    assert "sk-secret" not in r
+
+
+# ---------------------------------------------------------------------------
+# CredentialBundle.preferred_provider (library-owned "default backend" query)
+# ---------------------------------------------------------------------------
+
+
+def test_preferred_provider_default_order_prefers_cli() -> None:
+    b = CredentialBundle(by_provider={
+        "anthropic": ProviderCredentials(api_key="sk-a"),
+        "claude_code_cli": ProviderCredentials(binary_path="/usr/bin/claude"),
+    })
+    assert b.preferred_provider() == "claude_code_cli"
+
+
+def test_preferred_provider_falls_through_empty_entries() -> None:
+    b = CredentialBundle(by_provider={
+        "claude_code_cli": ProviderCredentials(),  # empty → skipped
+        "anthropic": ProviderCredentials(),        # empty → skipped
+        "openai": ProviderCredentials(api_key="sk-o"),
+    })
+    assert b.preferred_provider() == "openai"
+
+
+def test_preferred_provider_respects_custom_order() -> None:
+    b = CredentialBundle(by_provider={
+        "anthropic": ProviderCredentials(api_key="sk-a"),
+        "vllm": ProviderCredentials(base_url="http://localhost:8000/v1"),
+    })
+    assert b.preferred_provider(order=("vllm", "anthropic")) == "vllm"
+
+
+def test_preferred_provider_empty_bundle_returns_none() -> None:
+    """No silent default: callers must handle 'nothing configured'."""
+    assert CredentialBundle().preferred_provider() is None
+
+
+def test_preferred_provider_oauth_cli_counts() -> None:
+    """The Geny backend_resolver case this method absorbs: a
+    subscription-authenticated CLI with no API key anywhere."""
+    b = CredentialBundle(by_provider={
+        "claude_code_cli": ProviderCredentials(auth_mode="oauth"),
+    })
+    assert b.preferred_provider() == "claude_code_cli"

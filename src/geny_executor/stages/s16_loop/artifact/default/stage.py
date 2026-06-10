@@ -104,10 +104,31 @@ class LoopStage(Stage[Any, Any]):
             value = int(config["max_turns"])
             self._max_turns = value if value > 0 else None
             controller = self._slots["controller"].strategy
-            if hasattr(controller, "_max_turns"):
+            if self._controller_declares_max_turns(controller):
+                # 2026-06-09 audit §2.1: the old hasattr('_max_turns')
+                # poke silently skipped MultiDimensionalBudgetController
+                # (it has no such attribute), so a manifest-level
+                # max_turns was inert for exactly the controller Geny
+                # prod runs. configure() is the contract now — the
+                # controller decides what max_turns means for it.
+                controller.configure({"max_turns": value})
+            elif hasattr(controller, "_max_turns"):
+                # Legacy fallback for host-supplied controllers that
+                # predate the configure() contract.
                 controller._max_turns = self._max_turns  # type: ignore[attr-defined]
         if "early_stop_on" in config:
             self._early_stop_on = list(config["early_stop_on"] or [])
+
+    @staticmethod
+    def _controller_declares_max_turns(controller: LoopController) -> bool:
+        """True when the controller's config_schema() exposes ``max_turns``."""
+        try:
+            schema = controller.config_schema()
+        except Exception:
+            return False
+        if schema is None:
+            return False
+        return any(getattr(f, "name", "") == "max_turns" for f in getattr(schema, "fields", []))
 
     async def execute(self, input: Any, state: PipelineState) -> Any:
         upstream = state.loop_decision

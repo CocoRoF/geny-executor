@@ -1,9 +1,19 @@
 """Hook event taxonomy and payload schema.
 
-The 13 event kinds cover session lifecycle, each stage's enter/exit,
+The event kinds cover session lifecycle, each stage's enter/exit,
 tool invocation boundaries, permission decisions, and notification
-channels. Hook runner (later checkpoint) dispatches subprocess hooks
-matching these event names.
+channels. :class:`~geny_executor.hooks.runner.HookRunner` dispatches
+hooks matching these event names.
+
+Taxonomy honesty (2.2.0, audit 2026-06-09 §3.5): the enum declares
+the *full intended* taxonomy, but the engine only emits a subset
+today — binding a handler to a reserved event is a silent no-op,
+which cost both hosts dead-handler debugging time. ``FIRED_EVENTS``
+below is the authoritative "what actually fires" set; consult it
+before binding. Reserved members carry an explicit comment. The
+pipeline-side wiring that will light up the lifecycle events is owned
+by a separate workstream — do NOT grow ``FIRED_EVENTS`` without the
+corresponding ``fire()`` call shipping in the same change.
 """
 
 from __future__ import annotations
@@ -19,43 +29,75 @@ class HookEvent(str, Enum):
     Naming mirrors claude-code's hook system (PreToolUse / PostToolUse /
     etc.) so the pattern transfers directly — users who write hooks for
     claude-code can reuse the same scripts with minimal adaptation.
+
+    Only a subset of these is emitted by the engine today — see
+    ``FIRED_EVENTS`` (module level) before binding handlers. Members
+    marked "reserved" are accepted by the config parser and keep their
+    payload schema stable, but no engine code path fires them yet.
     """
 
     # Session lifecycle
-    SESSION_START = "session_start"
-    SESSION_END = "session_end"
+    SESSION_START = "session_start"  # reserved — not yet emitted by the engine (as of 2.2.0)
+    SESSION_END = "session_end"  # reserved — not yet emitted by the engine (as of 2.2.0)
 
     # Pipeline lifecycle
-    PIPELINE_START = "pipeline_start"
-    PIPELINE_END = "pipeline_end"
+    PIPELINE_START = "pipeline_start"  # reserved — not yet emitted by the engine (as of 2.2.0)
+    PIPELINE_END = "pipeline_end"  # reserved — not yet emitted by the engine (as of 2.2.0)
 
-    # Stage boundaries (fired for every stage — payload includes stage_order + name)
-    STAGE_ENTER = "stage_enter"
-    STAGE_EXIT = "stage_exit"
+    # Stage boundaries (payload will include stage_order + name)
+    STAGE_ENTER = "stage_enter"  # reserved — not yet emitted by the engine (as of 2.2.0)
+    STAGE_EXIT = "stage_exit"  # reserved — not yet emitted by the engine (as of 2.2.0)
 
     # User turn
-    USER_PROMPT_SUBMIT = "user_prompt_submit"
+    USER_PROMPT_SUBMIT = "user_prompt_submit"  # reserved — not yet emitted (as of 2.2.0)
 
     # Tool invocation — most common hook targets
     PRE_TOOL_USE = "pre_tool_use"  # After permission ALLOW, before execute()
     POST_TOOL_USE = "post_tool_use"  # After successful execute()
     POST_TOOL_FAILURE = "post_tool_failure"  # After execute() raised or is_error
 
-    # Permission
+    # Permission (fired by Stage 10's RegistryRouter since 2.2.0)
     PERMISSION_REQUEST = "permission_request"  # PermissionDecision.ASK fired
     PERMISSION_DENIED = "permission_denied"  # PermissionDecision.DENY fired
 
     # Loop
-    LOOP_ITERATION_END = "loop_iteration_end"
+    LOOP_ITERATION_END = "loop_iteration_end"  # reserved — not yet emitted (as of 2.2.0)
 
     # Environment
-    CWD_CHANGED = "cwd_changed"
+    CWD_CHANGED = "cwd_changed"  # reserved — not yet emitted by the engine (as of 2.2.0)
 
     # MCP
-    MCP_SERVER_STATE = "mcp_server_state"  # FSM transition (Phase 6)
+    MCP_SERVER_STATE = "mcp_server_state"  # reserved — not yet emitted (as of 2.2.0)
 
     # Generic
-    NOTIFICATION = "notification"  # Host-initiated, user-readable
+    NOTIFICATION = "notification"  # reserved — not yet emitted by the engine (as of 2.2.0)
+
+
+FIRED_EVENTS: frozenset = frozenset(
+    {
+        HookEvent.PRE_TOOL_USE,
+        HookEvent.POST_TOOL_USE,
+        HookEvent.POST_TOOL_FAILURE,
+        HookEvent.PERMISSION_REQUEST,
+        HookEvent.PERMISSION_DENIED,
+    }
+)
+"""Events the engine actually emits as of 2.2.0.
+
+Everything else in :class:`HookEvent` is reserved schema: the config
+parser accepts it and the payload shape is stable, but no engine code
+path calls ``HookRunner.fire`` with it — a handler bound there never
+runs. The 2026-06-09 audit (§3.5) found hosts binding dead handlers
+because the enum advertised 16 kinds while ~3 fired; this set is the
+contract that keeps docs and reality in lockstep. A grep-driven test
+(``tests/unit/test_hook_taxonomy.py``) fails the build when a new
+fire-site ships without updating this set (or vice versa).
+
+The tool-invocation trio fires from Stage 10's ``RegistryRouter``;
+the permission pair fires from the same dispatch path when the
+permission matrix returns DENY / ASK (2.2.0, audit §1-5 ASK→HITL
+plumbing).
+"""
 
 
 @dataclass
