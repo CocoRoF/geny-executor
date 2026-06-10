@@ -283,6 +283,23 @@ class BaseClient(ABC):
         "tool_choice": "tool_choice",
     }
 
+    # Capability flag that overrides a declared drop. ``drops`` tuples are
+    # written against a class's CONSERVATIVE defaults; instance-level
+    # capability upgrades (``VLLMClient.configure_capabilities(
+    # supports_tools=True)``) replace the flags but not the tuple, so the
+    # 2.2.0 authoritative-drops enforcement read a stale declaration and
+    # stripped fields the instance genuinely supports — a 2.1.x→2.2.0
+    # regression (review B3). A drop is skipped when the instance flag
+    # says the feature is supported; fields with no capability flag
+    # (temperature / top_p / max_tokens) always honour the declaration.
+    _DROP_FIELD_TO_CAPABILITY: Dict[str, str] = {
+        "tools": "supports_tools",
+        "tool_choice": "supports_tool_choice",
+        "thinking_enabled": "supports_thinking",
+        "top_k": "supports_top_k",
+        "stop_sequences": "supports_stop_sequences",
+    }
+
     def _apply_declared_drops(
         self,
         request: APIRequest,
@@ -312,7 +329,12 @@ class BaseClient(ABC):
         Reads ``self.capabilities`` (not ``type(self).capabilities``) so
         instance-level upgrades — ``VLLMClient.configure_capabilities`` on a
         deployment whose model genuinely supports tools — can also amend the
-        drops list without subclassing.
+        drops list without subclassing. And because those upgrades replace
+        the capability FLAGS without rewriting the drops tuple, the
+        effective drop set is capability-aware (review B3): a declared
+        drop whose matching ``supports_*`` flag is True on the instance
+        is skipped, so ``configure_capabilities(supports_tools=True)``
+        restores tools exactly as its docstring promises.
         """
         declared = self.capabilities.drops
         if not declared:
@@ -334,6 +356,11 @@ class BaseClient(ABC):
             if field_name in seen:
                 continue  # duplicate declaration — strip/report once
             seen.add(field_name)
+            capability_flag = self._DROP_FIELD_TO_CAPABILITY.get(field_name)
+            if capability_flag and getattr(self.capabilities, capability_flag, False):
+                # The INSTANCE says it supports this feature — the drop
+                # declaration is stale relative to a capability upgrade.
+                continue
             attr = self._DROP_FIELD_TO_REQUEST_ATTR.get(field_name)
             if attr is None:
                 # Unknown vocabulary (future capability name, typo in a

@@ -145,6 +145,95 @@ class TestValidateSubagents:
         issues = validate_manifest(_manifest(subagents=[entry]))
         assert "subagent.unknown_provider" not in _codes(issues)
 
+    # ── review N3: default-model mismatch + ignored overrides ──
+
+    def test_non_claude_provider_without_model_is_warning(self):
+        """An openai sub-pipeline with no model_override would carry the
+        default claude-* ModelConfig id — a guaranteed 404."""
+        entry = {"agent_type": "worker", "provider": "openai"}
+        issues = validate_manifest(_manifest(subagents=[entry]))
+        issue = _by_code(issues, "subagent.model_default_mismatch")
+        assert issue.severity == "warning"
+        assert "model_override" in issue.message
+
+    @pytest.mark.parametrize("provider", ["anthropic", "claude_code_cli"])
+    def test_claude_family_provider_without_model_is_clean(self, provider):
+        entry = {"agent_type": "worker", "provider": provider}
+        issues = validate_manifest(_manifest(subagents=[entry]))
+        assert "subagent.model_default_mismatch" not in _codes(issues)
+
+    def test_model_override_silences_default_mismatch(self):
+        entry = {"agent_type": "worker", "provider": "openai", "model_override": "gpt-5"}
+        issues = validate_manifest(_manifest(subagents=[entry]))
+        assert "subagent.model_default_mismatch" not in _codes(issues)
+
+    def test_inline_manifest_silences_default_mismatch(self):
+        """The inline-manifest path never reaches the default-model
+        materialization (provider is ignored there too — see
+        subagent.overrides_ignored)."""
+        entry = {
+            "agent_type": "worker",
+            "provider": "openai",
+            "manifest": {"version": "3.0"},
+        }
+        issues = validate_manifest(_manifest(subagents=[entry]))
+        assert "subagent.model_default_mismatch" not in _codes(issues)
+
+    def test_overrides_alongside_inline_manifest_warn(self):
+        entry = dict(_SUBAGENT_ENTRY, provider="anthropic", manifest={"version": "3.0"})
+        issues = validate_manifest(_manifest(subagents=[entry]))
+        issue = _by_code(issues, "subagent.overrides_ignored")
+        assert issue.severity == "warning"
+        # All three ignored fields are named so the fix is obvious.
+        for ignored in ("allowed_tools", "model_override", "provider"):
+            assert ignored in issue.message
+
+    def test_overrides_alongside_env_id_warn(self):
+        entry = {"agent_type": "stored", "env_id": "env_x", "model_override": "gpt-5"}
+        issues = validate_manifest(_manifest(subagents=[entry]))
+        assert "subagent.overrides_ignored" in _codes(issues)
+
+    def test_source_without_overrides_is_clean(self):
+        """description IS honoured on the manifest/env path — it must
+        not trigger the warning."""
+        entry = {"agent_type": "stored", "env_id": "env_x", "description": "persona"}
+        issues = validate_manifest(_manifest(subagents=[entry]))
+        assert "subagent.overrides_ignored" not in _codes(issues)
+
+
+# ── validate_manifest: tools decoys (review B6) ──────────────
+
+
+class TestValidateToolsDecoys:
+    def test_adhoc_data_is_warning(self):
+        m = _manifest()
+        m.tools = ToolsSnapshot(adhoc=[{"name": "calc", "code": "..."}])
+        issue = _by_code(validate_manifest(m), "tools.adhoc_unconsumed")
+        assert issue.severity == "warning"
+        assert issue.field == "tools.adhoc"
+        assert "does not consume" in issue.message
+
+    def test_scope_data_is_warning(self):
+        m = _manifest()
+        m.tools = ToolsSnapshot(scope={"default": "session"})
+        issue = _by_code(validate_manifest(m), "tools.scope_unconsumed")
+        assert issue.severity == "warning"
+        assert issue.field == "tools.scope"
+        assert "does not consume" in issue.message
+
+    def test_consumed_tool_fields_stay_clean(self):
+        """built_in / mcp_servers / external ARE consumed — no decoy
+        warnings for them, and an empty adhoc/scope stays silent."""
+        m = _manifest()
+        m.tools = ToolsSnapshot(
+            built_in=["*"],
+            mcp_servers=[{"name": "bridge", "url": "http://localhost:1"}],
+            external=["host_tool"],
+        )
+        codes = _codes(validate_manifest(m))
+        assert "tools.adhoc_unconsumed" not in codes
+        assert "tools.scope_unconsumed" not in codes
+
 
 # ── validate_manifest: memory ────────────────────────────────
 

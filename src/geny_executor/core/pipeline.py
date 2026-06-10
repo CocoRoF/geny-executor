@@ -608,13 +608,19 @@ class Pipeline:
         self._close_task: Optional[Any] = None  # keeps fire-and-forget close() task alive
         # state=None loudness — warn once per pipeline, not per turn.
         self._warned_state_none: bool = False
-        # Deferred run-start events: (event_type, data) pairs queued by
-        # attach/refresh (runtime.llm_client_override) and per-run
-        # overrides (config.override_applied). Flushed into
-        # state.add_event at the top of _run_phases — by then
+        # Deferred PIPELINE-scoped run-start events: (event_type, data)
+        # pairs queued by attach/refresh (runtime.llm_client_override).
+        # Flushed into state.add_event at the top of the NEXT run's
+        # _run_phases — exactly once overall, by whichever run starts
+        # next — because the attach/refresh that queued them is a
+        # pipeline-level act, not a per-run one. By flush time
         # run_stream's bus subscription is attached, so streaming
         # consumers see them too (add_event from _init_state would land
-        # pre-subscription).
+        # pre-subscription). RUN-scoped events (config.override_applied
+        # from per-run overrides) deliberately do NOT live here: they
+        # ride ``state._pending_run_events`` so overlapping runs cannot
+        # flush each other's overrides under the wrong run_id (2.2.0
+        # review B2).
         self._pending_runtime_events: List[Tuple[str, Dict[str, Any]]] = []
 
     @property
@@ -710,7 +716,9 @@ class Pipeline:
         no-op. Safe on any pipeline regardless of how construction
         went — hand-built pipelines and partially-attached ones simply
         have nothing to tear down. The pipeline is not usable after
-        closing; build a fresh one per session.
+        closing — ``run()`` / ``run_stream()`` raise ``RuntimeError``
+        (2.2.0 review N2; running with MCP disconnected silently
+        degraded every tool call); build a fresh one per session.
         """
         if self._closed:
             return
@@ -1286,6 +1294,10 @@ class Pipeline:
         that stage is silently ignored — a pipeline without a Memory stage
         simply has nowhere to attach memory runtime.
 
+        Where this sits among the configuration channels (per-run
+        overrides > mutator/refresh > attach_runtime > manifest >
+        defaults), see docs/architecture.md#configuration-precedence.
+
         Args:
             memory_retriever: A :class:`MemoryRetriever` subclass instance
                 (e.g. :class:`GenyMemoryRetriever`). Host is responsible for
@@ -1723,6 +1735,22 @@ class Pipeline:
 
     # ── Execution ──
 
+    def _ensure_not_closed(self) -> None:
+        """Refuse to run on an :meth:`aclose`'d pipeline (review N2).
+
+        After teardown the MCP servers are disconnected and the tool
+        providers shut down, so a run would proceed silently degraded —
+        tool calls failing one by one with no hint why. Fail fast with
+        the actual remedy instead.
+        """
+        if self._closed:
+            raise RuntimeError(
+                "pipeline is closed — build a new one. aclose() has torn "
+                "down this pipeline's runtime (MCP servers disconnected, "
+                "tool providers shut down); running it would silently "
+                "degrade every tool call."
+            )
+
     @property
     def run_in_progress(self) -> bool:
         """True while any ``run()`` / ``run_stream()`` is executing phases.
@@ -1801,22 +1829,32 @@ class Pipeline:
             :class:`PipelineResult` — its ``.state`` attribute carries
             the state actually used (the only handle when ``state`` was
             omitted).
-        """
-        state = self._init_state(state, overrides=overrides)
-        await self._emit(
-            "pipeline.start",
-            data={"input": str(input)[: self.EVENT_DATA_TRUNCATE]},
-            session_id=state.session_id,
-            run_id=state._run_id,
-        )
-        if self._hook_runner is not None:
-            await self._fire_lifecycle_hook(
-                HookEvent.PIPELINE_START, state, details={"streaming": False}
-            )
 
+        Raises:
+            RuntimeError: If the pipeline has been :meth:`aclose`'d —
+                its MCP servers / tool providers are gone; build a new
+                pipeline per session.
+        """
+        self._ensure_not_closed()
+        state = self._init_state(state, overrides=overrides)
+        # Run-lock up BEFORE the first await (review N1): the
+        # pipeline.start emit suspends, and a mutation landing in that
+        # window would bypass MutationLocked while the run is morally
+        # already in flight.
         self._runs_in_flight += 1
         success = False
         try:
+            await self._emit(
+                "pipeline.start",
+                data={"input": str(input)[: self.EVENT_DATA_TRUNCATE]},
+                session_id=state.session_id,
+                run_id=state._run_id,
+            )
+            if self._hook_runner is not None:
+                await self._fire_lifecycle_hook(
+                    HookEvent.PIPELINE_START, state, details={"streaming": False}
+                )
+
             await self._run_phases(input, state)
 
             result = PipelineResult.from_state(state)
@@ -1888,7 +1926,12 @@ class Pipeline:
         ``run_id`` — overlapping runs on a shared pipeline no longer
         cross-pollinate each other's streams (host-emitted bus events
         without a run_id still pass, preserving the old behaviour).
+
+        Raises:
+            RuntimeError: On first iteration when the pipeline has been
+                :meth:`aclose`'d — build a new pipeline per session.
         """
+        self._ensure_not_closed()
         state = self._init_state(state, overrides=overrides)
         run_id = state._run_id
         queue: asyncio.Queue[PipelineEvent] = asyncio.Queue()
@@ -1902,16 +1945,25 @@ class Pipeline:
 
         unsubscribe = self._event_bus.on("*", bus_collector)
 
+        # Run-lock up BEFORE the first await (review N1): the
+        # pipeline.start emit below suspends before the background task
+        # exists, and a mutation in that window would bypass
+        # MutationLocked. The counter is handed off to the task once it
+        # is created — its finally owns the decrement from then on,
+        # covering consumers that abandon the stream mid-run.
+        self._runs_in_flight += 1
+        counter_owned_by_task = False
+
         async def _run_pipeline() -> None:
             """Execute pipeline phases, then push sentinel to signal completion.
 
-            The run-in-progress counter brackets this task's whole
+            The run-in-progress counter brackets the run from the
+            generator's pre-emit increment through this task's whole
             lifetime (not just the generator's visible iteration) so
             refresh_runtime / mutator locking stay correct even when a
             consumer abandons the stream mid-run — the background task
             keeps executing until phases finish.
             """
-            self._runs_in_flight += 1
             success = False
             try:
                 if self._hook_runner is not None:
@@ -1969,6 +2021,7 @@ class Pipeline:
 
             # Run pipeline in background task so we can yield events as they arrive
             task = asyncio.create_task(_run_pipeline())
+            counter_owned_by_task = True
 
             while True:
                 event = await queue.get()
@@ -1994,6 +2047,10 @@ class Pipeline:
             yield error_event
 
         finally:
+            if not counter_owned_by_task:
+                # The pre-emit increment was never handed to a task
+                # (emit / task creation failed) — balance it here.
+                self._runs_in_flight -= 1
             unsubscribe()
 
     # ── Events ──
@@ -2223,14 +2280,23 @@ class Pipeline:
         registered, so presets that don't opt the new scaffolds in
         (orders 11/13/15/19/20) still run identically to pre-9a.
         """
-        # Flush deferred run-start events (config.override_applied /
-        # runtime.llm_client_override) now that any streaming consumer
-        # is subscribed on the bus — _init_state queues them because
-        # events added there would predate run_stream's subscription
-        # and never stream.
+        # Flush deferred run-start events now that any streaming
+        # consumer is subscribed on the bus — _init_state queues them
+        # because events added there would predate run_stream's
+        # subscription and never stream. Two queues (review B2):
+        #   * pipeline-scoped (runtime.llm_client_override from attach/
+        #     refresh) — pipeline-global, delivered once overall, by
+        #     whichever run starts next;
+        #   * run-scoped (config.override_applied from THIS run's
+        #     overrides) — on the state, so overlapping runs never
+        #     flush each other's overrides under the wrong run_id.
         if self._pending_runtime_events:
             pending, self._pending_runtime_events = self._pending_runtime_events, []
             for event_type, data in pending:
+                state.add_event(event_type, data)
+        if state._pending_run_events:
+            run_pending, state._pending_run_events = state._pending_run_events, []
+            for event_type, data in run_pending:
                 state.add_event(event_type, data)
 
         # Phase A: Input
@@ -2362,12 +2428,18 @@ class Pipeline:
         state._bus_emitter = self._make_state_event_bridge(state, state._run_id)
 
         self._config.apply_to_state(state)
+        # Per-run override events queue ON THE STATE (review B2): the
+        # pipeline-global queue is flushed by whichever run starts next,
+        # so overlapping runs would misattribute these to the wrong
+        # run_id. Reset first — a prior turn that failed before its
+        # _run_phases flush must not leak its overrides into this one.
+        state._pending_run_events = []
         if overrides is not None:
             # After apply_to_state on purpose: per-run overrides sit at
             # the top of the config funnel for exactly one run. Events
             # are deferred to _run_phases so streaming listeners see them.
             for field_name, value in overrides.apply_to_state(state).items():
-                self._pending_runtime_events.append(
+                state._pending_run_events.append(
                     (
                         "config.override_applied",
                         {"field": field_name, "value": value, "source": "per_run"},

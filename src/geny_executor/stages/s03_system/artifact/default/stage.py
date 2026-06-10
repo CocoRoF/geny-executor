@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Union
 
 from geny_executor.core.schema import ConfigField, ConfigSchema
 from geny_executor.core.slot import StrategySlot
@@ -90,7 +90,12 @@ class SystemStage(Stage[Any, Any]):
                     name="template_vars",
                     type="object",
                     label="Template Variables",
-                    description="Key-value pairs available to composable prompt builders.",
+                    description=(
+                        "Key-value pairs substituted into the built system "
+                        "prompt: every {name} placeholder is replaced "
+                        "post-build, whichever builder produced the prompt. "
+                        "Placeholders without a matching key are left intact."
+                    ),
                     default={},
                 ),
             ],
@@ -113,9 +118,45 @@ class SystemStage(Stage[Any, Any]):
             tv = config["template_vars"] or {}
             self._template_vars = dict(tv)
 
+    def _apply_template_vars(
+        self, system: Union[str, List[Dict[str, Any]]]
+    ) -> Union[str, List[Dict[str, Any]]]:
+        """Substitute ``{name}`` placeholders into the built prompt.
+
+        Why post-build instead of a builder kwarg (2.2.0 wave 4, config
+        liveness): the :class:`PromptBuilder` contract is ``build(state)``
+        — adding a ``template_vars`` parameter would break every custom
+        builder hosts attach via ``Pipeline.attach_runtime``. Substituting
+        on the *output* keeps the contract intact and works uniformly for
+        static, composable and persona builders.
+
+        Substitution is a literal ``{key}`` → ``str(value)`` replacement,
+        NOT ``str.format``: prompts routinely contain literal braces (JSON
+        examples, code snippets) that ``format`` would choke on. Unknown
+        placeholders are left untouched.
+        """
+
+        def _substitute(text: str) -> str:
+            for key, value in self._template_vars.items():
+                text = text.replace("{" + str(key) + "}", str(value))
+            return text
+
+        if isinstance(system, str):
+            return _substitute(system)
+        if isinstance(system, list):
+            blocks: List[Dict[str, Any]] = []
+            for block in system:
+                if isinstance(block, dict) and isinstance(block.get("text"), str):
+                    block = {**block, "text": _substitute(block["text"])}
+                blocks.append(block)
+            return blocks
+        return system
+
     async def execute(self, input: Any, state: PipelineState) -> Any:
         # Build system prompt
         system = self._builder.build(state)
+        if self._template_vars:
+            system = self._apply_template_vars(system)
         state.system = system
 
         # Register tools in state if registry provided

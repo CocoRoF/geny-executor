@@ -38,23 +38,33 @@ import asyncio
 import time
 from typing import Any, Dict, List, Optional
 
+from geny_executor.core.schema import ConfigSchema
 from geny_executor.stages.s10_tool.artifact.default.executors import (
+    _coerce_max_concurrency,
     _emit_call_complete,
     _emit_call_start,
+    _max_concurrency_schema,
 )
-from geny_executor.stages.s10_tool.interface import ToolEventCallback, ToolRouter
+from geny_executor.stages.s10_tool.interface import (
+    ToolEventCallback,
+    ToolExecutor,
+    ToolRouter,
+)
 from geny_executor.stages.s10_tool.persistence import maybe_persist_large_result
 from geny_executor.tools.base import ToolCapabilities, ToolContext
 from geny_executor.tools.registry import ToolRegistry
 
 
-class StreamingToolExecutor:
+class StreamingToolExecutor(ToolExecutor):
     """Executes tool calls as they stream in, preserves receive order on drain.
 
-    Unlike the batch executors that implement ``ToolExecutor.execute_all``,
-    this class exposes an ``add(call)`` / ``drain()`` interface so hosts
-    integrating with streaming LLM responses can kick off safe tools
-    while the model is still emitting subsequent tool_use blocks.
+    Beyond the batch ``ToolExecutor.execute_all`` surface (implemented
+    since 2.2.0 review N4, so manifests can elect this executor as
+    Stage 10's ``executor`` strategy under the registry name
+    ``"streaming"``), this class exposes an ``add(call)`` / ``drain()``
+    interface so hosts integrating with streaming LLM responses can
+    kick off safe tools while the model is still emitting subsequent
+    tool_use blocks.
 
     Typical usage::
 
@@ -104,6 +114,70 @@ class StreamingToolExecutor:
         # Keeps track of whether drain has been called — after drain,
         # add() becomes an error.
         self._drained: bool = False
+
+    # ─────────────────────────────────────────────────────────
+    # Strategy / ToolExecutor surface (2.2.0 review N4)
+    # ─────────────────────────────────────────────────────────
+
+    @property
+    def name(self) -> str:
+        return "streaming"
+
+    @property
+    def description(self) -> str:
+        return (
+            f"Streaming add/drain executor — safe tools start while the "
+            f"LLM is still emitting (max parallel: {self._max_concurrency})"
+        )
+
+    @classmethod
+    def config_schema(cls) -> ConfigSchema:
+        return _max_concurrency_schema("streaming", 10)
+
+    def configure(self, config: Dict[str, Any]) -> None:
+        if "max_concurrency" in config:
+            self._max_concurrency = _coerce_max_concurrency("streaming", config["max_concurrency"])
+
+    def get_config(self) -> Dict[str, Any]:
+        return {"max_concurrency": self._max_concurrency}
+
+    async def execute_all(
+        self,
+        tool_calls: List[Dict[str, Any]],
+        router: ToolRouter,
+        context: ToolContext,
+        *,
+        on_event: Optional[ToolEventCallback] = None,
+    ) -> List[Dict[str, Any]]:
+        """Batch adapter for the :class:`ToolExecutor` protocol.
+
+        Why (2.2.0 review N4): the stage's own ConfigSchema named this
+        executor but the slot registry never carried it — a manifest
+        electing ``"streaming"`` was impossible. The add()/drain()
+        machinery is single-use by design (the drain latch, the
+        receive-order maps), while a slot-elected strategy instance
+        lives for the whole session — so each batch runs on a FRESH
+        internal executor seeded with this instance's registry binding
+        and concurrency budget. Receive order == input order, matching
+        the batch executors' ordering contract.
+        """
+        if not tool_calls:
+            return []
+        registry = self._registry
+        if registry is None:
+            # Mirror PartitionExecutor's late-bind: without a registry
+            # every call resolves fail-closed (unsafe → fully serial).
+            router_registry = getattr(router, "_registry", None)
+            if isinstance(router_registry, ToolRegistry):
+                registry = router_registry
+        worker = StreamingToolExecutor(
+            registry=registry,
+            router=router,
+            max_concurrency=self._max_concurrency,
+        )
+        for call in tool_calls:
+            await worker.add(call, context)
+        return await worker.drain(context, on_event=on_event)
 
     # ─────────────────────────────────────────────────────────
     # Public API

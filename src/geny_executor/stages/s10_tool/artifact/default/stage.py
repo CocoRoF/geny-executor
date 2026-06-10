@@ -18,6 +18,7 @@ from geny_executor.stages.s10_tool.artifact.default.executors import (
     SequentialExecutor,
 )
 from geny_executor.stages.s10_tool.artifact.default.routers import RegistryRouter
+from geny_executor.stages.s10_tool.streaming import StreamingToolExecutor
 
 
 # Default parallel budget when a host doesn't specify one. Matches the
@@ -67,6 +68,10 @@ class ToolStage(Stage[Any, Any]):
                     # stage_order=10, slot_name="executor",
                     # impl_name="partition")`.
                     "partition": PartitionExecutor,
+                    # 2.2.0 review N4: exported + named in this stage's
+                    # ConfigSchema since Phase 2 W4, but never electable
+                    # from a manifest because it was missing here.
+                    "streaming": StreamingToolExecutor,
                 },
                 description="Tool execution strategy",
             ),

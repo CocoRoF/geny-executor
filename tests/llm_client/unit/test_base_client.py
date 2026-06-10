@@ -43,13 +43,35 @@ from geny_executor.llm_client.types import APIRequest, APIResponse
 
 class _DroppyClient(BaseClient):
     """Declares an aggressive drops list, including one unknown name —
-    a stale declaration must not crash request assembly."""
+    a stale declaration must not crash request assembly. Every declared
+    field's ``supports_*`` flag (where one exists) is False, matching
+    how every shipped client writes its tuple: since review B3 a drop
+    whose instance capability flag is True is SKIPPED (capability
+    upgrades win over the static declaration — see
+    ``_CapabilityUpgradedClient`` below)."""
 
     provider = "droppy"
     capabilities = ClientCapabilities(
-        supports_thinking=True,  # thinking passes the capability gate...
+        supports_thinking=False,
         drops=("temperature", "max_tokens", "tools", "thinking_enabled",
-               "warp_drive"),  # ...but is dropped by declaration anyway
+               "warp_drive"),
+    )
+
+    async def _send(self, request: APIRequest, *, purpose: str = "") -> APIResponse:
+        return APIResponse()
+
+
+class _CapabilityUpgradedClient(BaseClient):
+    """Drops tuple says strip tools/thinking, capability flags say the
+    instance supports them — the B3 shape (a stale declaration relative
+    to a ``configure_capabilities``-style upgrade). Capability wins."""
+
+    provider = "upgraded"
+    capabilities = ClientCapabilities(
+        supports_thinking=True,
+        supports_tools=True,
+        supports_tool_choice=True,
+        drops=("temperature", "tools", "tool_choice", "thinking_enabled"),
     )
 
     async def _send(self, request: APIRequest, *, purpose: str = "") -> APIResponse:
@@ -215,6 +237,40 @@ def test_no_event_sink_still_strips() -> None:
     assert request.temperature is None
 
 
+# ── Capability flags beat stale drop declarations (review B3) ─────────
+
+
+def test_supported_capability_skips_declared_drop() -> None:
+    """drops=('tools','tool_choice','thinking_enabled') with the matching
+    supports_* flags True: the fields survive, no parameter_dropped —
+    the declaration is stale relative to the instance's capabilities."""
+    events: List[Dict[str, Any]] = []
+    client = _CapabilityUpgradedClient(event_sink=events.append)
+    request = _build(
+        client,
+        ModelConfig(model="m", thinking_enabled=True),
+        tools=[{"name": "read"}],
+        tool_choice={"type": "auto"},
+    )
+    assert request.tools == [{"name": "read"}]
+    assert request.tool_choice == {"type": "auto"}
+    assert request.thinking is not None
+    dropped = _dropped(events)
+    assert "tools" not in dropped
+    assert "tool_choice" not in dropped
+    assert "thinking_enabled" not in dropped
+
+
+def test_flagless_drops_still_apply_on_upgraded_client() -> None:
+    """temperature has no supports_* flag — its declaration always
+    bites, capability upgrades or not."""
+    events: List[Dict[str, Any]] = []
+    client = _CapabilityUpgradedClient(event_sink=events.append)
+    request = _build(client, ModelConfig(model="m", temperature=0.7))
+    assert request.temperature is None
+    assert _dropped(events)["temperature"]["value"] == 0.7
+
+
 # ── Per-shipped-provider: the declarations actually bite ──────────────
 
 
@@ -271,6 +327,41 @@ def test_vllm_declared_tool_drops_strip_tools_from_request() -> None:
     )
     assert request.tools is None
     assert "tools" in _dropped(events)
+
+
+def test_vllm_configure_capabilities_restores_tools() -> None:
+    """Review B3: the documented configure_capabilities(supports_tools=
+    True) upgrade must survive the wave-1 authoritative-drops
+    enforcement — the drops tuple stays conservative, the instance flag
+    wins. 2.1.x honoured this; 2.2.0 must too."""
+    pytest.importorskip("openai")
+    from geny_executor.llm_client.vllm import VLLMClient
+
+    events: List[Dict[str, Any]] = []
+    client = VLLMClient(
+        base_url="http://localhost:8000/v1", event_sink=events.append
+    )
+    client.configure_capabilities(supports_tools=True, supports_tool_choice=True)
+    request = _build(
+        client,
+        ModelConfig(model="local"),
+        tools=[{"name": "read"}],
+        tool_choice={"type": "auto"},
+    )
+    assert request.tools == [{"name": "read"}]
+    assert request.tool_choice == {"type": "auto"}
+    dropped = _dropped(events)
+    assert "tools" not in dropped
+    assert "tool_choice" not in dropped
+    # The class-level capabilities are untouched — a second, default
+    # client still strips (instance-scoped upgrade).
+    fresh_events: List[Dict[str, Any]] = []
+    fresh = VLLMClient(
+        base_url="http://localhost:8000/v1", event_sink=fresh_events.append
+    )
+    fresh_request = _build(fresh, ModelConfig(model="local"), tools=[{"name": "read"}])
+    assert fresh_request.tools is None
+    assert "tools" in _dropped(fresh_events)
 
 
 def test_anthropic_declares_no_drops_temperature_survives() -> None:

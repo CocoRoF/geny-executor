@@ -37,6 +37,7 @@ The CLI clients wrap these into ``APIError`` with the matching
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import shutil
@@ -47,6 +48,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import (
     Any,
+    AsyncGenerator,
     AsyncIterator,
     Iterable,
     Mapping,
@@ -232,7 +234,7 @@ class CLIProcessRunner:
         argv: Sequence[str],
         *,
         stdin_iter: Optional[AsyncIterator[bytes]] = None,
-    ) -> AsyncIterator[bytes]:
+    ) -> AsyncGenerator[bytes, None]:
         """Spawn and yield stdout *lines* as they arrive.
 
         Newline-delimited (i.e. one stream-json line per yield). Caller is
@@ -240,12 +242,24 @@ class CLIProcessRunner:
 
         Stderr is captured but not yielded. On non-zero exit, stderr is
         attached to the raised exception.
+
+        Consumer disconnect (audit 2026-06-09 §3.7): both reference hosts
+        are SSE servers, so a client disconnect closes this generator
+        mid-output (``GeneratorExit`` at the ``yield``). The ``finally``
+        block below therefore owns the full teardown: cancel + reap the
+        stdin-drain side task, cancel the stderr collector, and — when
+        the child has not been reaped yet — run the SIGTERM → grace →
+        SIGKILL ladder so no real CLI process is left orphaned on the
+        box. Normal completion and the CLITimeout path reach the
+        ``finally`` with ``proc.returncode`` already set, making the
+        kill a no-op (no double-kill).
         """
         proc, t0 = await self._spawn(argv)
 
         # If caller has stdin_iter, drive it in a side task.
+        stdin_task: Optional[asyncio.Task[None]] = None
         if stdin_iter is not None and proc.stdin is not None:
-            asyncio.create_task(_drain_stdin(proc.stdin, stdin_iter))
+            stdin_task = asyncio.create_task(_drain_stdin(proc.stdin, stdin_iter))
         elif proc.stdin is not None:
             proc.stdin.close()
 
@@ -262,6 +276,14 @@ class CLIProcessRunner:
             raise
         finally:
             stderr_task.cancel()
+            if stdin_task is not None:
+                stdin_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await stdin_task
+            if proc.returncode is None:
+                # Generator exited before the child was reaped — the
+                # consumer-disconnect path. Kill the process group.
+                await self._kill_tree(proc)
 
         if rc != 0:
             tail = b"".join(stderr_buf).decode("utf-8", errors="replace")
