@@ -891,6 +891,11 @@ def validate_manifest(
       the base no-op (``type(strategy).configure is
       Strategy.configure``) [error] — the audit §2.1 masked-degradation
       class: the config parses, stores, round-trips, and does nothing.
+    - ``strategy_configs`` whose values the selected impl's own
+      ``configure()`` rejects with ``ValueError`` [error when active]
+      — probed on a throwaway instance (2.2.0 review B4); restore
+      records the same rejection and keeps the strategy's defaults, so
+      the bad value must surface at write time.
     - ``strategy_configs`` for a slot with no matching ``strategies``
       selection [warning] — ``PipelineMutator.restore`` only applies a
       slot's config alongside its strategy selection, so the config
@@ -920,7 +925,16 @@ def validate_manifest(
       inline ``manifest`` set [warning] — the inline manifest wins;
       ``provider`` not in :class:`~geny_executor.llm_client.registry.
       ClientRegistry` [warning] — hosts register custom providers
-      late, so an unknown name here may resolve at build time.
+      late, so an unknown name here may resolve at build time;
+      ``provider``/``model_override``/``allowed_tools`` alongside an
+      inline ``manifest``/``env_id`` [warning] — the factory builds
+      wholly from that source and ignores them; a non-Claude
+      ``provider`` with no ``model_override`` and no sub-manifest
+      [warning] — the compiled sub-environment would carry the default
+      claude-* model id, which that backend will 404 on.
+    - ``tools.adhoc`` / ``tools.scope`` carrying data [warning] — both
+      fields are serialized but engine-unconsumed (2.2.0 review B6); a
+      silent green check over them would institutionalize the decoy.
     - ``memory`` block (2.2.0 Wave 3): missing/unknown ``provider``
       name vs the built-in :class:`~geny_executor.memory.factory.
       MemoryProviderFactory` builders [error]; ``config`` keys the
@@ -1044,6 +1058,76 @@ def validate_manifest(
                 "build time — verify the name is not a typo.",
                 field_=f"{locator}.provider",
             )
+        has_sub_source = bool(raw_sub.get("manifest")) or bool(raw_sub.get("env_id"))
+        ignored_overrides = sorted(
+            key for key in ("provider", "model_override", "allowed_tools") if raw_sub.get(key)
+        )
+        if has_sub_source and ignored_overrides:
+            # ManifestSubagentPipelineFactory builds the sub-pipeline
+            # WHOLLY from the inline manifest / resolved environment on
+            # those paths — of the entry's fields only agent_type
+            # (registry key) and description (delegation metadata) are
+            # honoured there; provider/model_override/allowed_tools
+            # never reach the build.
+            add(
+                "warning",
+                "subagent.overrides_ignored",
+                f"{locator} ({agent_type!r}) sets {ignored_overrides} "
+                "alongside an inline 'manifest'/'env_id'; the factory "
+                "builds the sub-pipeline entirely from that source, so "
+                "these fields are ignored (only agent_type and "
+                "description are honoured on this path). Declare them "
+                "inside the sub-manifest instead.",
+                field_=locator,
+            )
+        if (
+            sub_provider
+            and str(sub_provider) not in ("anthropic", "claude_code_cli")
+            and not raw_sub.get("model_override")
+            and not has_sub_source
+        ):
+            # The no-manifest path materializes build_manifest(...,
+            # model=descriptor.model_override) — with no override that
+            # is the default ModelConfig model, a claude-* id an
+            # OpenAI-compatible backend will 404 on.
+            add(
+                "warning",
+                "subagent.model_default_mismatch",
+                f"{locator} ({agent_type!r}) requests provider "
+                f"{sub_provider!r} with no 'model_override' and no inline "
+                "manifest — the compiled sub-environment falls back to "
+                "the default ModelConfig model (a claude-* id), which "
+                f"{sub_provider!r} will reject. Declare a model_override "
+                "the provider actually serves.",
+                field_=f"{locator}.model_override",
+            )
+
+    # ── Tools section — engine-unconsumed fields (2.2.0 review B6) ──
+    # ``built_in`` / ``mcp_servers`` / ``external`` are all consumed at
+    # build time; ``adhoc`` and ``scope`` are serialized, round-tripped,
+    # and read by NOTHING in the engine. A green validate_manifest over
+    # data in them would institutionalize the decoy — warn instead.
+    tools_snapshot = manifest.tools
+    if getattr(tools_snapshot, "adhoc", None):
+        add(
+            "warning",
+            "tools.adhoc_unconsumed",
+            f"manifest.tools.adhoc carries {len(tools_snapshot.adhoc)} "
+            "definition(s), but the engine does not consume tools.adhoc — "
+            "they are stored and round-tripped only. Register adhoc tools "
+            "at runtime (ToolRegistry / adhoc providers via "
+            "tools.external) instead.",
+            field_="tools.adhoc",
+        )
+    if getattr(tools_snapshot, "scope", None):
+        add(
+            "warning",
+            "tools.scope_unconsumed",
+            "manifest.tools.scope carries data, but the engine does not "
+            "consume tools.scope — it is stored and round-tripped only. "
+            "Use stage tool_binding / permission rules for tool scoping.",
+            field_="tools.scope",
+        )
 
     # ── Memory block (2.2.0 Wave 3, audit §1-1) ─────────────
     memory_block = manifest.memory or {}
@@ -1345,6 +1429,37 @@ def validate_manifest(
                     name=entry.name,
                     field_=field_path,
                 )
+                continue
+            # Probe the config against the strategy's own configure()
+            # (2.2.0 review B4): wave 1 made configure fail loudly on
+            # bad values, so the same bad value must be caught HERE, at
+            # write time — not discovered as a hard strict-build failure
+            # or a silently-defaulted lenient build. Offline by
+            # construction: a throwaway instance takes the config; any
+            # non-ValueError (constructor needs runtime deps, configure
+            # needs live context) means this pass cannot judge and stays
+            # quiet.
+            try:
+                probe = impl_cls()
+            except Exception:
+                continue  # not constructible offline — cannot probe
+            try:
+                probe.configure(dict(slot_config))
+            except ValueError as exc:
+                add(
+                    entry_severity,
+                    "strategy.config_invalid",
+                    f"stage {entry.name!r} (order {entry.order}) declares "
+                    f"strategy_configs[{slot_name!r}] that impl "
+                    f"{declared_impl!r} rejects: {exc}. "
+                    "PipelineMutator.restore records this as an error and "
+                    "the strategy keeps its defaults — fix the value.",
+                    order=entry.order,
+                    name=entry.name,
+                    field_=field_path,
+                )
+            except Exception:  # noqa: BLE001 — probe must never crash validation
+                pass
 
         for chain_name, chain_order in (entry.chain_order or {}).items():
             if not chain_order:

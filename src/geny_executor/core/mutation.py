@@ -7,6 +7,7 @@ and configuration at runtime while maintaining consistency guarantees.
 from __future__ import annotations
 
 import itertools
+import logging
 import threading
 import uuid
 from contextlib import contextmanager
@@ -22,6 +23,8 @@ from geny_executor.core.stage import Stage
 if TYPE_CHECKING:
     from geny_executor.core.pipeline import Pipeline
 
+
+logger = logging.getLogger(__name__)
 
 _HOOK_EVENTS = {"on_enter", "on_exit", "on_error"}
 
@@ -103,7 +106,9 @@ class RestoreReport:
         or rejected the snapshot ordering.
       - ``errors``: anything else that prevented application — e.g. a
         snapshot entry marked active for a stage that is not
-        registered. Stage-construction failures never appear here
+        registered, or a strategy config the target's ``configure()``
+        rejected with ``ValueError`` (the strategy keeps its defaults;
+        2.2.0 review B4). Stage-construction failures never appear here
         (restore does not build stages); see
         ``Pipeline.dropped_stages`` for those.
     """
@@ -741,7 +746,17 @@ class PipelineMutator:
                     slot = slots.get(slot_name)
                     if slot is not None and slot.current_impl == impl_name:
                         if slot_config and hasattr(slot.strategy, "configure"):
-                            slot.strategy.configure(slot_config)
+                            try:
+                                slot.strategy.configure(slot_config)
+                            except ValueError as exc:
+                                # Wave-1 made configure() fail loudly on
+                                # bad values; restore must not turn that
+                                # into a hard build failure on the
+                                # lenient path (review B4) — the strategy
+                                # keeps its defaults, the loss is
+                                # recorded + logged.
+                                self._record_bad_config(outcome, target, impl_name, exc)
+                                continue
                         outcome.configured.append(target)
                         continue
                     try:
@@ -756,6 +771,13 @@ class PipelineMutator:
                             outcome.skipped_slots.append(target)
                         else:
                             outcome.skipped_impls.append(f"{target}→{impl_name}")
+                    except ValueError as exc:
+                        # set_strategy → StrategySlot.swap → configure()
+                        # rejected the captured config (the other
+                        # configure call site). The swap never landed,
+                        # so the slot keeps the previous (default)
+                        # strategy — record the rejection, don't raise.
+                        self._record_bad_config(outcome, target, impl_name, exc)
 
                 # Restore stage config
                 if stage_snap.stage_config:
@@ -855,6 +877,32 @@ class PipelineMutator:
         self._locked_stages.discard(order)
 
     # ── Internal ────────────────────────────────────────────
+
+    @staticmethod
+    def _record_bad_config(
+        outcome: RestoreReport, target: str, impl_name: str, exc: ValueError
+    ) -> None:
+        """Record a configure()-rejected strategy config during restore.
+
+        Why (2.2.0 review B4): wave 1 made ``Strategy.configure`` raise
+        ``ValueError`` on bad values, which silently re-broke
+        ``from_manifest(strict=False)`` — manifests 2.1.x accepted now
+        hard-failed at restore time. Both configure call sites in
+        :meth:`restore` funnel here instead: the error lands in
+        ``RestoreReport.errors`` (strict builds refuse via
+        ``has_skips``; ``validate_manifest`` reports the same bad value
+        as ``strategy.config_invalid`` at write time) and a WARNING is
+        logged for the legacy ``report=False`` path, where the report
+        object is discarded.
+        """
+        message = f"{target}: configure({impl_name!r}) rejected snapshot config: {exc}"
+        outcome.errors.append(message)
+        logger.warning(
+            "restore: %s — the strategy keeps its defaults; fix the "
+            "manifest (validate_manifest reports this as "
+            "strategy.config_invalid at write time)",
+            message,
+        )
 
     def _get_stage(self, order: int) -> Any:
         """Get a registered stage or raise."""

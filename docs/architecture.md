@@ -106,6 +106,20 @@ Provider selection is pinned at `stages[6].config["provider"]`. Strict-load reje
 
 See [manifest.md](manifest.md) for the schema and [providers.md](providers.md) for the provider catalog.
 
+## Configuration precedence
+
+Five channels can influence what a run executes with. Highest wins; every channel has exactly one lifetime, so "why did this run use that model?" always has a one-line answer.
+
+| Precedence | Channel | Lifetime | What it may set |
+|---|---|---|---|
+| 1 (highest) | **Per-run `ModelOverrides`** — `run(..., overrides=...)` / `run_stream(..., overrides=...)` | **One run.** Applied to state after the config stomp; the next run's stomp reverts it by construction. Each applied field emits `config.override_applied`. | model, max_tokens, temperature, top_p, thinking_enabled, thinking_budget_tokens |
+| 2 | **`PipelineMutator` mutations / `refresh_runtime(**kwargs)`** — between-turn live mutation | **Until cleared / re-mutated.** Refused mid-run (`MutationLocked` / `RuntimeError`); a refreshed `llm_client` bumps the client generation so reused states re-resolve. | strategy swaps + strategy/stage/model/pipeline config (mutator); every `attach_runtime` kwarg (refresh) |
+| 3 | **`attach_runtime` runtime objects** — construction-time wiring, before the first run | **Construction.** One-shot by contract (gate raises after the first run — use `refresh_runtime` afterwards). `llm_client` is guarded: a provider mismatch against the manifest raises `ConfigError` unless `override_manifest=True` is acknowledged (announced via `runtime.llm_client_override` at the next run start). | memory/system/tool strategies, tool_context, llm_client, session_runtime, hook_runner, mcp_manager, permission rules/mode, subagent_registry |
+| 4 | **Manifest** (`EnvironmentManifest`) | **Declarative.** The single source of truth on disk; each setting has exactly ONE home (model block at the top level, provider at `stages[6].config["provider"]`). `validate_manifest` flags dual-home declarations. | everything reconstructible: stages, strategies + configs, chains, tools, model block, pipeline block, subagents, memory |
+| 5 (lowest) | **`PipelineConfig` defaults** | **Default.** Dataclass defaults — what you get for anything no higher channel set. | model `claude-sonnet-4-6`, max_tokens 8192, max_iterations 50, stream on, … |
+
+Reading order at run start: `PipelineConfig.apply_to_state` stomps the state (4/5, as mutated by 2), then per-run overrides land on top (1). Runtime objects (3) are not state values — they are the live collaborators (clients, managers, strategies) the stages call into; the manifest names *which* to build, attach/refresh supply *the instances*.
+
 ## 2.2.0 surfaces
 
 The 2.2.0 cycle (audit 2026-06-09) promoted the patterns hosts had been hand-rolling into owned library APIs:

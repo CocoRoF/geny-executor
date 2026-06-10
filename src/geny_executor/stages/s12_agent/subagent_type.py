@@ -614,6 +614,18 @@ class SubagentTypeOrchestrator(AgentOrchestrator):
         Shared by the batch path (:meth:`_dispatch_one`) and the
         single-call path (:meth:`run_subagent`) so both produce the
         identical record shape from the identical build context.
+
+        Lifecycle: whatever pipeline THIS dispatch builds is also closed
+        here (2.2.0 review B1) — :class:`ManifestSubagentPipelineFactory`
+        builds a fresh sub-pipeline per call, and a manifest-declared
+        sub-environment may connect MCP servers / tool providers /
+        memory providers that ``Pipeline.from_manifest_async`` started.
+        Dropping the handle leaked one set of those per dispatch (the
+        same stdio-child leak class ``Pipeline.aclose`` exists to stop,
+        one level down). Close is best-effort: host factories may return
+        foreign objects with no ``aclose`` (skipped), and a teardown
+        failure must not poison an otherwise-good sub-result (logged at
+        debug, swallowed).
         """
         base_record: Dict[str, Any] = {
             "agent_type": agent_type,
@@ -657,6 +669,7 @@ class SubagentTypeOrchestrator(AgentOrchestrator):
         try:
             sub_pipeline = await _resolve_pipeline(descriptor.factory, ctx)
         except Exception as exc:
+            # Nothing was built — nothing to close.
             logger.warning(
                 "SubagentTypeOrchestrator: factory for %r raised: %s",
                 agent_type,
@@ -670,31 +683,60 @@ class SubagentTypeOrchestrator(AgentOrchestrator):
                 "error": f"factory_error: {exc}",
             }
 
-        sub_state = PipelineState(session_id=sub_session_id)
-
-        # Thread workspace context to the sub-pipeline.
-        if ws_snapshot is not None:
-            sub_state.shared["workspace_snapshot"] = ws_snapshot
-
         try:
-            result = await sub_pipeline.run(task, sub_state)
-        except Exception as exc:
-            logger.warning(
-                "SubagentTypeOrchestrator: sub-pipeline for %r raised: %s",
-                agent_type,
-                exc,
-                exc_info=True,
-            )
+            sub_state = PipelineState(session_id=sub_session_id)
+
+            # Thread workspace context to the sub-pipeline.
+            if ws_snapshot is not None:
+                sub_state.shared["workspace_snapshot"] = ws_snapshot
+
+            try:
+                result = await sub_pipeline.run(task, sub_state)
+            except Exception as exc:
+                logger.warning(
+                    "SubagentTypeOrchestrator: sub-pipeline for %r raised: %s",
+                    agent_type,
+                    exc,
+                    exc_info=True,
+                )
+                return {
+                    **base_record,
+                    "success": False,
+                    "text": "",
+                    "error": f"run_error: {exc}",
+                }
+
             return {
                 **base_record,
-                "success": False,
-                "text": "",
-                "error": f"run_error: {exc}",
+                "success": getattr(result, "success", True),
+                "text": getattr(result, "text", ""),
+                "error": getattr(result, "error", None),
             }
+        finally:
+            # This dispatch built the pipeline, so this dispatch closes
+            # it — success, run failure, and cancellation alike.
+            await self._aclose_sub_pipeline(sub_pipeline, agent_type)
 
-        return {
-            **base_record,
-            "success": getattr(result, "success", True),
-            "text": getattr(result, "text", ""),
-            "error": getattr(result, "error", None),
-        }
+    @staticmethod
+    async def _aclose_sub_pipeline(sub_pipeline: Any, agent_type: str) -> None:
+        """Best-effort ``aclose()`` on a dispatch-built sub-pipeline.
+
+        ``hasattr`` guard: host factories may return foreign objects
+        (test fakes, host wrappers) that own their own lifecycle —
+        skipping those preserves the pre-B1 contract for them.
+        Exceptions are swallowed at debug level: teardown failure must
+        not turn a successful sub-result into a failure record.
+        """
+        aclose = getattr(sub_pipeline, "aclose", None)
+        if not callable(aclose):
+            return
+        try:
+            result = aclose()
+            if inspect.isawaitable(result):
+                await result
+        except Exception:  # noqa: BLE001 — teardown must not raise
+            logger.debug(
+                "SubagentTypeOrchestrator: aclose() for sub-pipeline of %r failed",
+                agent_type,
+                exc_info=True,
+            )

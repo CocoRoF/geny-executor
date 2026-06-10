@@ -166,6 +166,39 @@ async def test_run_stream_background_task_holds_the_lock():
     assert pipeline.run_in_progress is False
 
 
+# ── lock window opens before the first await (review N1) ────────────
+
+
+@pytest.mark.asyncio
+async def test_run_lock_holds_during_pipeline_start_emit():
+    """The increment used to land AFTER the awaited pipeline.start emit
+    — a mutation scheduled into that window bypassed MutationLocked.
+    The bus handler observes the counter at emit time."""
+    pipeline, _ = _make_pipeline()
+    observed: list = []
+    pipeline.on(
+        "pipeline.start", lambda event: observed.append(pipeline.run_in_progress)
+    )
+
+    await pipeline.run("turn")
+    assert observed == [True]
+
+
+@pytest.mark.asyncio
+async def test_run_stream_lock_holds_during_pipeline_start_emit():
+    pipeline, _ = _make_pipeline()
+    observed: list = []
+    pipeline.on(
+        "pipeline.start", lambda event: observed.append(pipeline.run_in_progress)
+    )
+
+    async for _event in pipeline.run_stream("turn"):
+        pass
+    assert observed == [True]
+    # Balanced once the stream drains — no counter leak.
+    assert pipeline.run_in_progress is False
+
+
 # ── lock_stage stays a working manual flag ───────────────────────────
 
 

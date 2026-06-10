@@ -10,6 +10,7 @@ and announced via ``config.override_applied`` events.
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 
 import pytest
@@ -153,3 +154,75 @@ async def test_override_events_visible_in_run_stream():
         "value": 4096,
         "source": "per_run",
     }
+
+
+@pytest.mark.asyncio
+async def test_override_events_attributed_to_their_own_run_under_concurrency():
+    """2.2.0 review B2: the override events were stashed on a
+    pipeline-global FIFO flushed by whichever run started next, so two
+    overlapping run_streams could deliver one run's overrides into the
+    OTHER run's stream (wrong run_id). They now queue per-state."""
+
+    class _SlowProvider(MockProvider):
+        async def create_message(self, request):  # noqa: ANN001
+            await asyncio.sleep(0.01)  # force the runs to interleave
+            return await super().create_message(request)
+
+    pipeline = Pipeline(
+        PipelineConfig(name="overrides-concurrent", model=ModelConfig(max_tokens=8192))
+    )
+    pipeline.register_stage(InputStage())
+    pipeline.register_stage(APIStage(provider=_SlowProvider(default_text="ok")))
+    pipeline.register_stage(ParseStage())
+    pipeline.register_stage(YieldStage())
+
+    state_with = PipelineState(session_id="with-overrides")
+    state_without = PipelineState(session_id="plain")
+
+    async def _consume(text, state, **kwargs):
+        return [e async for e in pipeline.run_stream(text, state, **kwargs)]
+
+    # Start the overridden run first so its events are stashed before
+    # the plain run begins — the exact window the global FIFO leaked in.
+    events_with, events_without = await asyncio.gather(
+        _consume("one", state_with, overrides=ModelOverrides(max_tokens=1024)),
+        _consume("two", state_without),
+    )
+
+    applied = [e for e in events_with if e.type == "config.override_applied"]
+    leaked = [e for e in events_without if e.type == "config.override_applied"]
+    assert [e.data["field"] for e in applied] == ["max_tokens"]
+    assert leaked == []
+
+    # run_id attribution: the override event carries the overridden
+    # run's own correlation id.
+    (run_id_with,) = {e.run_id for e in events_with if e.run_id}
+    assert applied[0].run_id == run_id_with
+
+
+@pytest.mark.asyncio
+async def test_interleaved_run_does_not_flush_another_runs_overrides():
+    """Deterministic B2 shape: a run_stream is started (its overrides
+    are stashed at _init_state) but its background task has not flushed
+    yet when a second run()'s _run_phases begins — the second run must
+    NOT deliver the first run's override events as its own."""
+    pipeline = _make_pipeline()
+    state_a = PipelineState(session_id="stream-a")
+    state_b = PipelineState(session_id="plain-b")
+
+    gen_a = pipeline.run_stream(
+        "one", state_a, overrides=ModelOverrides(model="claude-opus-4-7")
+    )
+    # First __anext__ runs A's _init_state (overrides stashed) and
+    # yields pipeline.start before A's background task flushes anything.
+    first = await gen_a.__anext__()
+    assert first.type == "pipeline.start"
+
+    result_b = await pipeline.run("two", state_b)
+    leaked = [e for e in result_b.events if e["type"] == "config.override_applied"]
+    assert leaked == []
+
+    remaining = [e async for e in gen_a]
+    applied = [e for e in remaining if e.type == "config.override_applied"]
+    assert [e.data["field"] for e in applied] == ["model"]
+    assert {e.session_id for e in applied} == {"stream-a"}

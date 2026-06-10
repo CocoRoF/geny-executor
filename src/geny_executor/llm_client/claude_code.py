@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import logging
 import os
+from contextlib import aclosing
 from typing import Any, AsyncIterator, Callable, Dict, List, Optional, Sequence
 
 from geny_executor.core.config import ModelConfig
@@ -527,40 +528,48 @@ class ClaudeCodeCLIClient(BaseClient):
         accum = StreamJsonAccumulator(model=model_config.model, cli_version=cli_version)
 
         try:
-            async for raw in runner.stream(argv, stdin_iter=aiter_bytes(stdin)):
-                line_obj = parse_stream_json_line(raw)
-                if line_obj is None:
-                    continue
-                # Surface CLI-side errors as APIError so the stage's
-                # retry/escalate path runs instead of silently producing
-                # an empty response. (Malformed lines have no ``type``
-                # key — they fall through to ``feed`` for counting.)
-                if str(line_obj.get("type", "")) == "error":
-                    raise APIError(
-                        self._with_version(
-                            f"Claude Code CLI reported error: "
-                            f"{line_obj.get('message') or line_obj!r}"
-                        ),
-                        category=ErrorCategory.CLI_PROTOCOL_ERROR,
-                    )
-                # Surface the authentication_failed annotation that the
-                # CLI emits on the assistant frame when no credential
-                # is available — without this we'd swallow the
-                # "Not logged in" placeholder text as the assistant's
-                # answer and call the session "successful".
-                if str(line_obj.get("error", "")) == "authentication_failed":
-                    raise APIError(
-                        self._with_version(
-                            "Claude Code CLI is not authenticated (claude --print "
-                            "returned error=authentication_failed). Sign in via "
-                            "Settings → LLM Backends → Claude Code (CLI)."
-                        ),
-                        category=ErrorCategory.CLI_AUTH_FAILED,
-                    )
+            # ``aclosing`` finalizes the runner generator *synchronously*
+            # when this generator is closed mid-answer (SSE consumer
+            # disconnect → GeneratorExit at a ``yield`` below). Without
+            # it the inner generator — and the kill ladder in its
+            # ``finally`` — would only run whenever the GC's asyncgen
+            # hook got around to it, leaving a live ``claude`` child in
+            # the meantime (audit 2026-06-09 §3.7).
+            async with aclosing(runner.stream(argv, stdin_iter=aiter_bytes(stdin))) as lines:
+                async for raw in lines:
+                    line_obj = parse_stream_json_line(raw)
+                    if line_obj is None:
+                        continue
+                    # Surface CLI-side errors as APIError so the stage's
+                    # retry/escalate path runs instead of silently producing
+                    # an empty response. (Malformed lines have no ``type``
+                    # key — they fall through to ``feed`` for counting.)
+                    if str(line_obj.get("type", "")) == "error":
+                        raise APIError(
+                            self._with_version(
+                                f"Claude Code CLI reported error: "
+                                f"{line_obj.get('message') or line_obj!r}"
+                            ),
+                            category=ErrorCategory.CLI_PROTOCOL_ERROR,
+                        )
+                    # Surface the authentication_failed annotation that the
+                    # CLI emits on the assistant frame when no credential
+                    # is available — without this we'd swallow the
+                    # "Not logged in" placeholder text as the assistant's
+                    # answer and call the session "successful".
+                    if str(line_obj.get("error", "")) == "authentication_failed":
+                        raise APIError(
+                            self._with_version(
+                                "Claude Code CLI is not authenticated (claude --print "
+                                "returned error=authentication_failed). Sign in via "
+                                "Settings → LLM Backends → Claude Code (CLI)."
+                            ),
+                            category=ErrorCategory.CLI_AUTH_FAILED,
+                        )
 
-                # Feed accumulator + stream canonical events to consumer.
-                for event in accum.feed(line_obj):
-                    yield event
+                    # Feed accumulator + stream canonical events to consumer.
+                    for event in accum.feed(line_obj):
+                        yield event
 
             # Wire-drift telemetry must run before the terminal envelope:
             # strict_wire failures should look like a failed call, not a

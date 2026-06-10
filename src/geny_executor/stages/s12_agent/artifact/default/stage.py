@@ -97,6 +97,21 @@ class AgentStage(Stage[Any, Any]):
         return False
 
     async def execute(self, input: Any, state: PipelineState) -> Any:
+        # Enforce the delegation cap BEFORE dispatch (2.2.0 wave 4,
+        # config liveness — the field was schema-validated and stored
+        # but nothing read it). Requests beyond the cap are truncated;
+        # the drop is announced via ``agent.delegations_capped`` so the
+        # operator sees the cap acting instead of silently losing work.
+        requested = len(state.delegate_requests)
+        cap = self._max_delegations
+        capped = requested > cap
+        if capped:
+            state.delegate_requests = list(state.delegate_requests[:cap])
+            state.add_event(
+                "agent.delegations_capped",
+                {"requested": requested, "cap": cap},
+            )
+
         state.add_event(
             "agent.orchestrate_start",
             {
@@ -104,6 +119,16 @@ class AgentStage(Stage[Any, Any]):
                 "delegate_count": len(state.delegate_requests),
             },
         )
+
+        if capped and not state.delegate_requests:
+            # cap=0 with pending requests: delegation is disabled this
+            # turn — skip the orchestrator dispatch entirely so no
+            # sub-agent runs (and no sub-results sneak into state).
+            state.add_event(
+                "agent.orchestrate_complete",
+                {"delegated": False, "sub_result_count": 0},
+            )
+            return input
 
         result = await self._orchestrator.orchestrate(state)
 

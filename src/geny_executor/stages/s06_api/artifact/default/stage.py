@@ -112,7 +112,16 @@ class APIStage(Stage[Any, APIResponse]):
         stream: bool = True,
         timeout_ms: Optional[int] = None,
     ):
-        self._stream_default = stream
+        # ``stream`` is two values in one knob (2.2.0 wave 4, config
+        # liveness): the constructor arg is the stage's *fallback* when
+        # nothing else decided (kept ``bool`` for back-compat — direct
+        # constructions like ``APIStage(stream=True)`` must NOT override
+        # a host's per-run ``state.stream``), while ``update_config``
+        # records an *explicit* operator choice into ``_stream_config``
+        # (``None`` = unset) that wins over ``state.stream``. See
+        # ``_resolve_stream`` for the priority ladder.
+        self._stream_default = bool(stream)
+        self._stream_config: Optional[bool] = None
         self._timeout_ms = timeout_ms
         # Test-fixture conveniences. The production manifest path leaves
         # these empty; ``state.llm_client`` built from
@@ -208,7 +217,12 @@ class APIStage(Stage[Any, APIResponse]):
                     name="stream",
                     type="boolean",
                     label="Stream",
-                    description="Use Server-Sent Events streaming when supported.",
+                    description=(
+                        "Use Server-Sent Events streaming when supported. "
+                        "When set explicitly, this stage-level knob wins over "
+                        "the run-level stream flag; leave unset (null) to "
+                        "follow the run-level flag (default: streaming on)."
+                    ),
                     default=True,
                     ui_widget="toggle",
                 ),
@@ -224,10 +238,15 @@ class APIStage(Stage[Any, APIResponse]):
         )
 
     def get_config(self) -> Dict[str, Any]:
+        # ``stream`` round-trips the tri-state: ``None`` (unset — follow
+        # ``state.stream``) must survive snapshot/restore, otherwise every
+        # restored pipeline would pin streaming at the stage level and
+        # silently override the host's per-run flag. Schema validation
+        # tolerates ``None`` (non-required fields skip the type check).
         return {
             "provider": self._provider_name,
             "base_url": self._base_url or "",
-            "stream": self._stream_default,
+            "stream": self._stream_config,
             "timeout_ms": self._timeout_ms or 0,
         }
 
@@ -241,7 +260,11 @@ class APIStage(Stage[Any, APIResponse]):
         if "base_url" in config:
             self._base_url = str(config["base_url"]) or None
         if "stream" in config:
-            self._stream_default = bool(config["stream"])
+            value = config["stream"]
+            # ``None`` clears the explicit choice (back to "follow the
+            # run-level flag"); a bool records an explicit stage-level
+            # decision that _resolve_stream ranks above ``state.stream``.
+            self._stream_config = None if value is None else bool(value)
         if "timeout_ms" in config:
             value = int(config["timeout_ms"])
             self._timeout_ms = value if value > 0 else None
@@ -278,9 +301,23 @@ class APIStage(Stage[Any, APIResponse]):
         return override
 
     def _resolve_stream(self, state: PipelineState) -> bool:
+        """Resolve the effective streaming mode for this call.
+
+        Priority (2.2.0 wave 4, audit §3.1 channel funnel — pre-fix the
+        stage knob was a decoy because ``state.stream`` always answered
+        first and ``PipelineConfig.apply_to_state`` stomps it every run):
+
+        1. Stage config, when *explicitly* set via ``update_config``
+           (``_stream_config is not None``) — the operator asked for it.
+        2. ``state.stream`` — the host-set per-run flag
+           (``PipelineConfig.apply_to_state`` / ``ModelOverrides``).
+        3. The constructor fallback (default ``True``).
+        """
+        if self._stream_config is not None:
+            return self._stream_config
         state_stream = getattr(state, "stream", None)
         if state_stream is not None:
-            return state_stream
+            return bool(state_stream)
         return self._stream_default
 
     def _resolve_client(self, state: PipelineState) -> BaseClient:

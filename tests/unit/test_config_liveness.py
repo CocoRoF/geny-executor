@@ -123,6 +123,19 @@ async def _probe_s03_prompt() -> None:
     assert state.system == "You are the liveness probe."
 
 
+async def _probe_s03_template_vars() -> None:
+    """template_vars substitute {name} placeholders into the built prompt."""
+    from geny_executor.stages.s03_system import SystemStage
+
+    stage = SystemStage()
+    stage.update_config(
+        {"prompt": "Hello {name}", "template_vars": {"name": "Liveness"}}
+    )
+    state = PipelineState()
+    await stage.execute("in", state)
+    assert "Liveness" in str(state.system)
+
+
 class _CountingGuard:
     """Minimal Guard double recording whether it ran."""
 
@@ -226,6 +239,23 @@ async def _probe_s06_base_url() -> None:
     assert client._base_url == "http://probe.local/v1"
 
 
+async def _probe_s06_stream() -> None:
+    """stream=False at the stage level routes through the non-streaming
+    client call (no text.delta events), winning over state.stream=True."""
+    from geny_executor.stages.s06_api import APIStage, MockProvider
+
+    stage = APIStage(provider=MockProvider(default_text="alpha beta"))
+    stage.update_config({"stream": False})
+    state = PipelineState(session_id="stream-knob")
+    state.add_message("user", "hi")
+    await stage.execute("in", state)
+    deltas = [e for e in state.events if e["type"] == "text.delta"]
+    assert deltas == [], (
+        "stream=False at the stage level should route through the "
+        "non-streaming client call (no text.delta events)"
+    )
+
+
 async def _probe_s06_timeout_ms() -> None:
     """timeout_ms reaches the call site: clients that can't take the
     kwarg get the api.timeout_unsupported event instead of a silent drop."""
@@ -246,6 +276,49 @@ async def _probe_s06_timeout_ms() -> None:
     state2.add_message("user", "hi")
     await stage2.execute("in", state2)
     assert _events(state2) == ["api.timeout_unsupported"]
+
+
+class _RecordingOrchestrator:
+    """AgentOrchestrator double that always wants to delegate."""
+
+    name = "recording"
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def configure(self, config):  # noqa: ANN001 — Strategy surface
+        pass
+
+    async def orchestrate(self, state):  # noqa: ANN001
+        from geny_executor.stages.s12_agent.types import AgentResult
+
+        self.calls += 1
+        return AgentResult(
+            delegated=True,
+            sub_results=[{"agent_type": "probe", "success": True, "text": "hi"}],
+        )
+
+
+async def _probe_s12_max_delegations() -> None:
+    """max_delegations truncates delegate_requests before dispatch; cap=0
+    refuses delegation outright and announces agent.delegations_capped."""
+    from geny_executor.stages.s12_agent import AgentStage
+
+    orchestrator = _RecordingOrchestrator()
+    stage = AgentStage(orchestrator=orchestrator)
+    stage.update_config({"max_delegations": 0})
+    state = PipelineState(session_id="delegation-cap")
+    state.delegate_requests = [{"agent_type": "probe", "task": "x"}]
+
+    await stage.execute("in", state)
+
+    assert state.agent_results == [], (
+        "max_delegations=0 must refuse delegation — sub-agent results "
+        "were appended anyway"
+    )
+    assert orchestrator.calls == 0, "orchestrator dispatched despite cap=0"
+    capped = [e for e in state.events if e["type"] == "agent.delegations_capped"]
+    assert [e["data"] for e in capped] == [{"requested": 1, "cap": 0}]
 
 
 async def _probe_s16_max_turns() -> None:
@@ -329,16 +402,16 @@ async def _probe_s18_persistence_path() -> None:
 LIVENESS: Dict[Tuple[int, str], Entry] = {
     (2, "stateless"): Probe(_probe_s02_stateless),
     (3, "prompt"): Probe(_probe_s03_prompt),
-    (3, "template_vars"): Decoy("test_decoy_s03_template_vars_reach_built_prompt"),
+    (3, "template_vars"): Probe(_probe_s03_template_vars),
     (4, "max_chain_length"): Probe(_probe_s04_max_chain_length),
     (4, "fail_fast"): Probe(_probe_s04_fail_fast),
     (5, "cache_prefix"): Probe(_probe_s05_cache_prefix),
     (6, "provider"): Probe(_probe_s06_provider),
     (6, "base_url"): Probe(_probe_s06_base_url),
-    (6, "stream"): Decoy("test_decoy_s06_stream_knob_disables_streaming"),
+    (6, "stream"): Probe(_probe_s06_stream),
     (6, "timeout_ms"): Probe(_probe_s06_timeout_ms),
     (10, "max_concurrency"): CoveredBy("tests/unit/test_tool_stage_max_concurrency.py"),
-    (12, "max_delegations"): Decoy("test_decoy_s12_max_delegations_caps_delegation"),
+    (12, "max_delegations"): Probe(_probe_s12_max_delegations),
     (16, "max_turns"): Probe(_probe_s16_max_turns),
     (16, "early_stop_on"): Probe(_probe_s16_early_stop_on),
     (18, "stateless"): Probe(_probe_s18_stateless),
@@ -430,104 +503,8 @@ def test_reserved_fields_say_so_in_their_description() -> None:
 # ---------------------------------------------------------------------------
 # Decoy probes — strict xfail; flipping one means the field got wired
 # and its LIVENESS entry must become Probe(...)
+#
+# (Empty since 2.2.0 wave 4: the s03 template_vars / s06 stream /
+# s12 max_delegations decoys were wired and their entries upgraded to
+# Probe(...) above. The Decoy mechanism stays for the next inert field.)
 # ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-@pytest.mark.xfail(
-    reason=(
-        "s03 template_vars is a decoy: SystemStage stores/round-trips the "
-        "dict but no builder ever receives it — the declared contract "
-        "('available to composable prompt builders') has no code path. "
-        "Wiring belongs in SystemStage.execute/builders (pass "
-        "_template_vars into PromptBuilder.build or format the static "
-        "prompt), or the field must be marked reserved."
-    ),
-    strict=True,
-)
-async def test_decoy_s03_template_vars_reach_built_prompt() -> None:
-    from geny_executor.stages.s03_system import SystemStage
-
-    stage = SystemStage()
-    stage.update_config(
-        {"prompt": "Hello {name}", "template_vars": {"name": "Liveness"}}
-    )
-    state = PipelineState()
-    await stage.execute("in", state)
-    assert "Liveness" in str(state.system)
-
-
-@pytest.mark.asyncio
-@pytest.mark.xfail(
-    reason=(
-        "s06 stream is a decoy: _resolve_stream consults state.stream "
-        "first, and PipelineState.stream defaults True (plus "
-        "PipelineConfig.apply_to_state stomps it every run) — the "
-        "stage-level knob can never take effect through any channel. "
-        "Fix belongs in the s06 stream-resolution priority (audit §3.1 "
-        "channel funnel), or the field must be marked reserved."
-    ),
-    strict=True,
-)
-async def test_decoy_s06_stream_knob_disables_streaming() -> None:
-    from geny_executor.stages.s06_api import APIStage, MockProvider
-
-    stage = APIStage(provider=MockProvider(default_text="alpha beta"))
-    stage.update_config({"stream": False})
-    state = PipelineState(session_id="stream-knob")
-    state.add_message("user", "hi")
-    await stage.execute("in", state)
-    deltas = [e for e in state.events if e["type"] == "text.delta"]
-    assert deltas == [], (
-        "stream=False at the stage level should route through the "
-        "non-streaming client call (no text.delta events)"
-    )
-
-
-class _RecordingOrchestrator:
-    """AgentOrchestrator double that always wants to delegate."""
-
-    name = "recording"
-
-    def __init__(self) -> None:
-        self.calls = 0
-
-    def configure(self, config):  # noqa: ANN001 — Strategy surface
-        pass
-
-    async def orchestrate(self, state):  # noqa: ANN001
-        from geny_executor.stages.s12_agent.types import AgentResult
-
-        self.calls += 1
-        return AgentResult(
-            delegated=True,
-            sub_results=[{"agent_type": "probe", "success": True, "text": "hi"}],
-        )
-
-
-@pytest.mark.asyncio
-@pytest.mark.xfail(
-    reason=(
-        "s12 max_delegations is a decoy: AgentStage stores/round-trips the "
-        "int but neither execute() nor any orchestrator reads it — there "
-        "is no delegation cap. Wiring belongs in AgentStage.execute "
-        "(enforce the cap around orchestrate()/sub_results) or the field "
-        "must be marked reserved."
-    ),
-    strict=True,
-)
-async def test_decoy_s12_max_delegations_caps_delegation() -> None:
-    from geny_executor.stages.s12_agent import AgentStage
-
-    orchestrator = _RecordingOrchestrator()
-    stage = AgentStage(orchestrator=orchestrator)
-    stage.update_config({"max_delegations": 0})
-    state = PipelineState(session_id="delegation-cap")
-    state.delegate_requests = [{"agent_type": "probe", "task": "x"}]
-
-    await stage.execute("in", state)
-
-    assert state.agent_results == [], (
-        "max_delegations=0 must refuse delegation — sub-agent results "
-        "were appended anyway"
-    )

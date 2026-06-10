@@ -229,3 +229,19 @@ if errors:
   `begin_turn()`, called automatically when the reused state re-enters
   `run()` / `run_stream()`. Pass `state=` explicitly — a `state=None`
   call still creates a fresh state per turn.
+- **`total_cost_usd` is per-turn since 2.2.0.** `begin_turn()` resets
+  it, so on a reused state it now reads "this turn's cost", not a
+  session-running total (which is what hosts billing per turn actually
+  wanted — the old accumulate-forever value double-counted). The
+  session-cumulative figure moved to `state.session_cost_usd`, folded
+  forward at the end of every run. Hosts that displayed
+  `total_cost_usd` as a session total should read `session_cost_usd`
+  instead.
+- **Pre-2.2 snapshots may pin streaming at Stage 6.** The stage-level
+  `stream` knob is tri-state since 2.2.0 (`None` = follow the run-level
+  `state.stream`; `True`/`False` = explicit operator pin that wins).
+  Old snapshots/manifests that serialized the previous always-on
+  default as `"stream": true` rehydrate as an explicit pin. If
+  streaming should follow the run-level flag again, clear the pin:
+  `mutator.update_stage_config(6, {"stream": None})` (or
+  `api_stage.update_config({"stream": None})`).

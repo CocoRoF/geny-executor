@@ -12,14 +12,13 @@ pid to ``$FAKE_CLAUDE_PID_FILE`` so tests can poll the process):
 
   * ``_kill_tree`` semantics — SIGTERM→grace→SIGKILL on the process
     group actually reaps a live child, and is a no-op on an exited one.
-  * The CLITimeout path through ``stream()`` kills the child (the one
-    cancellation path that works today).
-  * THE PREDICTED BUG (strict xfail): closing the ``stream()``
-    generator mid-output — exactly what a consumer disconnect does —
-    does NOT kill the child and does NOT reap the stdin-drain task.
-    ``stream()``'s ``finally`` block only cancels the stderr collector;
-    the fix belongs there (kill_tree + drain-task cancel alongside
-    ``stderr_task.cancel()``), at which point these xfails flip.
+  * The CLITimeout path through ``stream()`` kills the child.
+  * The consumer-disconnect path (fixed in 2.2.0 wave 4): closing the
+    ``stream()`` generator mid-output — exactly what a consumer
+    disconnect does — runs the kill ladder and cancels + reaps the
+    stdin-drain task from ``stream()``'s ``finally`` block, and
+    ``ClaudeCodeCLIClient.create_message_stream`` propagates the close
+    to the runner generator deterministically via ``aclosing``.
 """
 
 from __future__ import annotations
@@ -176,16 +175,6 @@ async def test_stream_timeout_kills_child(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(
-    reason=(
-        "audit §3.7 predicted bug: closing CLIProcessRunner.stream() "
-        "mid-output (the SSE consumer-disconnect path) does not kill the "
-        "child — stream()'s finally block only cancels the stderr task. "
-        "Fix belongs in _cli_runtime.stream()'s finally: _kill_tree(proc) "
-        "when the generator exits before the child has been reaped."
-    ),
-    strict=True,
-)
 async def test_runner_stream_generator_close_kills_child(tmp_path: Path) -> None:
     pid_file = tmp_path / "pid"
     runner = _runner("stream_then_hang", pid_file)
@@ -210,17 +199,6 @@ async def test_runner_stream_generator_close_kills_child(tmp_path: Path) -> None
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(
-    reason=(
-        "audit §3.7 companion leak: stream() spawns the _drain_stdin task "
-        "fire-and-forget; on generator close nothing cancels it, so a "
-        "still-producing stdin_iter pins the task (and the child's stdin "
-        "pipe) forever. Fix belongs in the same _cli_runtime.stream() "
-        "finally block: keep the task handle and cancel it next to "
-        "stderr_task.cancel()."
-    ),
-    strict=True,
-)
 async def test_runner_stream_generator_close_reaps_stdin_drain_task(
     tmp_path: Path,
 ) -> None:
@@ -275,16 +253,6 @@ async def test_stdin_drain_task_finishes_on_normal_completion(tmp_path: Path) ->
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(
-    reason=(
-        "audit §3.7 predicted bug, client surface: aclosing "
-        "ClaudeCodeCLIClient.create_message_stream mid-answer orphans the "
-        "CLI child. Same root cause as the runner-level xfail — the fix "
-        "is _cli_runtime.stream()'s finally block killing the tree; this "
-        "test pins that the fix actually reaches the surface hosts call."
-    ),
-    strict=True,
-)
 async def test_client_stream_close_kills_child_process_group(tmp_path: Path) -> None:
     pid_file = tmp_path / "pid"
     client = ClaudeCodeCLIClient(

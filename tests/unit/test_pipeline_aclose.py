@@ -145,3 +145,44 @@ def test_sync_close_outside_loop_blocks_until_done():
     pipeline.close()
 
     assert mcp.disconnect_calls == 1
+
+
+# ── closed-pipeline guard (review N2) ─────────────────────────────────
+
+
+def _runnable_pipeline() -> Pipeline:
+    from geny_executor.stages.s01_input import InputStage
+    from geny_executor.stages.s06_api import APIStage, MockProvider
+    from geny_executor.stages.s09_parse import ParseStage
+    from geny_executor.stages.s21_yield import YieldStage
+
+    pipeline = Pipeline(PipelineConfig(name="closed-guard"))
+    pipeline.register_stage(InputStage())
+    pipeline.register_stage(APIStage(provider=MockProvider(default_text="ok")))
+    pipeline.register_stage(ParseStage())
+    pipeline.register_stage(YieldStage())
+    return pipeline
+
+
+@pytest.mark.asyncio
+async def test_run_on_closed_pipeline_raises():
+    """A closed pipeline used to run silently with MCP disconnected —
+    every tool call degraded with no hint why. Fail fast instead."""
+    pipeline = _runnable_pipeline()
+    result = await pipeline.run("before close")
+    assert result.success is True
+
+    await pipeline.aclose()
+
+    with pytest.raises(RuntimeError, match="pipeline is closed — build a new one"):
+        await pipeline.run("after close")
+
+
+@pytest.mark.asyncio
+async def test_run_stream_on_closed_pipeline_raises():
+    pipeline = _runnable_pipeline()
+    await pipeline.aclose()
+
+    agen = pipeline.run_stream("after close")
+    with pytest.raises(RuntimeError, match="pipeline is closed — build a new one"):
+        await agen.__anext__()

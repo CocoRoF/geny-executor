@@ -46,7 +46,8 @@ from typing import Any, Dict, List
 
 #: Bumped when the catalogue gains members (append-only). Hosts can pin
 #: a minimum version to assert the names they consume exist.
-EVENT_CATALOG_VERSION = 1
+#: v2: + ``agent.delegations_capped`` (Stage 12 max_delegations wiring).
+EVENT_CATALOG_VERSION = 2
 
 
 class EventTypes(str, Enum):
@@ -144,6 +145,7 @@ class EventTypes(str, Enum):
     # ── Stage 12: Agent ──
     AGENT_ORCHESTRATE_START = "agent.orchestrate_start"
     AGENT_ORCHESTRATE_COMPLETE = "agent.orchestrate_complete"
+    AGENT_DELEGATIONS_CAPPED = "agent.delegations_capped"
 
     # ── Stage 13: Task registry ──
     TASK_REGISTERED = "task.registered"
@@ -452,6 +454,10 @@ PAYLOADS: Dict[EventTypes, Dict[str, str]] = {
     EventTypes.AGENT_ORCHESTRATE_COMPLETE: {
         "delegated": "bool",
         "sub_result_count": "int",
+    },
+    EventTypes.AGENT_DELEGATIONS_CAPPED: {
+        "requested": "int — delegate requests queued this turn",
+        "cap": "int — the max_delegations limit that truncated them",
     },
     EventTypes.TASK_REGISTERED: {
         "task_id": "str",

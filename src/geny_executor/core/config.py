@@ -108,6 +108,10 @@ class ModelOverrides:
 
     Frozen: an overrides object is a value, not a channel — build a
     new one per run rather than mutating a shared instance.
+
+    This is the HIGHEST-precedence configuration channel (per-run
+    overrides > mutator/refresh > attach_runtime > manifest >
+    defaults); see docs/architecture.md#configuration-precedence.
     """
 
     model: Optional[str] = None

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 
 @dataclass
@@ -244,6 +244,16 @@ class PipelineState:
     # can attribute events without wrapping emit sites. Private: the
     # pipeline owns it; hosts read it off events, not the state.
     _run_id: str = field(default="", repr=False)
+
+    # ── Deferred run-start events (set by Pipeline._init_state) ──
+    # (event_type, data) pairs queued by THIS run's per-run overrides
+    # (``config.override_applied``) and flushed by the owning run's
+    # ``_run_phases``. Per-state on purpose (2.2.0 review B2): a
+    # pipeline-global FIFO was flushed by whichever run started next,
+    # so overlapping runs on a shared pipeline misattributed override
+    # events to the wrong run_id. Overlapping runs each get their own
+    # state, hence their own queue. Private: the pipeline owns it.
+    _pending_run_events: List[Tuple[str, Dict[str, Any]]] = field(default_factory=list, repr=False)
 
     # ── Turn accounting (set by Pipeline._init_state) ──
     # Number of runs this state object has entered. >0 marks the state

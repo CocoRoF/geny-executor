@@ -4,7 +4,7 @@
 <!-- Regenerate: python scripts/gen_event_docs.py -->
 
 > Generated from `geny_executor.events.catalog` on 2026-06-10.
-> Catalogue version: **1** · events: **102**
+> Catalogue version: **2** · events: **103**
 
 Every event name the engine emits, value == wire string. The enum
 is a *names registry*, not a rename — consumers matching raw strings
@@ -527,6 +527,15 @@ Enum member: `EventTypes.AGENT_ORCHESTRATE_COMPLETE`
 |---|---|
 | `delegated` | bool |
 | `sub_result_count` | int |
+
+### `agent.delegations_capped`
+
+Enum member: `EventTypes.AGENT_DELEGATIONS_CAPPED`
+
+| Field | Description |
+|---|---|
+| `requested` | int — delegate requests queued this turn |
+| `cap` | int — the max_delegations limit that truncated them |
 
 ## Stage 13 — Task registry
 

@@ -69,6 +69,13 @@ class VLLMClient(OpenAIClient):
 
             client = VLLMClient(base_url=...)
             client.configure_capabilities(supports_tools=True, supports_tool_choice=True)
+
+        The declared ``drops`` tuple is interpreted against the upgraded
+        flags: the drop application skips any field whose matching
+        ``supports_*`` flag is True on the instance (see
+        ``BaseClient._apply_declared_drops``), so the opt-in above
+        really does let ``tools`` / ``tool_choice`` reach the server —
+        no need to rewrite ``drops`` here.
         """
         # type-ignore: dataclasses.replace stubs can't type heterogeneous
         # **kwargs against the per-field types; values are validated by

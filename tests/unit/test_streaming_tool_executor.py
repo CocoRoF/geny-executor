@@ -400,3 +400,90 @@ class TestInterleavedMix:
         assert u.started_at[0] >= s1.finished_at[0] - 0.005
         # s2 started only after u finished (queued behind barrier)
         assert s2.started_at[0] >= u.finished_at[0] - 0.005
+
+
+# ─────────────────────────────────────────────────────────────────
+# Slot registration — manifests can elect it (2.2.0 review N4)
+# ─────────────────────────────────────────────────────────────────
+
+
+class TestExecutorSlotRegistration:
+    def test_streaming_is_in_the_executor_slot_registry(self) -> None:
+        """The stage's ConfigSchema named StreamingToolExecutor since
+        Phase 2 W4, but the slot registry never carried it — a manifest
+        electing 'streaming' hit strategy.unknown_impl."""
+        from geny_executor.stages.s10_tool.artifact.default.stage import ToolStage
+
+        slot = ToolStage().get_strategy_slots()["executor"]
+        assert "streaming" in slot.available_impls
+        assert slot.registry["streaming"] is StreamingToolExecutor
+
+    def test_slot_swap_builds_and_configures(self) -> None:
+        from geny_executor.stages.s10_tool.artifact.default.stage import ToolStage
+
+        stage = ToolStage()
+        stage.set_strategy("executor", "streaming", {"max_concurrency": 3})
+        slot = stage.get_strategy_slots()["executor"]
+        assert slot.current_impl == "streaming"
+        assert slot.strategy.get_config() == {"max_concurrency": 3}
+
+    def test_bad_max_concurrency_rejected_at_configure(self) -> None:
+        with pytest.raises(ValueError, match="max_concurrency"):
+            StreamingToolExecutor().configure({"max_concurrency": "lots"})
+
+    def test_execute_all_batch_adapter_matches_contract(self) -> None:
+        """Stage 10 drives slot strategies through execute_all — the
+        batch adapter must produce input-ordered results and per-call
+        events, and stay reusable across turns (the add/drain machinery
+        is single-use; the adapter is not)."""
+
+        async def _run():
+            a = _TimedTool("A", concurrency_safe=True, sleep_ms=10)
+            u = _TimedTool("U", concurrency_safe=False, sleep_ms=10)
+            reg = _make_registry([a, u])
+            router = RegistryRouter(reg)
+            ex = StreamingToolExecutor(registry=reg)
+            ctx = ToolContext()
+            events: List[Any] = []
+
+            def on_event(event_type: str, data: Dict[str, Any]) -> None:
+                events.append((event_type, data["tool_use_id"]))
+
+            first = await ex.execute_all(
+                [_call("A", 0), _call("U", 1)], router, ctx, on_event=on_event
+            )
+            # Second turn on the SAME strategy instance — would raise
+            # "add() after drain()" without the per-batch worker.
+            second = await ex.execute_all([_call("A", 2)], router, ctx)
+            empty = await ex.execute_all([], router, ctx)
+            return first, second, empty, events
+
+        first, second, empty, events = asyncio.run(_run())
+        assert [r["tool_use_id"] for r in first] == ["tu_0", "tu_1"]
+        assert [r["tool_use_id"] for r in second] == ["tu_2"]
+        assert empty == []
+        assert ("tool.call_start", "tu_0") in events
+        assert ("tool.call_complete", "tu_1") in events
+
+    def test_manifest_elected_streaming_executor_builds_strict(self) -> None:
+        """A manifest declaring strategies.executor='streaming' passes
+        validate_manifest and builds strict with the executor elected."""
+        from geny_executor import build_manifest, validate_manifest
+        from geny_executor.core.environment import EnvironmentManifest
+        from geny_executor.core.pipeline import Pipeline
+
+        data = build_manifest("worker_adaptive", provider="anthropic").to_dict()
+        for entry in data["stages"]:
+            if entry["name"] == "tool":
+                entry.setdefault("strategies", {})["executor"] = "streaming"
+        manifest = EnvironmentManifest.from_dict(data)
+
+        assert not [
+            i
+            for i in validate_manifest(manifest)
+            if i.code == "strategy.unknown_impl"
+        ]
+        pipeline = Pipeline.from_manifest(manifest, api_key="sk-test", strict=True)
+        tool_stage = next(s for s in pipeline.stages if s.name == "tool")
+        slot = tool_stage.get_strategy_slots()["executor"]
+        assert slot.current_impl == "streaming"
