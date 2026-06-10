@@ -48,8 +48,6 @@ from pathlib import Path
 from typing import (
     Any,
     AsyncIterator,
-    Awaitable,
-    Callable,
     Iterable,
     Mapping,
     NamedTuple,
