@@ -1,5 +1,5 @@
 diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
-index 3071bf9..c3e2960 100644
+index 3071bf9..ed70c2e 100644
 --- a/.github/workflows/ci.yml
 +++ b/.github/workflows/ci.yml
 @@ -38,6 +38,34 @@ jobs:
@@ -58,6 +58,15 @@ index 3071bf9..c3e2960 100644
          if: matrix.python-version == '3.11'
          run: pytest tests/ --cov=geny_executor --cov-report=term-missing --cov-report=xml
  
+@@ -84,7 +113,7 @@ jobs:
+       - uses: actions/setup-python@v5
+         with:
+           python-version: "3.12"
+-      - run: pip install pip-audit
++      - run: pip install --upgrade pip && pip install pip-audit
+       - run: pip install -e .
+       # CVE-2026-3219 affects pip 26.x itself; the CI runner installs an
+       # affected pip and there is no fix release as of this commit.
 @@ -95,7 +124,7 @@ jobs:
    build:
      name: Build package
