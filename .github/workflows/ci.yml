@@ -38,6 +38,34 @@ jobs:
       - name: Run ruff format check
         run: ruff format --check src/ tests/
 
+  type-check:
+    name: Type check (mypy beachhead)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      # Typed-surface beachhead: the package ships `py.typed`, so the
+      # surfaces hosts import against (core/ + llm_client/) are gated.
+      # Config lives in [tool.mypy] in pyproject.toml — widen the package
+      # list there as more modules come clean.
+      - name: Run mypy (core + llm_client)
+        run: mypy src/geny_executor/core src/geny_executor/llm_client
+
+      # docs/events.md is generated from the EventTypes catalogue; fail
+      # if an event landed without regenerating the doc.
+      - name: Check docs/events.md is current
+        run: python scripts/gen_event_docs.py --check
+
   test:
     name: Test (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
@@ -59,13 +87,14 @@ jobs:
           pip install --upgrade pip
           pip install -e ".[dev]"
 
-      - name: Run unit tests
-        run: pytest tests/unit/ --tb=short -q
+      # Full suite — tests/ also contains llm_client/, contract/ and
+      # completeness/ beyond unit/ + integration/; running per-directory
+      # subsets silently skipped them on 3.12/3.13 (audit 2026-06-09 §completeness).
+      - name: Run full test suite
+        if: matrix.python-version != '3.11'
+        run: pytest --tb=short -q
 
-      - name: Run integration tests
-        run: pytest tests/integration/ --tb=short -q
-
-      - name: Run tests with coverage
+      - name: Run full test suite with coverage
         if: matrix.python-version == '3.11'
         run: pytest tests/ --cov=geny_executor --cov-report=term-missing --cov-report=xml
 
@@ -95,7 +124,7 @@ jobs:
   build:
     name: Build package
     runs-on: ubuntu-latest
-    needs: [lint, test, security-audit]
+    needs: [lint, type-check, test, security-audit]
     steps:
       - uses: actions/checkout@v4
 

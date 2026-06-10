@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import shutil
 from pathlib import Path
 
@@ -10,7 +9,6 @@ import pytest
 
 from geny_executor.skills.loader import SkillLoadError, parse_skill_file
 from geny_executor.skills.shell_blocks import (
-    ShellBlock,
     execute_blocks,
     is_trusted_source,
     parse_blocks,

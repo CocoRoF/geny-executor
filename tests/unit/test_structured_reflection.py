@@ -7,7 +7,6 @@ import pytest
 from geny_executor.core.state import PipelineState
 from geny_executor.memory.provider import Importance, Insight
 from geny_executor.stages.s18_memory import (
-    INSIGHTS_KEY,
     PENDING_INSIGHTS_KEY,
     MemoryStage,
     StructuredReflectiveStrategy,

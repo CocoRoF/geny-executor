@@ -7,7 +7,6 @@ import time
 from pathlib import Path
 from typing import List
 
-import pytest
 
 from geny_executor.skills.loader import SkillLoadReport, load_skills_dir
 from geny_executor.skills.registry import SkillRegistry

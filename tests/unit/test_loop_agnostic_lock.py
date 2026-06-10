@@ -22,9 +22,8 @@ import tempfile
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Awaitable, Callable, TypeVar
+from typing import Any, Awaitable, TypeVar
 
-import pytest
 
 from geny_executor.memory.provider import (
     Importance,

@@ -178,6 +178,7 @@ def _image_block_to_openai_part(block: Dict[str, Any]) -> Optional[Dict[str, Any
     """
     source = block.get("source") or {}
     src_type = source.get("type")
+    url: Optional[str]
     if src_type == "base64":
         media_type = source.get("media_type") or "image/png"
         data = source.get("data") or ""

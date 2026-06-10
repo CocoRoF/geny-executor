@@ -51,7 +51,7 @@ def _meta(path: Path) -> Dict[str, Any]:
 
 
 def _lines(path: Path) -> List[bytes]:
-    return [l for l in path.read_bytes().splitlines() if l.strip()]
+    return [ln for ln in path.read_bytes().splitlines() if ln.strip()]
 
 
 def _is_stream_event_text_delta(obj: Dict[str, Any]) -> bool:

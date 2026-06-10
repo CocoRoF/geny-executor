@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-import os
 from typing import List
 
 import pytest
 
-from geny_executor.hooks.config import HookConfig, HookConfigEntry
+from geny_executor.hooks.config import HookConfig
 from geny_executor.hooks.events import HookEvent, HookEventPayload, HookOutcome
 from geny_executor.hooks.runner import HookRunner
 

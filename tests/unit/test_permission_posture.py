@@ -7,7 +7,6 @@ default stays ``ALLOW`` for 2.x back-compat; 3.0 flips it.
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any, Callable, Dict
 
 import pytest

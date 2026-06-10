@@ -17,13 +17,11 @@ The contract checked here:
 
 from __future__ import annotations
 
-import asyncio
 from pathlib import Path
 
 import pytest
 
 from geny_executor.memory.provider import (
-    Importance,
     Insight,
     MemorySnapshot,
     Note,

@@ -479,10 +479,10 @@ def _stage_kwargs_for_entry(entry: "StageManifestEntry") -> Dict[str, Any]:
 class Pipeline:
     """Stage들을 순서대로 실행하는 파이프라인 엔진.
 
-    Execution model:
+    Execution model (21-slot layout, S9a.3):
       Phase A: Input (Stage 1, once)
-      Phase B: Agent Loop (Stage 2~13, repeats)
-      Phase C: Finalize (Stage 14~16, once)
+      Phase B: Agent Loop (Stage 2~16, repeats)
+      Phase C: Finalize (Stage 17~21, once)
 
     Pipelines built via :meth:`from_manifest_async` also carry their
     associated :class:`~geny_executor.tools.mcp.manager.MCPManager` and
@@ -553,14 +553,15 @@ class Pipeline:
         # cap are dropped oldest-first; replay then starts at the
         # oldest retained seq).
         if event_journal_size < 1:
-            raise ValueError(
-                f"event_journal_size must be >= 1 (got {event_journal_size})"
-            )
+            raise ValueError(f"event_journal_size must be >= 1 (got {event_journal_size})")
         self._event_seq: int = 0
         self._event_journal: Deque[PipelineEvent] = deque(maxlen=event_journal_size)
         self._event_taps: List[asyncio.Queue] = []
         self._mcp_manager: Any = None  # MCPManager | None — set by from_manifest_async
         self._tool_registry: Any = None  # ToolRegistry | None — set by from_manifest_async
+        # MemoryProvider built from the manifest's ``memory`` block
+        # (2.2.0 Wave 3); None for hosts that wire memory themselves.
+        self._memory_provider: Any = None
         self._tool_providers: List[
             Any
         ] = []  # started ToolProvider list — set by from_manifest_async
@@ -635,6 +636,19 @@ class Pipeline:
         :meth:`from_manifest` path.
         """
         return self._tool_registry
+
+    @property
+    def memory_provider(self) -> Any:
+        """The :class:`MemoryProvider` built from ``manifest.memory`` (if any).
+
+        Set by :meth:`from_manifest` / :meth:`from_manifest_async` when
+        the manifest's ``memory`` block was non-empty (2.2.0 Wave 3);
+        ``None`` otherwise — including when the host wires memory
+        runtime objects itself via :meth:`attach_runtime`. Exposed so
+        hosts can reach the declared provider (e.g. to install
+        :class:`MemoryHooks` or drive promotion) without re-building it.
+        """
+        return self._memory_provider
 
     @property
     def tool_providers(self) -> List[Any]:
@@ -763,6 +777,7 @@ class Pipeline:
         credentials: Optional[CredentialBundle] = None,
         api_key: Optional[str] = None,
         subagent_registry: Optional[Any] = None,
+        subagent_env_resolver: Optional[Callable[[str], Any]] = None,
         strict: bool = True,
         adhoc_providers: Sequence["AdhocToolProvider"] = (),
         tool_registry: Optional["ToolRegistry"] = None,
@@ -793,12 +808,38 @@ class Pipeline:
              consulted by ``_resolve_llm_client`` when building the
              ``state.llm_client`` for Stage 6 (and by sub-pipelines for
              their own providers).
+          6. Compile ``manifest.subagents`` into
+             :class:`SubagentTypeDescriptor` registrations and wire
+             Stage 12's orchestrator (2.2.0 Wave 3, audit §1-1). A
+             host-supplied ``subagent_registry`` MERGES with the
+             manifest entries — the explicit registry wins on
+             ``agent_type`` collision (logged at info).
+          7. When ``manifest.memory`` is non-empty, build the declared
+             :class:`MemoryProvider` via
+             :func:`~geny_executor.memory.factory.
+             provider_from_manifest_memory` (the ``credentials`` bundle
+             flows in so embedding keys stay single-channel) and wire
+             it through the same slot wiring ``attach_runtime``'s
+             memory kwargs use. Precedence: runtime objects beat
+             declarations — a host that later calls
+             ``attach_runtime(memory_retriever=... /
+             memory_strategy=...)`` replaces the manifest-built wiring.
 
         Args:
             manifest: The environment template to materialize.
             credentials: Single-channel credential bundle. The required
                 provider (Stage 6) must have an entry; otherwise
                 ``ConfigError`` is raised at strict load.
+            subagent_registry: Pre-built
+                :class:`SubagentTypeRegistry` (Geny's path today).
+                Merged with ``manifest.subagents`` — explicit
+                registrations win on collision.
+            subagent_env_resolver: Host callback resolving a
+                ``subagents`` entry's ``env_id`` to a stored
+                :class:`EnvironmentManifest` (or its dict form); sync
+                or async. Only needed when the manifest declares
+                ``env_id`` entries — without it those entries raise an
+                actionable ``ConfigError`` at first dispatch.
             strict: Fail on stage instantiation / schema errors versus
                 dropping the offending stage.
             adhoc_providers: Host-supplied
@@ -999,9 +1040,78 @@ class Pipeline:
                 if getattr(stage, "_registry") is not registry:
                     stage._registry = registry
 
-        if subagent_registry is not None:
-            pipeline._subagent_registry = subagent_registry
-            pipeline._wire_subagent_orchestrator(subagent_registry)
+        # ── Sub-agents: manifest section + explicit registry merge ──
+        # (2.2.0 Wave 3, audit §1-1: sub-agent environments become
+        # manifest-expressible.) Manifest entries compile into
+        # library-backed descriptors; a host-supplied registry merges
+        # on top with explicit registrations winning per agent_type —
+        # runtime objects beat declarations, same precedence rule as
+        # the memory block below.
+        effective_subagent_registry = subagent_registry
+        manifest_subagents = list(getattr(manifest, "subagents", []) or [])
+        if manifest_subagents:
+            from geny_executor.stages.s12_agent.subagent_type import (
+                SubagentTypeRegistry,
+                compile_subagent_descriptors,
+            )
+
+            compiled = compile_subagent_descriptors(
+                manifest_subagents, env_resolver=subagent_env_resolver
+            )
+            if effective_subagent_registry is None:
+                effective_subagent_registry = SubagentTypeRegistry()
+            for descriptor in compiled:
+                if descriptor.agent_type in effective_subagent_registry:
+                    logger.info(
+                        "from_manifest: subagents entry %r is also present in "
+                        "the host-supplied subagent_registry — the explicit "
+                        "registration wins; the manifest entry is skipped.",
+                        descriptor.agent_type,
+                    )
+                    continue
+                effective_subagent_registry.register(descriptor)
+        if effective_subagent_registry is not None:
+            pipeline._subagent_registry = effective_subagent_registry
+            pipeline._wire_subagent_orchestrator(effective_subagent_registry)
+
+        # ── Memory: manifest block → provider build + slot wiring ──
+        # (2.2.0 Wave 3, audit §1-1.) Wiring goes through
+        # _apply_runtime — the exact path attach_runtime's memory
+        # kwargs take — so there is one slot-wiring implementation. A
+        # host that attaches memory runtime objects afterwards
+        # overwrites these slots: runtime objects beat declarations.
+        manifest_memory = dict(getattr(manifest, "memory", {}) or {})
+        if manifest_memory:
+            try:
+                from geny_executor.memory.factory import provider_from_manifest_memory
+                from geny_executor.memory.retriever import MemoryAwareRetriever
+                from geny_executor.memory.strategy import ProviderDrivenStrategy
+
+                memory_provider = provider_from_manifest_memory(
+                    manifest_memory, credentials=credentials
+                )
+            except Exception as exc:
+                if strict:
+                    raise ConfigError(
+                        f"manifest.memory could not be built: "
+                        f"{type(exc).__name__}: {exc}. Fix the block "
+                        "(validate_manifest reports memory.* issues at "
+                        "write time) or load with strict=False to build "
+                        "without manifest memory."
+                    ) from exc
+                logger.warning(
+                    "from_manifest(strict=False): manifest.memory failed to "
+                    "build and was DROPPED — the pipeline runs without the "
+                    "declared memory provider: %s: %s",
+                    type(exc).__name__,
+                    exc,
+                )
+            else:
+                pipeline._memory_provider = memory_provider
+                pipeline._apply_runtime(
+                    memory_retriever=MemoryAwareRetriever(memory_provider),
+                    memory_strategy=ProviderDrivenStrategy(memory_provider),
+                )
 
         return pipeline
 
@@ -1013,6 +1123,7 @@ class Pipeline:
         credentials: Optional[CredentialBundle] = None,
         api_key: Optional[str] = None,
         subagent_registry: Optional[Any] = None,
+        subagent_env_resolver: Optional[Callable[[str], Any]] = None,
         strict: bool = True,
         adhoc_providers: Sequence["AdhocToolProvider"] = (),
         tool_registry: Optional["ToolRegistry"] = None,
@@ -1064,6 +1175,7 @@ class Pipeline:
             credentials=credentials,
             api_key=api_key,
             subagent_registry=subagent_registry,
+            subagent_env_resolver=subagent_env_resolver,
             strict=strict,
             adhoc_providers=adhoc_providers,
             tool_registry=registry,
@@ -1179,6 +1291,10 @@ class Pipeline:
                 (e.g. :class:`GenyMemoryRetriever`). Host is responsible for
                 constructing it with any ``llm_gate`` or
                 ``curated_knowledge_manager`` callbacks it needs.
+                Precedence (2.2.0 Wave 3): runtime objects beat
+                declarations — attaching this (or ``memory_strategy``)
+                replaces any wiring built from the manifest's
+                ``memory`` block, which uses the same slot path.
             memory_strategy: A :class:`MemoryUpdateStrategy` subclass
                 instance (e.g. :class:`GenyMemoryStrategy`). Host wires any
                 ``llm_reflect`` callback at construction time.

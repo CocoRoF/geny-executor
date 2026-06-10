@@ -113,8 +113,10 @@ def claude_code_argv(
     if request.stream:
         argv += [
             "--verbose",
-            "--input-format", "stream-json",
-            "--output-format", "stream-json",
+            "--input-format",
+            "stream-json",
+            "--output-format",
+            "stream-json",
             "--include-partial-messages",
         ]
     else:
@@ -194,9 +196,7 @@ def claude_code_argv(
     #   2. ``mcp_config`` constructor kwarg (legacy per-client static
     #      config from the LLM-backends settings card).
     # Both flow to ``--mcp-config <json|path>``.
-    effective_mcp_config: Any = (
-        request.mcp_config if request.mcp_config is not None else mcp_config
-    )
+    effective_mcp_config: Any = request.mcp_config if request.mcp_config is not None else mcp_config
     has_host_mcp = bool(effective_mcp_config)
     if has_host_mcp:
         if isinstance(effective_mcp_config, str):
@@ -271,7 +271,8 @@ def _render_block_for_history(block: Any) -> str:
         name = block.get("name", "tool")
         try:
             input_json = json.dumps(
-                block.get("input") or {}, ensure_ascii=False,
+                block.get("input") or {},
+                ensure_ascii=False,
             )
         except (TypeError, ValueError):
             input_json = str(block.get("input"))
@@ -279,9 +280,7 @@ def _render_block_for_history(block: Any) -> str:
     if btype == "tool_result":
         body = block.get("content")
         if isinstance(body, list):
-            body = "\n".join(
-                _render_block_for_history(b) for b in body
-            ).strip()
+            body = "\n".join(_render_block_for_history(b) for b in body).strip()
         elif body is None:
             body = ""
         is_error = bool(block.get("is_error"))
@@ -298,9 +297,7 @@ def _render_content_for_history(content: Any) -> str:
     if isinstance(content, str):
         return content
     if isinstance(content, list):
-        rendered = [
-            _render_block_for_history(b) for b in content
-        ]
+        rendered = [_render_block_for_history(b) for b in content]
         return "\n".join(s for s in rendered if s).strip()
     return str(content)
 
@@ -377,9 +374,7 @@ def build_stream_json_stdin(messages: List[Dict[str, Any]]) -> bytes:
     if len(parts) > 1:
         preamble_parts = parts[:-1]
         preamble = (
-            "## Conversation so far\n\n"
-            + "\n\n".join(preamble_parts)
-            + "\n\n## Current input\n"
+            "## Conversation so far\n\n" + "\n\n".join(preamble_parts) + "\n\n## Current input\n"
         )
 
     flat = (preamble + current_input).strip()
@@ -455,7 +450,7 @@ def stream_json_line_to_canonical_event(line_obj: Dict[str, Any]) -> Optional[Di
         msg = line_obj.get("message") or {}
         if isinstance(msg, dict):
             parts: List[str] = []
-            for block in (msg.get("content") or []):
+            for block in msg.get("content") or []:
                 if isinstance(block, dict) and block.get("type") == "text":
                     text = str(block.get("text", ""))
                     if text:
@@ -552,9 +547,7 @@ def _envelope_usage(obj: Mapping[str, Any]) -> TokenUsage:
     return TokenUsage(
         input_tokens=int(usage_in.get("input_tokens", 0) or 0),
         output_tokens=int(usage_in.get("output_tokens", 0) or 0),
-        cache_creation_input_tokens=int(
-            usage_in.get("cache_creation_input_tokens", 0) or 0
-        ),
+        cache_creation_input_tokens=int(usage_in.get("cache_creation_input_tokens", 0) or 0),
         cache_read_input_tokens=int(usage_in.get("cache_read_input_tokens", 0) or 0),
         cost_usd=cost,
         duration_ms=obj.get("duration_ms"),
@@ -619,9 +612,7 @@ def parse_json_output_to_response(stdout: bytes, *, model: str) -> APIResponse:
         if btype == "text":
             blocks.append(ContentBlock(type="text", text=block.get("text", "")))
         elif btype == "thinking":
-            blocks.append(
-                ContentBlock(type="thinking", thinking_text=block.get("text", ""))
-            )
+            blocks.append(ContentBlock(type="thinking", thinking_text=block.get("text", "")))
 
     # Real-envelope path: no content[] array, the assistant text lives in
     # the top-level ``result`` string.
@@ -793,7 +784,9 @@ class StreamJsonAccumulator:
         self._unknown_count += 1
         if self._first_unknown_type is None:
             self._first_unknown_type = ltype or "<missing>"
-        self._record_unknown(kind="unknown", sample=json.dumps(line, ensure_ascii=False, default=str))
+        self._record_unknown(
+            kind="unknown", sample=json.dumps(line, ensure_ascii=False, default=str)
+        )
         return [{"type": "cli_unknown", "raw": line}]
 
     def finalize(self) -> APIResponse:
@@ -834,9 +827,7 @@ class StreamJsonAccumulator:
 
         blocks: List[ContentBlock] = []
         if self._thinking_buf:
-            blocks.append(
-                ContentBlock(type="thinking", thinking_text="".join(self._thinking_buf))
-            )
+            blocks.append(ContentBlock(type="thinking", thinking_text="".join(self._thinking_buf)))
         if self._text_buf:
             blocks.append(ContentBlock(type="text", text="".join(self._text_buf)))
 
@@ -852,9 +843,7 @@ class StreamJsonAccumulator:
 
         return APIResponse(
             content=blocks,
-            stop_reason=_envelope_stop_reason(
-                self._final_obj or {}, default=self._stop_reason
-            ),
+            stop_reason=_envelope_stop_reason(self._final_obj or {}, default=self._stop_reason),
             usage=_envelope_usage(self._final_obj or {}),
             model=self._resolved_model,
             message_id=self._message_id,
@@ -1195,9 +1184,7 @@ async def assemble_response_from_stream_json(
         # (Malformed lines have no ``type`` key, so they fall through to
         # ``feed`` for counting.)
         if str(line.get("type", "")) == "error":
-            raise RuntimeError(
-                f"Claude Code CLI reported error: {line.get('message') or line!r}"
-            )
+            raise RuntimeError(f"Claude Code CLI reported error: {line.get('message') or line!r}")
         accum.feed(line)
 
     return accum.finalize()

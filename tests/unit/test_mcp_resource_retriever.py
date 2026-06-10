@@ -17,7 +17,6 @@ import pytest
 from geny_executor.core.state import PipelineState
 from geny_executor.stages.s02_context import (
     MCPResourceRetriever,
-    MemoryChunk,
 )
 from geny_executor.tools.mcp.manager import MCPManager, MCPServerConfig, MCPServerConnection
 from geny_executor.tools.mcp.state import MCPConnectionState

@@ -173,6 +173,68 @@ class MemoryProviderFactory:
         )
 
 
+# ── manifest glue (2.2.0 Wave 3, audit §1-1) ────────────────────────
+#
+# The manifest's ``memory`` block is ``{"provider": <name>, "config":
+# {...}}`` — the same per-provider keys ``build()`` reads, with the
+# provider name lifted out so env editors can render the selector
+# without parsing the config body.
+
+#: Config keys each built-in builder consumes (``provider`` included —
+#: it is legal inside ``config`` too, though redundant there).
+#: ``validate_manifest`` warns on ``memory.config`` keys outside the
+#: named builder's set; builders registered by hosts at runtime are
+#: absent here and skip the key check entirely.
+MEMORY_PROVIDER_CONFIG_KEYS: Dict[str, frozenset] = {
+    "ephemeral": frozenset({"provider", "scope"}),
+    "file": frozenset({"provider", "root", "embedding", "scope", "session_id", "timezone"}),
+    "sql": frozenset(
+        {"provider", "dsn", "dialect", "embedding", "scope", "session_id", "timezone"}
+    ),
+    "composite": frozenset(
+        {
+            "provider",
+            "providers",
+            "layers",
+            "scope_providers",
+            "scope",
+            "session_id",
+            "user_id",
+        }
+    ),
+}
+
+
+def provider_from_manifest_memory(
+    memory: Mapping[str, Any],
+    *,
+    credentials: Optional["CredentialBundle"] = None,
+) -> MemoryProvider:
+    """Build a :class:`MemoryProvider` from a manifest ``memory`` block.
+
+    The single translation point between the manifest shape
+    (``{"provider": ..., "config": {...}}``) and the factory's flat
+    config dict — ``Pipeline.from_manifest`` calls this when the block
+    is non-empty, passing the session's :class:`CredentialBundle` so
+    embedding keys flow through the bundle's ``'embedding'`` entry
+    (the 2.2.0 single credential channel) instead of env vars.
+
+    Raises:
+        ValueError: Missing/unknown provider name, or per-provider
+            required keys absent (e.g. ``file`` without ``root``) —
+            the same errors :meth:`MemoryProviderFactory.build` raises.
+    """
+    name = memory.get("provider")
+    if not isinstance(name, str) or not name:
+        raise ValueError(
+            "manifest.memory requires a non-empty 'provider' string "
+            "(e.g. 'file', 'sql', 'ephemeral', 'composite')"
+        )
+    config: Dict[str, Any] = dict(memory.get("config") or {})
+    config["provider"] = name
+    return MemoryProviderFactory(credentials=credentials).build(config)
+
+
 # ── builder implementations ─────────────────────────────────────────
 
 
@@ -377,4 +439,6 @@ def _optional_str(value: Any) -> Optional[str]:
 __all__ = [
     "MemoryProviderFactory",
     "Builder",
+    "MEMORY_PROVIDER_CONFIG_KEYS",
+    "provider_from_manifest_memory",
 ]

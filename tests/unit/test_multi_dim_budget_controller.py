@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-from typing import List
 
-import pytest
 
 from geny_executor.core.state import PipelineState, TokenUsage
 from geny_executor.stages.s16_loop import (

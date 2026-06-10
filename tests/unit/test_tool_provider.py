@@ -7,11 +7,11 @@ Covers the :class:`ToolProvider` ABC, the shipped
 
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import List
 
 import pytest
 
-from geny_executor.tools.base import Tool, ToolCapabilities, ToolContext, ToolResult
+from geny_executor.tools.base import Tool, ToolResult
 from tests._fixtures.manifest_entries import required_stage_entries
 from geny_executor.tools.provider import (
     BuiltInToolProvider,

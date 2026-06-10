@@ -326,7 +326,7 @@ class GoogleClient(BaseClient):
         try:
             from google.genai import errors as genai_errors
         except ImportError:  # pragma: no cover — SDK is a hard dep of this client
-            genai_errors = None
+            genai_errors = None  # type: ignore[assignment]  # module-or-None sentinel
 
         if genai_errors is not None and isinstance(e, genai_errors.APIError):
             code = getattr(e, "code", None)
@@ -337,13 +337,9 @@ class GoogleClient(BaseClient):
                     str(e), category=ErrorCategory.RATE_LIMITED, status_code=code, cause=e
                 )
             if code in (401, 403) or status in ("UNAUTHENTICATED", "PERMISSION_DENIED"):
-                return APIError(
-                    str(e), category=ErrorCategory.AUTH, status_code=code, cause=e
-                )
+                return APIError(str(e), category=ErrorCategory.AUTH, status_code=code, cause=e)
             if code == 504 or status == "DEADLINE_EXCEEDED":
-                return APIError(
-                    str(e), category=ErrorCategory.TIMEOUT, status_code=code, cause=e
-                )
+                return APIError(str(e), category=ErrorCategory.TIMEOUT, status_code=code, cause=e)
             if code == 503 or status == "UNAVAILABLE":
                 return APIError(
                     str(e), category=ErrorCategory.SERVER_ERROR, status_code=code, cause=e
@@ -386,17 +382,13 @@ class GoogleClient(BaseClient):
 
         if isinstance(e, gac_exceptions.ResourceExhausted):
             return ErrorCategory.RATE_LIMITED
-        if isinstance(
-            e, (gac_exceptions.Unauthenticated, gac_exceptions.PermissionDenied)
-        ):
+        if isinstance(e, (gac_exceptions.Unauthenticated, gac_exceptions.PermissionDenied)):
             return ErrorCategory.AUTH
         if isinstance(e, gac_exceptions.DeadlineExceeded):
             return ErrorCategory.TIMEOUT
         if isinstance(e, gac_exceptions.InvalidArgument):
             return ErrorCategory.BAD_REQUEST
-        if isinstance(
-            e, (gac_exceptions.ServiceUnavailable, gac_exceptions.InternalServerError)
-        ):
+        if isinstance(e, (gac_exceptions.ServiceUnavailable, gac_exceptions.InternalServerError)):
             return ErrorCategory.SERVER_ERROR
         return None
 

@@ -23,7 +23,6 @@ from geny_executor.hooks import (
     HookConfigEntry,
     HookEvent,
     HookEventPayload,
-    HookOutcome,
     HookRunner,
     hooks_opt_in_from_env,
     load_hooks_config,

@@ -1,6 +1,6 @@
 # geny-executor Error Codes
 
-**Since:** 2.1.0
+**Since:** 2.1.0 (table verified against the enum on 2026-06-10, 2.2.0 cycle)
 **Source of truth:** `src/geny_executor/core/errors.py` (`ExecutorErrorCode` enum)
 
 Every exception raised by geny-executor carries a stable string identifier
@@ -28,7 +28,8 @@ in the form `exec.<component>.<reason>`. Hosts use this code for:
 
 Every `GenyExecutorError` subclass exposes the code as the `code`
 attribute. The pipeline's structured events (`stage.error`,
-`pipeline.error`, `api.retry`) also carry it:
+`pipeline.error`, `api.retry`, and — since 2.2.0 — `api.error`) also
+carry it (see [events.md](events.md) for the full event catalogue):
 
 ```json
 {
@@ -143,7 +144,7 @@ Don't delete it. Instead:
 
 ## Migration phases
 
-Phase 1 (this release, 2.1.0) — critical-path raise sites in
+Phase 1 (2.1.0) — critical-path raise sites in
 `claude_code.py` and `s06_api/stage.py`; all `APIError(category=…)`
 sites automatically inherit the right code via `from_category`.
 

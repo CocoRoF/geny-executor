@@ -107,7 +107,7 @@ class Stage(ABC, Generic[T_In, T_Out]):
     @property
     @abstractmethod
     def order(self) -> int:
-        """Execution order within the pipeline (1-16)."""
+        """Execution order within the pipeline (1-21)."""
         ...
 
     @property

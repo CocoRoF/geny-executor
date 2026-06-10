@@ -14,7 +14,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
 
 from geny_executor.memory.embedding import LocalHashEmbeddingClient
 from geny_executor.memory.provider import (

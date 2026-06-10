@@ -27,7 +27,6 @@ from geny_executor.hooks import (
 )
 from geny_executor.permission.types import (
     PermissionBehavior,
-    PermissionMode,
     PermissionRule,
     PermissionSource,
 )

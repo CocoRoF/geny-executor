@@ -13,7 +13,6 @@ from geny_executor.runtime import (
 )
 from geny_executor.stages.s13_task_registry import (
     InMemoryRegistry,
-    TaskFilter,
     TaskRecord,
     TaskStatus,
 )

@@ -18,7 +18,6 @@ from pathlib import Path
 from geny_executor.memory.factory import MemoryProviderFactory
 from geny_executor.memory.provider import (
     MemoryHooks,
-    MemoryProvider,
     NoteDraft,
     Scope,
     Turn,

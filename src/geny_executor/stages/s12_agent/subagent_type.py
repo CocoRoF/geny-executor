@@ -21,6 +21,15 @@ This module ships:
 * :class:`SubagentTypeOrchestrator` — :class:`AgentOrchestrator`
   subclass that consumes ``state.delegate_requests`` against the
   registry. Serial dispatch in D1; parallel fan-out arrives in D2.
+  2.2.0 Wave 3 adds the single-call ``run_subagent`` surface —
+  the call shape ``AgentTool`` / ``LocalAgentExecutor`` dispatch on.
+* Manifest compilation (2.2.0 Wave 3, audit §1-1):
+  :func:`compile_subagent_descriptors` turns a manifest ``subagents``
+  section into descriptors backed by
+  :class:`ManifestSubagentPipelineFactory`, and
+  :func:`resolve_subagent_provider` is the single home for the
+  sub-agent provider resolution order (entry override → parent
+  inheritance → credential-bundle preference).
 """
 
 from __future__ import annotations
@@ -29,10 +38,23 @@ import asyncio
 import inspect
 import logging
 import uuid
-from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, Dict, List, Mapping, Optional, Tuple, Union
+from dataclasses import dataclass, field, replace
+from typing import (
+    Any,
+    Awaitable,
+    Callable,
+    Dict,
+    List,
+    Mapping,
+    Optional,
+    Sequence,
+    Tuple,
+    Union,
+)
 
+from geny_executor.core.shared_keys import SharedKeys
 from geny_executor.core.state import PipelineState
+from geny_executor.llm_client.credentials import ConfigError
 from geny_executor.stages.s12_agent.interface import AgentOrchestrator
 from geny_executor.stages.s12_agent.types import AgentResult
 
@@ -57,6 +79,14 @@ class SubAgentBuildContext:
     descriptor: "SubagentTypeDescriptor"
     workspace_snapshot: Optional[Mapping[str, Any]] = None
     parent_state_shared: Mapping[str, Any] = field(default_factory=dict)
+    #: Resolved Stage 6 provider of the PARENT pipeline — the typed
+    #: short-term fix from audit 2026-06-09 (host_ergonomics #7): the
+    #: orchestrator populates it from ``state.shared[SharedKeys.
+    #: PRIMARY_PROVIDER]`` (the producer Wave 2 made real in
+    #: ``Pipeline._init_state``) so factories no longer have to dig the
+    #: bare string out of ``parent_state_shared``. ``None`` when the
+    #: parent never resolved a provider (hand-built fixture pipelines).
+    parent_provider: Optional[str] = None
 
 
 # A factory takes a build context and returns a Pipeline (sync) or an
@@ -99,6 +129,13 @@ class SubagentTypeDescriptor:
             ``parallel=False``.
         extras: Free-form bag for host-specific descriptor data
             (cost budget, persona ids, …).
+        env_id: Stored-environment reference carried over from a
+            manifest ``subagents`` entry (2.2.0 Wave 3). The library
+            cannot resolve host storage itself — the default factory
+            raises a :class:`ConfigError` telling the host to supply a
+            ``subagent_env_resolver`` to ``Pipeline.from_manifest`` /
+            ``from_manifest_async``. ``None`` for descriptors built
+            outside the manifest path.
     """
 
     agent_type: str
@@ -111,6 +148,7 @@ class SubagentTypeDescriptor:
     parallel: bool = False
     max_concurrent: int = 1
     extras: Mapping[str, Any] = field(default_factory=dict)
+    env_id: Optional[str] = None
 
 
 class SubagentTypeRegistry:
@@ -147,9 +185,237 @@ class SubagentTypeRegistry:
         return agent_type in self._descriptors
 
 
-async def _resolve_pipeline(
-    factory: PipelineFactory, ctx: SubAgentBuildContext
-) -> Any:
+def resolve_subagent_provider(ctx: SubAgentBuildContext) -> Optional[str]:
+    """Resolve the Stage 6 provider a sub-agent should run on — THE single home.
+
+    Why one function (2.2.0 Wave 3, audit 2026-06-09 §2.8): provider
+    inheritance was a dead contract — the read side
+    (``parent_state_shared['primary_provider']``) shipped a full release
+    with no producer, so ``descriptor.provider=None`` always fell
+    through to host-global heuristics and a parent pinned to
+    ``claude_code_cli`` could spawn sub-agents on a different backend
+    (the #866 misrouting class, one level down). Wave 2 made the
+    producer real (``Pipeline._init_state`` writes
+    ``SharedKeys.PRIMARY_PROVIDER`` every run); this function encodes
+    the full resolution order in one place so factories stop
+    re-implementing (and re-drifting) it.
+
+    Order:
+
+    1. ``ctx.descriptor.provider`` — the entry's explicit override.
+    2. ``ctx.parent_provider`` — typed inheritance field, populated by
+       the orchestrator from the parent state's ``PRIMARY_PROVIDER``.
+    3. ``ctx.parent_state_shared['primary_provider']`` — the legacy
+       read-side key, honoured for contexts built by host code that
+       predates the typed field.
+    4. ``ctx.credentials.preferred_provider()`` — the Wave 1 bundle
+       heuristic; the "nothing declared anywhere" fallback.
+
+    Returns ``None`` when nothing resolves — callers must surface that
+    loudly (the default factory raises :class:`ConfigError`) instead of
+    inheriting a silent default.
+    """
+    descriptor_provider = getattr(ctx.descriptor, "provider", None)
+    if descriptor_provider:
+        return str(descriptor_provider)
+    if ctx.parent_provider:
+        return str(ctx.parent_provider)
+    shared = ctx.parent_state_shared or {}
+    inherited = str(shared.get(SharedKeys.PRIMARY_PROVIDER) or "")
+    if inherited:
+        return inherited
+    credentials = ctx.credentials
+    preferred = getattr(credentials, "preferred_provider", None)
+    if callable(preferred):
+        return preferred()
+    return None
+
+
+class ManifestSubagentPipelineFactory:
+    """LIBRARY default :data:`PipelineFactory` for manifest ``subagents`` entries.
+
+    2.2.0 Wave 3 (audit §1-1: "sub-agent environments are not
+    first-class"): ``Pipeline.from_manifest`` compiles each manifest
+    ``subagents`` entry into a :class:`SubagentTypeDescriptor` whose
+    factory is one of these. Build behaviour per entry shape:
+
+    - inline ``manifest`` dict → ``Pipeline.from_manifest_async(
+      sub_manifest, credentials=<parent's>)`` — a fully declared
+      sub-environment. When the entry *also* names an ``env_id``, the
+      inline manifest wins (``validate_manifest`` flags the pair as
+      ``subagent.dual_source``).
+    - ``env_id`` → the library cannot resolve host storage; without a
+      host-supplied resolver this raises :class:`ConfigError` telling
+      the host to pass ``subagent_env_resolver=`` to
+      ``Pipeline.from_manifest`` / ``from_manifest_async``. The
+      resolver receives the ``env_id`` and returns an
+      :class:`~geny_executor.core.environment.EnvironmentManifest` (or
+      its dict form); it may be sync or async.
+    - neither → ``build_manifest('worker_adaptive', provider=<resolved>,
+      model=<descriptor.model_override>)`` with the descriptor's
+      ``allowed_tools`` threaded into ``tools.built_in`` (empty tuple →
+      ``["*"]``, the full built-in toolkit — the library default
+      stand-in for "inherit parent"). Provider resolution goes through
+      :func:`resolve_subagent_provider` — the single resolution-order
+      home.
+
+    The parent's :class:`CredentialBundle` (``ctx.credentials``) flows
+    into every sub-build so authentication stays single-channel
+    end-to-end.
+    """
+
+    def __init__(
+        self,
+        agent_type: str,
+        *,
+        inline_manifest: Optional[Mapping[str, Any]] = None,
+        env_id: Optional[str] = None,
+        env_resolver: Optional[Callable[[str], Any]] = None,
+    ) -> None:
+        self._agent_type = agent_type
+        self._inline_manifest = dict(inline_manifest) if inline_manifest else None
+        self._env_id = env_id
+        self._env_resolver = env_resolver
+
+    @property
+    def agent_type(self) -> str:
+        return self._agent_type
+
+    @property
+    def env_id(self) -> Optional[str]:
+        return self._env_id
+
+    async def __call__(self, ctx: SubAgentBuildContext) -> Any:
+        # Local imports: core.pipeline ←→ s12_agent would cycle at
+        # module import time (the pipeline already imports this module
+        # lazily for the same reason).
+        from geny_executor.core.environment import EnvironmentManifest
+        from geny_executor.core.pipeline import Pipeline
+
+        if self._inline_manifest is not None:
+            sub_manifest = EnvironmentManifest.from_dict(self._inline_manifest)
+            return await Pipeline.from_manifest_async(sub_manifest, credentials=ctx.credentials)
+
+        if self._env_id:
+            if self._env_resolver is None:
+                raise ConfigError(
+                    f"subagents entry {self._agent_type!r} references "
+                    f"env_id={self._env_id!r}, but stored environments are "
+                    "host-resolved — the library has no access to the "
+                    "host's environment storage. Pass "
+                    "subagent_env_resolver=<callable> to "
+                    "Pipeline.from_manifest / from_manifest_async; the "
+                    "callable receives the env_id and returns an "
+                    "EnvironmentManifest (or its dict form), sync or async."
+                )
+            resolved = self._env_resolver(self._env_id)
+            if inspect.isawaitable(resolved):
+                resolved = await resolved
+            if isinstance(resolved, Mapping):
+                resolved = EnvironmentManifest.from_dict(dict(resolved))
+            return await Pipeline.from_manifest_async(resolved, credentials=ctx.credentials)
+
+        # No sub-manifest anywhere — materialize the adaptive-worker
+        # preset on the resolved provider.
+        from geny_executor.core.manifest_factory import build_manifest
+
+        provider = resolve_subagent_provider(ctx)
+        if not provider:
+            raise ConfigError(
+                f"subagents entry {self._agent_type!r}: no provider could "
+                "be resolved — the entry declares none, the parent "
+                "published no PRIMARY_PROVIDER, and the credential bundle "
+                "is empty. Declare 'provider' on the entry, or run the "
+                "sub-agent under a parent pipeline whose Stage 6 provider "
+                "resolved (Pipeline._init_state publishes it), or supply "
+                "a CredentialBundle with at least one provider."
+            )
+        allowed = list(ctx.descriptor.allowed_tools) or ["*"]
+        sub_manifest = build_manifest(
+            "worker_adaptive",
+            provider=provider,
+            model=ctx.descriptor.model_override,
+            built_in_tools=allowed,
+            name=f"subagent:{self._agent_type}",
+            description=ctx.descriptor.description
+            or f"Sub-agent environment compiled from subagents entry {self._agent_type!r}.",
+        )
+        return await Pipeline.from_manifest_async(sub_manifest, credentials=ctx.credentials)
+
+
+def compile_subagent_descriptors(
+    subagents: Sequence[Mapping[str, Any]],
+    *,
+    env_resolver: Optional[Callable[[str], Any]] = None,
+) -> List[SubagentTypeDescriptor]:
+    """Compile manifest ``subagents`` entries into registrable descriptors.
+
+    The library half of the 2.2.0 Wave 3 first-class sub-agent story:
+    each well-formed entry becomes a :class:`SubagentTypeDescriptor`
+    whose factory is a :class:`ManifestSubagentPipelineFactory`.
+    Malformed entries (non-mapping, missing ``agent_type``) are skipped
+    with a warning — :func:`~geny_executor.core.environment.
+    validate_manifest` reports the same problems as ``subagent.*``
+    errors at write time, so strict builds never reach this leniency.
+
+    Args:
+        subagents: ``manifest.subagents`` — plain dicts in the
+            documented entry shape.
+        env_resolver: Host callback for ``env_id`` entries (see
+            :class:`ManifestSubagentPipelineFactory`). Optional —
+            entries without ``env_id`` never need it.
+
+    Returns:
+        Descriptors in declaration order. Registration (and the
+        explicit-registry-wins merge) is the caller's job —
+        ``Pipeline.from_manifest`` owns that policy.
+    """
+    descriptors: List[SubagentTypeDescriptor] = []
+    for raw in subagents or []:
+        if not isinstance(raw, Mapping):
+            logger.warning(
+                "compile_subagent_descriptors: entry %r is not a mapping — skipped",
+                raw,
+            )
+            continue
+        agent_type = str(raw.get("agent_type") or "").strip()
+        if not agent_type:
+            logger.warning(
+                "compile_subagent_descriptors: entry %r has no agent_type — "
+                "skipped (validate_manifest flags this as subagent.missing_type)",
+                raw,
+            )
+            continue
+        inline = raw.get("manifest")
+        env_id = raw.get("env_id")
+        if inline and env_id:
+            logger.warning(
+                "compile_subagent_descriptors: entry %r sets both env_id and "
+                "an inline manifest — the inline manifest wins "
+                "(subagent.dual_source)",
+                agent_type,
+            )
+        factory = ManifestSubagentPipelineFactory(
+            agent_type,
+            inline_manifest=inline if isinstance(inline, Mapping) else None,
+            env_id=str(env_id) if env_id else None,
+            env_resolver=env_resolver,
+        )
+        descriptors.append(
+            SubagentTypeDescriptor(
+                agent_type=agent_type,
+                factory=factory,
+                description=str(raw.get("description") or ""),
+                allowed_tools=tuple(raw.get("allowed_tools") or ()),
+                provider=str(raw["provider"]) if raw.get("provider") else None,
+                model_override=(str(raw["model_override"]) if raw.get("model_override") else None),
+                env_id=str(env_id) if env_id else None,
+            )
+        )
+    return descriptors
+
+
+async def _resolve_pipeline(factory: PipelineFactory, ctx: SubAgentBuildContext) -> Any:
     """Call a factory with the build context and unwrap an awaitable.
 
     For backward compatibility with zero-arg factories (the pre-D1
@@ -252,6 +518,65 @@ class SubagentTypeOrchestrator(AgentOrchestrator):
         state.delegate_requests = []
         return AgentResult(delegated=True, sub_results=sub_results)
 
+    async def run_subagent(
+        self,
+        agent_type: str,
+        prompt: str,
+        *,
+        model: Optional[str] = None,
+        state: Optional[PipelineState] = None,
+    ) -> Dict[str, Any]:
+        """Single-call delegation surface (2.2.0 Wave 3).
+
+        Why (audit 2026-06-09, "two incompatible delegation
+        interfaces"): :class:`~geny_executor.tools.built_in.agent_tool.
+        AgentTool` and :class:`~geny_executor.runtime.task_executors.
+        LocalAgentExecutor` both dispatch via ``await runner(agent_type,
+        prompt, model=...)`` looked up as ``run_subagent`` / ``spawn``
+        — but this orchestrator only exposed the batch
+        :meth:`orchestrate` shape, so wiring it into
+        ``ToolContext.extras['agent_orchestrator']`` produced
+        ORCHESTRATOR_API errors. This method is the call shape those
+        consumers already speak.
+
+        Args:
+            agent_type: Registered descriptor id.
+            prompt: Initial user prompt for the sub-pipeline.
+            model: Optional per-call model override — applied as a
+                one-shot ``descriptor.model_override`` replacement so
+                the factory's normal model threading handles it.
+            state: Parent :class:`PipelineState` — pass it whenever one
+                exists so credentials / workspace / PRIMARY_PROVIDER
+                inherit. When omitted (tool-context callers have no
+                state handle) an ephemeral state is minted; provider
+                inheritance then falls through to the descriptor /
+                credential-bundle rungs of
+                :func:`resolve_subagent_provider`.
+
+        Returns:
+            The structured sub-result record — the same shape as the
+            entries :meth:`orchestrate` appends to ``sub_results``.
+
+        Raises:
+            KeyError: Unknown ``agent_type`` (AgentTool maps this to
+                its UNKNOWN_TYPE error code).
+            RuntimeError: Factory or sub-pipeline failure (the batch
+                path's failure-isolation records, re-raised because a
+                single-call consumer wants the error path, not a dict
+                it must inspect).
+        """
+        descriptor = self._registry.get(agent_type)
+        if descriptor is None:
+            raise KeyError(agent_type)
+        if model:
+            descriptor = replace(descriptor, model_override=model)
+        if state is None:
+            state = PipelineState(session_id=f"subagent-adhoc-{uuid.uuid4().hex[:8]}")
+        record = await self._run_descriptor(state, descriptor, agent_type, prompt)
+        if not record.get("success", False):
+            raise RuntimeError(record.get("error") or "sub-pipeline reported success=False")
+        return record
+
     async def _dispatch_one(
         self,
         state: PipelineState,
@@ -261,23 +586,40 @@ class SubagentTypeOrchestrator(AgentOrchestrator):
         task = request.get("task", "")
         descriptor = self._registry.get(agent_type)
 
-        base_record: Dict[str, Any] = {
-            "agent_type": agent_type,
-            "task": task,
-            "subagent_metadata": None,
-        }
-
         if descriptor is None:
             logger.warning(
                 "SubagentTypeOrchestrator: unknown agent_type %r — request rejected",
                 agent_type,
             )
             return {
-                **base_record,
+                "agent_type": agent_type,
+                "task": task,
+                "subagent_metadata": None,
                 "success": False,
                 "text": "",
                 "error": f"unknown_agent_type: {agent_type!r}",
             }
+
+        return await self._run_descriptor(state, descriptor, agent_type, task)
+
+    async def _run_descriptor(
+        self,
+        state: PipelineState,
+        descriptor: SubagentTypeDescriptor,
+        agent_type: str,
+        task: Any,
+    ) -> Dict[str, Any]:
+        """Build + run one sub-pipeline for *descriptor*; never raises.
+
+        Shared by the batch path (:meth:`_dispatch_one`) and the
+        single-call path (:meth:`run_subagent`) so both produce the
+        identical record shape from the identical build context.
+        """
+        base_record: Dict[str, Any] = {
+            "agent_type": agent_type,
+            "task": task,
+            "subagent_metadata": None,
+        }
 
         # Attach the descriptor's static metadata so audit / UI
         # surfaces can render the sub-agent's name + roster without
@@ -290,13 +632,16 @@ class SubagentTypeOrchestrator(AgentOrchestrator):
             "parallel": descriptor.parallel,
             "max_concurrent": descriptor.max_concurrent,
             "extras": dict(descriptor.extras),
+            "env_id": descriptor.env_id,
         }
 
         # Build the context handed to the factory. The parent's
         # CredentialBundle (populated by Pipeline._init_state from
         # the bundle passed to from_manifest_async) flows down so the
         # sub-pipeline's Stage 6 can authenticate with the right
-        # provider without re-asking the host.
+        # provider without re-asking the host. ``parent_provider`` is
+        # the typed inheritance field (audit host_ergonomics #7) fed
+        # from the PRIMARY_PROVIDER key _init_state publishes.
         ws_snapshot = state.shared.get("workspace_snapshot")
         sub_session_id = f"{state.session_id}-{agent_type}-{uuid.uuid4().hex[:8]}"
         ctx = SubAgentBuildContext(
@@ -306,6 +651,7 @@ class SubagentTypeOrchestrator(AgentOrchestrator):
             descriptor=descriptor,
             workspace_snapshot=ws_snapshot,
             parent_state_shared=dict(state.shared),
+            parent_provider=(str(state.shared.get(SharedKeys.PRIMARY_PROVIDER) or "") or None),
         )
 
         try:

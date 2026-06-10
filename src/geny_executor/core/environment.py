@@ -320,6 +320,8 @@ _KNOWN_TOP_LEVEL_KEYS: Set[str] = {
     "stages",
     "tools",
     "host_selections",
+    "subagents",
+    "memory",
 }
 
 _KNOWN_STAGE_ENTRY_KEYS: Set[str] = {
@@ -450,6 +452,36 @@ class EnvironmentManifest:
     ``chain_order``. v1 payloads are silently migrated on
     :meth:`from_dict` — callers that simply load + save a legacy file will
     upgrade it on next write.
+
+    **2.2.0 (Wave 3, audit 2026-06-09 §1-1)** adds two optional sections —
+    both default-empty, so every existing manifest loads and round-trips
+    unchanged (no version bump; pure additive defaults):
+
+    - ``subagents``: list of sub-agent type declarations. Each entry is a
+      plain dict::
+
+          {"agent_type": str,                  # registry key (required)
+           "description": str,                  # LLM-visible summary
+           "provider": Optional[str],           # None ⇒ inherit parent
+           "model_override": Optional[str],
+           "allowed_tools": List[str],
+           "env_id": Optional[str],             # stored env (host-resolved)
+           "manifest": Optional[dict]}          # OR inline sub-manifest
+
+      ``Pipeline.from_manifest`` compiles these into
+      :class:`~geny_executor.stages.s12_agent.subagent_type.
+      SubagentTypeDescriptor` registrations — sub-agent environments were
+      previously host-code-only ("not first-class", audit §1-1).
+    - ``memory``: declarative memory-provider block mirroring
+      :class:`~geny_executor.memory.factory.MemoryProviderFactory`'s
+      config-dict schema::
+
+          {"provider": "file" | "sql" | "ephemeral" | "composite",
+           "config": {...}}    # the factory's per-provider keys
+
+      ``Pipeline.from_manifest`` builds and wires the provider when the
+      block is non-empty; runtime objects a host attaches later via
+      ``attach_runtime(memory_*=...)`` win over this declaration.
     """
 
     version: str = MANIFEST_VERSION
@@ -459,6 +491,8 @@ class EnvironmentManifest:
     stages: List[Dict[str, Any]] = field(default_factory=list)
     tools: ToolsSnapshot = field(default_factory=ToolsSnapshot)
     host_selections: HostSelections = field(default_factory=HostSelections)
+    subagents: List[Dict[str, Any]] = field(default_factory=list)
+    memory: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -469,6 +503,8 @@ class EnvironmentManifest:
             "stages": list(self.stages),
             "tools": self.tools.to_dict(),
             "host_selections": self.host_selections.to_dict(),
+            "subagents": list(self.subagents),
+            "memory": dict(self.memory),
         }
 
     @classmethod
@@ -511,6 +547,10 @@ class EnvironmentManifest:
             stages=stages,
             tools=ToolsSnapshot.from_dict(data.get("tools", {})),
             host_selections=HostSelections.from_dict(data.get("host_selections")),
+            # Absent → empty (2.2.0 Wave 3 additive sections; pre-Wave-3
+            # payloads simply don't carry them).
+            subagents=list(data.get("subagents", []) or []),
+            memory=dict(data.get("memory", {}) or {}),
         )
 
     # ── Structured stage access ─────────────────────────────
@@ -773,7 +813,8 @@ class ManifestIssue:
       - ``severity``: ``"error"`` | ``"warning"``.
       - ``code``: stable machine-readable identifier (``"stage.…"`` /
         ``"strategy.…"`` / ``"chain.…"`` / ``"config.…"`` /
-        ``"provider.…"`` / ``"model.…"`` / ``"version.…"``). Hosts may
+        ``"provider.…"`` / ``"model.…"`` / ``"version.…"`` /
+        ``"subagent.…"`` / ``"memory.…"``). Hosts may
         key i18n / suppression lists on it; codes are append-only
         within a major version.
       - ``stage_order`` / ``stage_name``: the offending stage entry,
@@ -872,6 +913,20 @@ def validate_manifest(
       home and wins (``_pipeline_config_from_manifest`` reunites it
       into ``PipelineConfig.model``; the stage-config copy is inert).
     - ``version`` unknown / newer than this library supports [warning]
+    - ``subagents`` entries (2.2.0 Wave 3): non-dict entry / missing
+      ``agent_type`` [error] — the entry cannot be registered;
+      duplicate ``agent_type`` [error] — the registry raises on
+      duplicates, so the build would fail; both ``env_id`` AND an
+      inline ``manifest`` set [warning] — the inline manifest wins;
+      ``provider`` not in :class:`~geny_executor.llm_client.registry.
+      ClientRegistry` [warning] — hosts register custom providers
+      late, so an unknown name here may resolve at build time.
+    - ``memory`` block (2.2.0 Wave 3): missing/unknown ``provider``
+      name vs the built-in :class:`~geny_executor.memory.factory.
+      MemoryProviderFactory` builders [error]; ``config`` keys the
+      named builder does not accept [warning]; stray keys outside
+      ``provider``/``config`` [warning] — per-provider settings
+      belong nested under ``config``.
 
     Args:
         manifest: The manifest to validate. Not mutated.
@@ -897,6 +952,7 @@ def validate_manifest(
         _introspection_kwargs,
     )
     from geny_executor.core.stage import Strategy
+    from geny_executor.llm_client.registry import ClientRegistry
 
     issues: List[ManifestIssue] = []
 
@@ -932,6 +988,116 @@ def validate_manifest(
             "does not understand will be ignored.",
             field_="version",
         )
+
+    # ── Subagents section (2.2.0 Wave 3, audit §1-1) ────────
+    seen_agent_types: Set[str] = set()
+    for idx, raw_sub in enumerate(manifest.subagents or []):
+        locator = f"subagents[{idx}]"
+        if not isinstance(raw_sub, dict):
+            add(
+                "error",
+                "subagent.malformed_entry",
+                f"{locator} must be a dict, got {type(raw_sub).__name__}; "
+                "the entry cannot be compiled into a descriptor.",
+                field_=locator,
+            )
+            continue
+        agent_type = str(raw_sub.get("agent_type") or "").strip()
+        if not agent_type:
+            add(
+                "error",
+                "subagent.missing_type",
+                f"{locator} declares no 'agent_type' — it is the registry "
+                "key and the value the LLM uses in delegate requests, so "
+                "the entry cannot be registered without one.",
+                field_=f"{locator}.agent_type",
+            )
+            continue
+        if agent_type in seen_agent_types:
+            add(
+                "error",
+                "subagent.duplicate_type",
+                f"{locator} re-declares agent_type {agent_type!r}; "
+                "SubagentTypeRegistry.register raises on duplicates, so "
+                "the build would fail. Keep one entry per agent_type.",
+                field_=f"{locator}.agent_type",
+            )
+        seen_agent_types.add(agent_type)
+        if raw_sub.get("env_id") and raw_sub.get("manifest"):
+            add(
+                "warning",
+                "subagent.dual_source",
+                f"{locator} ({agent_type!r}) sets BOTH 'env_id' and an "
+                "inline 'manifest'; the inline manifest wins and env_id is "
+                "ignored — delete one so the intent is unambiguous.",
+                field_=f"{locator}.env_id",
+            )
+        sub_provider = raw_sub.get("provider")
+        if sub_provider and str(sub_provider) not in ClientRegistry.available():
+            add(
+                "warning",
+                "subagent.unknown_provider",
+                f"{locator} ({agent_type!r}) requests provider "
+                f"{sub_provider!r}, which is not currently registered "
+                f"(known: {sorted(ClientRegistry.available())}). Hosts "
+                "register custom providers late, so this may resolve at "
+                "build time — verify the name is not a typo.",
+                field_=f"{locator}.provider",
+            )
+
+    # ── Memory block (2.2.0 Wave 3, audit §1-1) ─────────────
+    memory_block = manifest.memory or {}
+    if memory_block:
+        from geny_executor.memory.factory import (
+            MEMORY_PROVIDER_CONFIG_KEYS,
+            MemoryProviderFactory,
+        )
+
+        registered_memory = MemoryProviderFactory().names()
+        memory_provider = memory_block.get("provider")
+        if not isinstance(memory_provider, str) or not memory_provider:
+            add(
+                "error",
+                "memory.missing_provider",
+                "manifest.memory is non-empty but declares no 'provider'; "
+                f"set one of the registered names: {registered_memory}.",
+                field_="memory.provider",
+            )
+        elif memory_provider not in registered_memory:
+            add(
+                "error",
+                "memory.unknown_provider",
+                f"manifest.memory requests unknown provider "
+                f"{memory_provider!r}; registered: {registered_memory}. "
+                "MemoryProviderFactory.build would refuse, so the "
+                "declaration cannot take effect.",
+                field_="memory.provider",
+            )
+        else:
+            accepted_keys = MEMORY_PROVIDER_CONFIG_KEYS.get(memory_provider)
+            memory_config = memory_block.get("config") or {}
+            if accepted_keys is not None and isinstance(memory_config, dict):
+                unknown_cfg = sorted(set(memory_config.keys()) - set(accepted_keys))
+                if unknown_cfg:
+                    add(
+                        "warning",
+                        "memory.unknown_config_key",
+                        f"manifest.memory.config declares keys {unknown_cfg} "
+                        f"that the {memory_provider!r} builder does not "
+                        f"accept (known: {sorted(k for k in accepted_keys if k != 'provider')}); "
+                        "they would be stored but not consumed.",
+                        field_="memory.config",
+                    )
+        stray_keys = sorted(set(memory_block.keys()) - {"provider", "config"})
+        if stray_keys:
+            add(
+                "warning",
+                "memory.unknown_key",
+                f"manifest.memory declares keys {stray_keys} outside "
+                "'provider'/'config'; per-provider settings belong nested "
+                "under memory.config — top-level strays are ignored.",
+                field_="memory",
+            )
 
     entries = manifest.stage_entries()
 

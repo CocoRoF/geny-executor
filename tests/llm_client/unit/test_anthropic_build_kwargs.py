@@ -20,17 +20,17 @@ existing translator test that asserts those flags pass through.
 
 from __future__ import annotations
 
-from typing import List
 
 import pytest
 
 from geny_executor.llm_client.anthropic import (
     AnthropicClient,
     _ANTHROPIC_MODEL_ALIASES,
-    _TEMPERATURE_DEPRECATED_PREFIXES,
     _model_rejects_sampling_params,
+    _model_requires_adaptive_thinking,
     _resolve_anthropic_model,
     _retry_kwargs_after_deprecation,
+    _translate_thinking_to_adaptive,
 )
 from geny_executor.llm_client.types import APIRequest
 
@@ -329,12 +329,7 @@ def test_retry_kwargs_returns_none_when_field_already_absent() -> None:
 
 
 # ── 2.1.3 — Opus 4.7 thinking.type=enabled → adaptive migration ───
-
-
-from geny_executor.llm_client.anthropic import (
-    _model_requires_adaptive_thinking,
-    _translate_thinking_to_adaptive,
-)
+# (helpers imported in the module-level block above)
 
 
 def test_model_requires_adaptive_thinking_for_opus_4_7():

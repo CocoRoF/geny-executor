@@ -113,8 +113,7 @@ class ExponentialBackoffRetry(RetryStrategy):
         # to max_delay — silent loss of the backoff curve).
         if max_d < base:
             raise ValueError(
-                f"exponential_backoff: 'max_delay' must be >= 'base_delay' "
-                f"(got {max_d} < {base})"
+                f"exponential_backoff: 'max_delay' must be >= 'base_delay' (got {max_d} < {base})"
             )
         if "jitter" in config:
             jitter = _require_number("exponential_backoff", "jitter", config["jitter"])

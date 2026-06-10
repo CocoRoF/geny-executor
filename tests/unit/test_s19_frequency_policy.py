@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Optional
 
 import pytest
 
@@ -13,7 +12,6 @@ from geny_executor.stages.s19_summarize import (
     NeverPolicy,
     NoSummarizer,
     OnContextFillPolicy,
-    RuleBasedSummarizer,
 )
 from geny_executor.stages.s19_summarize.interface import Summarizer
 

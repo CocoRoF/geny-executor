@@ -292,7 +292,7 @@ def test_argv_dropped_fields_not_emitted() -> None:
 def test_stdin_envelope_one_user_message() -> None:
     out = build_stream_json_stdin([{"role": "user", "content": "hi"}])
     assert out.endswith(b"\n")
-    envs = [json.loads(l) for l in out.strip().split(b"\n")]
+    envs = [json.loads(ln) for ln in out.strip().split(b"\n")]
     assert envs == [
         {"type": "user", "message": {"role": "user", "content": "hi"}},
     ]
@@ -315,7 +315,7 @@ def test_stdin_envelope_multi_turn_always_user_role() -> None:
         {"role": "assistant", "content": "a1"},
         {"role": "user", "content": [{"type": "tool_result", "content": "ok"}]},
     ])
-    envs = [json.loads(l) for l in out.strip().split(b"\n")]
+    envs = [json.loads(ln) for ln in out.strip().split(b"\n")]
     # ONE synthetic envelope — multi-turn collapses to a single user
     # message; the CLI reconstructs the conversation from its content.
     assert len(envs) == 1
@@ -837,8 +837,8 @@ async def test_assemble_simple_text_stream() -> None:
     ]
 
     async def gen():
-        for l in lines:
-            yield l
+        for ln in lines:
+            yield ln
 
     resp = await assemble_response_from_stream_json(gen(), model="default")
     assert resp.text == "Hello!"
@@ -868,8 +868,8 @@ async def test_assemble_drops_tool_use_blocks() -> None:
     ]
 
     async def gen():
-        for l in lines:
-            yield l
+        for ln in lines:
+            yield ln
 
     resp = await assemble_response_from_stream_json(gen(), model="default")
     assert resp.tool_calls == []
@@ -888,8 +888,8 @@ async def test_assemble_thinking_blocks_collected() -> None:
     ]
 
     async def gen():
-        for l in lines:
-            yield l
+        for ln in lines:
+            yield ln
 
     resp = await assemble_response_from_stream_json(gen(), model="m")
     assert any(b.type == "thinking" for b in resp.content)
@@ -905,8 +905,8 @@ async def test_assemble_raises_on_error_envelope() -> None:
     ]
 
     async def gen():
-        for l in lines:
-            yield l
+        for ln in lines:
+            yield ln
 
     with pytest.raises(RuntimeError, match="rate limited"):
         await assemble_response_from_stream_json(gen(), model="m")
