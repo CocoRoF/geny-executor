@@ -29,6 +29,33 @@ jobs:
         with:
           python-version: "3.11"
 
+      # Release gate: every published version must have a CHANGELOG
+      # section. 2.1.0 shipped without one (audit 2026-06-09 §3.7) and
+      # became the version a host pinned with no record of what it
+      # contained — this step makes that mistake impossible to repeat.
+      - name: Release gate — CHANGELOG entry for this version
+        run: |
+          python - <<'EOF'
+          import re
+          import sys
+          import tomllib
+
+          with open("pyproject.toml", "rb") as f:
+              version = tomllib.load(f)["project"]["version"]
+          with open("CHANGELOG.md", encoding="utf-8") as f:
+              changelog = f.read()
+
+          # Match '## [<version>]' at line start; separator after the
+          # bracket (em-dash / hyphen / nothing) is intentionally free.
+          if not re.search(rf"^## \[{re.escape(version)}\]", changelog, re.MULTILINE):
+              sys.exit(
+                  f"RELEASE GATE FAILED: CHANGELOG.md has no '## [{version}]' "
+                  f"section for pyproject version {version}. Add the entry "
+                  "before publishing."
+              )
+          print(f"Release gate OK: CHANGELOG.md documents [{version}].")
+          EOF
+
       - name: Install build tools
         run: pip install build
 
