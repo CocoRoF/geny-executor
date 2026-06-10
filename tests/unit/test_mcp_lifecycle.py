@@ -19,6 +19,7 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "src"))
 
 from geny_executor.core.environment import EnvironmentManifest, ToolsSnapshot
+from tests._fixtures.manifest_entries import required_stage_entries
 from geny_executor.core.pipeline import Pipeline
 from geny_executor.tools.base import Tool, ToolContext
 from geny_executor.tools.mcp.state import MCPConnectionState
@@ -373,7 +374,9 @@ class TestAdapterPreservesListResult:
 
 def _blank_manifest_with_servers(servers: List[Dict[str, Any]]) -> EnvironmentManifest:
     return EnvironmentManifest(
-        stages=[],
+        # Required stages present + active (2.2.0 strict validation);
+        # the subject under test is MCP lifecycle, not stage layout.
+        stages=required_stage_entries(),
         tools=ToolsSnapshot(mcp_servers=servers),
     )
 

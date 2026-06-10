@@ -32,6 +32,7 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "src"))
 
 from geny_executor.core.environment import EnvironmentManifest, ToolsSnapshot
+from tests._fixtures.manifest_entries import required_stage_entries
 from geny_executor.core.pipeline import Pipeline
 from geny_executor.tools.base import Tool, ToolContext, ToolResult
 from geny_executor.tools.built_in import BUILT_IN_TOOL_CLASSES
@@ -74,8 +75,11 @@ class _DictProvider:
 
 
 def _manifest(*, built_in: List[str] = (), external: List[str] = ()) -> EnvironmentManifest:
+    # Required stages present + active: strict from_manifest (2.2.0)
+    # enforces the structural contract; the subject under test here is
+    # built-in tool registration, not stage layout.
     return EnvironmentManifest(
-        stages=[],
+        stages=required_stage_entries(),
         tools=ToolsSnapshot(
             built_in=list(built_in),
             external=list(external),

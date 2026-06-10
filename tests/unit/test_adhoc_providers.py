@@ -22,6 +22,7 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "src"))
 
 from geny_executor.core.environment import EnvironmentManifest, ToolsSnapshot
+from tests._fixtures.manifest_entries import required_stage_entries
 from geny_executor.core.pipeline import Pipeline
 from geny_executor.tools.base import Tool, ToolContext, ToolResult
 from geny_executor.tools.mcp.state import MCPConnectionState
@@ -73,8 +74,11 @@ class _DictProvider:
 def _manifest_with(
     *, external: List[str] = (), mcp: List[Dict[str, Any]] = ()
 ) -> EnvironmentManifest:
+    # Required stages present + active: strict from_manifest (2.2.0)
+    # enforces the structural contract; the subject under test here is
+    # adhoc provider resolution, not stage layout.
     return EnvironmentManifest(
-        stages=[],
+        stages=required_stage_entries(),
         tools=ToolsSnapshot(
             external=list(external),
             mcp_servers=list(mcp),
@@ -232,7 +236,7 @@ class TestFromManifestExternalProviders:
 
         entries = [StageManifestEntry(order=3, name="system")]
         manifest = EnvironmentManifest(
-            stages=[e.to_dict() for e in entries],
+            stages=required_stage_entries() + [e.to_dict() for e in entries],
             tools=ToolsSnapshot(external=["alpha"]),
         )
         provider = _DictProvider({"alpha": _NamedTool("alpha")})
@@ -258,7 +262,7 @@ class TestFromManifestExternalProviders:
             StageManifestEntry(order=10, name="tool"),
         ]
         manifest = EnvironmentManifest(
-            stages=[e.to_dict() for e in entries],
+            stages=required_stage_entries() + [e.to_dict() for e in entries],
             tools=ToolsSnapshot(external=["alpha"]),
         )
         provider = _DictProvider({"alpha": _NamedTool("alpha")})

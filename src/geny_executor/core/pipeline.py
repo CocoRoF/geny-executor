@@ -5,12 +5,15 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
+from collections import deque
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import (
     TYPE_CHECKING,
     Any,
     AsyncIterator,
     Callable,
+    Deque,
     Dict,
     List,
     Mapping,
@@ -19,17 +22,19 @@ from typing import (
     Tuple,
 )
 
-from geny_executor.core.config import PipelineConfig
+from geny_executor.core.config import ModelOverrides, PipelineConfig
 from geny_executor.core.errors import (
     ExecutorErrorCode,
     GenyExecutorError,
     StageError,
 )
 from geny_executor.core.result import PipelineResult
+from geny_executor.core.shared_keys import SharedKeys
 from geny_executor.core.stage import Stage, StageDescription
 from geny_executor.core.state import PipelineState
 from geny_executor.events.bus import EventBus
 from geny_executor.events.types import PipelineEvent
+from geny_executor.hooks.events import HookEvent, HookEventPayload
 from geny_executor.llm_client.credentials import (
     ConfigError,
     CredentialBundle,
@@ -45,6 +50,12 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
+
+
+#: Sentinel pushed into every ``Pipeline.events()`` subscriber queue at
+#: ``aclose()`` so tap generators terminate instead of awaiting forever
+#: on a pipeline that will never emit again.
+_TAP_CLOSED = object()
 
 
 def _error_event_data(exc: Exception) -> Dict[str, Any]:
@@ -245,6 +256,30 @@ class ToolResolutionReport:
     unresolved: List[str] = field(default_factory=list)
     shadowed: List[str] = field(default_factory=list)
     required_unresolved: List[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class DroppedStage:
+    """Record of a manifest stage that failed to construct in lenient mode.
+
+    ``from_manifest(strict=False)`` used to swallow stage-construction
+    failures with a bare ``continue`` — a recovery load could silently
+    produce a pipeline missing half its stages with zero evidence
+    (2.2.0, audit 2026-06-09 §1-1 masked-degradation class). Lenient
+    mode still drops the stage (that is its contract), but every drop
+    now warns and lands here, on ``pipeline.dropped_stages``, so hosts
+    can render the degradation or refuse to serve the session.
+
+    Fields:
+      - ``name``: manifest stage name (e.g. ``"api"``).
+      - ``order``: manifest slot order (1-21).
+      - ``error``: ``"ExcType: message"`` summary of the construction
+        failure (full traceback goes to the warning log only).
+    """
+
+    name: str
+    order: int
+    error: str
 
 
 def _register_built_in_tools(
@@ -498,10 +533,32 @@ class Pipeline:
         21: "yield",
     }
 
-    def __init__(self, config: Optional[PipelineConfig] = None):
+    def __init__(
+        self,
+        config: Optional[PipelineConfig] = None,
+        *,
+        event_journal_size: int = 2048,
+    ):
         self._config = config or PipelineConfig()
         self._stages: Dict[int, Stage] = {}
         self._event_bus = EventBus()
+        # ── 2.2.0 unified event channel (audit 2026-06-09 §3.2) ──
+        # Every engine event — bus-native (stage.enter/exit, pipeline
+        # lifecycle) AND state-originated (text.delta, api.*, tool.*)
+        # — funnels through _record_event, which stamps a monotonically
+        # increasing .seq, journals the event in a bounded ring, and
+        # fans it out to every events() tap. The journal is the replay
+        # buffer for late-joining subscribers; cap it via the
+        # ``event_journal_size`` constructor kwarg (events beyond the
+        # cap are dropped oldest-first; replay then starts at the
+        # oldest retained seq).
+        if event_journal_size < 1:
+            raise ValueError(
+                f"event_journal_size must be >= 1 (got {event_journal_size})"
+            )
+        self._event_seq: int = 0
+        self._event_journal: Deque[PipelineEvent] = deque(maxlen=event_journal_size)
+        self._event_taps: List[asyncio.Queue] = []
         self._mcp_manager: Any = None  # MCPManager | None — set by from_manifest_async
         self._tool_registry: Any = None  # ToolRegistry | None — set by from_manifest_async
         self._tool_providers: List[
@@ -521,6 +578,43 @@ class Pipeline:
         # typically a websocket handler or HTTP endpoint receiving the
         # human's verdict.
         self._pending_hitl: Dict[str, Any] = {}
+        # ── 2.2.0 lifecycle ownership (audit 2026-06-09 §3.1/§3.3) ──
+        # Provider Stage 6 declared in the MANIFEST specifically — "" for
+        # hand-built / builder / fixture pipelines. Gates the
+        # attach_runtime(llm_client=) #866 guard: only a manifest
+        # declaration is strong enough to refuse a conflicting client.
+        self._manifest_provider: str = ""
+        # Stages dropped by from_manifest(strict=False) — see DroppedStage.
+        self.dropped_stages: List[DroppedStage] = []
+        # Hook runner handle for pipeline-level lifecycle events
+        # (pipeline start/end, stage enter/exit, loop iteration end).
+        # None keeps every fire-site a single attribute check — near
+        # zero overhead for the common no-hooks pipeline.
+        self._hook_runner: Any = None
+        # Client generation counter. invalidate_client() / a runtime
+        # llm_client refresh bumps it; states stamp the generation they
+        # captured a pipeline-resolved client under, and _init_state
+        # re-resolves on mismatch. Closes the "rotation never lands on
+        # a reused state" hole (_init_state used to fill only-if-None).
+        self._client_generation: int = 0
+        # Number of run()/run_stream() executions currently in flight
+        # (counter, not bool — overlapping runs on one loop must not
+        # unlock each other early). Exposed via .run_in_progress; the
+        # mutator and refresh_runtime() consult it.
+        self._runs_in_flight: int = 0
+        # aclose() idempotency latch.
+        self._closed: bool = False
+        self._close_task: Optional[Any] = None  # keeps fire-and-forget close() task alive
+        # state=None loudness — warn once per pipeline, not per turn.
+        self._warned_state_none: bool = False
+        # Deferred run-start events: (event_type, data) pairs queued by
+        # attach/refresh (runtime.llm_client_override) and per-run
+        # overrides (config.override_applied). Flushed into
+        # state.add_event at the top of _run_phases — by then
+        # run_stream's bus subscription is attached, so streaming
+        # consumers see them too (add_event from _init_state would land
+        # pre-subscription).
+        self._pending_runtime_events: List[Tuple[str, Dict[str, Any]]] = []
 
     @property
     def mcp_manager(self) -> Any:
@@ -565,6 +659,100 @@ class Pipeline:
             await shutdown_providers(self._tool_providers)
             self._tool_providers = []
 
+    async def aclose(self) -> None:
+        """Tear down every resource this pipeline owns. **Required host teardown.**
+
+        Why (2.2.0, audit 2026-06-09 §2.4): the library never owned
+        teardown — ``disconnect_all`` had exactly one caller (the
+        build-failure unwind inside ``from_manifest_async``), so a host
+        stopping a session with declared ``mcp_servers`` orphaned a
+        stdio MCP child process every time (live leak in Geny prod).
+        This method is the single aggregation point; hosts call it once
+        when the session that owns the pipeline ends::
+
+            pipeline = await Pipeline.from_manifest_async(manifest, ...)
+            try:
+                ...runs...
+            finally:
+                await pipeline.aclose()
+
+        Tears down, in order:
+          1. pending HITL futures — cancelled (``HITLDecision.CANCEL``)
+             so any stage coroutine blocked on an approval unwinds
+             instead of awaiting forever;
+          2. live :meth:`events` taps — each subscriber queue receives
+             a close sentinel so tap generators return instead of
+             awaiting an event that will never come (2.2.0 — a host
+             ``async for`` over a closed pipeline's tap would otherwise
+             hang its consumer task forever);
+          3. the owned :class:`MCPManager` — ``disconnect_all()``
+             (reaps stdio child processes);
+          4. started :class:`ToolProvider` bundles —
+             :meth:`shutdown_tool_providers`.
+
+        Best-effort and idempotent: each step's failure is logged and
+        the remaining steps still run (a wedged MCP server must not
+        leak the tool providers behind it); a second ``aclose()`` is a
+        no-op. Safe on any pipeline regardless of how construction
+        went — hand-built pipelines and partially-attached ones simply
+        have nothing to tear down. The pipeline is not usable after
+        closing; build a fresh one per session.
+        """
+        if self._closed:
+            return
+        self._closed = True
+
+        # 1. Unblock anything awaiting a human verdict. cancel_pending_hitl
+        # is already tolerant of resolved/unknown tokens.
+        for token in list(self._pending_hitl.keys()):
+            try:
+                self.cancel_pending_hitl(token)
+            except Exception:  # noqa: BLE001 — teardown must not raise
+                logger.warning("aclose: cancelling HITL token %r failed", token, exc_info=True)
+
+        # 2. Wake every events() tap with the close sentinel; the tap
+        # generators see it and return, detaching their queues.
+        for tap_queue in list(self._event_taps):
+            try:
+                tap_queue.put_nowait(_TAP_CLOSED)
+            except Exception:  # noqa: BLE001 — teardown must not raise
+                logger.warning("aclose: closing an events() tap failed", exc_info=True)
+
+        # 3. MCP servers (stdio child processes — the §2.4 leak).
+        manager = self._mcp_manager
+        if manager is not None and hasattr(manager, "disconnect_all"):
+            try:
+                await manager.disconnect_all()
+            except Exception:  # noqa: BLE001
+                logger.warning("aclose: MCPManager.disconnect_all failed", exc_info=True)
+
+        # 4. Tool provider bundles.
+        try:
+            await self.shutdown_tool_providers()
+        except Exception:  # noqa: BLE001
+            logger.warning("aclose: shutdown_tool_providers failed", exc_info=True)
+
+    def close(self) -> None:
+        """Best-effort sync wrapper around :meth:`aclose`.
+
+        For hosts whose teardown path is synchronous (atexit handlers,
+        ``__del__``-adjacent cleanup). Outside a running event loop it
+        blocks via ``asyncio.run``; inside one it schedules
+        :meth:`aclose` as a task (kept referenced on the pipeline so
+        the loop cannot garbage-collect it mid-flight) and returns
+        immediately. Prefer ``await pipeline.aclose()`` whenever the
+        caller is async — only that form guarantees teardown completed
+        before the next statement.
+        """
+        if self._closed:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            asyncio.run(self.aclose())
+            return
+        self._close_task = loop.create_task(self.aclose())
+
     # ── Construction from serialized state ──
 
     @classmethod
@@ -584,7 +772,15 @@ class Pipeline:
         Steps:
           1. Validate the manifest — Stage 6 must declare a provider via
              ``config["provider"]``; ``strategies["provider"]`` is rejected
-             (clean break from the legacy slot).
+             (clean break from the legacy slot). Since 2.2.0 the full
+             :func:`~geny_executor.core.environment.validate_manifest`
+             catalogue check also runs here: in strict mode its
+             error-severity findings (required stages inactive, unknown
+             strategy/impl/artifact names on active stages,
+             ``strategy_configs`` aimed at no-op ``configure``
+             implementations) raise :class:`ConfigError` listing every
+             issue, and warnings are logged; in lenient mode everything
+             is logged and the build proceeds degraded.
           2. Build a :class:`PipelineConfig` from ``manifest.pipeline`` and
              ``manifest.model``.
           3. Instantiate each ``active`` stage via
@@ -615,11 +811,44 @@ class Pipeline:
             manifest's template state.
         """
         from geny_executor.core.artifact import create_stage
+        from geny_executor.core.environment import validate_manifest
         from geny_executor.core.mutation import PipelineMutator
         from geny_executor.tools.registry import ToolRegistry
 
         if strict:
+            # Kept ahead of validate_manifest so the established, message-
+            # pinned errors for the two provider-location contracts fire
+            # first (hosts match on these strings).
             _validate_manifest_provider_locations(manifest)
+
+        # Write-time manifest validation (2.2.0, audit §1-1 / §2.1).
+        # Strict: error-severity issues refuse the build — required
+        # stages must be active, strategy selections must resolve, and
+        # strategy_configs aimed at no-op ``configure`` implementations
+        # (the masked-degradation class that broke Geny prod's worker
+        # loop) are rejected instead of silently dropped. Warnings log.
+        # Lenient: everything logs (errors included, downgraded) — the
+        # recovery path keeps loading, but no longer silently.
+        issues = validate_manifest(manifest)
+        validation_errors = [i for i in issues if i.severity == "error"]
+        for issue in issues:
+            if issue.severity == "error" and strict:
+                continue  # raised in aggregate below — don't double-log
+            logger.warning(
+                "from_manifest%s: manifest issue [%s] %s",
+                "" if strict else "(strict=False)",
+                issue.code,
+                issue.message,
+            )
+        if strict and validation_errors:
+            details = "\n".join(f"  - [{i.code}] {i.message}" for i in validation_errors)
+            raise ConfigError(
+                f"Manifest failed strict validation with "
+                f"{len(validation_errors)} error(s):\n{details}\n"
+                "Fix the manifest (validate_manifest() reports the same "
+                "issues at write time) or load with strict=False to build "
+                "a degraded pipeline."
+            )
 
         # Build the effective credential bundle. The canonical input is the
         # ``credentials`` kwarg. ``api_key`` is accepted as a test/legacy
@@ -627,9 +856,11 @@ class Pipeline:
         # and ``credentials`` wins.
         if credentials is None:
             if api_key:
-                credentials = CredentialBundle(by_provider={
-                    "anthropic": ProviderCredentials(api_key=api_key),
-                })
+                credentials = CredentialBundle(
+                    by_provider={
+                        "anthropic": ProviderCredentials(api_key=api_key),
+                    }
+                )
             else:
                 credentials = CredentialBundle()
 
@@ -641,19 +872,66 @@ class Pipeline:
 
         entries = sorted(manifest.stage_entries(), key=lambda e: e.order)
 
+        # Record the manifest's Stage 6 provider declaration. This is
+        # deliberately captured from the MANIFEST entry, not from the
+        # constructed APIStage — hand-built fixture pipelines derive a
+        # ``_provider_name`` from whatever provider object they were
+        # given (e.g. "mock"), and the attach_runtime(llm_client=)
+        # guard must never fire for those. Only an explicit manifest
+        # declaration carries enough intent to refuse a conflicting
+        # runtime client (#866 guard, see attach_runtime).
+        api_entry = next((e for e in entries if e.name == "api" and e.active), None)
+        if api_entry is not None:
+            pipeline._manifest_provider = str((api_entry.config or {}).get("provider") or "")
+
         for entry in entries:
             if not entry.active:
                 continue
             kwargs = _stage_kwargs_for_entry(entry)
             try:
                 stage = create_stage(entry.name, entry.artifact, **kwargs)
-            except Exception:
+            except Exception as exc:
                 if strict:
                     raise
+                # Lenient mode keeps building (that is its recovery
+                # contract) but the drop must be loud + inspectable —
+                # a bare ``continue`` here let a degraded pipeline ship
+                # with zero evidence (audit §1-1 masked degradation).
+                logger.warning(
+                    "from_manifest(strict=False): stage %r (order %d) failed to "
+                    "construct and was DROPPED from the pipeline: %s: %s",
+                    entry.name,
+                    entry.order,
+                    type(exc).__name__,
+                    exc,
+                )
+                pipeline.dropped_stages.append(
+                    DroppedStage(
+                        name=entry.name,
+                        order=entry.order,
+                        error=f"{type(exc).__name__}: {exc}",
+                    )
+                )
                 continue
             pipeline.register_stage(stage)
 
-        PipelineMutator(pipeline).restore(manifest.to_snapshot())
+        restore_report = PipelineMutator(pipeline).restore(manifest.to_snapshot(), report=True)
+        if strict and restore_report.has_skips:
+            # Strict loads promised "the manifest is the source of
+            # truth" — a silently skipped slot/impl/chain is exactly
+            # the masked-degradation class the audit flagged (§2.1:
+            # Geny prod ran with its evaluator config dropped on the
+            # floor). Full promotion to a hard error is a separate
+            # workstream's call; warn loudly with the specifics so
+            # operators see the drift today.
+            logger.warning(
+                "from_manifest(strict): snapshot restore skipped manifest "
+                "declarations — slots=%s impls=%s chains=%s errors=%s",
+                restore_report.skipped_slots,
+                restore_report.skipped_impls,
+                restore_report.skipped_chains,
+                restore_report.errors,
+            )
 
         if strict:
             for stage in pipeline.stages:
@@ -866,6 +1144,7 @@ class Pipeline:
         permission_rules: Optional[Any] = None,
         permission_mode: Optional[str] = None,
         subagent_registry: Optional[Any] = None,
+        override_manifest: bool = False,
     ) -> None:
         """Inject session-scoped runtime objects into a manifest-built pipeline.
 
@@ -919,6 +1198,41 @@ class Pipeline:
                 from the pipeline's per-run state inside Stage 10's
                 ``execute`` — the attached context supplies the *host-level*
                 fields that persist across runs.
+            llm_client: A pre-built :class:`BaseClient` that becomes the
+                Stage 6 client. **This is the most dangerous kwarg in
+                the signature** and was undocumented until 2.2.0
+                (audit 2026-06-09 §2.7): an attached client
+                unconditionally beats the manifest's Stage 6
+                ``config["provider"]`` in ``_resolve_llm_client``,
+                which is how incident #866 shipped — a host attached
+                an Anthropic client onto a manifest that declared
+                ``claude_code_cli`` and every run silently used the
+                wrong backend. Client precedence (highest wins):
+
+                1. ``attach_runtime(llm_client=...)`` / a
+                   ``refresh_runtime(llm_client=...)`` between turns;
+                2. the manifest's ``stages[6].config["provider"]``
+                   resolved via the :class:`CredentialBundle`;
+                3. ``None`` (Stage 6 may still recover via its own
+                   legacy/fixture provider, else raises at execute).
+
+                Since 2.2.0 the #866 class is guarded: when this
+                pipeline was built from a manifest that declares a
+                Stage 6 provider, and the supplied client reports a
+                different ``client.provider``, this method raises
+                :class:`ConfigError` unless ``override_manifest=True``
+                is passed alongside. Clients without a ``provider``
+                attribute, same-provider clients, and pipelines with
+                no manifest declaration (builder / fixture pipelines)
+                are unaffected.
+            override_manifest: Explicit acknowledgement that
+                ``llm_client`` may contradict the manifest's declared
+                Stage 6 provider. ``True`` allows the mismatch and
+                emits a ``runtime.llm_client_override`` event (carrying
+                both provider names) into the event stream at the next
+                run start, so the override is visible in any transcript
+                instead of being a silent foot-gun. Has no effect when
+                no mismatch exists.
             session_runtime: Free-shape carrier for host-side
                 session-scoped objects (e.g. game state, persona
                 providers, emitter chains). The executor is intentionally
@@ -945,7 +1259,10 @@ class Pipeline:
             Idempotent when called multiple times *before* the first run —
             the last call wins for each kwarg. After a run has started,
             this method is a hard error rather than a quiet no-op so hosts
-            notice construction-order bugs immediately.
+            notice construction-order bugs immediately. For *between-turn*
+            runtime updates on a long-lived pipeline (credential rotation,
+            tool_context swap), use :meth:`refresh_runtime` — the same
+            wiring without the before-first-run gate.
         """
         if self._has_started:
             raise RuntimeError(
@@ -953,10 +1270,89 @@ class Pipeline:
                 "started running. Runtime objects must be attached before "
                 "the first run() / run_stream() invocation; otherwise prior "
                 "stage state has already captured references to the old "
-                "values. Construct a fresh pipeline via from_manifest_async "
-                "and attach before running."
+                "values. Use refresh_runtime() for legal between-turn "
+                "updates, or construct a fresh pipeline via "
+                "from_manifest_async and attach before running."
             )
+        self._apply_runtime(
+            memory_retriever=memory_retriever,
+            memory_strategy=memory_strategy,
+            memory_persistence=memory_persistence,
+            system_builder=system_builder,
+            tool_context=tool_context,
+            llm_client=llm_client,
+            session_runtime=session_runtime,
+            hook_runner=hook_runner,
+            mcp_manager=mcp_manager,
+            permission_rules=permission_rules,
+            permission_mode=permission_mode,
+            subagent_registry=subagent_registry,
+            override_manifest=override_manifest,
+        )
 
+    def refresh_runtime(self, **attach_runtime_kwargs: Any) -> None:
+        """Between-turn runtime update — :meth:`attach_runtime` without the gate.
+
+        Why (2.2.0, audit 2026-06-09 §3.3 / host-compensation table):
+        ``attach_runtime`` is construction-time-only by contract, so a
+        host that needed to rotate credentials or swap a tool_context
+        on a long-lived pipeline had no legal API — Geny shipped a
+        ~220-line ``queue_runtime_refresh`` module that reached into
+        private setters between turns. This method is that operation,
+        owned by the library: identical kwargs, identical wiring
+        (including the ``llm_client`` #866 guard and
+        ``override_manifest`` escape hatch), legal at any *turn
+        boundary*.
+
+        A refreshed ``llm_client`` also bumps the pipeline's client
+        generation, so reused states (the long-lived-state model)
+        re-resolve their captured client at the next ``_init_state``
+        instead of riding the stale one forever. See
+        :meth:`invalidate_client` for the rotate-without-replacement
+        variant.
+
+        Raises:
+            RuntimeError: If a run is currently in progress
+                (``run_in_progress``). Swapping strategies mid-run
+                would hand later stages different runtime objects than
+                earlier stages already used — the exact mixed-runtime
+                hazard the attach gate exists to prevent. Wait for the
+                run to finish (or cancel it) first.
+            TypeError: On kwargs :meth:`attach_runtime` does not accept.
+        """
+        if self.run_in_progress:
+            raise RuntimeError(
+                "Pipeline.refresh_runtime() called while a run is in "
+                "progress. Runtime objects may only be swapped between "
+                "turns; a mid-run swap would mix old and new runtime "
+                "within one turn. Await the in-flight run() / drain the "
+                "run_stream() iterator first."
+            )
+        self._apply_runtime(**attach_runtime_kwargs)
+
+    def _apply_runtime(
+        self,
+        *,
+        memory_retriever: Optional[Any] = None,
+        memory_strategy: Optional[Any] = None,
+        memory_persistence: Optional[Any] = None,
+        system_builder: Optional[Any] = None,
+        tool_context: Optional[Any] = None,
+        llm_client: Optional[Any] = None,
+        session_runtime: Optional[Any] = None,
+        hook_runner: Optional[Any] = None,
+        mcp_manager: Optional[Any] = None,
+        permission_rules: Optional[Any] = None,
+        permission_mode: Optional[str] = None,
+        subagent_registry: Optional[Any] = None,
+        override_manifest: bool = False,
+    ) -> None:
+        """Shared wiring behind :meth:`attach_runtime` / :meth:`refresh_runtime`.
+
+        Gate-free by design — callers own the lifecycle policy
+        (before-first-run for attach, between-turns for refresh); this
+        method owns only the mechanics.
+        """
         if memory_retriever is not None:
             self._set_stage_slot_strategy(
                 stage_name="context", slot_name="retriever", strategy=memory_retriever
@@ -981,7 +1377,47 @@ class Pipeline:
             self._set_tool_stage_context(tool_context)
 
         if llm_client is not None:
+            # #866 guard (2.2.0, audit §2.7): an attached client beats
+            # the manifest unconditionally in _resolve_llm_client, so a
+            # provider mismatch here means every subsequent run silently
+            # uses a backend the environment never declared. Refuse
+            # unless the caller explicitly acknowledged the override.
+            client_provider = str(getattr(llm_client, "provider", "") or "")
+            declared = self._manifest_provider
+            if declared and client_provider and client_provider != declared:
+                if not override_manifest:
+                    raise ConfigError(
+                        f"attach_runtime(llm_client=...): the supplied client "
+                        f"reports provider {client_provider!r} but this "
+                        f"pipeline's manifest declares Stage 6 provider "
+                        f"{declared!r}. An attached client overrides the "
+                        f"manifest unconditionally — this exact mismatch "
+                        f"shipped incident #866 (runs silently used the "
+                        f"wrong backend). Either drop the llm_client kwarg "
+                        f"and let the credential bundle resolve "
+                        f"{declared!r}, fix the manifest, or pass "
+                        f"override_manifest=True to acknowledge the "
+                        f"override (it will be announced via a "
+                        f"'runtime.llm_client_override' event at the next "
+                        f"run start)."
+                    )
+                # Acknowledged override — make it visible in the event
+                # stream at the next run start instead of staying a
+                # silent foot-gun.
+                self._pending_runtime_events.append(
+                    (
+                        "runtime.llm_client_override",
+                        {
+                            "manifest_provider": declared,
+                            "client_provider": client_provider,
+                        },
+                    )
+                )
             self._attached_llm_client = llm_client
+            # Bump the generation so reused states drop any previously
+            # pipeline-resolved client and capture this one at the next
+            # _init_state (credential-rotation symmetry, audit §3.3).
+            self._client_generation += 1
 
         if session_runtime is not None:
             self._attached_session_runtime = session_runtime
@@ -990,7 +1426,11 @@ class Pipeline:
             # Stash on the Tool stage's context so Stage 10's
             # RegistryRouter sees it on every dispatch. The host
             # constructs a HookRunner once (per session typically) and
-            # attaches it before the first run.
+            # attaches it before the first run. The pipeline also keeps
+            # its own handle for the lifecycle events it fires itself
+            # (pipeline start/end, stage enter/exit, loop iteration end
+            # — 2.2.0, previously documented-but-never-fired).
+            self._hook_runner = hook_runner
             self._set_tool_stage_hook_runner(hook_runner)
 
         if permission_rules is not None or permission_mode is not None:
@@ -1167,94 +1607,248 @@ class Pipeline:
 
     # ── Execution ──
 
-    async def run(self, input: Any, state: Optional[PipelineState] = None) -> PipelineResult:
+    @property
+    def run_in_progress(self) -> bool:
+        """True while any ``run()`` / ``run_stream()`` is executing phases.
+
+        Covers the streaming background task's full lifetime, not just
+        the generator's visible iteration. This is the engine-wired
+        execution lock (2.2.0, audit §3.5): :meth:`refresh_runtime`
+        refuses while it is set, and :class:`PipelineMutator` raises
+        :class:`MutationLocked` from its config/strategy mutations —
+        previously ``MutationLocked`` could not fire in prod because
+        nothing ever called the manual ``lock_stage`` API.
+        """
+        return self._runs_in_flight > 0
+
+    def invalidate_client(self) -> None:
+        """Drop the resolved/attached LLM client; reused states re-resolve.
+
+        Why (2.2.0, audit §3.3 sticky-client asymmetry): ``_init_state``
+        fills ``state.llm_client`` only-if-None, so on a long-lived
+        state a credential rotation or provider swap never landed — the
+        first-ever resolved client rode the session forever. Calling
+        this method:
+
+        1. clears any ``attach_runtime(llm_client=...)`` client, and
+        2. bumps the pipeline's client generation, so every state that
+           captured a *pipeline-resolved* client re-resolves at its
+           next ``_init_state`` (against the current credential bundle
+           / any client supplied via :meth:`refresh_runtime` since).
+
+        Clients a host placed **directly** onto ``state.llm_client``
+        are never touched — the state never recorded a pipeline
+        generation for them, and clobbering host property writes is not
+        this method's mandate. Legal at any turn boundary; like
+        :meth:`refresh_runtime` it must not race a run in progress.
+
+        Raises:
+            RuntimeError: If a run is in progress (mid-turn client swap
+                would mix backends within one turn).
+        """
+        if self.run_in_progress:
+            raise RuntimeError(
+                "Pipeline.invalidate_client() called while a run is in "
+                "progress. Invalidate between turns so a single turn never "
+                "mixes two clients."
+            )
+        self._attached_llm_client = None
+        self._client_generation += 1
+
+    async def run(
+        self,
+        input: Any,
+        state: Optional[PipelineState] = None,
+        *,
+        overrides: Optional[ModelOverrides] = None,
+    ) -> PipelineResult:
         """Execute the full pipeline.
 
         Phase A: Stage 1 (Input) — runs once
-        Phase B: Stage 2~13 (Agent Loop) — repeats until loop_decision != "continue"
-        Phase C: Stage 14~16 (Finalize) — runs once
-        """
-        state = self._init_state(state)
-        await self._emit("pipeline.start", data={"input": str(input)[: self.EVENT_DATA_TRUNCATE]})
+        Phase B: Stage 2~16 (Agent Loop) — repeats until loop_decision != "continue"
+        Phase C: Stage 17~21 (Finalize) — runs once
 
+        Args:
+            input: The user turn (string or rich input Stage 1 accepts).
+            state: Conversation state. Pass the previous turn's state
+                (or ``result.state``) to continue a conversation —
+                omitting it starts a FRESH conversation, and doing so
+                on a pipeline that has already run logs a one-time
+                warning (audit §3.3: GAPT shipped prod amnesia exactly
+                this way). Reused states get their per-turn fields
+                reset via :meth:`PipelineState.begin_turn`.
+            overrides: Optional :class:`ModelOverrides` applied AFTER
+                config → state stomping, for THIS run only. The next
+                run's ``apply_to_state`` reverts them by construction.
+
+        Returns:
+            :class:`PipelineResult` — its ``.state`` attribute carries
+            the state actually used (the only handle when ``state`` was
+            omitted).
+        """
+        state = self._init_state(state, overrides=overrides)
+        await self._emit(
+            "pipeline.start",
+            data={"input": str(input)[: self.EVENT_DATA_TRUNCATE]},
+            session_id=state.session_id,
+            run_id=state._run_id,
+        )
+        if self._hook_runner is not None:
+            await self._fire_lifecycle_hook(
+                HookEvent.PIPELINE_START, state, details={"streaming": False}
+            )
+
+        self._runs_in_flight += 1
+        success = False
         try:
             await self._run_phases(input, state)
 
             result = PipelineResult.from_state(state)
-            await self._emit("pipeline.complete", data={"iterations": state.iteration})
+            success = result.success
+            await self._emit(
+                "pipeline.complete",
+                data={"iterations": state.iteration},
+                session_id=state.session_id,
+                run_id=state._run_id,
+            )
             return result
 
         except Exception as e:
-            await self._emit("pipeline.error", data=_error_event_data(e))
+            await self._emit(
+                "pipeline.error",
+                data=_error_event_data(e),
+                session_id=state.session_id,
+                run_id=state._run_id,
+            )
             return PipelineResult.error_result(str(e), state)
+        finally:
+            self._runs_in_flight -= 1
+            self._end_turn(state)
+            if self._hook_runner is not None:
+                await self._fire_lifecycle_hook(
+                    HookEvent.PIPELINE_END,
+                    state,
+                    details={"success": success, "iterations": state.iteration},
+                )
 
     async def run_stream(
-        self, input: Any, state: Optional[PipelineState] = None
+        self,
+        input: Any,
+        state: Optional[PipelineState] = None,
+        *,
+        overrides: Optional[ModelOverrides] = None,
     ) -> AsyncIterator[PipelineEvent]:
         """Streaming mode — yields PipelineEvents in real-time.
 
         Uses an asyncio.Queue so events emitted mid-stage (e.g. text.delta
         during streaming API calls) are yielded immediately, not buffered
         until stage completion.
+
+        State ownership: unlike :meth:`run`, this generator yields
+        events, not a result object — there is nothing to hang a
+        ``.state`` attribute on, so **the caller must construct and
+        hold the state themselves** to continue the conversation next
+        turn::
+
+            state = PipelineState(session_id=...)   # turn 1; reuse next turn
+            async for event in pipeline.run_stream(user_text, state):
+                ...
+
+        Passing ``state=None`` on a pipeline that has already run logs
+        the same one-time amnesia warning as :meth:`run` — the
+        internally created state is unreachable afterwards (audit
+        §3.3). ``overrides`` has :meth:`run`'s semantics: applied after
+        config stomping, this run only.
+
+        Channel unification (2.2.0, audit §3.2): this generator now
+        subscribes ONCE, to the event bus. State events (text.delta,
+        api.*) reach the bus through the bridge ``_init_state``
+        installs, so the old second collector (and its
+        double-delivery hazard) is gone; ``pipeline.start`` /
+        ``pipeline.complete`` / ``pipeline.error`` are emitted through
+        the bus as well, so ``pipeline.on()`` subscribers and
+        :meth:`events` taps finally see the full lifecycle in
+        streaming mode too. The collector filters on this run's
+        ``run_id`` — overlapping runs on a shared pipeline no longer
+        cross-pollinate each other's streams (host-emitted bus events
+        without a run_id still pass, preserving the old behaviour).
         """
-        state = self._init_state(state)
+        state = self._init_state(state, overrides=overrides)
+        run_id = state._run_id
         queue: asyncio.Queue[PipelineEvent] = asyncio.Queue()
         _SENTINEL = object()
 
-        # Capture EventBus events (stage.enter/exit/bypass etc.)
+        # Single subscription: bus-native AND bridged state events.
         def bus_collector(event: PipelineEvent) -> None:
+            if event.run_id and event.run_id != run_id:
+                return  # another run's traffic on a shared pipeline
             queue.put_nowait(event)
 
-        # Capture state.add_event() calls (text.delta, api.request etc.)
-        def state_collector(event_dict: Dict[str, Any]) -> None:
-            queue.put_nowait(
-                PipelineEvent(
-                    type=event_dict["type"],
-                    stage=event_dict.get("stage", ""),
-                    iteration=event_dict.get("iteration", 0),
-                    timestamp=event_dict.get("timestamp", ""),
-                    data=event_dict.get("data", {}),
-                )
-            )
-
         unsubscribe = self._event_bus.on("*", bus_collector)
-        state._event_listener = state_collector
 
         async def _run_pipeline() -> None:
-            """Execute pipeline phases, then push sentinel to signal completion."""
-            try:
-                await self._run_phases(input, state)
+            """Execute pipeline phases, then push sentinel to signal completion.
 
-                queue.put_nowait(
-                    PipelineEvent(
-                        type="pipeline.complete",
-                        data={
-                            # `result` is the canonical final text consumers
-                            # forward to the user — it must not be truncated.
-                            # EVENT_DATA_TRUNCATE only applies to preview-only
-                            # event payloads (see pipeline.start.input).
-                            "result": state.final_text,
-                            "iterations": state.iteration,
-                            "total_cost_usd": state.total_cost_usd,
-                        },
+            The run-in-progress counter brackets this task's whole
+            lifetime (not just the generator's visible iteration) so
+            refresh_runtime / mutator locking stay correct even when a
+            consumer abandons the stream mid-run — the background task
+            keeps executing until phases finish.
+            """
+            self._runs_in_flight += 1
+            success = False
+            try:
+                if self._hook_runner is not None:
+                    await self._fire_lifecycle_hook(
+                        HookEvent.PIPELINE_START, state, details={"streaming": True}
                     )
+                await self._run_phases(input, state)
+                success = state.loop_decision != "error"
+
+                await self._emit(
+                    "pipeline.complete",
+                    data={
+                        # `result` is the canonical final text consumers
+                        # forward to the user — it must not be truncated.
+                        # EVENT_DATA_TRUNCATE only applies to preview-only
+                        # event payloads (see pipeline.start.input).
+                        "result": state.final_text,
+                        "iterations": state.iteration,
+                        "total_cost_usd": state.total_cost_usd,
+                    },
+                    session_id=state.session_id,
+                    run_id=run_id,
                 )
             except Exception as e:
-                queue.put_nowait(
-                    PipelineEvent(
-                        type="pipeline.error",
-                        data={
-                            **_error_event_data(e),
-                            "total_cost_usd": state.total_cost_usd,
-                        },
-                    )
+                await self._emit(
+                    "pipeline.error",
+                    data={
+                        **_error_event_data(e),
+                        "total_cost_usd": state.total_cost_usd,
+                    },
+                    session_id=state.session_id,
+                    run_id=run_id,
                 )
             finally:
+                self._runs_in_flight -= 1
+                self._end_turn(state)
+                if self._hook_runner is not None:
+                    await self._fire_lifecycle_hook(
+                        HookEvent.PIPELINE_END,
+                        state,
+                        details={"success": success, "iterations": state.iteration},
+                    )
                 queue.put_nowait(_SENTINEL)  # type: ignore[arg-type]
 
         try:
-            yield PipelineEvent(
-                type="pipeline.start", data={"input": str(input)[: self.EVENT_DATA_TRUNCATE]}
+            # Through the bus (not a direct yield) so on() subscribers,
+            # the journal and events() taps see the run open; the
+            # collector above echoes it into our queue synchronously.
+            await self._emit(
+                "pipeline.start",
+                data={"input": str(input)[: self.EVENT_DATA_TRUNCATE]},
+                session_id=state.session_id,
+                run_id=run_id,
             )
 
             # Run pipeline in background task so we can yield events as they arrive
@@ -1269,22 +1863,145 @@ class Pipeline:
             await task  # propagate any unexpected errors
 
         except Exception as e:
-            yield PipelineEvent(type="pipeline.error", data=_error_event_data(e))
+            # Generator-machinery failure (queue handling, the awaited
+            # task re-raising). The run task already announced its own
+            # pipeline.error through the bus; this direct yield covers
+            # failures outside it so the consumer is never left without
+            # a terminal event. Recorded for the journal/taps too.
+            error_event = PipelineEvent(
+                type="pipeline.error",
+                data=_error_event_data(e),
+                session_id=state.session_id,
+                run_id=run_id,
+            )
+            self._record_event(error_event)
+            yield error_event
 
         finally:
-            state._event_listener = None
             unsubscribe()
 
     # ── Events ──
 
     def on(self, event_type: str, handler: Callable) -> Callable:
-        """Register event handler. Returns unsubscribe function."""
+        """Register event handler. Returns unsubscribe function.
+
+        Since 2.2.0 the bus carries EVERYTHING the engine emits —
+        state events (text.delta, api.*, tool.*) are bridged into it,
+        so ``pipeline.on("*")`` is a complete feed, not just stage
+        transitions (audit §3.2: subscribers previously never saw the
+        state channel at all). Handler-based; for an async-iterator
+        surface with replay and clean teardown, prefer :meth:`events`.
+        """
         return self._event_bus.on(event_type, handler)
 
     @property
     def event_bus(self) -> EventBus:
         """Access the event bus directly."""
         return self._event_bus
+
+    async def events(self, replay_from: int = -1) -> AsyncIterator[PipelineEvent]:
+        """Multi-subscriber async-iterator tap over the unified event stream.
+
+        Why (2.2.0, audit §3.2): with only ``run_stream`` (single
+        consumer, run-scoped) and ``on()`` (callback, no replay), a
+        host UI that attached mid-session had no way to catch up —
+        Geny shipped a 50ms polling loop over ``state.events`` to
+        compensate. This tap is the library-owned replacement::
+
+            async for event in pipeline.events(replay_from=0):
+                render(event)   # event.seq is the resume cursor
+
+        Semantics:
+          - Every engine event (bus-native + bridged state events,
+            across ALL runs and sessions on this pipeline) flows
+            through, stamped with ``seq`` / ``run_id`` /
+            ``session_id``. Events a host emits directly on the raw
+            :attr:`event_bus` are NOT journaled and do not appear here.
+          - ``replay_from`` is a ``seq`` cursor: events with
+            ``seq > replay_from`` still held in the bounded ring
+            journal (``event_journal_size`` events, constructor kwarg)
+            are yielded first, then the live feed continues with no
+            gap and no duplicate. The default ``-1`` means live-only
+            — strictly: replay is skipped entirely, which on a fresh
+            pipeline is the same thing. Pass ``0`` to replay from the
+            beginning (as far as the journal still reaches; older
+            events have been evicted oldest-first).
+          - Multiple concurrent taps each get the full sequence,
+            independently paced (each tap has its own unbounded queue;
+            an abandoned-but-unclosed tap therefore accumulates — close
+            the generator or :meth:`aclose` the pipeline).
+          - Termination: closing the generator (``aclose()`` /
+            ``break`` + GC) detaches its queue immediately;
+            :meth:`Pipeline.aclose` wakes every live tap with a close
+            sentinel so host consumer tasks unwind instead of awaiting
+            forever. No background tasks are spawned — nothing to leak.
+        """
+        if self._closed:
+            return
+        tap_queue: asyncio.Queue = asyncio.Queue()
+        self._event_taps.append(tap_queue)
+        last_seq = int(replay_from)
+        try:
+            if replay_from >= 0:
+                # Snapshot AFTER registering the queue: anything that
+                # arrives during replay is also in our queue, and the
+                # seq cursor below deduplicates the overlap.
+                for event in list(self._event_journal):
+                    if event.seq > last_seq:
+                        last_seq = event.seq
+                        yield event
+            while True:
+                event = await tap_queue.get()
+                if event is _TAP_CLOSED:
+                    return
+                if event.seq <= last_seq:
+                    continue  # already delivered during journal replay
+                last_seq = event.seq
+                yield event
+        finally:
+            if tap_queue in self._event_taps:
+                self._event_taps.remove(tap_queue)
+
+    def _record_event(self, event: PipelineEvent) -> PipelineEvent:
+        """Stamp ``seq``, journal, and fan out to :meth:`events` taps.
+
+        The single funnel every engine event passes through before any
+        subscriber sees it — keeping seq assignment here makes the
+        ordering contract trivial: one pipeline, one monotonic
+        sequence, no matter which channel produced the event.
+        """
+        self._event_seq += 1
+        event.seq = self._event_seq
+        self._event_journal.append(event)
+        for tap_queue in list(self._event_taps):
+            tap_queue.put_nowait(event)
+        return event
+
+    def _make_state_event_bridge(self, state: PipelineState, run_id: str) -> Callable:
+        """Build the ``add_event`` → event-channel forwarder for one run.
+
+        Installed on ``state._bus_emitter`` by :meth:`_init_state`.
+        Wraps each event dict in a :class:`PipelineEvent` carrying the
+        run's correlation ids, records it (seq / journal / taps) and
+        dispatches synchronously on the bus — ``emit_sync`` preserves
+        the inline-delivery semantics streaming consumers relied on
+        when this was a per-state listener.
+        """
+
+        def _bridge(event_dict: Dict[str, Any]) -> None:
+            event = PipelineEvent(
+                type=event_dict["type"],
+                stage=event_dict.get("stage", ""),
+                iteration=event_dict.get("iteration", 0),
+                timestamp=event_dict.get("timestamp", ""),
+                data=event_dict.get("data", {}),
+                session_id=state.session_id,
+                run_id=run_id,
+            )
+            self._record_event(event)
+            self._event_bus.emit_sync(event)
+
+        return _bridge
 
     # ── Pipeline.resume API (S9c.1) ─────────────────────────────
 
@@ -1390,6 +2107,16 @@ class Pipeline:
         registered, so presets that don't opt the new scaffolds in
         (orders 11/13/15/19/20) still run identically to pre-9a.
         """
+        # Flush deferred run-start events (config.override_applied /
+        # runtime.llm_client_override) now that any streaming consumer
+        # is subscribed on the bus — _init_state queues them because
+        # events added there would predate run_stream's subscription
+        # and never stream.
+        if self._pending_runtime_events:
+            pending, self._pending_runtime_events = self._pending_runtime_events, []
+            for event_type, data in pending:
+                state.add_event(event_type, data)
+
         # Phase A: Input
         current = await self._run_stage(1, input, state)
 
@@ -1406,6 +2133,19 @@ class Pipeline:
             # single_turn: complete after one pass regardless of loop decision
             if state.single_turn and state.loop_decision == "continue":
                 state.loop_decision = "complete"
+
+            # One full loop-body pass finished — fire the lifecycle
+            # hook (2.2.0; previously documented-but-never-fired) with
+            # the verdict the controller just produced.
+            if self._hook_runner is not None:
+                await self._fire_lifecycle_hook(
+                    HookEvent.LOOP_ITERATION_END,
+                    state,
+                    details={
+                        "iteration": state.iteration,
+                        "loop_decision": state.loop_decision,
+                    },
+                )
 
             if state.loop_decision != "continue":
                 break
@@ -1440,22 +2180,183 @@ class Pipeline:
 
     # ── Internal: Stage execution ──
 
-    def _init_state(self, state: Optional[PipelineState]) -> PipelineState:
-        """Initialize or apply config to state."""
+    def _init_state(
+        self,
+        state: Optional[PipelineState],
+        *,
+        overrides: Optional[ModelOverrides] = None,
+    ) -> PipelineState:
+        """Initialize or apply config to state — the turn-boundary owner.
+
+        Responsibilities (2.2.0, audit §3.3 — see the
+        :class:`PipelineState` docstring for the field-lifetime
+        contract this enforces):
+
+        1. ``state=None`` loudness — warn once per pipeline when a
+           pipeline that has already run gets no state (the GAPT
+           amnesia class: history silently discarded).
+        2. Reused-state detection (prior run on record, or pre-seeded
+           ``messages`` from a checkpoint rehydration) →
+           :meth:`PipelineState.begin_turn` resets the per-turn fields.
+        3. Config → state stomping, then per-run ``overrides`` on top
+           (one-run lifetime by construction — the next stomp reverts).
+        4. Client resolution with generation stamping: fill-if-None as
+           always, but also RE-resolve when the captured generation no
+           longer matches (``invalidate_client`` / refreshed client
+           since capture). Host-set clients (no generation on record)
+           are never clobbered.
+        5. Publish the resolved Stage 6 provider into
+           ``state.shared[SharedKeys.PRIMARY_PROVIDER]`` so sub-agent
+           factories can inherit the parent backend (audit §2.8: the
+           read side existed for a release with no producer).
+        6. Event correlation + channel bridge (2.2.0, audit §3.2):
+           mint this run's ``run_id`` and install the
+           ``state.add_event`` → event-bus forwarder. Re-installed
+           every run so a state migrated between pipelines always
+           feeds its CURRENT owner, and each turn's events carry that
+           turn's run_id.
+        """
+        if state is None and self._has_started and not self._warned_state_none:
+            self._warned_state_none = True
+            logger.warning(
+                "Pipeline.run/run_stream called with state=None on a pipeline "
+                "that has run before: passing no state discards conversation "
+                "history; pass the prior state (run() exposes it as "
+                "result.state) or use a session store. This warning fires "
+                "once per pipeline."
+            )
         state = state or PipelineState()
+
+        # Turn boundary: a state that already served a run — or arrives
+        # pre-seeded with conversation history (checkpoint / host
+        # rehydration) — must not leak the previous turn's loop verdict,
+        # iteration count, or event log into this one.
+        if state._run_count > 0 or state.messages:
+            state.begin_turn()
+        state._run_count += 1
+
         if not state.pipeline_id:
             state.pipeline_id = uuid.uuid4().hex[:12]
+
+        # Per-run correlation id + the add_event → bus bridge. The
+        # bridge closure carries the run_id so every event this state
+        # produces during THIS turn is attributable; overlapping runs
+        # each get their own state, hence their own bridge.
+        state._run_id = uuid.uuid4().hex
+        state._bus_emitter = self._make_state_event_bridge(state, state._run_id)
+
         self._config.apply_to_state(state)
+        if overrides is not None:
+            # After apply_to_state on purpose: per-run overrides sit at
+            # the top of the config funnel for exactly one run. Events
+            # are deferred to _run_phases so streaming listeners see them.
+            for field_name, value in overrides.apply_to_state(state).items():
+                self._pending_runtime_events.append(
+                    (
+                        "config.override_applied",
+                        {"field": field_name, "value": value, "source": "per_run"},
+                    )
+                )
         if state.credentials is None:
             state.credentials = self._credentials
         if state.subagent_registry is None and self._subagent_registry is not None:
             state.subagent_registry = self._subagent_registry
         if state.llm_client is None:
             state.llm_client = self._resolve_llm_client()
+            state._client_generation = self._client_generation
+        elif (
+            state._client_generation is not None
+            and state._client_generation != self._client_generation
+        ):
+            # The client this state captured came from a pipeline
+            # resolution that has since been invalidated (credential
+            # rotation / refresh_runtime(llm_client=...)). Re-resolve —
+            # riding the stale client was the §3.3 asymmetry.
+            state.llm_client = self._resolve_llm_client()
+            state._client_generation = self._client_generation
         if state.session_runtime is None and self._attached_session_runtime is not None:
             state.session_runtime = self._attached_session_runtime
+
+        provider_name = self._resolved_provider_name(state)
+        if provider_name:
+            state.shared[SharedKeys.PRIMARY_PROVIDER] = provider_name
+
         self._has_started = True
         return state
+
+    def _end_turn(self, state: PipelineState) -> None:
+        """Per-turn bookkeeping at run end (success OR failure paths).
+
+        Folds the turn's cost accumulator into the session-cumulative
+        counter. ``total_cost_usd`` itself is NOT zeroed here — the
+        result/event consumers built right after the run still read it
+        as "this turn's cost"; the reset happens at the NEXT turn's
+        ``begin_turn``.
+        """
+        state.session_cost_usd += state.total_cost_usd
+
+    def _resolved_provider_name(self, state: PipelineState) -> str:
+        """Best available name for the provider Stage 6 will actually use.
+
+        Preference order mirrors ``_resolve_llm_client``: the live
+        client's own ``provider`` attribute (ground truth — covers
+        attached/override clients), then the Stage 6 declaration
+        (covers fixture pipelines whose client is resolved lazily
+        inside the stage). Empty string when undeterminable.
+        """
+        client = state.llm_client
+        if client is not None:
+            name = str(getattr(client, "provider", "") or "")
+            if name:
+                return name
+        api_stage = next((s for s in self._stages.values() if s.name == "api"), None)
+        if api_stage is None:
+            return ""
+        provider_name = str(getattr(api_stage, "_provider_name", "") or "")
+        if not provider_name and hasattr(api_stage, "get_config"):
+            provider_name = str((api_stage.get_config() or {}).get("provider", "") or "")
+        return provider_name
+
+    async def _fire_lifecycle_hook(
+        self,
+        event: HookEvent,
+        state: PipelineState,
+        *,
+        stage: Optional[Stage] = None,
+        details: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Fire a pipeline-level lifecycle hook; never let it break the run.
+
+        2.2.0 (audit §3.5): pipeline start/end, stage enter/exit and
+        loop-iteration-end were documented in :class:`HookEvent` but no
+        engine path ever fired them — hosts bound dead handlers. The
+        pipeline now mirrors its bus events to the hook runner. Call
+        sites guard with ``if self._hook_runner is not None`` so the
+        no-hooks fast path costs one attribute check; outcomes are
+        observational here (lifecycle hooks cannot block the pipeline —
+        blocking semantics remain a tool-invocation feature) and any
+        runner failure is logged and swallowed.
+        """
+        runner = self._hook_runner
+        if runner is None:
+            return
+        try:
+            payload = HookEventPayload(
+                event=event,
+                session_id=state.session_id,
+                timestamp=datetime.now(timezone.utc).isoformat(),
+                pipeline_id=state.pipeline_id,
+                stage_order=getattr(stage, "order", None) if stage is not None else None,
+                stage_name=getattr(stage, "name", None) if stage is not None else None,
+                details=details or {},
+            )
+            await runner.fire(event, payload)
+        except Exception:  # noqa: BLE001 — observability must not kill the run
+            logger.warning(
+                "lifecycle hook %s failed (ignored)",
+                getattr(event, "value", event),
+                exc_info=True,
+            )
 
     def _resolve_llm_client(self) -> Any:
         """Choose the LLM client to attach to fresh state.
@@ -1511,10 +2412,22 @@ class Pipeline:
         if stage is None:
             # Emit bypass event so the UI shows unregistered stages as skipped
             name = self._DEFAULT_STAGE_NAMES.get(order, f"stage_{order}")
-            await self._emit("stage.bypass", stage=name, iteration=state.iteration)
+            await self._emit(
+                "stage.bypass",
+                stage=name,
+                iteration=state.iteration,
+                session_id=state.session_id,
+                run_id=state._run_id,
+            )
             return current
         if stage.should_bypass(state):
-            await self._emit("stage.bypass", stage=stage.name, iteration=state.iteration)
+            await self._emit(
+                "stage.bypass",
+                stage=stage.name,
+                iteration=state.iteration,
+                session_id=state.session_id,
+                run_id=state._run_id,
+            )
             return current
         return await self._run_stage(order, current, state)
 
@@ -1526,13 +2439,38 @@ class Pipeline:
 
         state.current_stage = stage.name
         state.stage_history.append(stage.name)
-        await self._emit("stage.enter", stage=stage.name, iteration=state.iteration)
+        await self._emit(
+            "stage.enter",
+            stage=stage.name,
+            iteration=state.iteration,
+            session_id=state.session_id,
+            run_id=state._run_id,
+        )
+        if self._hook_runner is not None:
+            # Mirror the bus event to the hook surface (2.2.0 — these
+            # HookEvent kinds were reserved-but-never-fired before).
+            await self._fire_lifecycle_hook(
+                HookEvent.STAGE_ENTER, state, stage=stage, details={"iteration": state.iteration}
+            )
 
         await stage.on_enter(state)
         try:
             result = await stage.execute(input, state)
             await stage.on_exit(result, state)
-            await self._emit("stage.exit", stage=stage.name, iteration=state.iteration)
+            await self._emit(
+                "stage.exit",
+                stage=stage.name,
+                iteration=state.iteration,
+                session_id=state.session_id,
+                run_id=state._run_id,
+            )
+            if self._hook_runner is not None:
+                await self._fire_lifecycle_hook(
+                    HookEvent.STAGE_EXIT,
+                    state,
+                    stage=stage,
+                    details={"iteration": state.iteration},
+                )
             return result
         except Exception as e:
             await self._emit(
@@ -1540,6 +2478,8 @@ class Pipeline:
                 stage=stage.name,
                 iteration=state.iteration,
                 data=_error_event_data(e),
+                session_id=state.session_id,
+                run_id=state._run_id,
             )
             recovery = await stage.on_error(e, state)
             if recovery is not None:
@@ -1547,6 +2487,14 @@ class Pipeline:
             raise StageError(str(e), stage_name=stage.name, stage_order=order, cause=e) from e
 
     async def _emit(self, event_type: str, **kwargs: Any) -> None:
-        """Emit a pipeline event."""
+        """Emit a pipeline event (bus-native channel).
+
+        Records first (seq / journal / events() taps), then dispatches
+        on the bus with async handlers awaited inline — the pre-2.2.0
+        contract for bus subscribers is unchanged. ``kwargs`` map to
+        :class:`PipelineEvent` fields; call sites pass ``session_id`` /
+        ``run_id`` so correlation holds across overlapping runs.
+        """
         event = PipelineEvent(type=event_type, **kwargs)
+        self._record_event(event)
         await self._event_bus.emit(event)

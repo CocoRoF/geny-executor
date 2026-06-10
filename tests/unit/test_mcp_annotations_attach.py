@@ -8,6 +8,7 @@ from typing import Any, Dict
 import pytest
 
 from geny_executor.tools.base import ToolCapabilities, ToolContext
+from tests._fixtures.manifest_entries import required_stage_entries
 from geny_executor.tools.mcp.adapter import MCPToolAdapter, _annotations_to_capabilities
 from geny_executor.tools.mcp.manager import (
     MCPServerConfig,
@@ -172,7 +173,7 @@ class TestPipelineAttachManager:
 
         # Build a pipeline first via the manifest path so it has an
         # empty registry attached.
-        manifest = EnvironmentManifest()
+        manifest = EnvironmentManifest(stages=required_stage_entries())
         pipeline = await Pipeline.from_manifest_async(manifest)
         assert pipeline.tool_registry is not None
         before_names = {t.name for t in pipeline.tool_registry.list_all()}
@@ -217,7 +218,7 @@ class TestPipelineAttachManager:
         from geny_executor.core.environment import EnvironmentManifest
         from geny_executor.core.pipeline import Pipeline
 
-        manifest = EnvironmentManifest()
+        manifest = EnvironmentManifest(stages=required_stage_entries())
         pipeline = await Pipeline.from_manifest_async(manifest)
 
         mgr = _connected_manager(
@@ -270,7 +271,7 @@ class TestPipelineAttachManager:
             async def execute(self, input, context):
                 return ToolResult(content="sentinel")
 
-        manifest = EnvironmentManifest()
+        manifest = EnvironmentManifest(stages=required_stage_entries())
         pipeline = await Pipeline.from_manifest_async(manifest)
         pipeline.tool_registry.register(_Sentinel())
 
@@ -291,7 +292,7 @@ class TestPipelineAttachManager:
         from geny_executor.core.environment import EnvironmentManifest
         from geny_executor.core.pipeline import Pipeline
 
-        manifest = EnvironmentManifest()
+        manifest = EnvironmentManifest(stages=required_stage_entries())
         pipeline = await Pipeline.from_manifest_async(manifest)
         pipeline._has_started = True  # simulate post-run
 

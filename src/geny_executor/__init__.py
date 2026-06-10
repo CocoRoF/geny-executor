@@ -17,7 +17,7 @@ Usage:
 """
 
 from geny_executor.core.pipeline import Pipeline
-from geny_executor.core.config import PipelineConfig, ModelConfig
+from geny_executor.core.config import PipelineConfig, ModelConfig, ModelOverrides
 from geny_executor.core.state import PipelineState, TokenUsage, CacheMetrics
 from geny_executor.core.result import PipelineResult
 from geny_executor.core.stage import Stage, Strategy, StageDescription, StrategyInfo
@@ -59,9 +59,12 @@ from geny_executor.core.environment import (
     EnvironmentSanitizer,
     EnvironmentSummary,
     HostSelections,
+    ManifestIssue,
     StageManifestEntry,
     ToolsSnapshot,
+    validate_manifest,
 )
+from geny_executor.core.manifest_factory import build_manifest, known_manifest_presets
 from geny_executor.core.artifact import (
     ArtifactInfo,
     create_stage,
@@ -78,7 +81,13 @@ from geny_executor.core.introspection import (
     introspect_all,
     introspect_stage,
 )
-from geny_executor.events import EventBus, PipelineEvent
+from geny_executor.events import (
+    EVENT_CATALOG_VERSION,
+    EventBus,
+    EventTypes,
+    PipelineEvent,
+    known_event_types,
+)
 from geny_executor.llm_client import (
     APIRequest,
     APIResponse,
@@ -105,6 +114,7 @@ __all__ = [
     "PipelineState",
     "PipelineResult",
     "ModelConfig",
+    "ModelOverrides",
     "TokenUsage",
     "CacheMetrics",
     # Abstractions
@@ -127,8 +137,12 @@ __all__ = [
     "EnvironmentSanitizer",
     "EnvironmentSummary",
     "HostSelections",
+    "ManifestIssue",
     "StageManifestEntry",
     "ToolsSnapshot",
+    "validate_manifest",
+    "build_manifest",
+    "known_manifest_presets",
     "DiffEntry",
     "EnvironmentDiff",
     # Artifact system
@@ -146,8 +160,11 @@ __all__ = [
     "introspect_all",
     "introspect_stage",
     # Events
+    "EVENT_CATALOG_VERSION",
     "EventBus",
+    "EventTypes",
     "PipelineEvent",
+    "known_event_types",
     # LLM clients (unified)
     "APIRequest",
     "APIResponse",

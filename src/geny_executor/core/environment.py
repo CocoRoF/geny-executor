@@ -9,16 +9,20 @@ from __future__ import annotations
 
 import copy
 import json
+import logging
 import os
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Callable, Dict, List, Optional, Set
 from uuid import uuid4
 
 from geny_executor.core.diff import EnvironmentDiff
 from geny_executor.core.snapshot import PipelineSnapshot, StageSnapshot
+
+
+logger = logging.getLogger(__name__)
 
 
 # ═══════════════════════════════════════════════════════════
@@ -121,8 +125,7 @@ class HostSelections:
     Hooks, skills, and permission rules live host-level (one set of
     files shared by every environment on this machine). Each manifest
     records which subset of those host registrations is *active for
-    this environment*. The runtime intersects the host registry with
-    the env selection at session boot.
+    this environment*.
 
     Sentinel ``["*"]`` means "use everything the host has registered,
     including future additions" — distinct from selecting every
@@ -135,10 +138,23 @@ class HostSelections:
     it's on by default"). Users narrow on a per-env basis when they
     need to.
 
-    .. note:: ``permissions`` is reserved but the runtime does not yet
-       intersect it. The frontend exposes a placeholder picker so the
-       data shape is forward-compatible; expect real enforcement in a
-       future minor release.
+    .. note:: **The library does not apply these selections itself.**
+       An earlier revision of this docstring claimed "the runtime
+       intersects the host registry with the env selection at session
+       boot" — that was aspirational, not true (2.2.0, audit
+       2026-06-09 §3.5: zero ``HostSelections.resolve`` call sites in
+       the library). The honest contract: hook runners, skill sets,
+       and permission rules reach the pipeline as *already-built
+       runtime objects* via :meth:`Pipeline.attach_runtime`, and only
+       the host knows the name/id scheme its registries use (e.g.
+       Geny's permission ids are ``"{tool}::{pattern}::{behavior}"``
+       strings minted host-side). Hosts therefore apply the selection
+       *before* attaching: filter the registry with
+       :meth:`HostSelections.resolve` (or equivalent — see Geny's
+       ``service/permission/install.py``) and pass only the surviving
+       objects to ``attach_runtime(hook_runner=... / permission_rules=
+       ...)``. :meth:`resolve` is the supported helper for that
+       filtering and is contract-tested in this repo.
     """
 
     hooks: List[str] = field(default_factory=lambda: ["*"])
@@ -284,6 +300,117 @@ _V3_NEW_ORDERS: Dict[int, str] = {
 }
 
 
+# ── from_dict hygiene (2.2.0, audit §1-1 / host_ergonomics) ─────
+#
+# ``from_dict`` historically accepted any payload shape and silently
+# dropped keys it didn't know. That tolerance is load-bearing for
+# back-compat (a newer host writing a richer manifest must still load
+# on an older library), but the *silence* caused real damage: GAPT
+# dual-wrote its model settings to two locations because a misspelled
+# key vanished without a trace ("両쪽 다 써야 안전" — audit §1-3).
+# Unknown keys are still accepted, but now warned about — once per
+# load, listing every offender — so a typo'd manifest is visible at
+# load time instead of three debugging sessions later.
+
+_KNOWN_TOP_LEVEL_KEYS: Set[str] = {
+    "version",
+    "metadata",
+    "model",
+    "pipeline",
+    "stages",
+    "tools",
+    "host_selections",
+}
+
+_KNOWN_STAGE_ENTRY_KEYS: Set[str] = {
+    "order",
+    "name",
+    "active",
+    "artifact",
+    "strategies",
+    "strategy_configs",
+    "config",
+    "tool_binding",
+    "model_override",
+    "chain_order",
+}
+
+
+def _warn_unknown_keys(data: Dict[str, Any]) -> None:
+    """Log one warning per load listing unknown top-level / stage-entry keys."""
+    unknown_top = sorted(set(data.keys()) - _KNOWN_TOP_LEVEL_KEYS)
+    unknown_stage: Set[str] = set()
+    for entry in data.get("stages", []) or []:
+        if isinstance(entry, dict):
+            unknown_stage.update(set(entry.keys()) - _KNOWN_STAGE_ENTRY_KEYS)
+    if not unknown_top and not unknown_stage:
+        return
+    parts: List[str] = []
+    if unknown_top:
+        parts.append(f"top-level keys {unknown_top}")
+    if unknown_stage:
+        parts.append(f"stage-entry keys {sorted(unknown_stage)}")
+    logger.warning(
+        "EnvironmentManifest.from_dict: unknown %s — accepted for forward "
+        "compatibility but the library will not consume them. Check for "
+        "typos / misplaced declarations (each setting has exactly one "
+        "manifest home).",
+        " and ".join(parts),
+    )
+
+
+def _migrate_legacy_mock_provider(stages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Rewrite pre-0.13.5 ``s06_api.strategies.provider == 'mock'`` entries.
+
+    Absorbed from Geny's load layer (``service/environment/service.py::
+    _migrate_legacy_mock_provider``, 2.2.0): older blank manifests
+    recorded ``provider: mock`` on the s06 entry because session-less
+    introspection instantiated APIStage with MockProvider. At runtime
+    that meant ``PipelineMutator.restore()`` swapped the real provider
+    for MockProvider and every "agent reply" was the literal string
+    ``"Mock response"`` — a prod incident debugged in Geny before the
+    introspection fix (see ``_STAGE_INTROSPECTION_KWARGS`` in
+    ``core/introspection.py`` for the forward fix). The library now
+    performs the same on-load rewrite so *every* host gets the healing,
+    not just the one that already paid for the incident.
+
+    Returns a new list when a rewrite happened; the input payload is
+    never mutated (``from_dict`` must not edit the caller's dict).
+    """
+
+    def _order(entry: Dict[str, Any]) -> int:
+        # from_dict tolerates malformed payloads everywhere else; a
+        # garbage ``order`` must not turn this healing pass into a crash.
+        try:
+            return int(entry.get("order", 0) or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    rewritten: List[Dict[str, Any]] = []
+    changed = False
+    for entry in stages:
+        if (
+            isinstance(entry, dict)
+            and _order(entry) == 6
+            and str(entry.get("artifact", "default")) == "default"
+            and isinstance(entry.get("strategies"), dict)
+            and entry["strategies"].get("provider") == "mock"
+        ):
+            entry = copy.deepcopy(entry)
+            entry["strategies"]["provider"] = "anthropic"
+            changed = True
+        rewritten.append(entry)
+    if changed:
+        logger.warning(
+            "EnvironmentManifest.from_dict: migrated legacy s06 "
+            "strategies['provider']='mock' → 'anthropic' (pre-0.13.5 blank-"
+            "manifest artifact; re-save this environment to persist the fix). "
+            "Note strategies['provider'] itself is a legacy location — the "
+            "single home is stages[6].config['provider']."
+        )
+    return rewritten if changed else stages
+
+
 def _migrate_v2_to_v3(data: Dict[str, Any]) -> Dict[str, Any]:
     """Pad a v2 manifest's stages list out to the 21-slot v3 layout."""
     data = copy.deepcopy(data)
@@ -358,6 +485,14 @@ class EnvironmentManifest:
         implicit "host hooks/skills always apply" behaviour of those
         older versions. No version bump is needed because the change
         is a pure additive default.
+
+        Hygiene (2.2.0): unknown top-level / per-stage-entry keys are
+        still *accepted* (forward compat — newer hosts may write richer
+        payloads) but logged once per load so typos and misplaced
+        declarations stop vanishing silently. Legacy
+        ``s06.strategies['provider'] == 'mock'`` entries are migrated
+        to ``'anthropic'`` on load — see
+        :func:`_migrate_legacy_mock_provider` for the incident history.
         """
         version = str(data.get("version", "1.0"))
         if version == "1.0":
@@ -366,12 +501,14 @@ class EnvironmentManifest:
         if version == "2.0":
             data = _migrate_v2_to_v3(data)
             version = MANIFEST_VERSION
+        _warn_unknown_keys(data)
+        stages = _migrate_legacy_mock_provider(data.get("stages", []) or [])
         return cls(
             version=version,
             metadata=EnvironmentMetadata.from_dict(data.get("metadata", {})),
             model=data.get("model", {}),
             pipeline=data.get("pipeline", {}),
-            stages=data.get("stages", []),
+            stages=stages,
             tools=ToolsSnapshot.from_dict(data.get("tools", {})),
             host_selections=HostSelections.from_dict(data.get("host_selections")),
         )
@@ -543,6 +680,56 @@ class EnvironmentManifest:
             description=self.metadata.description,
         )
 
+    def drift_against(self, introspection_catalog: Optional[List[Any]] = None) -> EnvironmentDiff:
+        """Diff this manifest's stage layout against the library's canonical layout.
+
+        Why (2.2.0, audit §3.1 / stage_model): hosts accumulate stored
+        manifests across library versions — a 16-slot v2-era environment
+        sitting next to today's 21-slot canon. Before order-keyed stage
+        diffing, comparing the two collapsed into one opaque "stages
+        changed" blob; now each stage's drift is reported individually
+        (``stages[order=N].…`` paths), with stages missing from this
+        manifest showing as ``removed`` and foreign ones as ``added``.
+
+        The canonical baseline is built the same way
+        :meth:`blank_manifest` builds its template: session-less
+        introspection over every registered stage, default artifact,
+        the artifact's default strategy picks, and the stage's default
+        config. ``introspection_catalog`` accepts a pre-computed
+        ``introspect_all()`` result (list of
+        :class:`~geny_executor.core.introspection.StageIntrospection`)
+        so batch callers (env list views) pay the introspection cost
+        once.
+
+        Returns:
+            An :class:`EnvironmentDiff` where side *a* is the canonical
+            layout and side *b* is this manifest — so ``added`` means
+            "this manifest declares a stage/field the canon doesn't"
+            and ``removed`` means "the canon has it, this manifest
+            lost it".
+        """
+        from geny_executor.core.introspection import introspect_all
+
+        catalog = introspection_catalog if introspection_catalog is not None else introspect_all()
+        canonical: List[Dict[str, Any]] = []
+        for insp in catalog:
+            canonical.append(
+                StageManifestEntry(
+                    order=insp.order,
+                    name=insp.name,
+                    active=insp.required,
+                    artifact=insp.artifact,
+                    strategies={
+                        slot: slot_info.current_impl
+                        for slot, slot_info in insp.strategy_slots.items()
+                        if slot_info.current_impl
+                    },
+                    strategy_configs={},
+                    config=dict(insp.config),
+                ).to_dict()
+            )
+        return EnvironmentDiff.compute({"stages": canonical}, {"stages": list(self.stages)})
+
     def update(self, changes: Dict[str, Any]) -> None:
         """Apply partial updates."""
         if "metadata" in changes:
@@ -560,6 +747,518 @@ class EnvironmentManifest:
         if "pipeline" in changes:
             self.pipeline.update(changes["pipeline"])
         self.metadata.updated_at = datetime.now(timezone.utc).isoformat()
+
+
+# ═══════════════════════════════════════════════════════════
+#  Manifest validation — write-time contract checking
+# ═══════════════════════════════════════════════════════════
+
+
+@dataclass(frozen=True)
+class ManifestIssue:
+    """One finding from :func:`validate_manifest`.
+
+    Severity semantics (owner's write-time-only rule — validation runs
+    where manifests are *written or loaded*, never on the per-run hot
+    path):
+
+    - ``"error"`` — the declaration cannot take effect / the pipeline
+      cannot honour the manifest's promise. ``Pipeline.from_manifest
+      (strict=True)`` refuses to build on these.
+    - ``"warning"`` — the manifest is suspicious (typo'd key, dual-home
+      declaration, unappliable ordering) but a pipeline can still be
+      built faithfully. Logged, never fatal.
+
+    Fields:
+      - ``severity``: ``"error"`` | ``"warning"``.
+      - ``code``: stable machine-readable identifier (``"stage.…"`` /
+        ``"strategy.…"`` / ``"chain.…"`` / ``"config.…"`` /
+        ``"provider.…"`` / ``"model.…"`` / ``"version.…"``). Hosts may
+        key i18n / suppression lists on it; codes are append-only
+        within a major version.
+      - ``stage_order`` / ``stage_name``: the offending stage entry,
+        when the issue is stage-scoped (``None`` for manifest-level
+        issues like ``version.unknown``).
+      - ``field``: dotted locator inside the entry (e.g.
+        ``"strategies.controller"``), when one field is to blame.
+      - ``message``: human-readable explanation with the fix spelled
+        out.
+    """
+
+    severity: str
+    code: str
+    message: str
+    stage_order: Optional[int] = None
+    stage_name: Optional[str] = None
+    field: Optional[str] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Return a JSON-ready representation (env-editor diagnostics)."""
+        return {
+            "severity": self.severity,
+            "code": self.code,
+            "message": self.message,
+            "stage_order": self.stage_order,
+            "stage_name": self.stage_name,
+            "field": self.field,
+        }
+
+
+# Stage config keys consumed by the engine itself rather than the
+# stage's own ConfigSchema. ``provider_override`` is read uniformly by
+# ``Stage.resolve_local_client`` on every stage, so it is legitimate in
+# any stage's config dict even though no per-stage schema declares it.
+_ENGINE_CONFIG_KEYS: Set[str] = {"provider_override"}
+
+
+def validate_manifest(
+    manifest: EnvironmentManifest,
+    *,
+    registry_introspection: Optional[Callable[[str, str], Any]] = None,
+) -> List[ManifestIssue]:
+    """Validate a manifest against the library's stage/strategy catalogue.
+
+    Why (2.2.0, audit §1-1 / §2.1): the manifest claims to be the
+    single source of truth, but a whole class of declarations used to
+    be "accepted, stored, schema-green, and inert" — strategy configs
+    aimed at strategies that drop them, impl names no registry knows,
+    required stages quietly missing. Geny prod ran with its worker
+    evaluator config dropped on the floor exactly this way. This
+    function makes those failures *visible at write time*: env editors
+    call it on save, ``Pipeline.from_manifest`` calls it at build
+    (strict → errors raise; lenient → everything logs).
+
+    All checks are pure and offline: the stage catalogue is consulted
+    via the artifact loader and session-less introspection helpers —
+    no network, no filesystem writes, no live pipeline.
+
+    Checks (severity in brackets; ``active=False`` entries downgrade
+    entry-scoped errors to warnings because an inactive declaration is
+    a parked intent, not a live promise):
+
+    - unknown stage name [error when active] /
+      duplicate ``order`` values [error when any duplicate is active] /
+      unknown artifact for a stage [error when active] /
+      stage that fails to construct from the catalogue [error when active]
+    - declared ``order`` differing from the stage's canonical order
+      [warning] — ``from_manifest`` registers stages at their
+      class-level order, so the manifest's number is cosmetic but
+      misleading.
+    - unknown strategy slot / unknown impl name vs the stage's slot
+      registries [error when active]
+    - ``strategy_configs`` targeting a strategy whose ``configure`` is
+      the base no-op (``type(strategy).configure is
+      Strategy.configure``) [error] — the audit §2.1 masked-degradation
+      class: the config parses, stores, round-trips, and does nothing.
+    - ``strategy_configs`` for a slot with no matching ``strategies``
+      selection [warning] — ``PipelineMutator.restore`` only applies a
+      slot's config alongside its strategy selection, so the config
+      would never land.
+    - ``chain_order`` naming an unknown chain or unknown chain impls
+      [error when active]; chain orderings that the default chain
+      contents cannot satisfy [warning] — ``restore`` can only
+      *reorder* existing items, not populate (hosts that populate
+      chains at runtime, e.g. Geny's ``populate_guard_chain``, can
+      ignore this one).
+    - stage ``config`` keys not in the stage's ConfigSchema, where a
+      schema exists [warning]
+    - required stages (``introspection._STAGE_REQUIRED``) missing or
+      inactive [error]
+    - provider missing on an active s06 [error] / provider in the
+      legacy ``strategies`` location [error] — mirrors the existing
+      build-time checks so standalone validators see them too.
+    - ``model`` declared in BOTH the top-level ``model`` block and the
+      s06 stage config [warning] — the top-level block is the single
+      home and wins (``_pipeline_config_from_manifest`` reunites it
+      into ``PipelineConfig.model``; the stage-config copy is inert).
+    - ``version`` unknown / newer than this library supports [warning]
+
+    Args:
+        manifest: The manifest to validate. Not mutated.
+        registry_introspection: Optional ``(stage_module, artifact) →
+            Stage`` factory used to build catalogue instances. Defaults
+            to ``create_stage`` with the session-less introspection
+            kwargs (dummy credentials where a ctor demands them).
+            Injection point for tests and for hosts with out-of-tree
+            stage registries.
+
+    Returns:
+        Every finding, in stage order then manifest order. Empty list
+        means the manifest is clean.
+    """
+    from geny_executor.core.artifact import (
+        _MODULE_TO_ORDER,
+        _resolve_stage_module,
+        create_stage,
+        list_artifacts,
+    )
+    from geny_executor.core.introspection import (
+        _STAGE_REQUIRED,
+        _introspection_kwargs,
+    )
+    from geny_executor.core.stage import Strategy
+
+    issues: List[ManifestIssue] = []
+
+    def add(
+        severity: str,
+        code: str,
+        message: str,
+        *,
+        order: Optional[int] = None,
+        name: Optional[str] = None,
+        field_: Optional[str] = None,
+    ) -> None:
+        issues.append(
+            ManifestIssue(
+                severity=severity,
+                code=code,
+                message=message,
+                stage_order=order,
+                stage_name=name,
+                field=field_,
+            )
+        )
+
+    # ── Manifest-level checks ───────────────────────────────
+    supported_versions = _LEGACY_VERSIONS | {MANIFEST_VERSION}
+    if str(manifest.version) not in supported_versions:
+        add(
+            "warning",
+            "version.unknown",
+            f"manifest version {manifest.version!r} is unknown to this library "
+            f"(supported: {sorted(supported_versions)}). It may have been "
+            "written by a newer geny-executor; declarations this library "
+            "does not understand will be ignored.",
+            field_="version",
+        )
+
+    entries = manifest.stage_entries()
+
+    seen_orders: Dict[int, List[StageManifestEntry]] = {}
+    for entry in entries:
+        seen_orders.setdefault(entry.order, []).append(entry)
+    for order, group in sorted(seen_orders.items()):
+        if len(group) > 1:
+            severity = "error" if any(e.active for e in group) else "warning"
+            add(
+                severity,
+                "stage.duplicate_order",
+                f"order {order} is declared by {len(group)} stage entries "
+                f"({[e.name for e in group]}); the pipeline keys stages by "
+                "order, so later entries silently displace earlier ones.",
+                order=order,
+                name=group[0].name,
+            )
+
+    top_level_model = bool((manifest.model or {}).get("model"))
+
+    # Catalogue instances are cached per (module, artifact) within one
+    # validation pass — duplicate orders / repeated artifacts shouldn't
+    # pay construction twice.
+    catalogue: Dict[tuple, Any] = {}
+    artifact_lists: Dict[str, List[str]] = {}
+
+    def stage_instance(module: str, artifact: str) -> Any:
+        key = (module, artifact)
+        if key not in catalogue:
+            if registry_introspection is not None:
+                catalogue[key] = registry_introspection(module, artifact)
+            else:
+                kwargs = _introspection_kwargs(module, artifact)
+                catalogue[key] = create_stage(module, artifact, **kwargs)
+        return catalogue[key]
+
+    active_required: Set[str] = set()
+
+    # ── Per-entry checks ────────────────────────────────────
+    for entry in entries:
+        # Inactive entries are parked intent: their problems are worth
+        # surfacing but must never block a build that won't run them.
+        entry_severity = "error" if entry.active else "warning"
+
+        try:
+            module = _resolve_stage_module(entry.name)
+        except (ValueError, AttributeError):
+            add(
+                entry_severity,
+                "stage.unknown_name",
+                f"stage entry order={entry.order} names unknown stage "
+                f"{entry.name!r}; use a module name (s06_api), short name "
+                "(api), or order string.",
+                order=entry.order,
+                name=entry.name,
+                field_="name",
+            )
+            continue
+
+        if entry.active and module in _STAGE_REQUIRED:
+            active_required.add(module)
+
+        canonical_order = _MODULE_TO_ORDER.get(module)
+        if canonical_order is not None and entry.order != canonical_order:
+            add(
+                "warning",
+                "stage.order_mismatch",
+                f"stage {entry.name!r} declares order={entry.order} but its "
+                f"canonical order is {canonical_order}; from_manifest "
+                "registers stages at their class-level order, so the "
+                "declared number is ignored.",
+                order=entry.order,
+                name=entry.name,
+                field_="order",
+            )
+
+        if module not in artifact_lists:
+            artifact_lists[module] = list_artifacts(module)
+        if entry.artifact not in artifact_lists[module]:
+            add(
+                entry_severity,
+                "stage.unknown_artifact",
+                f"stage {entry.name!r} (order {entry.order}) requests unknown "
+                f"artifact {entry.artifact!r}; available: "
+                f"{artifact_lists[module]}.",
+                order=entry.order,
+                name=entry.name,
+                field_="artifact",
+            )
+            continue
+
+        strategies = entry.strategies or {}
+        if "provider" in strategies:
+            # Mirrors _validate_manifest_provider_locations — error even on
+            # inactive entries, because reactivating one must not resurrect
+            # the silent-divergence bug class the single home killed.
+            add(
+                "error",
+                "provider.legacy_location",
+                f"stage {entry.name!r} (order {entry.order}) stores provider "
+                f"in the legacy strategies['provider']="
+                f"{strategies['provider']!r} slot; move it to "
+                "config['provider'] — the single source of truth.",
+                order=entry.order,
+                name=entry.name,
+                field_="strategies.provider",
+            )
+
+        if module == "s06_api":
+            cfg = entry.config or {}
+            if entry.active and not cfg.get("provider"):
+                add(
+                    "error",
+                    "provider.missing",
+                    "Stage 6 ('api') is active but no provider is configured. "
+                    "Set stages[6].config['provider'] (e.g. 'anthropic').",
+                    order=entry.order,
+                    name=entry.name,
+                    field_="config.provider",
+                )
+            if top_level_model and cfg.get("model"):
+                add(
+                    "warning",
+                    "model.dual_home",
+                    "model is declared in BOTH the top-level manifest 'model' "
+                    "block and stages[6].config['model']. The top-level block "
+                    "is the single home and wins (it becomes "
+                    "PipelineConfig.model); the stage-config copy is inert — "
+                    "delete it.",
+                    order=entry.order,
+                    name=entry.name,
+                    field_="config.model",
+                )
+
+        try:
+            instance = stage_instance(module, entry.artifact)
+        except Exception as exc:  # construction failed — catalogue unusable
+            add(
+                entry_severity,
+                "stage.unbuildable",
+                f"stage {entry.name!r} (order {entry.order}, artifact "
+                f"{entry.artifact!r}) failed to construct for validation: "
+                f"{type(exc).__name__}: {exc}",
+                order=entry.order,
+                name=entry.name,
+            )
+            continue
+
+        slots = instance.get_strategy_slots() or {}
+        chains = instance.get_strategy_chains() or {}
+
+        for slot_name, impl_name in strategies.items():
+            if slot_name == "provider":
+                continue  # already flagged as provider.legacy_location
+            slot = slots.get(slot_name)
+            if slot is None:
+                add(
+                    entry_severity,
+                    "strategy.unknown_slot",
+                    f"stage {entry.name!r} (order {entry.order}) selects "
+                    f"strategy for unknown slot {slot_name!r}; available "
+                    f"slots: {sorted(slots.keys())}, chains: "
+                    f"{sorted(chains.keys())}.",
+                    order=entry.order,
+                    name=entry.name,
+                    field_=f"strategies.{slot_name}",
+                )
+                continue
+            if impl_name not in slot.registry:
+                add(
+                    entry_severity,
+                    "strategy.unknown_impl",
+                    f"stage {entry.name!r} (order {entry.order}) slot "
+                    f"{slot_name!r} selects unknown impl {impl_name!r}; "
+                    f"available: {sorted(slot.registry.keys())}. "
+                    "PipelineMutator.restore would skip this selection.",
+                    order=entry.order,
+                    name=entry.name,
+                    field_=f"strategies.{slot_name}",
+                )
+
+        for slot_name, slot_config in (entry.strategy_configs or {}).items():
+            if not slot_config:
+                continue  # empty dict — nothing to lose
+            field_path = f"strategy_configs.{slot_name}"
+            slot = slots.get(slot_name)
+            if slot is None:
+                if slot_name in chains:
+                    add(
+                        "warning",
+                        "strategy.config_unpaired",
+                        f"stage {entry.name!r} (order {entry.order}) declares "
+                        f"strategy_configs[{slot_name!r}] but {slot_name!r} "
+                        "is a chain — restore only applies strategy_configs "
+                        "to slots; configure chain items host-side or via "
+                        "chain mutation APIs.",
+                        order=entry.order,
+                        name=entry.name,
+                        field_=field_path,
+                    )
+                else:
+                    add(
+                        entry_severity,
+                        "strategy.unknown_slot",
+                        f"stage {entry.name!r} (order {entry.order}) declares "
+                        f"strategy_configs for unknown slot {slot_name!r}; "
+                        f"available slots: {sorted(slots.keys())}.",
+                        order=entry.order,
+                        name=entry.name,
+                        field_=field_path,
+                    )
+                continue
+            declared_impl = strategies.get(slot_name)
+            if declared_impl is None:
+                add(
+                    "warning",
+                    "strategy.config_unpaired",
+                    f"stage {entry.name!r} (order {entry.order}) declares "
+                    f"strategy_configs[{slot_name!r}] without selecting a "
+                    f"strategy in strategies[{slot_name!r}] — "
+                    "PipelineMutator.restore only applies a slot's config "
+                    "alongside its strategy selection, so this config will "
+                    "never land. Declare the impl name too.",
+                    order=entry.order,
+                    name=entry.name,
+                    field_=field_path,
+                )
+                continue
+            impl_cls = slot.registry.get(declared_impl)
+            if impl_cls is None:
+                continue  # unknown impl already flagged above
+            if getattr(impl_cls, "configure", None) is Strategy.configure:
+                add(
+                    "error",
+                    "strategy.config_dropped",
+                    f"stage {entry.name!r} (order {entry.order}) declares "
+                    f"strategy_configs[{slot_name!r}] for impl "
+                    f"{declared_impl!r}, but that strategy does not override "
+                    "Strategy.configure — the config would be accepted, "
+                    "stored, and silently dropped (the audit §2.1 Geny prod "
+                    "bug class). Implement configure() on the strategy or "
+                    "remove the config block.",
+                    order=entry.order,
+                    name=entry.name,
+                    field_=field_path,
+                )
+
+        for chain_name, chain_order in (entry.chain_order or {}).items():
+            if not chain_order:
+                continue  # restore skips empty orderings
+            field_path = f"chain_order.{chain_name}"
+            chain = chains.get(chain_name)
+            if chain is None:
+                add(
+                    entry_severity,
+                    "chain.unknown",
+                    f"stage {entry.name!r} (order {entry.order}) declares "
+                    f"chain_order for unknown chain {chain_name!r}; "
+                    f"available chains: {sorted(chains.keys())}.",
+                    order=entry.order,
+                    name=entry.name,
+                    field_=field_path,
+                )
+                continue
+            unknown_impls = [n for n in chain_order if n not in chain.registry]
+            if unknown_impls:
+                add(
+                    entry_severity,
+                    "chain.unknown_impl",
+                    f"stage {entry.name!r} (order {entry.order}) chain "
+                    f"{chain_name!r} ordering names unknown impls "
+                    f"{unknown_impls}; available: "
+                    f"{sorted(chain.registry.keys())}.",
+                    order=entry.order,
+                    name=entry.name,
+                    field_=field_path,
+                )
+                continue
+            current = sorted(item.name for item in chain.items)
+            if sorted(chain_order) != current:
+                add(
+                    "warning",
+                    "chain.order_unappliable",
+                    f"stage {entry.name!r} (order {entry.order}) chain "
+                    f"{chain_name!r} ordering {list(chain_order)} is not a "
+                    f"permutation of the default chain contents {current} — "
+                    "PipelineMutator.restore can only reorder existing items, "
+                    "so this ordering will be skipped. Populate the chain at "
+                    "runtime (e.g. Stage.add_to_chain) if that is the intent.",
+                    order=entry.order,
+                    name=entry.name,
+                    field_=field_path,
+                )
+
+        schema = instance.get_config_schema() if hasattr(instance, "get_config_schema") else None
+        if schema is not None and getattr(schema, "fields", None) is not None:
+            known_keys = {f.name for f in schema.fields} | _ENGINE_CONFIG_KEYS
+            unknown_keys = sorted(set((entry.config or {}).keys()) - known_keys)
+            if unknown_keys:
+                add(
+                    "warning",
+                    "config.unknown_key",
+                    f"stage {entry.name!r} (order {entry.order}) config "
+                    f"declares keys {unknown_keys} that its ConfigSchema does "
+                    f"not define (known: {sorted(known_keys)}); they will be "
+                    "stored but not consumed.",
+                    order=entry.order,
+                    name=entry.name,
+                    field_="config",
+                )
+
+    # ── Required stages ─────────────────────────────────────
+    for module in sorted(_STAGE_REQUIRED):
+        if module not in active_required:
+            add(
+                "error",
+                "stage.required_inactive",
+                f"required stage {module!r} is missing or inactive — every "
+                "pipeline is an LLM agent loop and cannot function without "
+                "input/api/parse/yield (see introspection._STAGE_REQUIRED). "
+                "Add the entry with active=true.",
+                order=_MODULE_TO_ORDER.get(module),
+                name=module,
+            )
+
+    return issues
 
 
 # ═══════════════════════════════════════════════════════════

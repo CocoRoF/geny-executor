@@ -32,6 +32,19 @@ class SharedKeys:
     TOOL_CALL_ID: Final = "executor.current_tool_call_id"
     """Identifier of the tool_use block currently being processed."""
 
+    PRIMARY_PROVIDER: Final = "primary_provider"
+    """Resolved Stage 6 provider name, written by ``Pipeline._init_state``
+    at every run start (2.2.0, audit 2026-06-09 §2.8).
+
+    Sub-agent factories read ``ctx.parent_state_shared["primary_provider"]``
+    to inherit the parent pipeline's backend when
+    ``descriptor.provider is None`` — that read side existed for a full
+    release with NO producer, so inheritance silently fell through to
+    host-global heuristics (the #866 misrouting class, one level down).
+    The value is deliberately the bare legacy string (no ``executor.``
+    prefix) because host factories already shipped reading this exact
+    key."""
+
     SKILL_CTX: Final = "executor.current_skill_ctx"
     """Context for an in-flight Skill invocation (Phase 3)."""
 

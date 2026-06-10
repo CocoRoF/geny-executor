@@ -196,13 +196,18 @@ def test_from_manifest_v1_payload_migrates_then_instantiates():
         "metadata": {"id": "env_legacy", "name": "Legacy"},
         "model": {"model": "claude-opus-4-7"},
         "pipeline": {"name": "legacy"},
+        # All four required stages (2.2.0 strict validation): a v1
+        # payload that omitted s06/s09 would never have been a runnable
+        # agent anyway; the migration mechanics under test are the same.
         "stages": [
             {"order": 1, "name": "s01_input", "active": True},
+            {"order": 6, "name": "s06_api", "active": True, "config": {"provider": "anthropic"}},
+            {"order": 9, "name": "s09_parse", "active": True},
             {"order": 21, "name": "s21_yield", "active": True},
         ],
         "tools": {},
     }
     manifest = EnvironmentManifest.from_dict(v1)
     rebuilt = Pipeline.from_manifest(manifest, strict=True)
-    assert {s.order for s in rebuilt.stages} == {1, 21}
+    assert {s.order for s in rebuilt.stages} == {1, 6, 9, 21}
     assert rebuilt._config.model.model == "claude-opus-4-7"

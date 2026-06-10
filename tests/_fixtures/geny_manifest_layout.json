@@ -1,0 +1,669 @@
+{
+  "_source": "Geny/backend/service/executor/default_manifest.py",
+  "_generated": "2026-06-10",
+  "_rationale": "Vendored snapshot of the stage layouts Geny's host-side manifest builder produced at the time geny-executor 2.2.0 absorbed it into core/manifest_factory.build_manifest(). The factory must stay layout-compatible with what the reference consumer shipped: same orders, names, active flags, artifacts, strategies, strategy_configs, configs, and chain orders. Regenerate ONLY when deliberately changing the canonical preset layouts, and say so in the changelog.",
+  "provider": "anthropic",
+  "presets": {
+    "worker_adaptive": [
+      {
+        "order": 1,
+        "name": "input",
+        "active": true,
+        "artifact": "default",
+        "strategies": {
+          "validator": "default",
+          "normalizer": "default"
+        },
+        "strategy_configs": {},
+        "config": {},
+        "tool_binding": null,
+        "model_override": null,
+        "chain_order": {}
+      },
+      {
+        "order": 2,
+        "name": "context",
+        "active": true,
+        "artifact": "default",
+        "strategies": {
+          "strategy": "simple_load",
+          "compactor": "truncate",
+          "retriever": "null"
+        },
+        "strategy_configs": {},
+        "config": {},
+        "tool_binding": null,
+        "model_override": null,
+        "chain_order": {}
+      },
+      {
+        "order": 3,
+        "name": "system",
+        "active": true,
+        "artifact": "default",
+        "strategies": {
+          "builder": "composable"
+        },
+        "strategy_configs": {},
+        "config": {},
+        "tool_binding": null,
+        "model_override": null,
+        "chain_order": {}
+      },
+      {
+        "order": 4,
+        "name": "guard",
+        "active": true,
+        "artifact": "default",
+        "strategies": {},
+        "strategy_configs": {},
+        "config": {},
+        "tool_binding": null,
+        "model_override": null,
+        "chain_order": {
+          "guards": [
+            "token_budget",
+            "cost_budget",
+            "iteration",
+            "permission"
+          ]
+        }
+      },
+      {
+        "order": 5,
+        "name": "cache",
+        "active": true,
+        "artifact": "default",
+        "strategies": {
+          "strategy": "aggressive_cache"
+        },
+        "strategy_configs": {},
+        "config": {},
+        "tool_binding": null,
+        "model_override": null,
+        "chain_order": {}
+      },
+      {
+        "order": 6,
+        "name": "api",
+        "active": true,
+        "artifact": "default",
+        "strategies": {
+          "retry": "exponential_backoff",
+          "router": "adaptive"
+        },
+        "strategy_configs": {},
+        "config": {
+          "provider": "anthropic"
+        },
+        "tool_binding": null,
+        "model_override": null,
+        "chain_order": {}
+      },
+      {
+        "order": 7,
+        "name": "token",
+        "active": true,
+        "artifact": "default",
+        "strategies": {
+          "tracker": "default",
+          "calculator": "anthropic_pricing"
+        },
+        "strategy_configs": {},
+        "config": {},
+        "tool_binding": null,
+        "model_override": null,
+        "chain_order": {}
+      },
+      {
+        "order": 8,
+        "name": "think",
+        "active": true,
+        "artifact": "default",
+        "strategies": {
+          "processor": "extract_and_store",
+          "budget_planner": "adaptive"
+        },
+        "strategy_configs": {},
+        "config": {},
+        "tool_binding": null,
+        "model_override": null,
+        "chain_order": {}
+      },
+      {
+        "order": 9,
+        "name": "parse",
+        "active": true,
+        "artifact": "default",
+        "strategies": {
+          "parser": "default",
+          "signal_detector": "regex"
+        },
+        "strategy_configs": {},
+        "config": {},
+        "tool_binding": null,
+        "model_override": null,
+        "chain_order": {}
+      },
+      {
+        "order": 10,
+        "name": "tool",
+        "active": true,
+        "artifact": "default",
+        "strategies": {
+          "executor": "partition",
+          "router": "registry"
+        },
+        "strategy_configs": {},
+        "config": {
+          "max_concurrency": 8
+        },
+        "tool_binding": null,
+        "model_override": null,
+        "chain_order": {}
+      },
+      {
+        "order": 11,
+        "name": "tool_review",
+        "active": true,
+        "artifact": "default",
+        "strategies": {},
+        "strategy_configs": {},
+        "config": {},
+        "tool_binding": null,
+        "model_override": null,
+        "chain_order": {
+          "reviewers": [
+            "schema",
+            "sensitive",
+            "destructive",
+            "network",
+            "size"
+          ]
+        }
+      },
+      {
+        "order": 12,
+        "name": "agent",
+        "active": true,
+        "artifact": "default",
+        "strategies": {
+          "orchestrator": "subagent_type"
+        },
+        "strategy_configs": {},
+        "config": {
+          "max_delegations": 4
+        },
+        "tool_binding": null,
+        "model_override": null,
+        "chain_order": {}
+      },
+      {
+        "order": 13,
+        "name": "task_registry",
+        "active": true,
+        "artifact": "default",
+        "strategies": {
+          "registry": "in_memory",
+          "policy": "fire_and_forget"
+        },
+        "strategy_configs": {},
+        "config": {},
+        "tool_binding": null,
+        "model_override": null,
+        "chain_order": {}
+      },
+      {
+        "order": 14,
+        "name": "evaluate",
+        "active": true,
+        "artifact": "default",
+        "strategies": {
+          "strategy": "evaluation_chain",
+          "scorer": "no_scorer"
+        },
+        "strategy_configs": {
+          "strategy": {
+            "evaluators": [
+              "binary_classify",
+              "signal_based"
+            ],
+            "easy_max_turns": 1,
+            "not_easy_max_turns": 30
+          }
+        },
+        "config": {},
+        "tool_binding": null,
+        "model_override": null,
+        "chain_order": {}
+      },
+      {
+        "order": 15,
+        "name": "hitl",
+        "active": true,
+        "artifact": "default",
+        "strategies": {
+          "requester": "null",
+          "timeout": "indefinite"
+        },
+        "strategy_configs": {},
+        "config": {},
+        "tool_binding": null,
+        "model_override": null,
+        "chain_order": {}
+      },
+      {
+        "order": 16,
+        "name": "loop",
+        "active": true,
+        "artifact": "default",
+        "strategies": {
+          "controller": "multi_dim_budget"
+        },
+        "strategy_configs": {
+          "controller": {
+            "dimensions": [
+              "iterations"
+            ]
+          }
+        },
+        "config": {
+          "max_turns": 30
+        },
+        "tool_binding": null,
+        "model_override": null,
+        "chain_order": {}
+      },
+      {
+        "order": 17,
+        "name": "emit",
+        "active": true,
+        "artifact": "default",
+        "strategies": {},
+        "strategy_configs": {},
+        "config": {},
+        "tool_binding": null,
+        "model_override": null,
+        "chain_order": {
+          "emitters": []
+        }
+      },
+      {
+        "order": 18,
+        "name": "memory",
+        "active": true,
+        "artifact": "default",
+        "strategies": {
+          "strategy": "structured_reflective",
+          "persistence": "null"
+        },
+        "strategy_configs": {},
+        "config": {},
+        "tool_binding": null,
+        "model_override": null,
+        "chain_order": {}
+      },
+      {
+        "order": 19,
+        "name": "summarize",
+        "active": true,
+        "artifact": "default",
+        "strategies": {
+          "summarizer": "rule_based",
+          "importance": "heuristic"
+        },
+        "strategy_configs": {},
+        "config": {},
+        "tool_binding": null,
+        "model_override": null,
+        "chain_order": {}
+      },
+      {
+        "order": 20,
+        "name": "persist",
+        "active": true,
+        "artifact": "default",
+        "strategies": {
+          "persister": "no_persist",
+          "frequency": "on_significant"
+        },
+        "strategy_configs": {},
+        "config": {},
+        "tool_binding": null,
+        "model_override": null,
+        "chain_order": {}
+      },
+      {
+        "order": 21,
+        "name": "yield",
+        "active": true,
+        "artifact": "default",
+        "strategies": {
+          "formatter": "default"
+        },
+        "strategy_configs": {},
+        "config": {},
+        "tool_binding": null,
+        "model_override": null,
+        "chain_order": {}
+      }
+    ],
+    "vtuber": [
+      {
+        "order": 1,
+        "name": "input",
+        "active": true,
+        "artifact": "default",
+        "strategies": {
+          "validator": "default",
+          "normalizer": "default"
+        },
+        "strategy_configs": {},
+        "config": {},
+        "tool_binding": null,
+        "model_override": null,
+        "chain_order": {}
+      },
+      {
+        "order": 2,
+        "name": "context",
+        "active": true,
+        "artifact": "default",
+        "strategies": {
+          "strategy": "simple_load",
+          "compactor": "truncate",
+          "retriever": "null"
+        },
+        "strategy_configs": {},
+        "config": {},
+        "tool_binding": null,
+        "model_override": null,
+        "chain_order": {}
+      },
+      {
+        "order": 3,
+        "name": "system",
+        "active": true,
+        "artifact": "default",
+        "strategies": {
+          "builder": "composable"
+        },
+        "strategy_configs": {},
+        "config": {},
+        "tool_binding": null,
+        "model_override": null,
+        "chain_order": {}
+      },
+      {
+        "order": 4,
+        "name": "guard",
+        "active": true,
+        "artifact": "default",
+        "strategies": {},
+        "strategy_configs": {},
+        "config": {},
+        "tool_binding": null,
+        "model_override": null,
+        "chain_order": {}
+      },
+      {
+        "order": 5,
+        "name": "cache",
+        "active": true,
+        "artifact": "default",
+        "strategies": {
+          "strategy": "system_cache"
+        },
+        "strategy_configs": {},
+        "config": {},
+        "tool_binding": null,
+        "model_override": null,
+        "chain_order": {}
+      },
+      {
+        "order": 6,
+        "name": "api",
+        "active": true,
+        "artifact": "default",
+        "strategies": {
+          "retry": "exponential_backoff",
+          "router": "passthrough"
+        },
+        "strategy_configs": {},
+        "config": {
+          "provider": "anthropic"
+        },
+        "tool_binding": null,
+        "model_override": null,
+        "chain_order": {}
+      },
+      {
+        "order": 7,
+        "name": "token",
+        "active": true,
+        "artifact": "default",
+        "strategies": {
+          "tracker": "default",
+          "calculator": "anthropic_pricing"
+        },
+        "strategy_configs": {},
+        "config": {},
+        "tool_binding": null,
+        "model_override": null,
+        "chain_order": {}
+      },
+      {
+        "order": 8,
+        "name": "think",
+        "active": false,
+        "artifact": "default",
+        "strategies": {
+          "processor": "extract_and_store",
+          "budget_planner": "adaptive"
+        },
+        "strategy_configs": {},
+        "config": {},
+        "tool_binding": null,
+        "model_override": null,
+        "chain_order": {}
+      },
+      {
+        "order": 9,
+        "name": "parse",
+        "active": true,
+        "artifact": "default",
+        "strategies": {
+          "parser": "default",
+          "signal_detector": "regex"
+        },
+        "strategy_configs": {},
+        "config": {},
+        "tool_binding": null,
+        "model_override": null,
+        "chain_order": {}
+      },
+      {
+        "order": 10,
+        "name": "tool",
+        "active": true,
+        "artifact": "default",
+        "strategies": {
+          "executor": "sequential",
+          "router": "registry"
+        },
+        "strategy_configs": {},
+        "config": {},
+        "tool_binding": null,
+        "model_override": null,
+        "chain_order": {}
+      },
+      {
+        "order": 11,
+        "name": "tool_review",
+        "active": true,
+        "artifact": "default",
+        "strategies": {},
+        "strategy_configs": {},
+        "config": {},
+        "tool_binding": null,
+        "model_override": null,
+        "chain_order": {
+          "reviewers": [
+            "schema",
+            "sensitive"
+          ]
+        }
+      },
+      {
+        "order": 12,
+        "name": "agent",
+        "active": true,
+        "artifact": "default",
+        "strategies": {
+          "orchestrator": "subagent_type"
+        },
+        "strategy_configs": {},
+        "config": {
+          "max_delegations": 4
+        },
+        "tool_binding": null,
+        "model_override": null,
+        "chain_order": {}
+      },
+      {
+        "order": 13,
+        "name": "task_registry",
+        "active": false,
+        "artifact": "default",
+        "strategies": {
+          "registry": "in_memory",
+          "policy": "fire_and_forget"
+        },
+        "strategy_configs": {},
+        "config": {},
+        "tool_binding": null,
+        "model_override": null,
+        "chain_order": {}
+      },
+      {
+        "order": 14,
+        "name": "evaluate",
+        "active": true,
+        "artifact": "default",
+        "strategies": {
+          "strategy": "signal_based",
+          "scorer": "no_scorer"
+        },
+        "strategy_configs": {},
+        "config": {},
+        "tool_binding": null,
+        "model_override": null,
+        "chain_order": {}
+      },
+      {
+        "order": 15,
+        "name": "hitl",
+        "active": false,
+        "artifact": "default",
+        "strategies": {
+          "requester": "null",
+          "timeout": "indefinite"
+        },
+        "strategy_configs": {},
+        "config": {},
+        "tool_binding": null,
+        "model_override": null,
+        "chain_order": {}
+      },
+      {
+        "order": 16,
+        "name": "loop",
+        "active": true,
+        "artifact": "default",
+        "strategies": {
+          "controller": "standard"
+        },
+        "strategy_configs": {},
+        "config": {
+          "max_turns": 10
+        },
+        "tool_binding": null,
+        "model_override": null,
+        "chain_order": {}
+      },
+      {
+        "order": 17,
+        "name": "emit",
+        "active": true,
+        "artifact": "default",
+        "strategies": {},
+        "strategy_configs": {},
+        "config": {},
+        "tool_binding": null,
+        "model_override": null,
+        "chain_order": {
+          "emitters": []
+        }
+      },
+      {
+        "order": 18,
+        "name": "memory",
+        "active": true,
+        "artifact": "default",
+        "strategies": {
+          "strategy": "append_only",
+          "persistence": "null"
+        },
+        "strategy_configs": {},
+        "config": {},
+        "tool_binding": null,
+        "model_override": null,
+        "chain_order": {}
+      },
+      {
+        "order": 19,
+        "name": "summarize",
+        "active": true,
+        "artifact": "default",
+        "strategies": {
+          "summarizer": "rule_based",
+          "importance": "heuristic"
+        },
+        "strategy_configs": {},
+        "config": {},
+        "tool_binding": null,
+        "model_override": null,
+        "chain_order": {}
+      },
+      {
+        "order": 20,
+        "name": "persist",
+        "active": true,
+        "artifact": "default",
+        "strategies": {
+          "persister": "no_persist",
+          "frequency": "on_significant"
+        },
+        "strategy_configs": {},
+        "config": {},
+        "tool_binding": null,
+        "model_override": null,
+        "chain_order": {}
+      },
+      {
+        "order": 21,
+        "name": "yield",
+        "active": true,
+        "artifact": "default",
+        "strategies": {
+          "formatter": "default"
+        },
+        "strategy_configs": {},
+        "config": {},
+        "tool_binding": null,
+        "model_override": null,
+        "chain_order": {}
+      }
+    ]
+  }
+}

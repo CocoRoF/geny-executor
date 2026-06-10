@@ -23,6 +23,7 @@ from typing import Any, Dict, List, Optional
 import pytest
 
 from geny_executor.core.environment import EnvironmentManifest, ToolsSnapshot
+from tests._fixtures.manifest_entries import required_stage_entries
 from geny_executor.core.pipeline import Pipeline, ToolResolutionReport
 from geny_executor.llm_client.credentials import ConfigError
 from geny_executor.tools.base import Tool, ToolContext, ToolResult
@@ -60,8 +61,11 @@ class _DictProvider:
 
 
 def _manifest(*, built_in: List[str] = (), external: List[Any] = ()) -> EnvironmentManifest:
+    # Required stages present + active: strict from_manifest (2.2.0)
+    # enforces the structural contract; the subject under test here is
+    # tool resolution, not stage layout.
     return EnvironmentManifest(
-        stages=[],
+        stages=required_stage_entries(),
         tools=ToolsSnapshot(
             built_in=list(built_in),
             external=list(external),

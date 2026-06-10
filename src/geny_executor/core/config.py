@@ -80,6 +80,73 @@ class ModelConfig:
         return cls(**kwargs)
 
 
+@dataclass(frozen=True)
+class ModelOverrides:
+    """One-run model overrides for ``Pipeline.run`` / ``run_stream``.
+
+    Why (2.2.0, audit 2026-06-09 §3.1): there was no sanctioned way to
+    say "this run only, use opus / a bigger budget". GAPT compensated
+    by mutating ``pipeline._config.model.*`` directly with a hand-built
+    baseline/revert dance — a private-attribute hack that leaked
+    overrides into later runs whenever the revert path was skipped.
+    This dataclass is the public funnel for that need.
+
+    Semantics:
+      - Every field is ``Optional``; only non-``None`` fields are
+        applied. They are written onto the :class:`PipelineState`
+        AFTER ``PipelineConfig.apply_to_state`` at run start, so they
+        win over manifest/config values **for that run only**.
+      - Lifetime is exactly one run: the next run's
+        ``apply_to_state`` stomps the state fields back to config
+        values (that stomp is the documented semantic, not an
+        accident). No revert bookkeeping is needed.
+      - Each applied field emits a ``config.override_applied`` event
+        (``{"field", "value", "source": "per_run"}``) into the run's
+        event stream so hosts can render *why* this run used a
+        different model (audit §3.1's "config.resolved" reporting,
+        scoped to the override layer).
+
+    Frozen: an overrides object is a value, not a channel — build a
+    new one per run rather than mutating a shared instance.
+    """
+
+    model: Optional[str] = None
+    max_tokens: Optional[int] = None
+    temperature: Optional[float] = None
+    top_p: Optional[float] = None
+    thinking_enabled: Optional[bool] = None
+    thinking_budget_tokens: Optional[int] = None
+
+    def non_none_fields(self) -> Dict[str, Any]:
+        """Return ``{field: value}`` for every field that is set.
+
+        Field names intentionally match the :class:`PipelineState`
+        attribute names 1:1 so application is a plain ``setattr`` walk
+        — adding a field here requires only the dataclass line plus
+        the matching state attribute.
+        """
+        out: Dict[str, Any] = {}
+        for key in (
+            "model",
+            "max_tokens",
+            "temperature",
+            "top_p",
+            "thinking_enabled",
+            "thinking_budget_tokens",
+        ):
+            value = getattr(self, key)
+            if value is not None:
+                out[key] = value
+        return out
+
+    def apply_to_state(self, state: "PipelineState") -> Dict[str, Any]:
+        """Write the non-``None`` fields onto *state*; return what was applied."""
+        applied = self.non_none_fields()
+        for key, value in applied.items():
+            setattr(state, key, value)
+        return applied
+
+
 @dataclass
 class PipelineConfig:
     """Top-level pipeline configuration."""
