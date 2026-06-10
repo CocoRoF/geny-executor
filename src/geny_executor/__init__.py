@@ -116,7 +116,7 @@ from geny_executor.stages.s12_agent.subagent_type import (
     resolve_subagent_provider,
 )
 
-__version__ = "2.1.4"
+__version__ = "2.2.0"
 
 __all__ = [
     # Core

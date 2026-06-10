@@ -4,6 +4,132 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.2.0] — 2026-06-09
+
+The "Environment is the single source of truth" release. Driven by the
+deep architecture audit at
+``docs/reviews/2026-06-09-environment-philosophy-audit.md`` and
+delivered in four reviewed waves (PRs #215–#218). Host migration
+guide: ``docs/migration-2.2.md``. Configuration precedence is now
+documented in ``docs/architecture.md`` — one table, five channels,
+explicit lifetimes.
+
+### Highlights
+
+- **Strategy config is a real contract.** ``configure()`` /
+  ``config_schema()`` / ``get_config()`` implemented on 17 strategies
+  (EvaluationChain, MultiDimensionalBudgetController,
+  AdaptiveModelRouter, retry strategies, security reviewers,
+  executors, loop controllers). Manifest ``strategy_configs`` were
+  previously dropped silently by the base no-op ``configure`` — the
+  bug that emptied Geny's production evaluator chain and terminated
+  its worker loop after one iteration. Reviewer policy knobs
+  (allowed_hosts, secret patterns, destructive-tool lists) are now
+  manifest-reachable: policy via config, not hardcode.
+- **build_manifest(preset, provider=...)** — the canonical
+  preset→EnvironmentManifest factory (worker_adaptive / vtuber /
+  default), absorbing the hand-mirrored manifest builders hosts
+  maintained. **validate_manifest()** — public write-time validation
+  with stable, append-only issue codes; strict ``from_manifest`` now
+  enforces it (unknown strategies, configs on no-op strategies,
+  malformed config values via an offline configure() probe, inactive
+  required stages all refuse to build).
+- **The library owns the session lifecycle.** ``Pipeline.aclose()``
+  (MCP/tool-provider teardown — closes the child-process leak),
+  ``refresh_runtime()`` between turns + an engine-wired
+  run-in-progress lock (``MutationLocked`` finally fires),
+  ``PipelineState.begin_turn()`` per-turn reset contract with every
+  field's lifetime documented, per-turn ``total_cost_usd`` vs
+  cumulative ``session_cost_usd``, ``invalidate_client()`` for
+  credential rotation, a loud warning when ``state=None`` discards
+  history, and ``PipelineResult.state``.
+- **Per-run overrides**: ``run/run_stream(...,
+  overrides=ModelOverrides(...))`` — one-run lifetime, per-field
+  ``config.override_applied`` events, state-scoped attribution under
+  concurrent runs. Replaces host-side private ``_config`` mutation.
+- **attach_runtime(llm_client=) is guarded**: a provider mismatch
+  against the manifest's Stage-6 provider raises ``ConfigError``
+  (the #866 routing incident is structurally impossible);
+  ``override_manifest=True`` opts in with an attributing event.
+- **Events are a published contract.** ``EventTypes`` catalogue
+  (102+ members, wire-string-equal, AST-completeness-tested),
+  ``PipelineEvent.session_id/run_id/seq`` correlation, unified bus
+  (``pipeline.on('*')`` finally sees ``text.delta``/``api.*``),
+  ``pipeline.events(replay_from=)`` multi-subscriber ring-journal
+  tap, and s06 forwards the full chunk set (``thinking.delta``,
+  ``api.tool_use {source}``, ``api.tool_result``,
+  ``api.input_json_delta``, ``api.error``) — hosts can delete their
+  stream monkey-patches and polling bridges. ``docs/events.md`` is
+  generated from the catalogue.
+- **Sub-agents and memory are manifest-expressible.**
+  ``manifest.subagents`` (roster with provider/model/tools/env_id or
+  inline manifest; library default factory; typed provider
+  inheritance via ``resolve_subagent_provider`` — descriptor >
+  parent's ``PRIMARY_PROVIDER`` > ``preferred_provider()``) and
+  ``manifest.memory`` (built via ``MemoryProviderFactory`` with
+  bundle-sourced credentials; host attach wins). Sub-pipelines are
+  ``aclose()``'d per dispatch. A stored environment is now a complete
+  description of a multi-agent session.
+- **Vendor boundaries hardened symmetrically.**
+  - CLI: ``cli_unknown`` wire telemetry (the v2.1.4 masking channel
+    is closed), golden fixtures recorded from real CLI output with
+    replay tests, ``claude --version`` handshake attached to
+    responses/errors, ``auth_mode`` first-class on
+    ``ProviderCredentials`` (the env-var sniff is deleted),
+    ``runner_factory`` spawn seam, anchored error classification,
+    ``session_hint`` → ``--resume``.
+  - SDKs: OpenAI streaming usage requested (the silent $0-cost bug),
+    ``max_tokens→max_completion_tokens`` heal, retry-on-heal
+    generalized into ``BaseClient`` with ``llm_client.drift_healed``
+    events, Anthropic TOKEN_LIMIT anchoring, Google typed-exception
+    classification, ``capabilities.drops`` authoritative with
+    ``parameter_dropped`` events (capability-aware: instance
+    ``supports_*`` upgrades win).
+  - Embeddings: credentials via the bundle's ``embedding`` entry,
+    classified errors, and a trip-once auth circuit breaker (ends the
+    per-turn 401 traceback spam).
+- **Inert knobs wired or honest**: s03 ``template_vars``, s04
+  ``fail_fast``/``max_chain_length``, s05 ``cache_prefix``, s06
+  ``timeout_ms`` + tri-state ``stream``, s12 ``max_delegations``
+  (+ ``agent.delegations_capped``), s16 ``max_turns``;
+  ``StreamingToolExecutor`` electable from manifests; a standing
+  config-liveness test makes future decoy fields unlandable.
+- **Hooks/permission**: in-process hook handlers no longer gated
+  behind the subprocess env opt-in; pipeline/stage lifecycle hook
+  events actually fire (10 kinds); permission ``default_posture``
+  (back-compat ``allow``; ``deny`` runs the matrix with zero rules);
+  ASK decisions route to an HITL requester when bound.
+
+### Fixed
+
+- CLI subprocess orphaning on consumer disconnect (SSE break): the
+  stream generator's finally now cancels the stdin-drain task and
+  kills the process group.
+- Streamed CLI thinking tokens were dropped (``thinking_delta``
+  carries ``thinking``, not ``text``) — found by golden replay.
+- CLI tool_result echo envelopes were counted as unknown wire shapes.
+- AdaptiveModelRouter size estimation counted s05 cache blocks
+  instead of characters.
+- run_stream consumers of concurrent runs no longer receive each
+  other's events (run_id filtering).
+
+### Compatibility
+
+- Minor release; the public surface is additive. Behavioural notes
+  for hosts in ``docs/migration-2.2.md``: per-turn ``total_cost_usd``
+  semantics, strict-build validation (manifests with inactive
+  required stages or invalid strategy configs now refuse to build —
+  run ``validate_manifest`` to preflight), ``APIResponse.raw`` is
+  wrapped as ``{provider, sdk_version, response}``, VLLM declared
+  drops are enforced unless capability-upgraded.
+- Geny compatibility verified: 832 executor-adjacent tests have a
+  byte-identical failure list under 2.1.4 and 2.2.0 (zero caused
+  regressions). GAPT's six bundled manifests validate clean and
+  build strict.
+- CI workflow updates (mypy job, tests-lint, events-docs check,
+  release gate) are staged in ``docs/ci/2.2.0-workflow-updates.patch``
+  — apply from a workflow-scoped checkout per ``docs/ci/README.md``.
+
 ## [2.1.4] — 2026-06-09
 
 Fixes the long-standing "VTuber chat shows the whole answer in one
