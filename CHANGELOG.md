@@ -4,6 +4,38 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.2.1] — 2026-06-10
+
+### Fixed
+
+- **CLI MCP passthrough.** Manifest ``tools.mcp_servers`` now reach
+  subprocess backends (``claude_code_cli``) through the client's own
+  ``--mcp-config`` channel instead of being connected host-side. The
+  old behaviour connected the server inside the HOST process and
+  registered its tools into the pipeline ToolRegistry — but Stage 10
+  never dispatches for subprocess backends (the CLI runs its own
+  agentic loop) and the CLI subprocess only sees servers passed via
+  ``--mcp-config``, so a user-attached MCP server built cleanly and
+  was then completely invisible to the LLM, while the host spawned
+  the MCP child for nothing. Now, when the manifest's Stage-6
+  provider has ``is_subprocess + supports_mcp_passthrough``
+  capabilities:
+  - manifest MCP servers are translated to the CLI mcp-config shape
+    (stdio/sse/http) and merged into the client's ``mcp_config`` —
+    host-supplied config (e.g. a session-scoped bridge server) wins
+    on name collision; a host config given as a file path is read
+    and merged (unreadable → warn, host path kept);
+  - ``mcp__<server>`` is auto-appended to ``allow_tools`` for each
+    manifest-declared server (``--print`` mode has no human to answer
+    permission prompts — without the allow entry the passthrough
+    would be dead on arrival);
+  - the host-side ``MCPManager`` connect is skipped for those servers
+    (SDK providers keep the host-side path unchanged, regression-
+    pinned).
+
+17 new tests (``tests/unit/test_cli_mcp_passthrough.py``). Full
+suite: 4113 passed.
+
 ## [2.2.0] — 2026-06-09
 
 The "Environment is the single source of truth" release. Driven by the
