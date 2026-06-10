@@ -5,7 +5,19 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
-from typing import TYPE_CHECKING, Any, AsyncIterator, Callable, Dict, List, Optional, Sequence
+from dataclasses import dataclass, field
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    AsyncIterator,
+    Callable,
+    Dict,
+    List,
+    Mapping,
+    Optional,
+    Sequence,
+    Tuple,
+)
 
 from geny_executor.core.config import PipelineConfig
 from geny_executor.core.errors import (
@@ -105,6 +117,14 @@ def _creds_to_client_kwargs(provider: str, creds: ProviderCredentials) -> Dict[s
         kwargs = {"api_key": creds.api_key}
         if creds.binary_path:
             kwargs["binary_path"] = creds.binary_path
+        # ``auth_mode`` lives on ProviderCredentials itself (2.2.0) — it is
+        # the host's declaration of which credential channel drives the
+        # CLI ('api_key' | 'oauth' | 'setup_token' | 'auto'). Without this
+        # threading, the client falls back to 'auto' (key-presence
+        # resolution) and an explicit subscription declaration from the
+        # host's auth modal would be silently ignored.
+        if getattr(creds, "auth_mode", "auto") != "auto":
+            kwargs["auth_mode"] = creds.auth_mode
         # Map known extras to constructor kwargs; unknown extras pass through
         # to ``extra_args`` (caller's escape hatch).
         for key in (
@@ -119,6 +139,7 @@ def _creds_to_client_kwargs(provider: str, creds: ProviderCredentials) -> Dict[s
             "disallow_tools",
             "extra_args",
             "timeout_s",
+            "strict_wire",
         ):
             if key in extras:
                 # workspace_root is the settings-side name; the client takes workspace_dir
@@ -191,9 +212,45 @@ def _mcp_configs_from_manifest(manifest: "EnvironmentManifest") -> Dict[str, Any
     return configs
 
 
+@dataclass
+class ToolResolutionReport:
+    """What happened to every tool name the manifest asked for.
+
+    Registration used to warn-and-pray (audit §3.5): a manifest could
+    declare ten external tools, have zero of them resolve, and the
+    pipeline would build fine with the only evidence buried in logs.
+    This report makes the outcome a first-class artifact — stored on
+    ``pipeline.tool_resolution_report`` after ``from_manifest`` /
+    ``from_manifest_async`` so hosts can render it (env editor
+    diagnostics panel) or assert on it (deploy smoke checks).
+
+    Fields:
+      - ``resolved``: names successfully registered (built-in +
+        external, in registration order).
+      - ``unresolved``: names that could not be resolved — unknown
+        built-in names, external names no provider claimed.
+      - ``shadowed``: names where one registration displaced or
+        pre-empted another (a built-in skipped because the registry
+        already held the name, or an external entry overwriting an
+        earlier registration). A name can appear in both ``resolved``
+        and ``shadowed`` when an external override replaced a
+        built-in — the name *is* live, just not from the source that
+        registered first.
+      - ``required_unresolved``: the subset of ``unresolved`` that the
+        manifest marked ``{"name": ..., "required": true}``. Non-empty
+        here means strict mode would have refused to build.
+    """
+
+    resolved: List[str] = field(default_factory=list)
+    unresolved: List[str] = field(default_factory=list)
+    shadowed: List[str] = field(default_factory=list)
+    required_unresolved: List[str] = field(default_factory=list)
+
+
 def _register_built_in_tools(
     manifest: "EnvironmentManifest",
     registry: "ToolRegistry",
+    report: Optional[ToolResolutionReport] = None,
 ) -> None:
     """Register framework-shipped tools named in ``manifest.tools.built_in``.
 
@@ -215,6 +272,11 @@ def _register_built_in_tools(
     surfacing but not worth crashing the build. If a name is already
     present in the registry (e.g. an ``AdhocToolProvider`` beat us
     to it) the existing registration wins silently.
+
+    When *report* is given, each name's fate lands in it: registered →
+    ``resolved``, unknown → ``unresolved``, skipped-because-present →
+    ``shadowed`` (audit §3.5 — registration outcomes must be
+    inspectable, not just logged).
     """
     from geny_executor.tools.built_in import BUILT_IN_TOOL_CLASSES
 
@@ -233,49 +295,134 @@ def _register_built_in_tools(
                 name,
                 sorted(BUILT_IN_TOOL_CLASSES.keys()),
             )
+            if report is not None:
+                report.unresolved.append(name)
             continue
         if registry.get(name) is not None:
+            if report is not None:
+                report.shadowed.append(name)
             continue
         registry.register(cls())
+        if report is not None:
+            report.resolved.append(name)
 
 
 def _register_external_tools(
     manifest: "EnvironmentManifest",
     registry: "ToolRegistry",
     providers: Sequence["AdhocToolProvider"],
+    report: Optional[ToolResolutionReport] = None,
+    strict: bool = False,
 ) -> None:
-    """Register every ``manifest.tools.external`` name against *providers*.
+    """Register every ``manifest.tools.external`` entry against *providers*.
 
     Walks ``manifest.tools.external`` in declared order. For each name,
     queries the providers left-to-right and registers the first
-    non-``None`` :class:`Tool` they return. Names that no provider
-    claims are skipped with a warning — the manifest may legitimately
-    reference a tool that a given deployment chose not to wire, and the
-    pipeline should remain constructible in that case.
+    non-``None`` :class:`Tool` they return.
+
+    Entry forms (2.2.0, audit §3.5):
+      * ``"name"`` — plain string, **optional** semantics (back-compat):
+        if no provider claims it, log a warning and keep building. The
+        manifest may legitimately reference a tool a given deployment
+        chose not to wire.
+      * ``{"name": "...", "required": true}`` — the manifest declares
+        the environment is *broken* without this tool. Unresolved +
+        ``strict=True`` raises :class:`ConfigError` at build time
+        instead of shipping a pipeline whose LLM will hallucinate calls
+        into a void; non-strict downgrades to a louder warning so
+        recovery tooling can still load the manifest.
+
+    Dict entries are parsed here at the registration site rather than
+    in :class:`ToolsSnapshot` — the snapshot's ``external`` field is
+    typed ``List[str]`` and round-trips foreign values untouched, so
+    the dict form survives serialization without a schema change.
+
+    When *report* is given, every entry's fate is recorded (resolved /
+    unresolved / shadowed / required_unresolved).
     """
-    external_names = list(getattr(manifest.tools, "external", []) or [])
-    if not external_names or not providers:
-        if external_names and not providers:
+    raw_entries = list(getattr(manifest.tools, "external", []) or [])
+    if not raw_entries:
+        return
+
+    # Normalize entries → (name, required). Malformed entries warn and
+    # count as unresolved-but-unnamed; they cannot be required because
+    # we cannot even tell what the author wanted.
+    entries: List[Tuple[str, bool]] = []
+    for raw in raw_entries:
+        if isinstance(raw, str):
+            entries.append((raw, False))
+        elif isinstance(raw, Mapping):
+            name = str(raw.get("name") or "")
+            if not name:
+                logger.warning("manifest.tools.external entry %r has no 'name' — skipping", raw)
+                continue
+            entries.append((name, bool(raw.get("required", False))))
+        else:
             logger.warning(
-                "manifest declares %d external tool(s) but no AdhocToolProvider was supplied: %s",
-                len(external_names),
-                external_names,
+                "manifest.tools.external entry %r is neither a string nor a "
+                "{'name', 'required'} mapping — skipping",
+                raw,
+            )
+
+    if not providers:
+        names = [name for name, _ in entries]
+        logger.warning(
+            "manifest declares %d external tool(s) but no AdhocToolProvider was supplied: %s",
+            len(names),
+            names,
+        )
+        required_missing = [name for name, required in entries if required]
+        if report is not None:
+            report.unresolved.extend(names)
+            report.required_unresolved.extend(required_missing)
+        if strict and required_missing:
+            raise ConfigError(
+                f"required external tool(s) {required_missing} declared in "
+                "manifest.tools.external but no AdhocToolProvider was supplied. "
+                "Pass adhoc_providers= to from_manifest, or mark the entries "
+                "optional (plain string / required: false)."
             )
         return
 
-    for name in external_names:
+    for name, required in entries:
         tool = None
         for provider in providers:
             tool = provider.get(name)
             if tool is not None:
                 break
         if tool is None:
-            logger.warning(
-                "external tool '%s' was declared in manifest but no "
-                "AdhocToolProvider supplied it — skipping",
-                name,
-            )
+            if report is not None:
+                report.unresolved.append(name)
+                if required:
+                    report.required_unresolved.append(name)
+            if required:
+                if strict:
+                    raise ConfigError(
+                        f"required external tool '{name}' was declared in "
+                        "manifest.tools.external but no AdhocToolProvider "
+                        "supplied it. Wire a provider for it or mark the entry "
+                        "optional (plain string / required: false)."
+                    )
+                logger.warning(
+                    "REQUIRED external tool '%s' was declared in manifest but no "
+                    "AdhocToolProvider supplied it — continuing because "
+                    "strict=False; this environment is degraded",
+                    name,
+                )
+            else:
+                logger.warning(
+                    "external tool '%s' was declared in manifest but no "
+                    "AdhocToolProvider supplied it — skipping",
+                    name,
+                )
             continue
+        if report is not None:
+            if registry.get(name) is not None:
+                # Last-write-wins: this external entry displaces an
+                # earlier registration (typically a built-in being
+                # intentionally hardened by the host).
+                report.shadowed.append(name)
+            report.resolved.append(name)
         registry.register(tool)
 
 
@@ -319,6 +466,12 @@ class Pipeline:
     FINALIZE_START = 17
     FINALIZE_END = 21  # inclusive
     EVENT_DATA_TRUNCATE = 500  # max chars for event data preview
+
+    # Filled by ``from_manifest`` / ``from_manifest_async`` with the
+    # outcome of built-in + external tool registration (audit §3.5).
+    # Class-level default keeps hand-constructed ``Pipeline()``
+    # instances attribute-safe (None = "no manifest registration ran").
+    tool_resolution_report: Optional[ToolResolutionReport] = None
 
     # Default names for unregistered stage slots (used in bypass events)
     _DEFAULT_STAGE_NAMES: Dict[int, str] = {
@@ -525,8 +678,20 @@ class Pipeline:
         # so host code can replace any framework tool with a hardened
         # variant by exposing an equally-named ``AdhocToolProvider``
         # entry and listing the name in ``manifest.tools.external``.
-        _register_built_in_tools(manifest, registry)
-        _register_external_tools(manifest, registry, adhoc_providers)
+        # Both passes feed one ToolResolutionReport so the outcome of
+        # registration is inspectable on the pipeline, not just logged
+        # (audit §3.5); ``strict`` makes unresolved *required* external
+        # entries a build failure instead of a runtime surprise.
+        resolution_report = ToolResolutionReport()
+        _register_built_in_tools(manifest, registry, report=resolution_report)
+        _register_external_tools(
+            manifest,
+            registry,
+            adhoc_providers,
+            report=resolution_report,
+            strict=strict,
+        )
+        pipeline.tool_resolution_report = resolution_report
         pipeline._tool_registry = registry
 
         # Stages that hold a tool-registry reference are instantiated at

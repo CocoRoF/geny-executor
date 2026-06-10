@@ -6,6 +6,7 @@ import asyncio
 import time
 from typing import Any, Dict, List, Optional
 
+from geny_executor.core.schema import ConfigField, ConfigSchema
 from geny_executor.tools.base import ToolCapabilities, ToolContext
 from geny_executor.tools.registry import ToolRegistry
 from geny_executor.stages.s10_tool.interface import (
@@ -146,6 +147,35 @@ class SequentialExecutor(ToolExecutor):
         return results
 
 
+def _max_concurrency_schema(name: str, default: int) -> ConfigSchema:
+    """Shared schema for the executors' single tunable.
+
+    The attribute stays named ``_max_concurrency`` on purpose: the default
+    ToolStage still pokes it directly (``_apply_max_concurrency``) for
+    stage-level config; configure() is the manifest-reachable channel for
+    the same knob (audit §1-1: strategy_configs previously vanished here).
+    """
+    return ConfigSchema(
+        name=name,
+        fields=[
+            ConfigField(
+                name="max_concurrency",
+                type="integer",
+                label="Max concurrency",
+                description="Upper bound on tool calls running at the same time.",
+                default=default,
+                min_value=1,
+            ),
+        ],
+    )
+
+
+def _coerce_max_concurrency(strategy: str, value: Any) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ValueError(f"{strategy}: 'max_concurrency' must be an integer >= 1, got {value!r}")
+    return value
+
+
 class ParallelExecutor(ToolExecutor):
     """Executes independent tools concurrently."""
 
@@ -159,6 +189,17 @@ class ParallelExecutor(ToolExecutor):
     @property
     def description(self) -> str:
         return f"Execute tools in parallel (max {self._max_concurrency})"
+
+    @classmethod
+    def config_schema(cls) -> ConfigSchema:
+        return _max_concurrency_schema("parallel", 5)
+
+    def configure(self, config: Dict[str, Any]) -> None:
+        if "max_concurrency" in config:
+            self._max_concurrency = _coerce_max_concurrency("parallel", config["max_concurrency"])
+
+    def get_config(self) -> Dict[str, Any]:
+        return {"max_concurrency": self._max_concurrency}
 
     async def execute_all(
         self,
@@ -241,6 +282,17 @@ class PartitionExecutor(ToolExecutor):
             f"Partition tool calls by concurrency_safe capability "
             f"(max parallel: {self._max_concurrency})"
         )
+
+    @classmethod
+    def config_schema(cls) -> ConfigSchema:
+        return _max_concurrency_schema("partition", 10)
+
+    def configure(self, config: Dict[str, Any]) -> None:
+        if "max_concurrency" in config:
+            self._max_concurrency = _coerce_max_concurrency("partition", config["max_concurrency"])
+
+    def get_config(self) -> Dict[str, Any]:
+        return {"max_concurrency": self._max_concurrency}
 
     def bind_registry(self, registry: ToolRegistry) -> None:
         """Late-bind the tool registry — mirrors RegistryRouter pattern."""

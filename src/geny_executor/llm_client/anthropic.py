@@ -9,6 +9,7 @@ profile.
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any, AsyncIterator, Dict, List, Optional
 
 from geny_executor.core.errors import APIError, ErrorCategory
@@ -225,6 +226,62 @@ def _retry_kwargs_after_deprecation(
     return None
 
 
+# ── 400 disambiguation: TOKEN_LIMIT vs BAD_REQUEST ──────────────────
+#
+# The 2.1.x heuristic was ``'token' in msg or 'context' in msg`` — which
+# routed *param-shape* 400s into TOKEN_LIMIT. Concretely: the drift
+# message this very module documents
+# (``thinking.adaptive.budget_tokens: Extra inputs are not permitted``)
+# contains the substring ``token``, so the next thinking-shape drift
+# would have been diagnosed as "reduce your context" instead of "your
+# request shape is stale" (audit §3.4). The two categories drive very
+# different recovery: TOKEN_LIMIT tells s06 retry logic to compact the
+# conversation; BAD_REQUEST is fatal and should bubble immediately.
+#
+# Classify TOKEN_LIMIT only on phrases the live API actually anchors
+# overflow errors with, and short-circuit anything that *looks like a
+# request-validation message* (a named param path or a deprecation
+# notice) into BAD_REQUEST first.
+_TOKEN_LIMIT_ANCHORS: tuple[str, ...] = (
+    "maximum context length",
+    "prompt is too long",
+    "input length exceeds",
+    "too many tokens",
+    # The live API's combined-budget phrasing:
+    # ``input length and `max_tokens` exceed context limit: …``
+    "exceed context limit",
+)
+
+#: Substrings that mark a request-*validation* 400 (pydantic-style param
+#: rejection or a deprecation notice) — never a context overflow.
+_PARAM_SHAPE_NEEDLES: tuple[str, ...] = (
+    ": extra inputs",
+    "extra inputs are not permitted",
+    "is deprecated",
+)
+
+#: A dotted parameter path (``thinking.adaptive.budget_tokens:``,
+#: ``messages.0.content.0.image._meta:``) followed by a colon — the shape
+#: the API uses to name the offending field in validation errors.
+_PARAM_PATH_RE = re.compile(r"\b[a-z0-9_]+(?:\.[a-z0-9_\[\]]+)+\s*:")
+
+
+def _classify_bad_request_message(msg_lower: str) -> ErrorCategory:
+    """Pure classifier for an Anthropic ``BadRequestError`` message.
+
+    Param-shape evidence wins over token-limit anchors on purpose: a
+    validation message that happens to mention budget *tokens* must not
+    be mistaken for an overflow (the misdiagnosis the audit flagged).
+    """
+    if any(needle in msg_lower for needle in _PARAM_SHAPE_NEEDLES):
+        return ErrorCategory.BAD_REQUEST
+    if _PARAM_PATH_RE.search(msg_lower):
+        return ErrorCategory.BAD_REQUEST
+    if any(anchor in msg_lower for anchor in _TOKEN_LIMIT_ANCHORS):
+        return ErrorCategory.TOKEN_LIMIT
+    return ErrorCategory.BAD_REQUEST
+
+
 class AnthropicClient(BaseClient):
     """Real Anthropic API client using the official SDK."""
 
@@ -247,6 +304,8 @@ class AnthropicClient(BaseClient):
         requires_workspace=False,
         streaming_granularity="token",
     )
+
+    _sdk_module = "anthropic"
 
     def __init__(
         self,
@@ -279,34 +338,33 @@ class AnthropicClient(BaseClient):
             self._client = anthropic.AsyncAnthropic(**kwargs)
         return self._client
 
+    def _heal_request_kwargs(
+        self, kwargs: Dict[str, Any], exc: BaseException
+    ) -> Optional[Dict[str, Any]]:
+        """Route the 2.1.2/2.1.3 deprecation safety net through the
+        :class:`BaseClient` heal hook.
+
+        The mechanism (rebuild kwargs from the 400 message, retry once)
+        was born here and got promoted to ``BaseClient`` in 2.2.0 so
+        OpenAI/Google grow the same reflex; the Anthropic-specific
+        needle table stays in :func:`_retry_kwargs_after_deprecation`
+        (also kept module-level — the 2.1.x boundary tests pin it).
+        """
+        return _retry_kwargs_after_deprecation(kwargs, exc)
+
     async def _send(self, request: APIRequest, *, purpose: str = "") -> APIResponse:
         client = self._get_client()
         kwargs = self._build_kwargs(request)
-        try:
-            raw_response = await client.messages.create(**kwargs)
-            return self._parse_response(raw_response)
-        except Exception as e:
-            # Retry-on-deprecation safety net. The static prefix list
-            # in ``_TEMPERATURE_DEPRECATED_PREFIXES`` will go stale as
-            # Anthropic deprecates more sampling params for more
-            # models. When the API explicitly tells us a sampling
-            # param is the problem, strip it and retry once. Beats
-            # a hard error on a model whose prefix we don't know yet.
-            retry_kwargs = _retry_kwargs_after_deprecation(kwargs, e)
-            if retry_kwargs is not None:
-                logger.info(
-                    "anthropic: retrying %s after deprecation 400 with "
-                    "%r dropped (model=%r)",
-                    purpose or "messages.create",
-                    sorted(set(kwargs) - set(retry_kwargs)),
-                    retry_kwargs.get("model"),
-                )
-                try:
-                    raw_response = await client.messages.create(**retry_kwargs)
-                    return self._parse_response(raw_response)
-                except Exception as inner:
-                    raise self._classify_error(inner) from inner
-            raise self._classify_error(e) from e
+        # Retry-on-heal safety net (``_heal_request_kwargs``). The static
+        # prefix list in ``_TEMPERATURE_DEPRECATED_PREFIXES`` will go
+        # stale as Anthropic deprecates more sampling params for more
+        # models. When the API explicitly tells us a sampling param is
+        # the problem, strip it and retry once. Beats a hard error on a
+        # model whose prefix we don't know yet.
+        raw_response = await self._invoke_with_heal(
+            client.messages.create, kwargs, purpose=purpose or "messages.create"
+        )
+        return self._parse_response(raw_response)
 
     async def create_message_stream(
         self,
@@ -344,25 +402,24 @@ class AnthropicClient(BaseClient):
                     "response": self._parse_response(final),
                 }
         except Exception as e:
-            # Same retry-on-deprecation safety net as ``_send``. The
-            # SDK validates kwargs eagerly inside the ``stream``
-            # context manager, so the deprecation 400 surfaces before
-            # any tokens reach the caller — safe to retry once with
-            # the offending field dropped.
-            retry_kwargs = _retry_kwargs_after_deprecation(kwargs, e)
+            # Same retry-on-heal safety net as ``_send``, routed through
+            # the BaseClient hook. The SDK validates kwargs eagerly
+            # inside the ``stream`` context manager, so the heal-able
+            # 400 surfaces before any tokens reach the caller — safe to
+            # retry once with the rebuilt kwargs. (Generators can't use
+            # ``_invoke_with_heal`` directly; the structure stays
+            # hand-rolled, the policy is shared.)
+            retry_kwargs = self._heal_request_kwargs(kwargs, e)
             if retry_kwargs is not None:
-                logger.info(
-                    "anthropic: retrying %s after deprecation 400 with "
-                    "%r dropped (model=%r)",
-                    purpose or "messages.stream",
-                    sorted(set(kwargs) - set(retry_kwargs)),
-                    retry_kwargs.get("model"),
-                )
                 try:
                     async with client.messages.stream(**retry_kwargs) as stream:
                         async for text in stream.text_stream:
                             yield {"type": "text_delta", "text": text}
                         final = await stream.get_final_message()
+                        self._report_drift_healed(
+                            kwargs, retry_kwargs, e,
+                            purpose=purpose or "messages.stream",
+                        )
                         yield {
                             "type": "message_complete",
                             "response": self._parse_response(final),
@@ -509,13 +566,19 @@ class AnthropicClient(BaseClient):
         else:
             usage = TokenUsage()
 
+        # ``raw`` is the provenance channel (the CLI client already ships
+        # a dict here with ``cli_version``). ``response`` carries the SDK
+        # object for callers that need vendor-specific fields.
+        provenance = self._provenance()
+        provenance["response"] = raw
+
         return APIResponse(
             content=content_blocks,
             stop_reason=raw.stop_reason or "",
             usage=usage,
             model=raw.model,
             message_id=raw.id,
-            raw=raw,
+            raw=provenance,
         )
 
     def _classify_error(self, e: Exception) -> APIError:
@@ -530,12 +593,11 @@ class AnthropicClient(BaseClient):
         if isinstance(e, anthropic.AuthenticationError):
             return APIError(str(e), category=ErrorCategory.AUTH, status_code=401, cause=e)
         if isinstance(e, anthropic.BadRequestError):
-            msg = str(e).lower()
-            if "token" in msg or "context" in msg:
-                return APIError(
-                    str(e), category=ErrorCategory.TOKEN_LIMIT, status_code=400, cause=e
-                )
-            return APIError(str(e), category=ErrorCategory.BAD_REQUEST, status_code=400, cause=e)
+            # TOKEN_LIMIT only on anchored overflow phrases; param-shape
+            # validation messages (which routinely mention "tokens") are
+            # BAD_REQUEST — see ``_classify_bad_request_message``.
+            category = _classify_bad_request_message(str(e).lower())
+            return APIError(str(e), category=category, status_code=400, cause=e)
         if isinstance(e, anthropic.InternalServerError):
             return APIError(str(e), category=ErrorCategory.SERVER_ERROR, status_code=500, cause=e)
         if isinstance(e, APIError):

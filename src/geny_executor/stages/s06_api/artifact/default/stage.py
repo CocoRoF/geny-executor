@@ -411,11 +411,47 @@ class APIStage(Stage[Any, APIResponse]):
             kwargs["tool_choice"] = state.tool_choice
         return kwargs
 
+    def _apply_timeout_kwarg(
+        self, kwargs: Dict[str, Any], client: BaseClient, state: PipelineState, method_name: str
+    ) -> None:
+        """Thread the stage's ``timeout_ms`` into the client call kwargs.
+
+        2026-06-09 audit ("validated-but-inert" table): ``timeout_ms`` was
+        accepted by the schema, stored, serialized — and never reached the
+        client. Clients gain the kwarg in a separate wave, so we feed it
+        only to clients whose method signature accepts it (named param or
+        ``**kwargs``); for older clients we emit ``api.timeout_unsupported``
+        instead of a silent drop OR a TypeError that would regress
+        previously-working (if inert) manifests.
+        """
+        if not self._timeout_ms:
+            return
+        import inspect
+
+        accepts = False
+        method = getattr(client, method_name, None)
+        if method is not None:
+            try:
+                params = inspect.signature(method).parameters
+                accepts = "timeout_ms" in params or any(
+                    p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()
+                )
+            except (TypeError, ValueError):
+                accepts = False
+        if accepts:
+            kwargs["timeout_ms"] = self._timeout_ms
+        else:
+            state.add_event(
+                "api.timeout_unsupported",
+                {"provider": getattr(client, "provider", ""), "timeout_ms": self._timeout_ms},
+            )
+
     async def _call_with_retry(
         self, client: BaseClient, cfg: Any, state: PipelineState
     ) -> APIResponse:
         last_error: Optional[Exception] = None
         kwargs = self._call_kwargs(cfg, state)
+        self._apply_timeout_kwarg(kwargs, client, state, "create_message")
 
         for attempt in range(self._retry.max_retries + 1):
             try:
@@ -509,6 +545,7 @@ class APIStage(Stage[Any, APIResponse]):
     ) -> APIResponse:
         response: Optional[APIResponse] = None
         kwargs = self._call_kwargs(cfg, state)
+        self._apply_timeout_kwarg(kwargs, client, state, "create_message_stream")
 
         stream: AsyncIterator[Dict[str, Any]] = client.create_message_stream(**kwargs)
         async for chunk in stream:

@@ -24,6 +24,15 @@ class TestVLLMConformance(ConformanceTestSuite):
         # vLLM mandates a base_url at construction time.
         return VLLMClient(base_url="http://localhost:8000/v1")
 
+    def make_usage_stream_client(self) -> BaseClient:
+        # vLLM-style servers ship ``prompt_tokens_details`` as a plain
+        # dict — exercise that wire variant through the shared fake.
+        from tests.llm_client.conformance.test_openai import make_fake_openai_sdk
+
+        client = VLLMClient(base_url="http://localhost:8000/v1")
+        client._client, _ = make_fake_openai_sdk(usage_details_as_dict=True)
+        return client
+
     def test_vllm_capabilities(self) -> None:
         client = self.make_client()
         assert client.supports("thinking") is False

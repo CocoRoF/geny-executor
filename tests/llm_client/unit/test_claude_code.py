@@ -326,10 +326,11 @@ async def test_send_streaming_message_form_text() -> None:
 
 @pytest.mark.asyncio
 async def test_argv_carries_bare_and_workspace(monkeypatch) -> None:
-    # ``--bare`` is auto-stripped on the OAuth path (no
-    # ANTHROPIC_API_KEY in env). Pin the API-key env so this argv
-    # surface test exercises the API-key path.
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    # The client holds its own api_key ("sk-fake" via _client) so
+    # auth_mode='auto' resolves to the API-key path → ``--bare``. The
+    # parent-process env must be irrelevant (the env sniff was deleted in
+    # 2.2.0 — PR #868 history), so explicitly clear it here.
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     c = _client(scenario="echo_argv")
     resp = await c._send(_make_request(model="opus", system="rule X"))
     import json
@@ -341,12 +342,336 @@ async def test_argv_carries_bare_and_workspace(monkeypatch) -> None:
     assert "--system-prompt" in argv and "rule X" in argv
 
 
+@pytest.mark.asyncio
+async def test_argv_oauth_auth_mode_strips_bare_despite_api_key(monkeypatch) -> None:
+    """Explicit ``auth_mode='oauth'`` wins over a configured api_key —
+    the host is declaring the subscription path, and ``--bare`` would
+    crash it with 'Not logged in · Please run /login'."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-stray")  # must be ignored too
+    c = _client(scenario="echo_argv", auth_mode="oauth")
+    resp = await c._send(_make_request())
+    import json
+
+    argv = json.loads(resp.text)
+    assert "--bare" not in argv
+
+
 def test_send_oneshot_propagates_api_key_via_env() -> None:
     """The fake CLI doesn't inspect env, but ``_env_extras`` should still
     expose ANTHROPIC_API_KEY to the child."""
     c = _client(api_key="sk-special")
     extras = c._env_extras()
     assert extras["ANTHROPIC_API_KEY"] == "sk-special"
+
+
+# ---------------------------------------------------------------------------
+# stream_event wire form — end-to-end via the fake CLI (audit §2.3)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_create_message_stream_stream_event_form() -> None:
+    """End-to-end over the REAL 2.1.x wire shape (``stream_event`` lines
+    + duplicate-bearing terminal envelope + result with top-level
+    ``result`` text). This is the scenario whose absence let the v2.1.4
+    incident ship through a fully green suite — the fake CLI only spoke
+    the pre-2.1.x delta dialect (audit §2.3)."""
+    c = _client(scenario="ok_stream_event", text="streaming is real")
+    events = []
+    async for evt in c.create_message_stream(
+        model_config=ModelConfig(model="sonnet"),
+        messages=[{"role": "user", "content": "go"}],
+    ):
+        events.append(evt)
+
+    text_deltas = [e for e in events if e.get("type") == "text_delta"]
+    # True per-token streaming: multiple chunks, reassembling exactly.
+    assert len(text_deltas) >= 2
+    assert "".join(d["text"] for d in text_deltas) == "streaming is real"
+
+    completes = [e for e in events if e.get("type") == "message_complete"]
+    assert len(completes) == 1
+    resp = completes[0]["response"]
+    # No duplication from the terminal assistant envelope.
+    assert resp.text == "streaming is real"
+    assert resp.stop_reason == "end_turn"
+    assert resp.usage.cost_usd == pytest.approx(0.0123)
+    # Clean wire: no telemetry keys; version handshake recorded.
+    assert "unknown_line_count" not in resp.raw
+    assert resp.raw["cli_version"].startswith("2.1.149-fake")
+
+
+@pytest.mark.asyncio
+async def test_send_oneshot_real_result_envelope() -> None:
+    """Non-streaming against the REAL ``--output-format json`` envelope
+    (top-level ``result`` string + ``total_cost_usd``; audit §3.4)."""
+    c = _client(scenario="ok_result_envelope", text="안녕, 친구!")
+    resp = await c._send(_make_request())
+    assert resp.text == "안녕, 친구!"
+    assert resp.stop_reason == "end_turn"
+    assert resp.usage.cost_usd == pytest.approx(0.15079925)
+    assert resp.usage.input_tokens == 2
+    assert resp.message_id  # session id fallback
+
+
+# ---------------------------------------------------------------------------
+# Unknown-wire-shape telemetry + strict_wire (audit §2.2)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_streaming_unknown_lines_tolerated_and_reported() -> None:
+    """Default posture: tolerate the drifted lines, keep the answer, and
+    TELL SOMEONE — counts in raw, one ``llm_client.unknown_wire_shape``
+    event per call on the sink."""
+    sink_events: list[dict] = []
+    c = _client(
+        scenario="stream_unknown_lines", text="drift",
+        event_sink=sink_events.append,
+    )
+    events = []
+    async for evt in c.create_message_stream(
+        model_config=ModelConfig(model="sonnet"),
+        messages=[{"role": "user", "content": "go"}],
+    ):
+        events.append(evt)
+
+    resp = [e for e in events if e.get("type") == "message_complete"][0]["response"]
+    assert resp.text == "drift"  # the call still succeeded
+    assert resp.raw["unknown_line_count"] == 1
+    assert resp.raw["malformed_line_count"] == 1
+    assert resp.raw["first_unknown_type"] == "telepathy_event"
+
+    wire_events = [
+        e for e in sink_events if e["type"] == "llm_client.unknown_wire_shape"
+    ]
+    assert len(wire_events) == 1, "exactly one signal per call, not per line"
+    assert wire_events[0]["provider"] == "claude_code_cli"
+    assert wire_events[0]["unknown_type"] == "telepathy_event"
+    assert wire_events[0]["count"] == 2  # 1 unknown + 1 malformed
+
+
+@pytest.mark.asyncio
+async def test_strict_wire_raises_on_unknown_lines() -> None:
+    """CI-canary posture: the next wire drift becomes a failing call."""
+    c = _client(scenario="stream_unknown_lines", strict_wire=True)
+    with pytest.raises(APIError) as ei:
+        async for _ in c.create_message_stream(
+            model_config=ModelConfig(model="sonnet"),
+            messages=[{"role": "user", "content": "go"}],
+        ):
+            pass
+    assert ei.value.category is ErrorCategory.CLI_PROTOCOL_ERROR
+    assert "telepathy_event" in str(ei.value)
+
+
+@pytest.mark.asyncio
+async def test_strict_wire_raises_on_send_streaming_path() -> None:
+    """The assembler path (``_send(stream=True)``) enforces strict_wire
+    too — both consumers of the stream share the telemetry contract."""
+    c = _client(scenario="stream_unknown_lines", strict_wire=True)
+    with pytest.raises(APIError) as ei:
+        await c._send(_make_request(stream=True))
+    assert ei.value.category is ErrorCategory.CLI_PROTOCOL_ERROR
+
+
+@pytest.mark.asyncio
+async def test_send_streaming_unknown_lines_tolerated_by_default() -> None:
+    c = _client(scenario="stream_unknown_lines", text="drift")
+    resp = await c._send(_make_request(stream=True))
+    assert resp.text == "drift"
+    assert resp.raw["unknown_line_count"] == 1
+
+
+# ---------------------------------------------------------------------------
+# CLI version handshake (audit Tier 2 — all four 2.1.x incidents were skew)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_cli_version_attached_to_response_raw() -> None:
+    c = _client(text="v")
+    resp = await c._send(_make_request())
+    assert resp.raw["cli_version"] == "2.1.149-fake (Claude Code)"
+    assert c._cli_version_value == "2.1.149-fake (Claude Code)"
+
+
+@pytest.mark.asyncio
+async def test_cli_version_probed_once_per_instance() -> None:
+    """The handshake is lazy and cached — one ``--version`` spawn per
+    client instance, not per call."""
+    from geny_executor.llm_client._cli_runtime import CLIProcessRunner
+
+    made: list[dict] = []
+
+    def factory(**kwargs):
+        made.append(kwargs)
+        return CLIProcessRunner(**kwargs)
+
+    c = _client(text="x", runner_factory=factory)
+    await c._send(_make_request())
+    await c._send(_make_request())
+    # First call: probe runner + call runner. Second call: call runner only.
+    assert len(made) == 3
+
+
+@pytest.mark.asyncio
+async def test_cli_version_in_error_message_on_cli_failure() -> None:
+    c = _client(scenario="crash")
+    with pytest.raises(APIError) as ei:
+        await c._send(_make_request())
+    assert ei.value.category is ErrorCategory.CLI_PROTOCOL_ERROR
+    assert "cli_version=2.1.149-fake" in str(ei.value)
+
+
+@pytest.mark.asyncio
+async def test_cli_version_probe_failure_never_fails_call() -> None:
+    """A binary that can't answer ``--version`` caches 'unknown' and the
+    real call proceeds (and fails on its own merits, version-stamped)."""
+    c = ClaudeCodeCLIClient(
+        binary_path="/bin/false",
+        workspace_dir=os.getcwd(),
+        api_key="sk-fake",
+        timeout_s=10.0,
+    )
+    with pytest.raises(APIError) as ei:
+        await c._send(_make_request())
+    # The failure is the CLI's own non-zero exit — not the probe.
+    assert ei.value.category is ErrorCategory.CLI_PROTOCOL_ERROR
+    assert c._cli_version_value == "unknown"
+    assert "cli_version=unknown" in str(ei.value)
+
+
+# ---------------------------------------------------------------------------
+# runner_factory seam (GAPT sandbox patch absorber, audit Tier 1-1)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_runner_factory_receives_spawn_parameters() -> None:
+    """Hosts wrap process spawning (docker sandbox) via the factory —
+    the supported replacement for monkey-patching
+    ``CLIProcessRunner._spawn``, which pinned GAPT to 2.1.0."""
+    from geny_executor.llm_client._cli_runtime import CLIProcessRunner
+
+    made: list[dict] = []
+
+    def factory(**kwargs):
+        made.append(dict(kwargs))
+        return CLIProcessRunner(**kwargs)
+
+    c = _client(text="seam ok", runner_factory=factory, timeout_s=33.0)
+    resp = await c._send(_make_request())
+    assert resp.text == "seam ok"
+
+    assert made, "factory was never consulted"
+    for call in made:
+        assert call["binary"] == FAKE_CLAUDE
+        assert call["cwd"] == os.getcwd()
+        assert call["env_extras"]["ANTHROPIC_API_KEY"] == "sk-fake"
+        assert "timeout_s" in call
+    # The version probe routes through the same factory (so the recorded
+    # version matches the binary that actually runs) with a short cap,
+    # while the real call keeps the client timeout.
+    timeouts = sorted(c["timeout_s"] for c in made)
+    assert timeouts[0] <= 10.0  # probe runner
+    assert timeouts[-1] == 33.0  # call runner
+
+
+# ---------------------------------------------------------------------------
+# Session continuity — session_hint wiring (audit §3.5 decoy list)
+# ---------------------------------------------------------------------------
+
+
+def _hl_request(c: ClaudeCodeCLIClient, **request_kwargs):
+    """Build a request through the same high-level path stages use."""
+    base = dict(
+        model_config=ModelConfig(model="sonnet"),
+        messages=[{"role": "user", "content": "hi"}],
+        system="",
+        tools=None,
+        tool_choice=None,
+        stream=True,
+    )
+    base.update(request_kwargs)
+    return c._build_request(**base)
+
+
+def test_session_hint_constructor_threads_to_resume_argv() -> None:
+    """``supports_session_continuity=True`` was a producer-less decoy:
+    the argv builder knew ``--resume`` but the high-level surface could
+    never carry a hint. The client-level default closes the loop."""
+    c = _client(session_hint={"session_id": "sess-42", "resume": True})
+    req = _hl_request(c)
+    assert req.session_hint == {"session_id": "sess-42", "resume": True}
+    argv = c._build_argv(req)
+    assert "--resume" in argv and "sess-42" in argv
+
+
+def test_session_hint_updatable_between_turns_via_configure() -> None:
+    c = _client()
+    assert _hl_request(c).session_hint is None  # no hint by default
+    c.configure(session_hint={"session_id": "turn-2", "resume": True})
+    argv = c._build_argv(_hl_request(c))
+    assert "--resume" in argv and "turn-2" in argv
+
+
+def test_session_hint_per_request_wins_over_client_default() -> None:
+    from geny_executor.llm_client.translators._cli import claude_code_argv
+
+    c = _client(session_hint={"session_id": "client-default", "resume": True})
+    req = _hl_request(c)
+    req.session_hint = {"session_id": "explicit", "resume": True}
+    argv = c._build_argv(req)
+    assert "explicit" in argv and "client-default" not in argv
+    # Sanity: the builder itself honours the request hint.
+    assert "--resume" in claude_code_argv(req)
+
+
+# ---------------------------------------------------------------------------
+# _classify_cli_result anchoring (MCP/tool noise must not read as auth)
+# ---------------------------------------------------------------------------
+
+
+def _cli_result(stderr: bytes, returncode: int = 1):
+    from geny_executor.llm_client._cli_runtime import CLIResult
+
+    return CLIResult(returncode=returncode, stdout=b"", stderr=stderr, duration_ms=5)
+
+
+def test_classify_incidental_auth_noise_is_not_auth_failed() -> None:
+    """Regression: the old heuristic matched bare 'auth'+'fail'
+    substrings anywhere, so an MCP server named 'oauth-helper' failing
+    to start was classified CLI_AUTH_FAILED (fatal, non-retryable)."""
+    from geny_executor.llm_client.claude_code import _classify_cli_result
+
+    err = _classify_cli_result(
+        _cli_result(b"MCP server 'oauth-helper' failed to start: connection refused")
+    )
+    assert err.category is ErrorCategory.CLI_PROTOCOL_ERROR
+
+
+@pytest.mark.parametrize(
+    "stderr",
+    [
+        b"Error: not authenticated. Run `claude auth login`.",
+        b"HTTP 401 Unauthorized",
+        b"error=authentication_failed",
+        b"Invalid API key provided",
+    ],
+)
+def test_classify_real_auth_phrases_still_map(stderr: bytes) -> None:
+    from geny_executor.llm_client.claude_code import _classify_cli_result
+
+    err = _classify_cli_result(_cli_result(stderr))
+    assert err.category is ErrorCategory.CLI_AUTH_FAILED
+
+
+def test_classify_appends_cli_version_when_known() -> None:
+    from geny_executor.llm_client.claude_code import _classify_cli_result
+
+    err = _classify_cli_result(_cli_result(b"boom"), cli_version="2.1.149")
+    assert "cli_version=2.1.149" in str(err)
 
 
 # ---------------------------------------------------------------------------

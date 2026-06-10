@@ -1,0 +1,9 @@
+{
+  "claude_code_version": "2.1.162",
+  "captured_at": "2026-06-09",
+  "provenance": "verified production capture (GAPT prod, Claude Code 2.1.162); abridged but structurally exact — supplied as the cross-version golden alongside the locally recorded 2.1.149 transcript",
+  "command": "claude --print --verbose --input-format stream-json --output-format stream-json --include-partial-messages",
+  "model": "claude-opus-4-7",
+  "expected_text": "우주는 시간과 공간, 모든 물질과 에너지를 포함한 거대한 전체이다.",
+  "notes": "no thinking block in this capture; rate_limit_event appears before message_start; terminal assistant envelope duplicates the streamed text in full"
+}

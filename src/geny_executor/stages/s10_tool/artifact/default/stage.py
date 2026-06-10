@@ -223,6 +223,19 @@ class ToolStage(Stage[Any, Any]):
             permission_rules=list(getattr(self._context, "permission_rules", None) or []),
         )
 
+        # 2.2.0 (audit §1-5 — policy via config): the permission posture
+        # and the HITL requester travel as *dynamic* attributes rather
+        # than declared ToolContext fields — the field list lives in
+        # tools/base.py, which a parallel workstream owns this release.
+        # ``RegistryRouter`` reads both defensively via ``getattr``, the
+        # same convention ``hook_runner`` used before it became a field.
+        # Hosts set them on the stage context (``attach_runtime(
+        # tool_context=...)`` or direct attribute assignment).
+        for _runtime_attr in ("permission_default_posture", "hitl_requester"):
+            _val = getattr(self._context, _runtime_attr, None)
+            if _val is not None:
+                setattr(ctx, _runtime_attr, _val)
+
         router = self._router
         if isinstance(router, RegistryRouter):
             router.bind_registry(self._registry)

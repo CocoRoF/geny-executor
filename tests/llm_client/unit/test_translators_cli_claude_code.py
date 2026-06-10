@@ -55,12 +55,12 @@ def _req(**kwargs) -> APIRequest:
     return APIRequest(**base)
 
 
-def test_argv_non_stream_uses_json_output(monkeypatch) -> None:
-    # ``--bare`` is auto-stripped on the OAuth path (no ANTHROPIC_API_KEY
-    # in env). Pin the env so the test exercises the API-key path
-    # where ``--bare`` is expected.
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
-    argv = claude_code_argv(_req())
+def test_argv_non_stream_uses_json_output() -> None:
+    # ``has_api_key=True`` resolves auth_mode='auto' to the API-key path
+    # where ``--bare`` is expected. (Pre-2.2.0 this was decided by
+    # sniffing the spawning process's ANTHROPIC_API_KEY — deleted; see
+    # claude_code_argv's docstring for the PR #868 history.)
+    argv = claude_code_argv(_req(), has_api_key=True)
     assert "--print" in argv
     assert "--output-format" in argv
     idx = argv.index("--output-format")
@@ -81,14 +81,53 @@ def test_argv_stream_uses_stream_json_io_with_verbose() -> None:
     assert "--verbose" in argv
 
 
-def test_argv_bare_stripped_on_oauth_path(monkeypatch) -> None:
-    """When no ``ANTHROPIC_API_KEY`` is in the spawning process's env,
-    ``--bare`` is auto-stripped because the CLI's bare mode explicitly
-    disables OAuth ('OAuth and keychain are never read'), which crashes
-    every subscription user with 'Not logged in · Please run /login'."""
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    argv = claude_code_argv(_req(), bare_mode=True)
+def test_argv_bare_stripped_on_oauth_path() -> None:
+    """When the client holds no API key (``has_api_key=False``, the
+    default), ``--bare`` is auto-stripped because the CLI's bare mode
+    explicitly disables OAuth ('OAuth and keychain are never read'),
+    which crashes every subscription user with 'Not logged in · Please
+    run /login'."""
+    argv = claude_code_argv(_req(), bare_mode=True, has_api_key=False)
     assert "--bare" not in argv
+
+
+def test_argv_env_var_no_longer_consulted(monkeypatch) -> None:
+    """Regression for the deleted env sniff (PR #868 history): a stray
+    ANTHROPIC_API_KEY in the *parent* process env must not flip the
+    auth path — the scrubbed child env never necessarily carries it,
+    and the client's own credential state is the source of truth."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-stray-host-key")
+    argv = claude_code_argv(_req(), bare_mode=True, has_api_key=False)
+    assert "--bare" not in argv
+
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    argv = claude_code_argv(_req(), bare_mode=True, has_api_key=True)
+    assert "--bare" in argv
+
+
+@pytest.mark.parametrize(
+    "auth_mode, has_api_key, bare_mode, expect_bare",
+    [
+        # auto: resolves to api_key iff the client holds a key.
+        ("auto", True, True, True),
+        ("auto", False, True, False),
+        # explicit api_key: the host vouches for the key → --bare even
+        # when this builder wasn't told about one.
+        ("api_key", False, True, True),
+        ("api_key", True, True, True),
+        # subscription paths never get --bare (it disables OAuth reads).
+        ("oauth", True, True, False),
+        ("setup_token", True, True, False),
+        # bare_mode=False keeps its historical veto on every path.
+        ("api_key", True, False, False),
+        ("auto", True, False, False),
+    ],
+)
+def test_argv_auth_mode_matrix(auth_mode, has_api_key, bare_mode, expect_bare) -> None:
+    argv = claude_code_argv(
+        _req(), bare_mode=bare_mode, auth_mode=auth_mode, has_api_key=has_api_key
+    )
+    assert ("--bare" in argv) is expect_bare
 
 
 def test_argv_includes_model_and_system_prompt() -> None:
@@ -526,6 +565,124 @@ def test_accumulator_stream_event_yields_token_deltas() -> None:
     assert [e["text"] for e in emitted] == chunks, emitted
 
 
+def test_accumulator_stream_event_thinking_delta_wire_key() -> None:
+    """Real 2.1.149 wire carries thinking chunks under ``thinking``, not
+    ``text`` (verified by the golden capture). Reading only ``text``
+    silently dropped every thinking token — and the terminal envelope
+    masked the loss by re-recording the full block."""
+    from geny_executor.llm_client.translators._cli import StreamJsonAccumulator
+
+    accum = StreamJsonAccumulator(model="m")
+    events = accum.feed({
+        "type": "stream_event",
+        "event": {
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {"type": "thinking_delta", "thinking": "hm, let me think"},
+        },
+    })
+    assert events == [{"type": "thinking_delta", "text": "hm, let me think"}]
+    resp = accum.finalize()
+    assert resp.thinking_blocks[0].thinking_text == "hm, let me think"
+
+
+def test_accumulator_rate_limit_event_is_known() -> None:
+    """``rate_limit_event`` appears in every recorded golden — it must be
+    bookkeeping-only, never inflating the unknown-shape counters."""
+    from geny_executor.llm_client.translators._cli import StreamJsonAccumulator
+
+    accum = StreamJsonAccumulator(model="m")
+    events = accum.feed({
+        "type": "rate_limit_event",
+        "rate_limit_info": {"status": "allowed", "rateLimitType": "five_hour"},
+    })
+    assert events == []
+    assert accum.unknown_line_count == 0
+
+
+# ---------------------------------------------------------------------------
+# StreamJsonAccumulator — unknown/malformed wire telemetry (audit §2.2)
+# ---------------------------------------------------------------------------
+
+
+def test_accumulator_counts_unknown_lines_and_samples() -> None:
+    from geny_executor.llm_client.translators._cli import StreamJsonAccumulator
+
+    accum = StreamJsonAccumulator(model="m")
+    for i in range(5):
+        events = accum.feed({"type": "future_thing", "n": i})
+        # The tag is still yielded for stream consumers…
+        assert events and events[0]["type"] == "cli_unknown"
+
+    # …and now actually counted, typed, and sampled (bounded).
+    assert accum.unknown_line_count == 5
+    assert accum.first_unknown_type == "future_thing"
+    assert len(accum.unknown_samples) == 3  # _SAMPLE_LIMIT bound holds
+
+
+def test_accumulator_counts_malformed_lines() -> None:
+    from geny_executor.llm_client.translators._cli import StreamJsonAccumulator
+
+    accum = StreamJsonAccumulator(model="m")
+    assert accum.feed({"__malformed__": "this is not json"}) == []
+    assert accum.malformed_line_count == 1
+    assert accum.unknown_samples == ["this is not json"]
+
+
+def test_accumulator_warns_once_per_instance(caplog) -> None:
+    """First unknown line per accumulator → one rate-limited warning
+    naming the unknown type. Token-rate log floods are the embedding
+    401-spam failure mode; one signal per CLI call is the contract."""
+    import logging
+
+    from geny_executor.llm_client.translators._cli import StreamJsonAccumulator
+
+    accum = StreamJsonAccumulator(model="m", cli_version="9.9.9-test")
+    with caplog.at_level(logging.WARNING, logger="geny_executor.llm_client.translators._cli"):
+        for i in range(4):
+            accum.feed({"type": "future_thing", "n": i})
+
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    assert "future_thing" in warnings[0].getMessage()
+    assert "9.9.9-test" in warnings[0].getMessage()
+
+
+def test_accumulator_finalize_merges_telemetry_into_raw() -> None:
+    """Counts merge into APIResponse.raw WITHOUT clobbering the terminal
+    result envelope's own fields."""
+    from geny_executor.llm_client.translators._cli import StreamJsonAccumulator
+
+    accum = StreamJsonAccumulator(model="m")
+    accum.feed({"type": "mystery_line"})
+    accum.feed({"__malformed__": "garbage"})
+    accum.feed({
+        "type": "result", "stop_reason": "end_turn",
+        "total_cost_usd": 0.5,
+        "usage": {"input_tokens": 1, "output_tokens": 2},
+    })
+    resp = accum.finalize()
+    assert resp.raw["unknown_line_count"] == 1
+    assert resp.raw["malformed_line_count"] == 1
+    assert resp.raw["first_unknown_type"] == "mystery_line"
+    assert resp.raw["unknown_samples"]
+    # Envelope fields survive the merge.
+    assert resp.raw["total_cost_usd"] == 0.5
+    assert resp.usage.cost_usd == pytest.approx(0.5)
+
+
+def test_accumulator_clean_stream_attaches_no_telemetry_keys() -> None:
+    """A clean stream keeps raw byte-for-byte equal to the result
+    envelope — no telemetry noise on the happy path."""
+    from geny_executor.llm_client.translators._cli import StreamJsonAccumulator
+
+    accum = StreamJsonAccumulator(model="m")
+    accum.feed({"type": "result", "stop_reason": "end_turn", "usage": {}})
+    resp = accum.finalize()
+    assert "unknown_line_count" not in resp.raw
+    assert accum.unknown_line_count == 0
+
+
 def test_accumulator_skips_duplicate_text_when_envelope_follows_stream() -> None:
     """The CLI sends BOTH per-token stream_event lines AND a terminal
     ``assistant`` envelope with the full text. The accumulator must
@@ -620,6 +777,48 @@ def test_parse_json_output_drops_tool_use_blocks() -> None:
 def test_parse_json_output_malformed_raises() -> None:
     with pytest.raises(ValueError):
         parse_json_output_to_response(b"not json", model="x")
+
+
+def test_parse_json_output_real_envelope_result_string() -> None:
+    """The REAL ``--output-format json`` envelope (audit §3.4, pinned by
+    the golden fixture ``cli-2.1.149-json.json``): assistant text is a
+    top-level ``result`` string and cost is top-level ``total_cost_usd``.
+    The pre-2.2.0 parser expected an invented ``content[]`` shape and
+    returned an empty, cost-less response for these bytes."""
+    blob = json.dumps({
+        "type": "result", "subtype": "success", "is_error": False,
+        "duration_ms": 2315, "num_turns": 1,
+        "result": "우주는 거대한 전체이다.",
+        "stop_reason": "end_turn",
+        "session_id": "65f5c36b",
+        "total_cost_usd": 0.0284,
+        "usage": {"input_tokens": 6, "output_tokens": 24},
+    }).encode("utf-8")
+    resp = parse_json_output_to_response(blob, model="claude-opus-4-7")
+    assert resp.text == "우주는 거대한 전체이다."
+    assert resp.stop_reason == "end_turn"
+    assert resp.usage.cost_usd == pytest.approx(0.0284)
+    assert resp.usage.input_tokens == 6
+    assert resp.usage.output_tokens == 24
+    assert resp.usage.duration_ms == 2315
+    assert resp.message_id == "65f5c36b"  # session id fallback
+    assert resp.model == "claude-opus-4-7"  # request model fallback
+
+
+def test_parse_json_output_content_array_still_wins() -> None:
+    """Back-compat: when both shapes appear, the ``content[]`` array is
+    the canonical record and the top-level ``result`` string must not
+    double the text."""
+    blob = json.dumps({
+        "type": "result",
+        "content": [{"type": "text", "text": "canonical"}],
+        "result": "canonical",
+        "stop_reason": "end_turn",
+        "usage": {"input_tokens": 1, "output_tokens": 1},
+    }).encode("utf-8")
+    resp = parse_json_output_to_response(blob, model="m")
+    assert resp.text == "canonical"
+    assert len([b for b in resp.content if b.type == "text"]) == 1
 
 
 # ---------------------------------------------------------------------------

@@ -1,10 +1,13 @@
-"""Permission primitives — rule, source, mode, decision."""
+"""Permission primitives — rule, source, mode, posture, decision."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import logging
+from dataclasses import dataclass, field
 from enum import Enum
-from typing import Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
+
+logger = logging.getLogger(__name__)
 
 
 class PermissionBehavior(str, Enum):
@@ -13,6 +16,63 @@ class PermissionBehavior(str, Enum):
     ALLOW = "allow"
     DENY = "deny"
     ASK = "ask"
+
+
+class PermissionPosture(str, Enum):
+    """What the engine does when **no rule matches** (2.2.0, audit §1-5).
+
+    This is the configurable baseline underneath the whole matrix:
+
+    - ``ALLOW`` — unmatched invocations proceed (then the tool's own
+      ``check_permissions`` fallback gets a say). This is the 2.x
+      default purely for back-compat: both production hosts were built
+      against allow-by-default and a silent flip would break them.
+    - ``DENY`` — unmatched invocations are refused. With no rules
+      bound at all, DENY means "deny everything except an explicit
+      allowlist" — the matrix is consulted even for an empty rule set.
+
+    .. warning:: The philosophy target is **deny-by-default**
+       ("policy via config, not hardcode" — the declared posture of
+       this library). 3.0 flips the default to ``DENY``; hosts should
+       set the posture explicitly today so the flip is a no-op for
+       them. Until then the default stays ``ALLOW`` because 2.2.0 is
+       a minor release and may not change runtime behaviour under
+       existing configs.
+    """
+
+    ALLOW = "allow"
+    DENY = "deny"
+
+
+def coerce_posture(
+    raw: Any, *, default: Optional["PermissionPosture"] = None
+) -> "PermissionPosture":
+    """Best-effort coercion of a posture value (str / enum / None).
+
+    ``None`` → the 2.x back-compat default (``ALLOW``) — hosts that
+    never heard of postures keep their behaviour. Unknown strings log
+    a WARNING and fall back to ``ALLOW`` rather than raising: this
+    path receives *programmatic* host values (context attributes),
+    where a hard error would take down dispatch for a typo. The YAML
+    loader, by contrast, raises on unknown postures — a config file
+    typo silently downgrading ``deny`` to ``allow`` is exactly the
+    masked-degradation class the 2026-06-09 audit condemns, and at
+    parse time we can still refuse loudly.
+    """
+    fallback = default if default is not None else PermissionPosture.ALLOW
+    if raw is None:
+        return fallback
+    if isinstance(raw, PermissionPosture):
+        return raw
+    try:
+        return PermissionPosture(str(raw).strip().lower())
+    except ValueError:
+        logger.warning(
+            "unknown permission posture %r — falling back to %s (valid: 'allow' | 'deny')",
+            raw,
+            fallback.value,
+        )
+        return fallback
 
 
 class PermissionMode(str, Enum):
@@ -140,3 +200,30 @@ class PermissionDecision:
         cls, reason: str, matched_rule: Optional[PermissionRule] = None
     ) -> "PermissionDecision":
         return cls(behavior=PermissionBehavior.ASK, reason=reason, matched_rule=matched_rule)
+
+
+@dataclass(frozen=True)
+class PermissionPolicy:
+    """A rule set plus the posture that applies when no rule matches.
+
+    Introduced in 2.2.0 so the posture travels on the same surface the
+    rules do (one YAML file, one loader call) instead of being a
+    second, easy-to-forget channel. ``load_permission_policy`` /
+    ``parse_permission_policy`` in :mod:`~geny_executor.permission.loader`
+    produce these.
+
+    Attributes:
+        rules: Flat rule list, same shape ``evaluate_permission`` takes.
+        default_posture: Baseline when no rule matches. Defaults to
+            ``ALLOW`` for 2.x back-compat (see
+            :class:`PermissionPosture` for the 3.0 flip plan).
+        posture_declared: True when the source file *explicitly* wrote
+            a ``default_posture`` key. Lets hierarchical loading
+            distinguish "this file says allow" from "this file is
+            silent" — silence must not override a lower-priority file's
+            explicit ``deny``.
+    """
+
+    rules: List[PermissionRule] = field(default_factory=list)
+    default_posture: PermissionPosture = PermissionPosture.ALLOW
+    posture_declared: bool = False

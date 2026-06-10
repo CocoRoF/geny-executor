@@ -29,6 +29,7 @@ class GoogleClient(BaseClient):
     """
 
     provider = "google"
+    _sdk_module = "google.genai"
     capabilities = ClientCapabilities(
         supports_thinking=False,
         supports_tools=True,
@@ -181,6 +182,7 @@ class GoogleClient(BaseClient):
             stop_reason=normalize_stop_reason(finish_reason, "google"),
             usage=usage,
             model=request.model,
+            raw=self._provenance(),
         )
         yield {"type": "message_complete", "response": response}
 
@@ -227,13 +229,19 @@ class GoogleClient(BaseClient):
         return kwargs
 
     def _parse_response(self, raw: Any, model: str) -> APIResponse:
+        # ``raw`` on the canonical response is the provenance channel —
+        # see ``BaseClient._provenance``. The SDK object rides along
+        # under ``response``.
+        provenance = self._provenance()
+        provenance["response"] = raw
+
         if not raw.candidates:
             return APIResponse(
                 content=[ContentBlock(type="text", text="")],
                 stop_reason="end_turn",
                 usage=self._parse_usage(getattr(raw, "usage_metadata", None)),
                 model=model,
-                raw=raw,
+                raw=provenance,
             )
 
         candidate = raw.candidates[0]
@@ -281,7 +289,7 @@ class GoogleClient(BaseClient):
             stop_reason=stop_reason,
             usage=usage,
             model=model,
-            raw=raw,
+            raw=provenance,
         )
 
     def _parse_usage(self, usage_meta: Any) -> TokenUsage:
@@ -293,6 +301,112 @@ class GoogleClient(BaseClient):
         )
 
     def _classify_error(self, e: Exception) -> APIError:
+        """Vendor exception → canonical :class:`APIError`.
+
+        2.1.x classified by substring over ``str(e)`` — which routed any
+        message *containing* ``"400"`` (e.g. a 500 whose body echoes a
+        nested code, or a model name with "400" in it) into BAD_REQUEST
+        (audit §1-4: "next incident, first in line"). Typed checks first:
+
+          1. ``google.genai.errors`` — what the installed SDK actually
+             raises. ``APIError`` carries ``.code`` (HTTP status int) and
+             ``.status`` (gRPC-style string like ``RESOURCE_EXHAUSTED``);
+             ``ClientError``/``ServerError`` partition 4xx/5xx.
+          2. ``google.api_core.exceptions`` — not a google-genai
+             dependency, but present whenever Vertex/grpc extras are
+             installed, and some transports surface those types instead.
+             Import is guarded; absence is normal.
+          3. The old substring heuristic survives as a genuinely-last
+             resort for non-SDK exceptions (httpx transport errors,
+             asyncio timeouts) that carry no structure at all.
+        """
+        if isinstance(e, APIError):
+            return e
+
+        try:
+            from google.genai import errors as genai_errors
+        except ImportError:  # pragma: no cover — SDK is a hard dep of this client
+            genai_errors = None
+
+        if genai_errors is not None and isinstance(e, genai_errors.APIError):
+            code = getattr(e, "code", None)
+            status = str(getattr(e, "status", "") or "").upper()
+
+            if code == 429 or status == "RESOURCE_EXHAUSTED":
+                return APIError(
+                    str(e), category=ErrorCategory.RATE_LIMITED, status_code=code, cause=e
+                )
+            if code in (401, 403) or status in ("UNAUTHENTICATED", "PERMISSION_DENIED"):
+                return APIError(
+                    str(e), category=ErrorCategory.AUTH, status_code=code, cause=e
+                )
+            if code == 504 or status == "DEADLINE_EXCEEDED":
+                return APIError(
+                    str(e), category=ErrorCategory.TIMEOUT, status_code=code, cause=e
+                )
+            if code == 503 or status == "UNAVAILABLE":
+                return APIError(
+                    str(e), category=ErrorCategory.SERVER_ERROR, status_code=code, cause=e
+                )
+            if code == 400 or status in ("INVALID_ARGUMENT", "FAILED_PRECONDITION"):
+                return APIError(
+                    str(e), category=ErrorCategory.BAD_REQUEST, status_code=code, cause=e
+                )
+            # Partition by class/range when the specific code is novel.
+            if isinstance(e, genai_errors.ServerError) or (
+                isinstance(code, int) and 500 <= code < 600
+            ):
+                return APIError(
+                    str(e), category=ErrorCategory.SERVER_ERROR, status_code=code, cause=e
+                )
+            if isinstance(e, genai_errors.ClientError) or (
+                isinstance(code, int) and 400 <= code < 500
+            ):
+                return APIError(
+                    str(e), category=ErrorCategory.BAD_REQUEST, status_code=code, cause=e
+                )
+
+        api_core_category = self._classify_api_core(e)
+        if api_core_category is not None:
+            return APIError(str(e), category=api_core_category, cause=e)
+
+        return self._classify_by_message(e)
+
+    @staticmethod
+    def _classify_api_core(e: Exception) -> Optional[ErrorCategory]:
+        """isinstance chain over ``google.api_core`` typed exceptions.
+
+        Returns ``None`` when the package isn't installed or the
+        exception isn't one of its types.
+        """
+        try:
+            from google.api_core import exceptions as gac_exceptions
+        except ImportError:
+            return None
+
+        if isinstance(e, gac_exceptions.ResourceExhausted):
+            return ErrorCategory.RATE_LIMITED
+        if isinstance(
+            e, (gac_exceptions.Unauthenticated, gac_exceptions.PermissionDenied)
+        ):
+            return ErrorCategory.AUTH
+        if isinstance(e, gac_exceptions.DeadlineExceeded):
+            return ErrorCategory.TIMEOUT
+        if isinstance(e, gac_exceptions.InvalidArgument):
+            return ErrorCategory.BAD_REQUEST
+        if isinstance(
+            e, (gac_exceptions.ServiceUnavailable, gac_exceptions.InternalServerError)
+        ):
+            return ErrorCategory.SERVER_ERROR
+        return None
+
+    def _classify_by_message(self, e: Exception) -> APIError:
+        """Genuinely-last-resort substring classification.
+
+        Only reached for exceptions with no usable type information.
+        Server-side checks run before the ``400`` needle so a 5xx whose
+        body happens to echo "400" no longer lands in BAD_REQUEST.
+        """
         error_str = str(e).lower()
 
         if "resource exhausted" in error_str or "429" in error_str:
@@ -301,10 +415,8 @@ class GoogleClient(BaseClient):
             return APIError(str(e), category=ErrorCategory.TIMEOUT, cause=e)
         if "unauthenticated" in error_str or "401" in error_str or "api key" in error_str:
             return APIError(str(e), category=ErrorCategory.AUTH, cause=e)
+        if "unavailable" in error_str or "503" in error_str or "500" in error_str:
+            return APIError(str(e), category=ErrorCategory.SERVER_ERROR, cause=e)
         if "invalid argument" in error_str or "400" in error_str:
             return APIError(str(e), category=ErrorCategory.BAD_REQUEST, cause=e)
-        if "unavailable" in error_str or "503" in error_str:
-            return APIError(str(e), category=ErrorCategory.SERVER_ERROR, cause=e)
-        if isinstance(e, APIError):
-            return e
         return APIError(str(e), category=ErrorCategory.UNKNOWN, cause=e)

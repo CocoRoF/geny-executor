@@ -242,11 +242,36 @@ class _FilesystemNotesStore(NotesHandle):
     @staticmethod
     async def _safe_index(indexer: VectorIndexer, ref: NoteRef, body: str) -> None:
         """Best-effort indexer call — markdown writes win on any
-        embedding failure. Logs at WARNING so misconfigured embedding
-        keys surface without breaking note CRUD.
+        embedding failure.
+
+        Classified :class:`EmbeddingError`\\ s ('auth' / 'quota' /
+        'transient') log here at DEBUG only: the vector store's
+        breaker already emitted the appropriately-throttled message
+        (one warning at trip time for auth, first-occurrence warning
+        for transient/quota). Logging them again at WARNING with a
+        traceback is exactly the per-write 401-spam the audit (§2.6)
+        traced through a live prod incident. Unclassified failures
+        keep the WARNING + traceback — those are genuinely unexpected
+        and the stack is the only diagnostic we have.
         """
+        from geny_executor.memory.embedding.client import EmbeddingError
+
         try:
             await indexer(ref, body)
+        except EmbeddingError as exc:
+            if getattr(exc, "category", "unknown") == "unknown":
+                logger.warning(
+                    "auto-vector index failed for %s; markdown write retained",
+                    ref.filename,
+                    exc_info=True,
+                )
+            else:
+                logger.debug(
+                    "auto-vector index failed for %s (%s); markdown write retained: %s",
+                    ref.filename,
+                    exc.category,
+                    exc,
+                )
         except Exception:  # noqa: BLE001
             logger.warning(
                 "auto-vector index failed for %s; markdown write retained",

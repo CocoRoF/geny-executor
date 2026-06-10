@@ -69,7 +69,7 @@ implement those handles natively.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Callable, Dict, Mapping, MutableMapping, Optional
+from typing import TYPE_CHECKING, Any, Callable, Dict, Mapping, MutableMapping, Optional
 
 from geny_executor.memory.composite.provider import CompositeMemoryProvider
 from geny_executor.memory.composite.routing import LayerRouting
@@ -78,6 +78,9 @@ from geny_executor.memory.embedding.registry import create_embedding_client
 from geny_executor.memory.provider import Layer, MemoryProvider, Scope
 from geny_executor.memory.providers.ephemeral import EphemeralMemoryProvider
 from geny_executor.memory.providers.file import FileMemoryProvider
+
+if TYPE_CHECKING:
+    from geny_executor.llm_client.credentials import CredentialBundle
 
 # `geny_executor.memory.providers.sql` lazily imports `psycopg` for
 # Postgres dialects, but the Postgres SDK lives in the optional
@@ -98,11 +101,41 @@ class MemoryProviderFactory:
     to `build()` produces a fresh provider tree. Builder functions
     are cheap to swap, so tests can register a stub builder under a
     well-known name and get deterministic construction.
+
+    Credentials (2.2.0, audit §2.6)
+    -------------------------------
+    Pass ``credentials=`` (a :class:`CredentialBundle`) to source
+    embedding API keys from the bundle's ``'embedding'`` provider
+    entry instead of the legacy env-var ladder. The bundle entry's
+    ``api_key`` fills any embedding config that didn't set one
+    explicitly, and its ``extras`` may carry ``provider`` / ``model``
+    / ``base_url`` defaults. This closes the parallel credential
+    channel that caused the live 401-spam incident — the embedding
+    key now flows through the same object as every other provider
+    secret, so hosts rotate it in one place. The env ladder inside
+    the clients survives as a DEPRECATED fallback (one-time warning).
+
+    The bundle is factory-level rather than per-``build()`` because
+    the composite builder recurses through ``factory.build`` for each
+    sub-provider — per-call plumbing would have to thread through
+    every third-party builder signature, breaking the ``Builder``
+    Protocol for a value that is session-constant anyway.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, credentials: Optional["CredentialBundle"] = None) -> None:
         self._builders: Dict[str, Builder] = {}
+        self._credentials = credentials
         self._register_builtins()
+
+    @property
+    def credentials(self) -> Optional["CredentialBundle"]:
+        """The bundle embedding clients are constructed from (if any).
+
+        Exposed read-only so builder functions (including third-party
+        ones registered via :meth:`register`) can reach the same
+        credential source the built-in builders use.
+        """
+        return self._credentials
 
     # ── registration ────────────────────────────────────────────────
 
@@ -147,9 +180,9 @@ def _build_ephemeral(_: MemoryProviderFactory, config: Mapping[str, Any]) -> Mem
     return EphemeralMemoryProvider(scope=_resolve_scope(config))
 
 
-def _build_file(_: MemoryProviderFactory, config: Mapping[str, Any]) -> MemoryProvider:
+def _build_file(factory: MemoryProviderFactory, config: Mapping[str, Any]) -> MemoryProvider:
     root = _require_path(config, "root")
-    embedding_client = _build_embedding(config.get("embedding"))
+    embedding_client = _build_embedding(config.get("embedding"), factory.credentials)
     return FileMemoryProvider(
         root=root,
         scope=_resolve_scope(config),
@@ -159,7 +192,7 @@ def _build_file(_: MemoryProviderFactory, config: Mapping[str, Any]) -> MemoryPr
     )
 
 
-def _build_sql(_: MemoryProviderFactory, config: Mapping[str, Any]) -> MemoryProvider:
+def _build_sql(factory: MemoryProviderFactory, config: Mapping[str, Any]) -> MemoryProvider:
     dsn = config.get("dsn")
     if dsn in (None, ""):
         raise ValueError("sql provider config requires non-empty 'dsn'")
@@ -170,7 +203,7 @@ def _build_sql(_: MemoryProviderFactory, config: Mapping[str, Any]) -> MemoryPro
     from geny_executor.memory.providers.sql import SQLMemoryProvider
     from geny_executor.memory.providers.sql.schema import Dialect  # noqa: F401  (resolves at runtime)
 
-    embedding_client = _build_embedding(config.get("embedding"))
+    embedding_client = _build_embedding(config.get("embedding"), factory.credentials)
     dialect = _resolve_dialect(config.get("dialect"))
     return SQLMemoryProvider(
         dsn=dsn,
@@ -237,14 +270,64 @@ def _build_composite(factory: MemoryProviderFactory, config: Mapping[str, Any]) 
 # ── helpers ─────────────────────────────────────────────────────────
 
 
-def _build_embedding(spec: Optional[Mapping[str, Any]]) -> Optional[EmbeddingClient]:
+def _build_embedding(
+    spec: Optional[Mapping[str, Any]],
+    credentials: Optional["CredentialBundle"] = None,
+) -> Optional[EmbeddingClient]:
+    """Construct the embedding client for a provider config.
+
+    The config ``spec`` stays authoritative for *what* to build
+    (provider / model / dimension) — it is the manifest-editable
+    surface. The :class:`CredentialBundle`'s ``'embedding'`` entry is
+    authoritative for *how to authenticate*: its ``api_key`` fills in
+    whenever the spec didn't set one, and its ``extras`` may carry
+    ``provider`` / ``model`` / ``base_url`` defaults for specs that
+    omit them. Precedence per field is explicit-spec > bundle >
+    backend default, so a host that already passes keys in config is
+    untouched, while bundle-only hosts stop depending on env vars
+    (the env ladder inside the clients is the DEPRECATED last resort
+    — audit §2.6's 401-spam channel).
+    """
+    embedding_creds = credentials.get("embedding") if credentials is not None else None
+    if embedding_creds is not None and embedding_creds.is_empty():
+        embedding_creds = None
+
     if not spec:
-        return None
+        if embedding_creds is None:
+            return None
+        # Bundle-only construction: the host supplied embedding
+        # credentials but the provider config has no embedding block.
+        # Without a provider name we cannot build anything — config
+        # remains the opt-in switch for the vector layer.
+        extras = dict(embedding_creds.extras or {})
+        provider = extras.pop("provider", None)
+        if not provider:
+            return None
+        spec = {"provider": str(provider)}
+
     if not isinstance(spec, Mapping):
         raise TypeError(f"embedding config must be a mapping, got {type(spec).__name__}")
-    provider = _require_str(spec, "provider")
-    kwargs = {k: v for k, v in spec.items() if k != "provider"}
-    return create_embedding_client(provider, **kwargs)
+
+    kwargs: Dict[str, Any] = {k: v for k, v in spec.items() if k != "provider"}
+    provider_name = spec.get("provider")
+
+    if embedding_creds is not None:
+        extras = dict(embedding_creds.extras or {})
+        if not provider_name:
+            provider_name = extras.get("provider")
+        if not kwargs.get("api_key") and embedding_creds.api_key:
+            kwargs["api_key"] = embedding_creds.api_key
+        if not kwargs.get("model") and extras.get("model"):
+            kwargs["model"] = str(extras["model"])
+        base_url = embedding_creds.base_url or extras.get("base_url")
+        if base_url:
+            options = dict(kwargs.get("options") or {})
+            options.setdefault("base_url", str(base_url))
+            kwargs["options"] = options
+
+    if not isinstance(provider_name, str) or not provider_name:
+        raise ValueError("config key 'provider' must be a non-empty string")
+    return create_embedding_client(provider_name, **kwargs)
 
 
 def _resolve_scope(config: Mapping[str, Any]) -> Scope:

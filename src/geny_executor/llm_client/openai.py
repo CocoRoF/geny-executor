@@ -9,6 +9,7 @@ re-exports from the s06_api module during the PR-3→PR-4 bridge.
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any, AsyncIterator, Dict, List, Optional
 
 from geny_executor.core.errors import APIError, ErrorCategory
@@ -24,6 +25,44 @@ from geny_executor.llm_client.translators import (
 from geny_executor.llm_client.types import APIRequest, APIResponse, ContentBlock
 
 
+logger = logging.getLogger(__name__)
+
+
+# ── ``max_tokens`` → ``max_completion_tokens`` migration ────────────
+#
+# OpenAI's reasoning families reject the classic ``max_tokens`` kwarg:
+#
+#   ``Unsupported parameter: 'max_tokens' is not supported with this
+#     model. Use 'max_completion_tokens' instead.``
+#
+# The audit (§1-4) flagged this drift as "already real in prod" with
+# zero defense on the OpenAI boundary. Two layers, mirroring the
+# Anthropic pattern proven in 2.1.2/2.1.3:
+#
+#   1. Proactive — the static prefix table below sends
+#      ``max_completion_tokens`` up front for families known to demand
+#      it. Prefix match so dated/sized variants (``o3-mini``,
+#      ``gpt-5.2-codex``) ride along without a code change.
+#   2. Reactive — ``_heal_request_kwargs`` rebuilds + retries once when
+#      the 400 names the rename, covering whatever family ships after
+#      this table goes stale. Every reactive heal warns loudly so the
+#      table gets refreshed instead of paying the retry forever.
+_MAX_COMPLETION_TOKENS_PREFIXES: tuple[str, ...] = (
+    "o1",
+    "o3",
+    "o4",
+    "gpt-5",
+)
+
+
+def _model_requires_max_completion_tokens(model: str) -> bool:
+    """True iff ``model`` belongs to a family known to reject
+    ``max_tokens`` in favour of ``max_completion_tokens``."""
+    return any(
+        model.startswith(prefix) for prefix in _MAX_COMPLETION_TOKENS_PREFIXES
+    )
+
+
 class OpenAIClient(BaseClient):
     """OpenAI Chat Completions API client.
 
@@ -31,6 +70,7 @@ class OpenAIClient(BaseClient):
     """
 
     provider = "openai"
+    _sdk_module = "openai"
     capabilities = ClientCapabilities(
         supports_thinking=False,
         supports_tools=True,
@@ -87,14 +127,42 @@ class OpenAIClient(BaseClient):
             self._client = AsyncOpenAI(**kwargs)
         return self._client
 
+    def _heal_request_kwargs(
+        self, kwargs: Dict[str, Any], exc: BaseException
+    ) -> Optional[Dict[str, Any]]:
+        """Self-heal the ``max_tokens`` → ``max_completion_tokens`` rename.
+
+        Triggers only when the 400 message names the problem — it must
+        mention ``max_tokens`` *and* either say the param is not
+        supported or name the replacement kwarg. The live phrasing
+        (verified against openai 2.x):
+
+          ``Unsupported parameter: 'max_tokens' is not supported with
+            this model. Use 'max_completion_tokens' instead.``
+
+        Covers reasoning families the static
+        ``_MAX_COMPLETION_TOKENS_PREFIXES`` table doesn't know yet.
+        """
+        if "max_tokens" not in kwargs:
+            return None
+        msg = str(getattr(exc, "message", "") or exc).lower()
+        if "max_tokens" not in msg:
+            return None
+        if "max_completion_tokens" not in msg and "not supported" not in msg:
+            return None
+        retry = dict(kwargs)
+        retry["max_completion_tokens"] = retry.pop("max_tokens")
+        return retry
+
     async def _send(self, request: APIRequest, *, purpose: str = "") -> APIResponse:
         client = self._get_client()
         kwargs = self._build_kwargs(request)
-        try:
-            raw = await client.chat.completions.create(**kwargs)
-            return self._parse_response(raw)
-        except Exception as e:
-            raise self._classify_error(e) from e
+        raw = await self._invoke_with_heal(
+            client.chat.completions.create,
+            kwargs,
+            purpose=purpose or "chat.completions.create",
+        )
+        return self._parse_response(raw)
 
     async def create_message_stream(
         self,
@@ -117,6 +185,12 @@ class OpenAIClient(BaseClient):
         client = self._get_client()
         kwargs = self._build_kwargs(request)
         kwargs["stream"] = True
+        # Without this flag the Chat Completions stream sends NO usage
+        # chunk at all — the harvesting branch below ran for months while
+        # every streamed call aggregated $0 (audit §2.5: CostBudgetGuard
+        # and both hosts' cost displays silently neutralized). The usage
+        # arrives as a final chunk with empty ``choices``.
+        kwargs["stream_options"] = {"include_usage": True}
 
         accumulated_content = ""
         accumulated_tool_calls: Dict[int, Dict[str, Any]] = {}
@@ -124,8 +198,16 @@ class OpenAIClient(BaseClient):
         finish_reason = ""
         usage_data: Optional[Any] = None
 
+        # The SDK validates the request and raises the 400 at ``create()``
+        # time even with ``stream=True`` — so the retry-on-heal wrapper
+        # can guard stream setup exactly like the non-streaming path.
+        stream = await self._invoke_with_heal(
+            client.chat.completions.create,
+            kwargs,
+            purpose=purpose or "chat.completions.create(stream)",
+        )
+
         try:
-            stream = await client.chat.completions.create(**kwargs)
             async for chunk in stream:
                 if not chunk.choices:
                     if hasattr(chunk, "usage") and chunk.usage:
@@ -193,18 +275,12 @@ class OpenAIClient(BaseClient):
                 )
             )
 
-        usage = TokenUsage()
-        if usage_data:
-            usage = TokenUsage(
-                input_tokens=getattr(usage_data, "prompt_tokens", 0),
-                output_tokens=getattr(usage_data, "completion_tokens", 0),
-            )
-
         response = APIResponse(
             content=blocks,
             stop_reason=normalize_stop_reason(finish_reason, "openai"),
-            usage=usage,
+            usage=self._parse_usage(usage_data),
             model=model,
+            raw=self._provenance(),
         )
         yield {"type": "message_complete", "response": response}
 
@@ -218,7 +294,19 @@ class OpenAIClient(BaseClient):
         }
 
         if request.max_tokens:
-            kwargs["max_tokens"] = request.max_tokens
+            # Reasoning families reject the classic kwarg — see the
+            # ``_MAX_COMPLETION_TOKENS_PREFIXES`` block at module top.
+            # Sending the right name up front avoids burning a 400 +
+            # retry on every single call to o-series / gpt-5 models.
+            if _model_requires_max_completion_tokens(request.model):
+                logger.debug(
+                    "openai: model %r takes max_completion_tokens — sent %d "
+                    "via the renamed kwarg",
+                    request.model, request.max_tokens,
+                )
+                kwargs["max_completion_tokens"] = request.max_tokens
+            else:
+                kwargs["max_tokens"] = request.max_tokens
         if request.temperature is not None:
             kwargs["temperature"] = request.temperature
         if request.top_p is not None:
@@ -272,19 +360,45 @@ class OpenAIClient(BaseClient):
                     )
                 )
 
-        usage = TokenUsage(
-            input_tokens=getattr(raw.usage, "prompt_tokens", 0),
-            output_tokens=getattr(raw.usage, "completion_tokens", 0),
-        )
         stop_reason = normalize_stop_reason(choice.finish_reason or "", "openai")
+
+        # ``raw`` is the provenance channel — see ``BaseClient._provenance``.
+        provenance = self._provenance()
+        provenance["response"] = raw
 
         return APIResponse(
             content=blocks,
             stop_reason=stop_reason,
-            usage=usage,
+            usage=self._parse_usage(getattr(raw, "usage", None)),
             model=raw.model,
             message_id=raw.id,
-            raw=raw,
+            raw=provenance,
+        )
+
+    def _parse_usage(self, usage_data: Any) -> TokenUsage:
+        """OpenAI usage object → canonical :class:`TokenUsage`.
+
+        Shared by the streaming and non-streaming paths so the cache
+        accounting can't drift between them again. Maps
+        ``prompt_tokens_details.cached_tokens`` (OpenAI's automatic
+        prompt-cache hit counter) onto ``cache_read_input_tokens`` —
+        same semantics as Anthropic's field. NOTE: unlike Anthropic,
+        OpenAI's ``prompt_tokens`` already *includes* the cached
+        portion; pricing code discounts cache reads, it must not add
+        them on top. ``prompt_tokens_details`` may be an object (openai
+        SDK) or a plain dict (vLLM and other compatible servers).
+        """
+        if usage_data is None:
+            return TokenUsage()
+        details = getattr(usage_data, "prompt_tokens_details", None)
+        if isinstance(details, dict):
+            cached = details.get("cached_tokens", 0) or 0
+        else:
+            cached = getattr(details, "cached_tokens", 0) or 0
+        return TokenUsage(
+            input_tokens=getattr(usage_data, "prompt_tokens", 0) or 0,
+            output_tokens=getattr(usage_data, "completion_tokens", 0) or 0,
+            cache_read_input_tokens=cached,
         )
 
     def _classify_error(self, e: Exception) -> APIError:

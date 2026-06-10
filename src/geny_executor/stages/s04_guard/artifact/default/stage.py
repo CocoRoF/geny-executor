@@ -127,25 +127,70 @@ class GuardStage(Stage[Any, Any]):
             self._fail_fast = bool(config["fail_fast"])
 
     async def execute(self, input: Any, state: PipelineState) -> Any:
-        chain = GuardChain(self._guard_chain.items)
-        result = chain.check_all(state)
+        guards = self._guard_chain.items
+
+        # 2026-06-09 audit ("validated-but-inert" table): both knobs below
+        # passed schema validation and then were never read here. An
+        # operator who edited them saw a green check and no behaviour
+        # change — the masked-degradation pattern this release closes.
+        if len(guards) > self._max_chain_length:
+            raise GuardRejectError(
+                f"Guard chain has {len(guards)} guards, exceeding "
+                f"max_chain_length={self._max_chain_length}. Raise the limit via "
+                "stage config or remove guards from the chain.",
+                guard_name="chain",
+            )
+
+        if self._fail_fast:
+            result = GuardChain(guards).check_all(state)
+
+            state.add_event(
+                "guard.check",
+                {
+                    "passed": result.passed,
+                    "guard_name": result.guard_name,
+                    "message": result.message,
+                },
+            )
+
+            if not result.passed:
+                if result.action == "warn":
+                    state.add_event("guard.warn", {"message": result.message})
+                    return input
+                raise GuardRejectError(
+                    result.message,
+                    guard_name=result.guard_name,
+                )
+
+            return input
+
+        # fail_fast=False — run EVERY guard and aggregate. Operators use
+        # this to see the full violation picture in one turn instead of
+        # fixing guards one rejection at a time.
+        failures = [r for r in (guard.check(state) for guard in guards) if not r.passed]
+        rejects = [r for r in failures if r.action != "warn"]
 
         state.add_event(
             "guard.check",
             {
-                "passed": result.passed,
-                "guard_name": result.guard_name,
-                "message": result.message,
+                "passed": not failures,
+                "guard_name": ", ".join(r.guard_name for r in failures) or "chain",
+                "message": "; ".join(r.message for r in failures) or "All guards passed",
+                "violations": [
+                    {"guard_name": r.guard_name, "message": r.message, "action": r.action}
+                    for r in failures
+                ],
             },
         )
 
-        if not result.passed:
-            if result.action == "warn":
-                state.add_event("guard.warn", {"message": result.message})
-                return input
+        for r in failures:
+            if r.action == "warn":
+                state.add_event("guard.warn", {"message": r.message})
+
+        if rejects:
             raise GuardRejectError(
-                result.message,
-                guard_name=result.guard_name,
+                "; ".join(f"{r.guard_name}: {r.message}" for r in rejects),
+                guard_name=", ".join(r.guard_name for r in rejects),
             )
 
         return input

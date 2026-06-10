@@ -122,6 +122,10 @@ class HookConfig:
     enabled: bool = False
     entries: Dict[HookEvent, List[HookConfigEntry]] = field(default_factory=dict)
     audit_log_path: Optional[str] = None
+    # 2.2.0 note: ``enabled`` alone is sufficient for *in-process*
+    # handlers registered via ``HookRunner.register_in_process``. The
+    # ``GENY_ALLOW_HOOKS`` env opt-in additionally gates the
+    # *subprocess* entries declared here — see ``hooks_opt_in_from_env``.
 
     @classmethod
     def disabled(cls) -> "HookConfig":
@@ -261,17 +265,26 @@ def load_hooks_config(path: Path) -> HookConfig:
 
 
 def hooks_opt_in_from_env(env: Optional[Dict[str, str]] = None) -> bool:
-    """Return True when the host has opted into running hooks.
+    """Return True when the host has opted into running *subprocess* hooks.
 
     Reads ``GENY_ALLOW_HOOKS`` from the supplied env mapping (defaults
     to ``os.environ``). Truthy values: ``1``, ``true``, ``yes``, ``on``
     (case-insensitive). Anything else — including unset — is False.
 
-    The opt-in env var is the second of two switches: the runner only
-    fires hooks when **both** the env opt-in and ``HookConfig.enabled``
-    are true. Belt-and-braces because a misconfigured config that
-    enables hooks would otherwise be a security regression for hosts
-    that hadn't intended to run subprocesses.
+    The opt-in env var is the second of two switches for the
+    *subprocess* layer: the runner only spawns hook processes when
+    **both** the env opt-in and ``HookConfig.enabled`` are true.
+    Belt-and-braces because a misconfigured config that enables hooks
+    would otherwise be a security regression for hosts that hadn't
+    intended to run subprocesses.
+
+    Scope (narrowed in 2.2.0): this gate covers *only* subprocess
+    spawning. In-process handlers registered via
+    ``HookRunner.register_in_process`` fire on ``HookConfig.enabled``
+    alone — they are host-owned Python callables, not external
+    programs, and forcing hosts to set a subprocess-security env var
+    to dispatch their own callbacks pushed at least one host (GAPT)
+    into forging the variable (audit 2026-06-09 §1-5).
     """
     if env is None:
         env = dict(os.environ)

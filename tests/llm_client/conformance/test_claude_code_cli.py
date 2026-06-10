@@ -53,6 +53,11 @@ class TestClaudeCodeCLIConformance(ConformanceTestSuite):
             env_extras=env_extras,
         )
 
+    def make_usage_stream_client(self) -> BaseClient:
+        # The fake CLI's stream-json output carries usage on the result
+        # line — the real wire shape, no extra stubbing required.
+        return self.make_client(text="usage probe")
+
     # ----------------------------------------------------------- shape
     def test_is_subprocess(self) -> None:
         client = self.make_client()

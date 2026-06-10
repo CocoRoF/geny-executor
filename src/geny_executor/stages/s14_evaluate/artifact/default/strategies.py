@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Type
 
+from geny_executor.core.schema import ConfigField, ConfigSchema
 from geny_executor.core.state import PipelineState
 from geny_executor.stages.s14_evaluate.interface import EvaluationStrategy, QualityScorer
 from geny_executor.stages.s14_evaluate.types import EvaluationResult, QualityCriterion
@@ -82,6 +83,47 @@ class CriteriaBasedEvaluation(EvaluationStrategy):
     @property
     def name(self) -> str:
         return "criteria_based"
+
+    @classmethod
+    def config_schema(cls) -> ConfigSchema:
+        return ConfigSchema(
+            name="criteria_based",
+            fields=[
+                ConfigField(
+                    name="pass_threshold",
+                    type="number",
+                    label="Pass threshold",
+                    description=(
+                        "Weighted-average score required to pass (0.0–1.0). "
+                        "Criteria themselves carry Python check callables and are "
+                        "host-injected at construction time — they cannot be "
+                        "expressed in a manifest."
+                    ),
+                    default=0.6,
+                    min_value=0.0,
+                    max_value=1.0,
+                ),
+            ],
+        )
+
+    def configure(self, config: Dict[str, Any]) -> None:
+        """Apply ``{pass_threshold}`` from a manifest ``strategy_configs`` entry.
+
+        ``criteria`` is intentionally NOT configurable here: each
+        :class:`QualityCriterion` carries a ``check`` callable, and a JSON
+        manifest cannot round-trip Python callables. Hosts that need custom
+        criteria construct the strategy directly.
+        """
+        if "pass_threshold" in config:
+            v = config["pass_threshold"]
+            if isinstance(v, bool) or not isinstance(v, (int, float)) or not 0.0 <= v <= 1.0:
+                raise ValueError(
+                    f"criteria_based: 'pass_threshold' must be a number in [0.0, 1.0], got {v!r}"
+                )
+            self._pass_threshold = float(v)
+
+    def get_config(self) -> Dict[str, Any]:
+        return {"pass_threshold": self._pass_threshold}
 
     async def evaluate(self, state: PipelineState) -> EvaluationResult:
         if not self._criteria:
@@ -186,6 +228,44 @@ class WeightedScorer(QualityScorer):
     def name(self) -> str:
         return "weighted"
 
+    @classmethod
+    def config_schema(cls) -> ConfigSchema:
+        return ConfigSchema(
+            name="weighted",
+            fields=[
+                ConfigField(
+                    name="weights",
+                    type="object",
+                    label="Metric weights",
+                    description=(
+                        "Mapping of state.metadata key → weight. Score is the "
+                        "weighted average of the metadata values present."
+                    ),
+                    default={},
+                ),
+            ],
+        )
+
+    def configure(self, config: Dict[str, Any]) -> None:
+        if "weights" in config:
+            weights = config["weights"]
+            if not isinstance(weights, dict):
+                raise ValueError(
+                    f"weighted: 'weights' must be an object of metric → number, "
+                    f"got {type(weights).__name__}"
+                )
+            parsed: Dict[str, float] = {}
+            for key, value in weights.items():
+                if isinstance(value, bool) or not isinstance(value, (int, float)):
+                    raise ValueError(
+                        f"weighted: weight for {key!r} must be a number, got {value!r}"
+                    )
+                parsed[str(key)] = float(value)
+            self._weights = parsed
+
+    def get_config(self) -> Dict[str, Any]:
+        return {"weights": dict(self._weights)}
+
     def score(self, state: PipelineState) -> float:
         if not self._weights:
             return 1.0
@@ -237,10 +317,107 @@ class EvaluationChain(EvaluationStrategy):
 
     def __init__(self, evaluators: Optional[List[EvaluationStrategy]] = None):
         self._evaluators: List[EvaluationStrategy] = list(evaluators or [])
+        # Turn-limit knobs accepted on behalf of wrapped evaluators
+        # (binary_classify consumes them). Stored so get_config() can
+        # round-trip exactly what configure() accepted.
+        self._forwarded_config: Dict[str, Any] = {}
 
     @property
     def name(self) -> str:
         return "evaluation_chain"
+
+    @classmethod
+    def config_schema(cls) -> ConfigSchema:
+        return ConfigSchema(
+            name="evaluation_chain",
+            fields=[
+                ConfigField(
+                    name="evaluators",
+                    type="array",
+                    item_type="string",
+                    label="Evaluators",
+                    description=(
+                        "Ordered list of registered evaluator names "
+                        f"({', '.join(sorted(EVALUATOR_REGISTRY))}). Resolved to "
+                        "instances at configure time; first definitive verdict wins."
+                    ),
+                    default=[],
+                    required=True,
+                ),
+                ConfigField(
+                    name="easy_max_turns",
+                    type="integer",
+                    label="Easy max turns",
+                    description=(
+                        "Forwarded to wrapped evaluators that understand it "
+                        "(binary_classify): turn cap once a task is classified easy."
+                    ),
+                    min_value=1,
+                ),
+                ConfigField(
+                    name="not_easy_max_turns",
+                    type="integer",
+                    label="Not-easy max turns",
+                    description=(
+                        "Forwarded to wrapped evaluators that understand it "
+                        "(binary_classify): turn cap for multi-turn tasks."
+                    ),
+                    min_value=1,
+                ),
+            ],
+        )
+
+    def configure(self, config: Dict[str, Any]) -> None:
+        """Resolve ``{evaluators, easy_max_turns, not_easy_max_turns}`` into a live chain.
+
+        2026-06-09 environment-philosophy audit §2.1: Geny prod declared
+        ``strategy_configs={"strategy": {"evaluators": ["binary_classify",
+        "signal_based"], ...}}`` and the base ``Strategy.configure`` no-op
+        silently dropped it. The empty chain then returned
+        ``decision="complete"`` every turn, killing the worker loop after a
+        single iteration regardless of [CONTINUE] signals. This method is
+        the fix: names are resolved to instances HERE, at configure time,
+        and bad input fails loudly instead of degrading into an empty chain.
+
+        Turn-limit keys are stored and forwarded to every resolved
+        evaluator's ``configure`` — ``binary_classify`` consumes them,
+        evaluators without the knob inherit the base no-op.
+        """
+        forwarded: Dict[str, Any] = {}
+        for key in ("easy_max_turns", "not_easy_max_turns"):
+            if key in config:
+                v = config[key]
+                if isinstance(v, bool) or not isinstance(v, int) or v < 1:
+                    raise ValueError(
+                        f"evaluation_chain: {key!r} must be an integer >= 1, got {v!r}"
+                    )
+                forwarded[key] = v
+
+        if "evaluators" in config:
+            names = config["evaluators"]
+            if not isinstance(names, list) or not all(isinstance(n, str) for n in names):
+                raise ValueError(
+                    "evaluation_chain: 'evaluators' must be a list of registered "
+                    f"evaluator names, got {names!r}"
+                )
+            unknown = [n for n in names if n not in EVALUATOR_REGISTRY]
+            if unknown:
+                raise ValueError(
+                    f"evaluation_chain: unknown evaluator(s) {unknown}. "
+                    f"Available: {sorted(EVALUATOR_REGISTRY)}"
+                )
+            self._evaluators = [EVALUATOR_REGISTRY[n]() for n in names]
+
+        self._forwarded_config.update(forwarded)
+        if self._forwarded_config:
+            for evaluator in self._evaluators:
+                evaluator.configure(dict(self._forwarded_config))
+
+    def get_config(self) -> Dict[str, Any]:
+        cfg: Dict[str, Any] = dict(self._forwarded_config)
+        if self._evaluators:
+            cfg["evaluators"] = [getattr(ev, "name", "?") for ev in self._evaluators]
+        return cfg
 
     @property
     def description(self) -> str:
@@ -289,3 +466,31 @@ class EvaluationChain(EvaluationStrategy):
                 return result
             last_result = result
         return last_result
+
+
+def _build_evaluator_registry() -> Dict[str, Type[EvaluationStrategy]]:
+    """Single source for spellable evaluator names.
+
+    Mirrors (and is consumed by) the default stage's ``strategy`` slot
+    registry so that ``EvaluationChain.configure({"evaluators": [...]})``
+    accepts exactly the names a manifest can already select as the slot
+    strategy — no second naming scheme to drift. ``binary_classify`` is
+    imported lazily-at-module-bottom because the adaptive artifact module
+    only depends on interface/types (no cycle), matching what the default
+    stage module already does.
+    """
+    from geny_executor.stages.s14_evaluate.artifact.adaptive.strategy import (
+        BinaryClassifyEvaluation,
+    )
+
+    return {
+        "signal_based": SignalBasedEvaluation,
+        "criteria_based": CriteriaBasedEvaluation,
+        "agent_evaluation": AgentEvaluation,
+        "binary_classify": BinaryClassifyEvaluation,
+        "evaluation_chain": EvaluationChain,
+    }
+
+
+#: name → class registry shared by the stage slot and EvaluationChain.configure.
+EVALUATOR_REGISTRY: Dict[str, Type[EvaluationStrategy]] = _build_evaluator_registry()

@@ -16,11 +16,16 @@ Factory::
     client = create_embedding_client("openai", model="text-embedding-3-small")
 """
 
-from geny_executor.memory.embedding.client import EmbeddingClient, EmbeddingError
+from geny_executor.memory.embedding.client import (
+    EMBEDDING_ERROR_CATEGORIES,
+    EmbeddingClient,
+    EmbeddingError,
+)
 from geny_executor.memory.embedding.local import LocalHashEmbeddingClient
 from geny_executor.memory.embedding.registry import create_embedding_client
 
 __all__ = [
+    "EMBEDDING_ERROR_CATEGORIES",
     "EmbeddingClient",
     "EmbeddingError",
     "LocalHashEmbeddingClient",

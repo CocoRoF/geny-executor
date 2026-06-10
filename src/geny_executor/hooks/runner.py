@@ -11,10 +11,22 @@ are fired in declaration order and combined via
 
 Safety + ergonomics:
 
-* **Opt-in.** A runner constructed from a disabled :class:`HookConfig`
-  (``enabled=False``) or in an environment without
-  ``GENY_ALLOW_HOOKS=1`` short-circuits every fire to passthrough.
-  Both switches must be true to actually invoke subprocesses.
+* **Split opt-in (2.2.0).** Two layers, two gates:
+
+  - *Subprocess hooks* require ``HookConfig.enabled`` **and** the
+    ``GENY_ALLOW_HOOKS=1`` env opt-in. Unchanged security posture —
+    spawning arbitrary external programs stays belt-and-braces.
+  - *In-process handlers* (:meth:`HookRunner.register_in_process`)
+    fire on ``HookConfig.enabled`` alone. They are plain Python
+    callables already running inside the host's process; gating them
+    behind the subprocess env var conflated "may we exec external
+    programs?" with "may we dispatch a callback?". The 2026-06-09
+    environment-philosophy audit (§1-5) found GAPT forging
+    ``GENY_ALLOW_HOOKS`` just to run its own policy engine — exactly
+    the failure mode this split removes.
+
+  A fully disabled config (``enabled=False``) still short-circuits
+  *everything* to passthrough.
 * **Subprocess execution.** Always ``asyncio.create_subprocess_exec``
   with an explicit argv list — never ``shell=True``.
 * **Timeout.** Per-entry ``timeout_ms`` enforced via
@@ -87,8 +99,25 @@ class HookRunner:
 
     @property
     def enabled(self) -> bool:
-        """True if both the config and the env opt-in are set."""
+        """True when *subprocess* hooks may fire (config AND env opt-in).
+
+        Kept with its historical name + semantics for back-compat:
+        hosts have used this property to mean "will my hook scripts
+        run?" since Phase 5. In-process handlers are gated separately —
+        see :attr:`in_process_enabled`.
+        """
         return self._config.enabled and self._opt_in
+
+    @property
+    def in_process_enabled(self) -> bool:
+        """True when in-process handlers may fire (config alone).
+
+        Deliberately ignores ``GENY_ALLOW_HOOKS`` — that env var scopes
+        subprocess *spawning* only. A host registering Python callbacks
+        on its own runner has already demonstrated code execution; the
+        env gate adds nothing but friction there (audit §1-5).
+        """
+        return self._config.enabled
 
     @property
     def config(self) -> HookConfig:
@@ -144,22 +173,32 @@ class HookRunner:
     ) -> HookOutcome:
         """Fire all hooks matching ``event`` and combine their outcomes.
 
-        Returns :meth:`HookOutcome.passthrough` when:
+        Gate layout (2.2.0 split — see module docstring):
 
-        * the runner is disabled (config.enabled is False or
-          ``GENY_ALLOW_HOOKS`` is unset);
-        * no entries are registered for the event;
-        * no entries match the payload (e.g. tool-name filter mismatch).
+        * ``config.enabled`` is False → passthrough, nothing fires.
+        * ``config.enabled`` is True → in-process handlers fire.
+        * subprocess entries additionally require the
+          ``GENY_ALLOW_HOOKS`` env opt-in; without it the in-process
+          outcome is returned as-is and no process is ever spawned.
 
-        Otherwise returns the combined outcome of every matching hook.
+        Returns :meth:`HookOutcome.passthrough` when nothing is
+        registered or nothing matches the payload (e.g. tool-name
+        filter mismatch). Otherwise returns the combined outcome of
+        every handler/hook that fired.
         """
-        if not self.enabled:
+        if not self.in_process_enabled:
             return HookOutcome.passthrough()
 
         # PR-B.1.1: in-process handlers run BEFORE subprocess hooks.
         # A blocked outcome short-circuits subprocess execution.
         in_proc_outcome = await self._fire_in_process(event, payload)
         if in_proc_outcome.blocked:
+            return in_proc_outcome
+
+        # 2.2.0: the env opt-in gates ONLY the subprocess layer below.
+        # An in-process outcome (possibly carrying payload edits)
+        # survives even when subprocess execution is locked out.
+        if not self._opt_in:
             return in_proc_outcome
 
         entries = self._config.entries_for(event)

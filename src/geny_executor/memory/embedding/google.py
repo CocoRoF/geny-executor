@@ -10,10 +10,13 @@ Models and dimensions:
 
 from __future__ import annotations
 
-import os
 from typing import Any, List, Optional, Sequence
 
-from geny_executor.memory.embedding.client import EmbeddingClient, EmbeddingError
+from geny_executor.memory.embedding.client import (
+    EmbeddingClient,
+    EmbeddingError,
+    _resolve_env_api_key,
+)
 from geny_executor.memory.provider import EmbeddingDescriptor
 
 
@@ -36,8 +39,10 @@ class GoogleEmbeddingClient(EmbeddingClient):
         client: Optional[Any] = None,
     ) -> None:
         self._model = model
-        self._api_key = (
-            api_key or os.environ.get("GOOGLE_API_KEY", "") or os.environ.get("GEMINI_API_KEY", "")
+        # Explicit api_key wins; env ladder is the DEPRECATED fallback
+        # (one-time warning, see embedding/client.py — audit §2.6).
+        self._api_key = api_key or _resolve_env_api_key(
+            "google", "GOOGLE_API_KEY", "GEMINI_API_KEY"
         )
         self._dimension = dimension or _GOOGLE_DIMS.get(model, 0)
         self._client = client
