@@ -138,7 +138,7 @@ class PresetRegistry:
             group_eps = (
                 eps.select(group=PRESET_ENTRY_POINT_GROUP)
                 if hasattr(eps, "select")
-                else eps.get(PRESET_ENTRY_POINT_GROUP, [])
+                else eps.get(PRESET_ENTRY_POINT_GROUP, [])  # type: ignore[arg-type]  # pre-3.10 dict API
             )
         except Exception as exc:  # pragma: no cover — metadata backend variance
             logger.warning("Failed to enumerate preset entry-points: %s", exc)

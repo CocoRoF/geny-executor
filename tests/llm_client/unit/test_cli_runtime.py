@@ -5,8 +5,6 @@ Uses the fake echo CLI fixture under ``tests/_fixtures/fake_echo_cli.py``.
 
 from __future__ import annotations
 
-import asyncio
-import json
 import os
 import sys
 from pathlib import Path
@@ -234,7 +232,6 @@ async def test_runner_stream_timeout() -> None:
 async def test_runner_env_scrub_strips_non_whitelisted(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("LEAK_ME_PLEASE", "1")
     monkeypatch.setenv("HOME", os.environ.get("HOME", "/tmp"))
-    runner = CLIProcessRunner(binary=FAKE_CLI)
     # The fake binary prints stdin verbatim. We feed it an env-introspection
     # request via stdin echo — fake binary doesn't read env, so we just verify
     # that scrub_env() filtered LEAK_ME_PLEASE out:

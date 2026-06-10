@@ -13,7 +13,6 @@ from geny_executor.stages.s03_system import (
     PersonaBlock,
     PersonaProvider,
     PersonaResolution,
-    PromptBlock,
     RulesBlock,
     SystemStage,
 )

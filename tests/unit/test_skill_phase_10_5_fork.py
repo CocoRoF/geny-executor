@@ -8,7 +8,6 @@ import pytest
 
 from geny_executor.skills.fork import (
     ForkResult,
-    SkillForkRunner,
     make_default_fork_runner,
 )
 from geny_executor.skills.registry import SkillRegistry

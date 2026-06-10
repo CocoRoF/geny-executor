@@ -176,7 +176,9 @@ class ConfigSchema:
         errors: List[str] = []
 
         # Type validation
-        type_checks = {
+        # ``Any`` values: heterogeneous (type | tuple[type, ...]) — both
+        # valid isinstance() second arguments, which mypy can't unify.
+        type_checks: Dict[str, Any] = {
             "string": str,
             "integer": int,
             "number": (int, float),

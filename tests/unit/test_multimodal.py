@@ -5,9 +5,7 @@ import os
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "src"))
 
-import pytest
 
-from geny_executor.stages.s01_input.types import NormalizedInput
 from geny_executor.stages.s01_input.artifact.default.normalizers import (
     DefaultNormalizer,
     MultimodalNormalizer,

@@ -157,7 +157,6 @@ class TestSequentialExecutorApplies:
     async def test_success_mutations_reach_shared(self):
         tool = _MutatingTool("M", mutations={"executor.todos": [{"id": "x"}]})
         reg = _registry_with(tool)
-        router = RegistryRouter(reg)
         execu = SequentialExecutor()
 
         state = PipelineState(session_id="s")

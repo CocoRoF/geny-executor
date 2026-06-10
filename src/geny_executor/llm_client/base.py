@@ -466,16 +466,18 @@ class BaseClient(ABC):
         model = retry_kwargs.get("model", kwargs.get("model", ""))
         healed_fields = sorted(set(kwargs) - set(retry_kwargs))
         healed_fields += sorted(
-            k
-            for k in retry_kwargs
-            if k in kwargs and retry_kwargs[k] != kwargs[k]
+            k for k in retry_kwargs if k in kwargs and retry_kwargs[k] != kwargs[k]
         )
         for field_name in healed_fields:
             logger.warning(
                 "%s: request self-healed after vendor drift — %r rebuilt and "
                 "retried once (model=%r, purpose=%r). The static "
                 "compatibility tables are stale; original error: %s",
-                self.provider, field_name, model, purpose, message,
+                self.provider,
+                field_name,
+                model,
+                purpose,
+                message,
             )
             if self._event_sink is not None:
                 self._event_sink(

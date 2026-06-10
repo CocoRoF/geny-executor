@@ -92,8 +92,7 @@ def _classify_cli_result(result: CLIResult, *, cli_version: str = "") -> APIErro
     suffix = f" [cli_version={cli_version}]" if cli_version else ""
     if any(phrase in stderr for phrase in _AUTH_FAILURE_PHRASES):
         return APIError(
-            f"Claude Code CLI auth failed (exit {result.returncode}): "
-            f"{stderr[:300]}{suffix}",
+            f"Claude Code CLI auth failed (exit {result.returncode}): {stderr[:300]}{suffix}",
             category=ErrorCategory.CLI_AUTH_FAILED,
         )
     if "permission" in stderr and ("denied" in stderr or "deny" in stderr or "blocked" in stderr):
@@ -220,8 +219,10 @@ class ClaudeCodeCLIClient(BaseClient):
         else:
             env_override = os.environ.get("CLAUDE_CODE_BINARY", "")
             self._binary = (
-                detect_binary("claude", env_override) if env_override else None
-            ) or detect_binary("claude", None) or ""
+                (detect_binary("claude", env_override) if env_override else None)
+                or detect_binary("claude", None)
+                or ""
+            )
         self._workspace_dir = workspace_dir
         self._auth_mode = auth_mode
         self._settings_path = settings_path
@@ -236,9 +237,7 @@ class ClaudeCodeCLIClient(BaseClient):
         self._extra_env: Dict[str, str] = dict(env_extras) if env_extras else {}
         self._strict_wire = strict_wire
         self._runner_factory = runner_factory
-        self._session_hint: Optional[Dict[str, Any]] = (
-            dict(session_hint) if session_hint else None
-        )
+        self._session_hint: Optional[Dict[str, Any]] = dict(session_hint) if session_hint else None
         #: ``None`` = handshake not attempted yet; ``"unknown"`` = attempted
         #: and failed (never retried — one probe per client instance).
         self._cli_version_value: Optional[str] = None
@@ -456,12 +455,18 @@ class ClaudeCodeCLIClient(BaseClient):
         except CLITimeout as e:
             raise APIError(self._with_version(str(e)), category=ErrorCategory.CLI_TIMEOUT) from e
         except CLIAuthFailed as e:
-            raise APIError(self._with_version(str(e)), category=ErrorCategory.CLI_AUTH_FAILED) from e
+            raise APIError(
+                self._with_version(str(e)), category=ErrorCategory.CLI_AUTH_FAILED
+            ) from e
         except CLIProtocolError as e:
-            raise APIError(self._with_version(str(e)), category=ErrorCategory.CLI_PROTOCOL_ERROR) from e
+            raise APIError(
+                self._with_version(str(e)), category=ErrorCategory.CLI_PROTOCOL_ERROR
+            ) from e
         except RuntimeError as e:
             # stream-json error envelope was raised by the assembler.
-            raise APIError(self._with_version(str(e)), category=ErrorCategory.CLI_PROTOCOL_ERROR) from e
+            raise APIError(
+                self._with_version(str(e)), category=ErrorCategory.CLI_PROTOCOL_ERROR
+            ) from e
 
     # ───────────────────────────────────────────────── streaming API ─
 
@@ -574,4 +579,6 @@ class ClaudeCodeCLIClient(BaseClient):
         except CLITimeout as e:
             raise APIError(self._with_version(str(e)), category=ErrorCategory.CLI_TIMEOUT) from e
         except CLIProtocolError as e:
-            raise APIError(self._with_version(str(e)), category=ErrorCategory.CLI_PROTOCOL_ERROR) from e
+            raise APIError(
+                self._with_version(str(e)), category=ErrorCategory.CLI_PROTOCOL_ERROR
+            ) from e

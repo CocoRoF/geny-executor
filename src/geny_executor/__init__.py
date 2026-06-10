@@ -102,7 +102,18 @@ from geny_executor.llm_client import (
 from geny_executor.memory import (
     GenyPresets,
     MemoryAwareRetriever,
+    MemoryProviderFactory,
     ProviderDrivenStrategy,
+)
+from geny_executor.memory.factory import provider_from_manifest_memory
+from geny_executor.stages.s12_agent.subagent_type import (
+    ManifestSubagentPipelineFactory,
+    SubAgentBuildContext,
+    SubagentTypeDescriptor,
+    SubagentTypeOrchestrator,
+    SubagentTypeRegistry,
+    compile_subagent_descriptors,
+    resolve_subagent_provider,
 )
 
 __version__ = "2.1.4"
@@ -199,6 +210,16 @@ __all__ = [
     "MutationResult",
     # Memory plumbing (provider-driven)
     "MemoryAwareRetriever",
+    "MemoryProviderFactory",
     "ProviderDrivenStrategy",
     "GenyPresets",
+    "provider_from_manifest_memory",
+    # Sub-agent types (manifest-expressible since 2.2.0 Wave 3)
+    "ManifestSubagentPipelineFactory",
+    "SubAgentBuildContext",
+    "SubagentTypeDescriptor",
+    "SubagentTypeOrchestrator",
+    "SubagentTypeRegistry",
+    "compile_subagent_descriptors",
+    "resolve_subagent_provider",
 ]

@@ -79,6 +79,7 @@ dev = [
     "pytest-asyncio>=0.24",
     "pytest-cov>=5.0",
     "ruff>=0.4.0",
+    "mypy>=1.10",
 ]
 
 [project.urls]
@@ -120,5 +121,44 @@ markers = [
 [tool.ruff]
 target-version = "py311"
 line-length = 100
-extend-exclude = ["tests"]
+# tests/ is deliberately NOT excluded — CI runs `ruff check src/ tests/`
+# and the config must not silently veto half of that command line.
+# (Pre-2.2.0 `extend-exclude = ["tests"]` + `force-exclude = true` made
+# the tests/ half of the CI invocation a no-op — audit 2026-06-09 §3.7.)
 force-exclude = true
+
+[tool.ruff.format]
+# Formatter-only carve-out: tests/ predates formatter enforcement and a
+# blanket reformat would churn ~130 files. *Lint* rules apply to tests/
+# (see above); format normalization of tests/ is tracked separately.
+exclude = ["tests/**"]
+
+# ── mypy — typed-surface beachhead ─────────────────────────────────
+# The package ships `py.typed` but had no type-checking CI (audit
+# 2026-06-09 §3.7). Start permissive and on a beachhead: CI runs mypy
+# over core/ and llm_client/ only (the surfaces hosts import against).
+# Tighten incrementally — flip `check_untyped_defs`, then widen the
+# package list — rather than gating the world at once.
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true
+check_untyped_defs = false
+# Annotation-bearing defs only; untyped bodies are skipped for now.
+follow_imports = "silent"
+no_error_summary = false
+
+# Modules with known non-trivial findings (dynamic attributes, conditional
+# function variants, config-object reuse). Each needs a real refactor, not
+# an annotation — parked here so the beachhead gate stays green while the
+# fixes land one module at a time. Findings on file (2026-06-10):
+#   core.pipeline         — Stage has no `_context` attr (set dynamically)
+#   core.mutation         — conditional `wrapper` variants differ in arity;
+#                           `cfg` rebound across ModelConfig/PipelineConfig
+#   core.manifest_factory — Optional flows into dict(...) for chain_order
+[[tool.mypy.overrides]]
+module = [
+    "geny_executor.core.pipeline",
+    "geny_executor.core.mutation",
+    "geny_executor.core.manifest_factory",
+]
+ignore_errors = true

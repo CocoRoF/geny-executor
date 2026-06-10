@@ -7,10 +7,8 @@ Anthropic-only default runner.
 
 from __future__ import annotations
 
-import asyncio
 import sys
 import os
-from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "src"))
 

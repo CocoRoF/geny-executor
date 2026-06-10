@@ -39,7 +39,7 @@ def test_file_stm_append_event_writes_event_line():
 
         _run(go())
         jsonl = (root / "transcripts" / "session.jsonl").read_text(encoding="utf-8")
-        lines = [json.loads(l) for l in jsonl.strip().splitlines()]
+        lines = [json.loads(ln) for ln in jsonl.strip().splitlines()]
         assert len(lines) == 3
         assert lines[0]["type"] == "message"
         assert lines[1]["type"] == "event"

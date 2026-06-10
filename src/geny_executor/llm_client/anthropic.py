@@ -55,7 +55,8 @@ def _resolve_anthropic_model(model: str) -> str:
     if canonical != model:
         logger.info(
             "anthropic: model alias %r resolved to canonical %r",
-            model, canonical,
+            model,
+            canonical,
         )
     return canonical
 
@@ -99,17 +100,13 @@ _THINKING_INCOMPATIBLE_SAMPLING_KEYS: tuple[str, ...] = (
 # env that never sees Opus in its config can still hit this code
 # path indirectly. The drop has to live at the boundary, not the
 # router.
-_TEMPERATURE_DEPRECATED_PREFIXES: tuple[str, ...] = (
-    "claude-opus-4-7",
-)
+_TEMPERATURE_DEPRECATED_PREFIXES: tuple[str, ...] = ("claude-opus-4-7",)
 
 
 def _model_rejects_sampling_params(model: str) -> bool:
     """True iff ``model`` (canonical ID) belongs to a family that
     unconditionally rejects ``temperature``/``top_p``/``top_k``."""
-    return any(
-        model.startswith(prefix) for prefix in _TEMPERATURE_DEPRECATED_PREFIXES
-    )
+    return any(model.startswith(prefix) for prefix in _TEMPERATURE_DEPRECATED_PREFIXES)
 
 
 # ── ``thinking.type=enabled`` → ``adaptive`` migration ──────────────
@@ -128,16 +125,12 @@ def _model_rejects_sampling_params(model: str) -> bool:
 # Effort is *optional* — calls with bare ``{"type":"adaptive"}`` work.
 # Translate at the boundary so callers that ship the v1 thinking
 # shape continue to work against v2 models.
-_THINKING_ADAPTIVE_ONLY_PREFIXES: tuple[str, ...] = (
-    "claude-opus-4-7",
-)
+_THINKING_ADAPTIVE_ONLY_PREFIXES: tuple[str, ...] = ("claude-opus-4-7",)
 
 
 def _model_requires_adaptive_thinking(model: str) -> bool:
     """True iff ``model`` only accepts ``thinking.type=adaptive``."""
-    return any(
-        model.startswith(prefix) for prefix in _THINKING_ADAPTIVE_ONLY_PREFIXES
-    )
+    return any(model.startswith(prefix) for prefix in _THINKING_ADAPTIVE_ONLY_PREFIXES)
 
 
 def _translate_thinking_to_adaptive(thinking: Dict[str, Any]) -> Dict[str, Any]:
@@ -180,7 +173,8 @@ _DEPRECATION_MSG_TO_KWARG_KEY: Dict[str, str] = {
 
 
 def _retry_kwargs_after_deprecation(
-    kwargs: Dict[str, Any], exc: BaseException,
+    kwargs: Dict[str, Any],
+    exc: BaseException,
 ) -> Optional[Dict[str, Any]]:
     """If ``exc`` is an Anthropic 400 we can self-heal, return a
     rebuilt kwargs. ``None`` means *don't retry* — let the caller
@@ -208,8 +202,7 @@ def _retry_kwargs_after_deprecation(
     # diagnostic is structural (the request shape, not just one
     # missing field).
     if (
-        "thinking.type.enabled" in msg_lower
-        or "thinking.type.adaptive" in msg_lower
+        "thinking.type.enabled" in msg_lower or "thinking.type.adaptive" in msg_lower
     ) and isinstance(kwargs.get("thinking"), dict):
         thinking = kwargs["thinking"]
         if thinking.get("type") == "enabled":
@@ -417,7 +410,9 @@ class AnthropicClient(BaseClient):
                             yield {"type": "text_delta", "text": text}
                         final = await stream.get_final_message()
                         self._report_drift_healed(
-                            kwargs, retry_kwargs, e,
+                            kwargs,
+                            retry_kwargs,
+                            e,
                             purpose=purpose or "messages.stream",
                         )
                         yield {
@@ -480,7 +475,8 @@ class AnthropicClient(BaseClient):
                         "anthropic: dropped %r=%r — extended thinking "
                         "is enabled and the Messages API rejects this "
                         "sampling param",
-                        key, dropped,
+                        key,
+                        dropped,
                     )
 
         # Model-level unconditional rejection — see
@@ -495,7 +491,9 @@ class AnthropicClient(BaseClient):
                     logger.info(
                         "anthropic: dropped %r=%r — model %r refuses "
                         "this sampling param unconditionally",
-                        key, dropped, resolved_model,
+                        key,
+                        dropped,
+                        resolved_model,
                     )
 
         # Thinking-shape migration — see
@@ -515,7 +513,8 @@ class AnthropicClient(BaseClient):
             logger.info(
                 "anthropic: translated thinking.type=enabled → adaptive "
                 "(model=%r, dropped legacy budget_tokens=%r)",
-                resolved_model, before.get("budget_tokens"),
+                resolved_model,
+                before.get("budget_tokens"),
             )
 
         return kwargs

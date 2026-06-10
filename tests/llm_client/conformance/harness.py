@@ -20,14 +20,12 @@ the pytest CLI to opt into live API calls (gated by ``RUN_LIVE`` env).
 from __future__ import annotations
 
 import os
-from dataclasses import asdict
-from typing import Any, Literal
+from typing import Literal
 
 import pytest
 
 from geny_executor.core.config import ModelConfig
 from geny_executor.llm_client.base import BaseClient, ClientCapabilities
-from geny_executor.llm_client.types import APIRequest, APIResponse, ContentBlock
 
 
 Mode = Literal["mocked", "live"]

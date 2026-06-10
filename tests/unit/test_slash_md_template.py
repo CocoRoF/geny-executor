@@ -12,7 +12,6 @@ from geny_executor.slash_commands import (
     SlashContext,
 )
 from geny_executor.slash_commands.md_template import (
-    MdTemplateCommand,
     load_md_command,
     load_md_commands_into,
 )

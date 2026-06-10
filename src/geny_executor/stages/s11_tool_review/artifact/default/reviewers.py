@@ -160,9 +160,7 @@ class SensitivePatternReviewer(Reviewer):
             patterns = list(_DEFAULT_SENSITIVE_PATTERNS)
         # Keep the raw (label, regex) pairs alongside the compiled forms so
         # get_config() can round-trip what was configured.
-        self._patterns: List[Tuple[str, str]] = [
-            (str(label), str(rx)) for label, rx in patterns
-        ]
+        self._patterns: List[Tuple[str, str]] = [(str(label), str(rx)) for label, rx in patterns]
         self._compiled = [(label, re.compile(rx)) for label, rx in self._patterns]
 
     @property

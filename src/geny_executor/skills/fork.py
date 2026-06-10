@@ -219,9 +219,7 @@ def make_credential_bundle_fork_runner(
         invoke_args: Dict[str, Any],
         parent_context: ToolContext,
     ) -> ForkResult:
-        provider = (
-            getattr(skill.metadata, "provider", None) or fallback_provider
-        )
+        provider = getattr(skill.metadata, "provider", None) or fallback_provider
 
         try:
             creds = credentials.require(provider)
@@ -252,9 +250,7 @@ def make_credential_bundle_fork_runner(
         if invoke_args:
             import json as _json
 
-            user_content = (
-                user_content + "\n\nArguments:\n" + _json.dumps(invoke_args, indent=2)
-            )
+            user_content = user_content + "\n\nArguments:\n" + _json.dumps(invoke_args, indent=2)
 
         try:
             response = await client.create_message(

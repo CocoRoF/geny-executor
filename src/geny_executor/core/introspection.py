@@ -1,4 +1,4 @@
-"""Session-less introspection over the 16-stage pipeline.
+"""Session-less introspection over the 21-stage pipeline.
 
 The Environment Builder UI needs to render a form for every stage *before* a
 live pipeline exists. Doing this directly against ``create_stage`` works for
@@ -369,7 +369,7 @@ def introspect_all(
 
     Returns:
         A list of :class:`StageIntrospection` objects, ordered by stage order
-        (1–16). Strategy-only artifacts silently fall back to ``"default"`` so
+        (1–21). Strategy-only artifacts silently fall back to ``"default"`` so
         ``introspect_all`` never raises for a well-formed override map.
     """
     overrides: Dict[str, str] = {}
@@ -384,6 +384,6 @@ def introspect_all(
         try:
             results.append(introspect_stage(module_name, artifact))
         except IntrospectionUnsupported:
-            # Fall back to default so the caller still gets a full 16-element result.
+            # Fall back to default so the caller still gets a full 21-element result.
             results.append(introspect_stage(module_name, DEFAULT_ARTIFACT))
     return results

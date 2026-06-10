@@ -7,7 +7,7 @@ from typing import Any, Dict
 
 import pytest
 
-from geny_executor.tools.base import ToolCapabilities, ToolContext
+from geny_executor.tools.base import ToolCapabilities
 from tests._fixtures.manifest_entries import required_stage_entries
 from geny_executor.tools.mcp.adapter import MCPToolAdapter, _annotations_to_capabilities
 from geny_executor.tools.mcp.manager import (

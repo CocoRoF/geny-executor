@@ -70,4 +70,7 @@ class VLLMClient(OpenAIClient):
             client = VLLMClient(base_url=...)
             client.configure_capabilities(supports_tools=True, supports_tool_choice=True)
         """
-        self.capabilities = replace(self.capabilities, **overrides)
+        # type-ignore: dataclasses.replace stubs can't type heterogeneous
+        # **kwargs against the per-field types; values are validated by
+        # the dataclass itself at construction.
+        self.capabilities = replace(self.capabilities, **overrides)  # type: ignore[arg-type]

@@ -171,14 +171,10 @@ class AdaptiveModelRouter(ModelRouter):
             if key in config:
                 v = config[key]
                 if isinstance(v, bool) or not isinstance(v, int) or v < 0:
-                    raise ValueError(
-                        f"adaptive: {key!r} must be a non-negative integer, got {v!r}"
-                    )
+                    raise ValueError(f"adaptive: {key!r} must be a non-negative integer, got {v!r}")
         for key in ("thinking_promotes_heavy", "tools_promote_balanced"):
             if key in config and not isinstance(config[key], bool):
-                raise ValueError(
-                    f"adaptive: {key!r} must be a boolean, got {config[key]!r}"
-                )
+                raise ValueError(f"adaptive: {key!r} must be a boolean, got {config[key]!r}")
 
         light_threshold = config.get("light_threshold_chars", self._light_threshold)
         heavy_threshold = config.get("heavy_threshold_chars", self._heavy_threshold)

@@ -15,9 +15,7 @@ import asyncio
 import time
 from typing import Any, Dict, List
 
-import pytest
 
-from geny_executor.core.mutation import PipelineMutator
 from geny_executor.core.state import PipelineState
 from geny_executor.tools.base import (
     Tool,

@@ -506,8 +506,7 @@ class MultiDimensionalBudgetController(LoopController):
                     type="integer",
                     label="Max turns",
                     description=(
-                        "Cap for the iteration dimension. 0 = defer to "
-                        "state.max_iterations."
+                        "Cap for the iteration dimension. 0 = defer to state.max_iterations."
                     ),
                     default=0,
                     min_value=0,
@@ -660,15 +659,11 @@ class MultiDimensionalBudgetController(LoopController):
             )
         if canonical == "wall_clock":
             if "max_seconds" not in cfg:
-                raise ValueError(
-                    "multi_dim_budget: dimension 'wall_clock' requires 'max_seconds'"
-                )
+                raise ValueError("multi_dim_budget: dimension 'wall_clock' requires 'max_seconds'")
             return WallClockBudget(cfg["max_seconds"])
         # canonical == "tool_calls" — the alias table is exhaustive.
         if "max_tool_calls" not in cfg:
-            raise ValueError(
-                "multi_dim_budget: dimension 'tool_calls' requires 'max_tool_calls'"
-            )
+            raise ValueError("multi_dim_budget: dimension 'tool_calls' requires 'max_tool_calls'")
         return ToolCallBudget(cfg["max_tool_calls"])
 
     def _apply_limits(self, validated: Dict[str, Any]) -> None:

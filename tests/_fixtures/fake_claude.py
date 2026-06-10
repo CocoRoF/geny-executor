@@ -26,6 +26,10 @@ Scenarios driven by the ``FAKE_CLAUDE_SCENARIO`` env var:
   - ``stream_unknown_lines`` — like ``ok_stream_event`` but interleaves a
                          future/unknown line type and one malformed line,
                          for wire-drift telemetry tests.
+  - ``stream_then_hang``— preamble + ONE text delta, then sleep forever.
+                         Writes its pid to ``$FAKE_CLAUDE_PID_FILE`` so
+                         cancellation tests can poll whether the child
+                         was reaped after the consumer disconnected.
   - ``auth_fail``      — exit 1 with an auth-related stderr message.
   - ``permission_fail``— exit 1 with a permission-related stderr.
   - ``crash``          — exit 2 with generic stderr.
@@ -439,6 +443,37 @@ def _message_form_auth_failed(argv: List[str]) -> int:
     return 0
 
 
+def _stream_then_hang(argv: List[str]) -> int:
+    """Emit the stream-json preamble + one text delta, then block forever.
+
+    Drives the cancellation tests (audit §3.7: CLI subprocess
+    orphaning): a consumer that closes the stream generator mid-output
+    leaves this child alive unless the runner kills the process group —
+    the fake stays asleep so the test can poll the pid. The child's PID
+    is written to ``$FAKE_CLAUDE_PID_FILE`` (when set) BEFORE the first
+    line so the test can observe the process directly; writing it here
+    rather than in ``main()`` keeps the ``--version`` handshake child
+    from clobbering the file.
+    """
+    pid_file = os.environ.get("FAKE_CLAUDE_PID_FILE", "")
+    if pid_file:
+        with open(pid_file, "w") as fh:
+            fh.write(str(os.getpid()))
+    sid = "fake-hang-stream-1"
+    _emit_line({
+        "type": "system", "subtype": "init", "session_id": sid,
+        "model": "claude-sonnet-4-6", "pid": os.getpid(),
+    })
+    _emit_line({
+        "type": "stream_event",
+        "event": {"type": "content_block_delta", "index": 0,
+                  "delta": {"type": "text_delta", "text": "first chunk "}},
+        "session_id": sid, "uuid": "u-d0",
+    })
+    time.sleep(600)
+    return 0
+
+
 def _permission_fail(argv: List[str]) -> int:
     sys.stderr.write("permission denied: tool Bash blocked by policy\n")
     return 1
@@ -474,6 +509,7 @@ SCENARIOS = {
     "ok_stream_event_tools": _ok_stream_event_tools,
     "ok_result_envelope": _ok_result_envelope,
     "stream_unknown_lines": _stream_unknown_lines,
+    "stream_then_hang": _stream_then_hang,
     "message_form_auth_failed": _message_form_auth_failed,
     "auth_fail": _auth_fail,
     "permission_fail": _permission_fail,

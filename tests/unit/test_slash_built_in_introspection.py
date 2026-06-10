@@ -2,14 +2,11 @@
 
 from __future__ import annotations
 
-import asyncio
 from typing import Any, List
 
 import pytest
 
 from geny_executor.slash_commands import (
-    SlashCategory,
-    SlashCommand,
     SlashCommandRegistry,
     SlashContext,
 )

@@ -311,7 +311,7 @@ class TestExecutorIntegration:
         execu = PartitionExecutor(registry=reg, max_concurrency=2)
 
         ctx = _ctx(str(tmp_path))
-        results = await execu.execute_all(
+        await execu.execute_all(
             [
                 {"tool_use_id": "a1", "tool_name": "big", "tool_input": {}},
                 {"tool_use_id": "a2", "tool_name": "big", "tool_input": {}},

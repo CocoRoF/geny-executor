@@ -12,7 +12,7 @@ Treat any failure here as a regression: the contract with adopters
 from __future__ import annotations
 
 import importlib
-from typing import Iterable, Tuple
+from typing import Tuple
 
 import pytest
 

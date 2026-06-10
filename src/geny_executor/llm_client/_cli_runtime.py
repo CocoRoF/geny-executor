@@ -219,9 +219,7 @@ class CLIProcessRunner:
             stdout_bytes, stderr_bytes = await self._communicate(proc, stdin)
         except asyncio.TimeoutError as e:
             await self._kill_tree(proc)
-            raise CLITimeout(
-                f"CLI {self.binary!r} exceeded {self.timeout_s:.1f}s"
-            ) from e
+            raise CLITimeout(f"CLI {self.binary!r} exceeded {self.timeout_s:.1f}s") from e
         duration_ms = int((time.monotonic() - t0) * 1000)
         rc = proc.returncode if proc.returncode is not None else -1
         return CLIResult(
@@ -272,9 +270,7 @@ class CLIProcessRunner:
             )
 
     # ---------------------------------------------------------------- spawn
-    async def _spawn(
-        self, argv: Sequence[str]
-    ) -> tuple[asyncio.subprocess.Process, float]:
+    async def _spawn(self, argv: Sequence[str]) -> tuple[asyncio.subprocess.Process, float]:
         env = scrub_env(os.environ, whitelist=self.env_whitelist, extras=self.env_extras)
         kwargs: dict[str, Any] = dict(
             stdin=asyncio.subprocess.PIPE,

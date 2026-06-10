@@ -13,7 +13,6 @@ import tempfile
 from pathlib import Path
 from typing import List, Tuple
 
-import pytest
 
 from geny_executor.memory.provider import (
     ExecutionSummary,

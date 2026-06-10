@@ -58,9 +58,7 @@ _MAX_COMPLETION_TOKENS_PREFIXES: tuple[str, ...] = (
 def _model_requires_max_completion_tokens(model: str) -> bool:
     """True iff ``model`` belongs to a family known to reject
     ``max_tokens`` in favour of ``max_completion_tokens``."""
-    return any(
-        model.startswith(prefix) for prefix in _MAX_COMPLETION_TOKENS_PREFIXES
-    )
+    return any(model.startswith(prefix) for prefix in _MAX_COMPLETION_TOKENS_PREFIXES)
 
 
 class OpenAIClient(BaseClient):
@@ -300,9 +298,9 @@ class OpenAIClient(BaseClient):
             # retry on every single call to o-series / gpt-5 models.
             if _model_requires_max_completion_tokens(request.model):
                 logger.debug(
-                    "openai: model %r takes max_completion_tokens — sent %d "
-                    "via the renamed kwarg",
-                    request.model, request.max_tokens,
+                    "openai: model %r takes max_completion_tokens — sent %d via the renamed kwarg",
+                    request.model,
+                    request.max_tokens,
                 )
                 kwargs["max_completion_tokens"] = request.max_tokens
             else:

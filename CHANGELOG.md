@@ -182,6 +182,73 @@ on the CLI path.
   thinking-drops-all-three contract, and the combined-fix path
   (alias + thinking + temperature) that Geny's VTuber env triggers.
 
+## [2.1.0] — 2026-05 (backfilled 2026-06-09; reconstructed from code references)
+
+> 2.1.0 shipped without a CHANGELOG section — and it is the exact
+> version GAPT pinned, so the one release a host froze on had no
+> record of what it contained (audit 2026-06-09 §3.7). This entry was
+> reconstructed after the fact from in-tree references:
+> `core/errors.py` ("new in 2.1.0" docstrings), `core/pipeline.py`
+> ("stable since 2.1.0" payload contract), `docs/error_codes.md`
+> ("Since: 2.1.0", "Phase 1 (this release, 2.1.0)"), and the
+> `docs/*.md` "current for geny-executor 2.1.0" status lines. The
+> exact release date between 2.0.5 (2026-05-19) and 2.1.1
+> (2026-06-01) was not recoverable. The publish workflow now gates on
+> a matching CHANGELOG section so this cannot recur.
+
+### Added
+
+- **`ExecutorErrorCode` — stable `exec.<component>.<reason>` error
+  taxonomy** (`core/errors.py`). Fine-grained, never-renamed string
+  identifiers for host logging / i18n / telemetry grouping, coexisting
+  with the coarse retry-oriented `ErrorCategory` on every
+  `GenyExecutorError`: `e.code` answers *what specifically went wrong*
+  (`exec.cli.auth_failed`), `e.category` answers *should we retry?*.
+  Families: `exec.api.*`, `exec.cli.*`, `exec.pipeline.*` /
+  `exec.stage.*`, `exec.tool.*`, `exec.mutation.*`, `exec.mcp.*`, and
+  the `exec.unknown` fallback.
+  - Back-compat: legacy `APIError(category=…)` call sites keep working
+    unchanged — `code` is derived via
+    `ExecutorErrorCode.from_category(...)`; an explicit `code=` wins.
+  - Structured error events (`pipeline.error` / `stage.error` /
+    `api.retry`) carry the `code` field; the payload shape
+    (`error` / `code` / `exception_type`) is declared stable —
+    additive-only within 2.x.
+  - Phase 1 raise-site migration: critical paths in
+    `llm_client/claude_code.py` and `stages/s06_api/stage.py`; all
+    `APIError(category=…)` sites inherit codes automatically.
+  - New `docs/error_codes.md` documents every code with
+    recoverability and the stability contract; string values are
+    locked by a regression test.
+
+- **21-stage pipeline layout finalized.** The Phase C surface chain —
+  17 Emit, 18 Memory, 19 Summarize, 20 Persist, 21 Yield — settled
+  into the canonical layout documented in `docs/architecture.md`:
+  Phase A setup (1–5), Phase B generate+dispatch loop (6–16),
+  Phase C surface (17–21). `blank_manifest()` produces the 21-stage
+  template with the structurally required stages active. (Pre-2.1.0
+  consumers — e.g. geny-executor-web — still mirror the 16-stage
+  required-stage set and are incompatible with manifests produced
+  here.)
+
+- **Current manifest surface.** The manifest/provider documentation
+  set (`docs/architecture.md`, `docs/manifest.md`,
+  `docs/providers.md`, `docs/hooks.md`, `docs/mcp.md`,
+  `docs/memory.md`, `docs/claude_code_cli.md`) is stamped "current
+  for geny-executor 2.1.0": five Stage 6 providers (`anthropic` /
+  `openai` / `google` / `vllm` / `claude_code_cli`), provider pinned
+  at `stages[6].config["provider"]` as the single source of truth,
+  and strict-load rejection of the legacy `strategies["provider"]`
+  location.
+
+### Notes
+
+- GAPT pinned this version: its `executor_patches.py` forks three
+  private internals (`_call_streaming`, `StreamJsonAccumulator.feed`,
+  `CLIProcessRunner._spawn`) against 2.1.0, which blocked it from the
+  2.1.1–2.1.4 vendor-drift fixes. 2.2.0 ships the supported seams
+  that replace those patches — see `docs/migration-2.2.md`.
+
 ## [2.0.5] — 2026-05-19
 
 Phase-I foundation for **MCP-wrapped tools on ``claude_code_cli``
