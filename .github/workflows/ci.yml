@@ -1,6 +1,7 @@
 name: CI — geny-executor (library)
 
 on:
+  workflow_dispatch:
   push:
     branches: [main]
     paths:
