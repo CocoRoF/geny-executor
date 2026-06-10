@@ -4,6 +4,65 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.3.0] — 2026-06-10
+
+### Added
+
+- **Internal agentic tool loop — every backend gets the CLI execution
+  shape, manifest-selectable.** Stage 6 gains a third strategy slot,
+  ``tool_loop``:
+  - ``"pipeline"`` (default) — the historical shape, byte-identical:
+    one client call per pipeline iteration; Stage 9 parses tool_use
+    blocks, Stage 10 dispatches, Stage 16 loops the whole pipeline.
+    Full per-round-trip stage control.
+  - ``"internal"`` — Stage 6 resolves tool calls inside the stage
+    (call → dispatch → call …) and returns only the final response,
+    exactly how the ``claude_code_cli`` subprocess loop has always
+    behaved (the ``StreamJsonAccumulator.finalize`` contract,
+    generalized): Stage 9 finds no pending tool calls, Stage 10
+    naturally no-ops, and the pipeline pays ONE iteration instead of
+    one full stage round-trip per tool exchange.
+    ``strategy_configs: {"tool_loop": {"max_inner_turns": N,
+    "parallel_tools": bool}}``.
+
+  Design guarantees:
+  - **One permission path.** Internal dispatches go through the new
+    ``ToolDispatcher`` (``stages/s10_tool/dispatcher.py``) — a thin
+    handle over the registered Tool stage's own machinery: same
+    ``ToolRegistry`` instance, same permission ladder (matrix rules →
+    posture → ASK→HITL → hooks), same large-result persistence, same
+    ``tool.call_start``/``tool.call_complete`` timing events. Installed
+    per run on ``state.tool_dispatcher`` so ``refresh_runtime``
+    permission swaps reach internal dispatches at the next turn.
+  - **Event parity.** Every inner client call emits its own
+    ``api.request``/``api.response`` pair plus
+    ``api.tool_use {source:"internal"}`` / ``api.tool_result`` — hosts
+    see the identical stream regardless of where the loop ran.
+  - **Honest accounting.** The returned response's usage is the sum
+    over all inner calls, so Stage 7 prices the whole turn.
+  - **Graceful caps.** ``max_inner_turns`` or the per-turn cost budget
+    (the same fields Stage 16's controllers read) emit
+    ``api.internal_loop_capped {turns, reason}`` and hand leftover
+    tool calls back to the pipeline path — degradation, never dropped
+    work.
+  - **Containment.** Permission denials and tool crashes become
+    ``is_error`` tool_results the model can react to; a bad call never
+    kills the turn.
+  - **Capability guards.** Subprocess backends (the CLI already loops
+    internally) and tool-less clients degrade to pipeline behaviour
+    with a one-time warning.
+
+- ``EventTypes``: ``api.internal_loop_capped``, plus
+  ``tool.call_start``/``tool.call_complete`` formally catalogued (they
+  had always been emitted through the executor's on_event callback —
+  the indirect-emission blind spot the AST completeness test cannot
+  see). EVENT_CATALOG_VERSION → 3.
+
+- ``docs/architecture.md`` gains '## Tool execution modes'.
+
+16 new tests (``tests/unit/test_internal_agentic_loop.py``). Full
+suite: 4129 passed.
+
 ## [2.2.1] — 2026-06-10
 
 ### Fixed

@@ -2654,6 +2654,24 @@ class Pipeline:
         if provider_name:
             state.shared[SharedKeys.PRIMARY_PROVIDER] = provider_name
 
+        # Tool dispatch handle (2.3.0): Stage 6's tool_loop="internal"
+        # strategy dispatches through Stage 10's exact machinery via
+        # this state-carried handle. Rebuilt every run (two attribute
+        # writes) so a PipelineMutator stage replacement is picked up
+        # at the next turn boundary; None when no Tool stage exists —
+        # the strategy then degrades to pipeline behaviour with a
+        # one-time warning.
+        tool_stage = next(
+            (s for s in self._stages.values() if getattr(s, "name", "") == "tool"),
+            None,
+        )
+        if tool_stage is not None and hasattr(tool_stage, "build_dispatch_context"):
+            from geny_executor.stages.s10_tool.dispatcher import ToolDispatcher
+
+            state.tool_dispatcher = ToolDispatcher(tool_stage)
+        else:
+            state.tool_dispatcher = None
+
         self._has_started = True
         return state
 

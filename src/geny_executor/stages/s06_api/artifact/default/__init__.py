@@ -15,6 +15,10 @@ from geny_executor.stages.s06_api.artifact.default.router import (
     AdaptiveModelRouter,
     PassthroughRouter,
 )
+from geny_executor.stages.s06_api.artifact.default.tool_loop import (
+    InternalAgenticLoop,
+    PipelineToolLoop,
+)
 
 # Canonical alias
 Stage = APIStage
@@ -30,4 +34,6 @@ __all__ = [
     "RateLimitAwareRetry",
     "AdaptiveModelRouter",
     "PassthroughRouter",
+    "InternalAgenticLoop",
+    "PipelineToolLoop",
 ]

@@ -26,7 +26,12 @@ from geny_executor.core.stage import Stage
 from geny_executor.core.state import PipelineState
 from geny_executor.core.config import ModelConfig
 from geny_executor.llm_client import BaseClient, ClientCapabilities, ClientRegistry
-from geny_executor.stages.s06_api.interface import APIProvider, ModelRouter, RetryStrategy
+from geny_executor.stages.s06_api.interface import (
+    APIProvider,
+    ModelRouter,
+    RetryStrategy,
+    ToolLoopStrategy,
+)
 from geny_executor.stages.s06_api.artifact.default.retry import (
     ExponentialBackoffRetry,
     NoRetry,
@@ -35,6 +40,11 @@ from geny_executor.stages.s06_api.artifact.default.retry import (
 from geny_executor.stages.s06_api.artifact.default.router import (
     AdaptiveModelRouter,
     PassthroughRouter,
+)
+from geny_executor.stages.s06_api.artifact.default.tool_loop import (
+    InternalAgenticLoop,
+    PipelineToolLoop,
+    assistant_content_blocks,
 )
 from geny_executor.stages.s06_api.types import APIRequest, APIResponse
 
@@ -106,6 +116,7 @@ class APIStage(Stage[Any, APIResponse]):
         retry: Optional[RetryStrategy] = None,
         *,
         router: Optional[ModelRouter] = None,
+        tool_loop: Optional[ToolLoopStrategy] = None,
         api_key: str = "",
         base_url: Optional[str] = None,
         default_headers: Optional[Dict[str, str]] = None,
@@ -163,6 +174,23 @@ class APIStage(Stage[Any, APIResponse]):
                 },
                 description="Adaptive model selection per call (passthrough = no override)",
             ),
+            # 2.3.0: where the agentic tool loop runs. "pipeline" (the
+            # default) is the historical shape — one call per pipeline
+            # iteration, Stage 9/10/16 own the loop. "internal" resolves
+            # tool calls inside this stage, CLI-style. See tool_loop.py.
+            "tool_loop": StrategySlot(
+                name="tool_loop",
+                strategy=tool_loop or PipelineToolLoop(),
+                registry={
+                    "pipeline": PipelineToolLoop,
+                    "internal": InternalAgenticLoop,
+                },
+                description=(
+                    "Where the agentic tool loop runs (pipeline = Stage "
+                    "9/10/16 round-trips; internal = resolve tool calls "
+                    "inside this stage, CLI-style)"
+                ),
+            ),
         }
 
     @property
@@ -172,6 +200,10 @@ class APIStage(Stage[Any, APIResponse]):
     @property
     def _router(self) -> ModelRouter:
         return self._slots["router"].strategy  # type: ignore[return-value]
+
+    @property
+    def _tool_loop(self) -> ToolLoopStrategy:
+        return self._slots["tool_loop"].strategy  # type: ignore[return-value]
 
     @property
     def name(self) -> str:
@@ -366,63 +398,80 @@ class APIStage(Stage[Any, APIResponse]):
         client = self._resolve_client(state)
         use_stream = self._resolve_stream(state)
 
-        state.add_event(
-            "api.request",
-            {
-                "model": cfg.model,
-                "provider": getattr(client, "provider", ""),
-                "message_count": len(state.messages),
-                "has_tools": bool(state.tools),
-                "has_thinking": cfg.thinking_enabled,
-                "stream": use_stream,
-            },
-        )
+        # One retry-wrapped client call, shared with the tool_loop slot
+        # (2.3.0). The closure owns the per-call api.request /
+        # api.response / api.error event contract so EVERY call — the
+        # single pipeline-mode call and each inner call of an internal
+        # agentic loop — is individually visible to hosts with its own
+        # usage numbers. ``extra_messages`` are loop-local tool
+        # exchanges appended after ``state.messages`` for this call
+        # only (the internal loop records them onto the state once, at
+        # loop end).
+        async def call_once(
+            extra_messages: Optional[List[Dict[str, Any]]] = None,
+        ) -> APIResponse:
+            state.add_event(
+                "api.request",
+                {
+                    "model": cfg.model,
+                    "provider": getattr(client, "provider", ""),
+                    "message_count": len(state.messages) + len(extra_messages or []),
+                    "has_tools": bool(state.tools),
+                    "has_thinking": cfg.thinking_enabled,
+                    "stream": use_stream,
+                },
+            )
+            try:
+                if use_stream:
+                    response = await self._call_streaming_with_retry(
+                        client, cfg, state, extra_messages=extra_messages
+                    )
+                else:
+                    response = await self._call_with_retry(
+                        client, cfg, state, extra_messages=extra_messages
+                    )
+            except APIError as e:
+                # Structured error envelope (2.2.0, audit §3.2 / Tier 1-1):
+                # before this event, a host UI that wanted "auth failed,
+                # category fatal, on the CLI backend" had to regex the
+                # exception string out of pipeline.error — Geny's
+                # llm_patches module existed solely to absorb that. The
+                # stable code/category land in the stream BEFORE the
+                # exception propagates, so transcripts always carry the
+                # classification even when a retry wrapper upstream
+                # swallows or rewraps the exception object itself.
+                error_payload: Dict[str, Any] = {
+                    "code": e.code.value if e.code is not None else "exec.unknown",
+                    "category": e.category.value,
+                    "provider": getattr(client, "provider", ""),
+                    "message": str(e),
+                }
+                # CLI-backed clients know their binary version after the
+                # first handshake; every 2.1.x CLI incident was version
+                # skew, so record it at the moment of failure when known.
+                cli_version = getattr(client, "_cli_version_value", None)
+                if cli_version:
+                    error_payload["cli_version"] = str(cli_version)
+                state.add_event("api.error", error_payload)
+                raise
+            state.add_event(
+                "api.response",
+                {
+                    "stop_reason": response.stop_reason,
+                    "text_length": len(response.text),
+                    "tool_calls": len(response.tool_calls),
+                    "input_tokens": response.usage.input_tokens,
+                    "output_tokens": response.usage.output_tokens,
+                },
+            )
+            return response
 
-        try:
-            if use_stream:
-                response = await self._call_streaming_with_retry(client, cfg, state)
-            else:
-                response = await self._call_with_retry(client, cfg, state)
-        except APIError as e:
-            # Structured error envelope (2.2.0, audit §3.2 / Tier 1-1):
-            # before this event, a host UI that wanted "auth failed,
-            # category fatal, on the CLI backend" had to regex the
-            # exception string out of pipeline.error — Geny's
-            # llm_patches module existed solely to absorb that. The
-            # stable code/category land in the stream BEFORE the
-            # exception propagates, so transcripts always carry the
-            # classification even when a retry wrapper upstream
-            # swallows or rewraps the exception object itself.
-            error_payload: Dict[str, Any] = {
-                "code": e.code.value if e.code is not None else "exec.unknown",
-                "category": e.category.value,
-                "provider": getattr(client, "provider", ""),
-                "message": str(e),
-            }
-            # CLI-backed clients know their binary version after the
-            # first handshake; every 2.1.x CLI incident was version
-            # skew, so record it at the moment of failure when known.
-            cli_version = getattr(client, "_cli_version_value", None)
-            if cli_version:
-                error_payload["cli_version"] = str(cli_version)
-            state.add_event("api.error", error_payload)
-            raise
+        response = await self._tool_loop.run(call=call_once, client=client, state=state)
 
         state.last_api_response = response
 
         assistant_content = self._build_assistant_content(response)
         state.add_message("assistant", assistant_content)
-
-        state.add_event(
-            "api.response",
-            {
-                "stop_reason": response.stop_reason,
-                "text_length": len(response.text),
-                "tool_calls": len(response.tool_calls),
-                "input_tokens": response.usage.input_tokens,
-                "output_tokens": response.usage.output_tokens,
-            },
-        )
 
         return response
 
@@ -459,10 +508,22 @@ class APIStage(Stage[Any, APIResponse]):
 
     # ── Retry wrappers ──
 
-    def _call_kwargs(self, cfg: Any, state: PipelineState) -> Dict[str, Any]:
+    def _call_kwargs(
+        self,
+        cfg: Any,
+        state: PipelineState,
+        *,
+        extra_messages: Optional[List[Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
+        # ``extra_messages`` (2.3.0): the internal tool loop's pending
+        # exchange rides AFTER the state history for this call only —
+        # state.messages stays untouched until the loop commits it.
+        messages = list(state.messages)
+        if extra_messages:
+            messages.extend(extra_messages)
         kwargs: Dict[str, Any] = {
             "model_config": cfg,
-            "messages": list(state.messages),
+            "messages": messages,
             "purpose": "api",
         }
         if state.system:
@@ -509,10 +570,15 @@ class APIStage(Stage[Any, APIResponse]):
             )
 
     async def _call_with_retry(
-        self, client: BaseClient, cfg: Any, state: PipelineState
+        self,
+        client: BaseClient,
+        cfg: Any,
+        state: PipelineState,
+        *,
+        extra_messages: Optional[List[Dict[str, Any]]] = None,
     ) -> APIResponse:
         last_error: Optional[Exception] = None
-        kwargs = self._call_kwargs(cfg, state)
+        kwargs = self._call_kwargs(cfg, state, extra_messages=extra_messages)
         self._apply_timeout_kwarg(kwargs, client, state, "create_message")
 
         for attempt in range(self._retry.max_retries + 1):
@@ -557,13 +623,18 @@ class APIStage(Stage[Any, APIResponse]):
         )
 
     async def _call_streaming_with_retry(
-        self, client: BaseClient, cfg: Any, state: PipelineState
+        self,
+        client: BaseClient,
+        cfg: Any,
+        state: PipelineState,
+        *,
+        extra_messages: Optional[List[Dict[str, Any]]] = None,
     ) -> APIResponse:
         last_error: Optional[Exception] = None
 
         for attempt in range(self._retry.max_retries + 1):
             try:
-                return await self._call_streaming(client, cfg, state)
+                return await self._call_streaming(client, cfg, state, extra_messages=extra_messages)
             except APIError as e:
                 last_error = e
                 if not self._retry.should_retry(e.category, attempt):
@@ -603,7 +674,12 @@ class APIStage(Stage[Any, APIResponse]):
         )
 
     async def _call_streaming(
-        self, client: BaseClient, cfg: Any, state: PipelineState
+        self,
+        client: BaseClient,
+        cfg: Any,
+        state: PipelineState,
+        *,
+        extra_messages: Optional[List[Dict[str, Any]]] = None,
     ) -> APIResponse:
         """Drain the client's canonical chunk stream into state events.
 
@@ -646,7 +722,7 @@ class APIStage(Stage[Any, APIResponse]):
         ``llm_client.unknown_wire_shape`` sink event.
         """
         response: Optional[APIResponse] = None
-        kwargs = self._call_kwargs(cfg, state)
+        kwargs = self._call_kwargs(cfg, state, extra_messages=extra_messages)
         self._apply_timeout_kwarg(kwargs, client, state, "create_message_stream")
 
         # CLI/subprocess backends run their own tool loop — a tool_use
@@ -702,20 +778,10 @@ class APIStage(Stage[Any, APIResponse]):
     # ── Response formatting ──
 
     def _build_assistant_content(self, response: APIResponse) -> List[Dict[str, Any]]:
-        """Build assistant content for message history."""
-        blocks: List[Dict[str, Any]] = []
-        for block in response.content:
-            if block.raw:
-                blocks.append(block.raw)
-            elif block.type == "text":
-                blocks.append({"type": "text", "text": block.text or ""})
-            elif block.type == "tool_use":
-                blocks.append(
-                    {
-                        "type": "tool_use",
-                        "id": block.tool_use_id,
-                        "name": block.tool_name,
-                        "input": block.tool_input,
-                    }
-                )
-        return blocks
+        """Build assistant content for message history.
+
+        Delegates to the module-level renderer shared with the internal
+        tool loop (2.3.0) so the recorded history shape cannot drift
+        between the single-call and internal-loop paths.
+        """
+        return assistant_content_blocks(response)

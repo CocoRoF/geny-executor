@@ -4,7 +4,7 @@
 <!-- Regenerate: python scripts/gen_event_docs.py -->
 
 > Generated from `geny_executor.events.catalog` on 2026-06-10.
-> Catalogue version: **2** · events: **103**
+> Catalogue version: **3** · events: **106**
 
 Every event name the engine emits, value == wire string. The enum
 is a *names registry*, not a rename — consumers matching raw strings
@@ -368,7 +368,7 @@ Enum member: `EventTypes.API_TOOL_USE`
 | `id` | str\|None — tool_use block id |
 | `name` | str\|None — tool name |
 | `input` | dict — tool input (may be partial until input_json_delta completes) |
-| `source` | str — 'cli' (executed inside a CLI backend) \| 'api' (Stage 10 will dispatch) |
+| `source` | str — 'cli' (executed inside a CLI backend) \| 'api' (Stage 10 will dispatch) \| 'internal' (the Stage 6 internal loop is about to dispatch it) |
 
 ### `api.cli_tool_call`
 
@@ -405,7 +405,16 @@ Enum member: `EventTypes.API_TOOL_RESULT`
 | `tool_use_id` | str — id of the tool_use this result answers |
 | `content` | Any — tool result content as the backend reported it |
 | `is_error` | bool |
-| `source` | str — 'cli' \| 'api' |
+| `source` | str — 'cli' \| 'api' \| 'internal' (Stage 6 internal loop dispatched it) |
+
+### `api.internal_loop_capped`
+
+Enum member: `EventTypes.API_INTERNAL_LOOP_CAPPED`
+
+| Field | Description |
+|---|---|
+| `turns` | int — inner tool turns the loop completed before stopping |
+| `reason` | str — 'max_inner_turns' \| 'cost_budget' |
 
 ## Stage 7 — Token
 
@@ -475,6 +484,27 @@ Enum member: `EventTypes.TOOL_EXECUTE_COMPLETE`
 |---|---|
 | `count` | int |
 | `errors` | int — results flagged is_error |
+
+### `tool.call_start`
+
+Enum member: `EventTypes.TOOL_CALL_START`
+
+| Field | Description |
+|---|---|
+| `tool_use_id` | str |
+| `name` | str |
+| `input` | dict |
+
+### `tool.call_complete`
+
+Enum member: `EventTypes.TOOL_CALL_COMPLETE`
+
+| Field | Description |
+|---|---|
+| `tool_use_id` | str |
+| `name` | str |
+| `is_error` | bool |
+| `duration_ms` | int |
 
 ## Stage 11 — Tool review
 

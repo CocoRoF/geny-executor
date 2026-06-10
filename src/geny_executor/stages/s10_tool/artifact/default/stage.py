@@ -163,26 +163,18 @@ class ToolStage(Stage[Any, Any]):
     def should_bypass(self, state: PipelineState) -> bool:
         return not state.pending_tool_calls
 
-    async def execute(self, input: Any, state: PipelineState) -> Any:
-        if not state.pending_tool_calls:
-            return input
+    def build_dispatch_context(self, state: PipelineState) -> ToolContext:
+        """Build the per-call :class:`ToolContext` for dispatch.
 
-        tool_calls = list(state.pending_tool_calls)
-
-        binding = self.tool_binding
-        for tc in tool_calls:
-            tool_name = tc.get("tool_name", "")
-            if not binding.is_allowed(tool_name):
-                raise ToolAccessDenied(tool_name, self.order)
-
-        state.add_event(
-            "tool.execute_start",
-            {
-                "count": len(tool_calls),
-                "tools": [tc["tool_name"] for tc in tool_calls],
-            },
-        )
-
+        Extracted from ``execute`` (2.3.0) so the Stage 6 internal
+        agentic loop — via :class:`~geny_executor.stages.s10_tool.
+        dispatcher.ToolDispatcher` — constructs dispatch contexts
+        through this EXACT method instead of a parallel
+        implementation: same permission rules/mode/posture, same hook
+        runner, same HITL requester, read live off ``self._context``
+        each call so ``refresh_runtime`` swaps are visible to both
+        consumers on the next dispatch.
+        """
         # Bind a state-mutation sink onto the context so tools /
         # executors can apply ``ToolResult.state_mutations`` into
         # ``state.shared`` without plumbing PipelineState down through
@@ -240,6 +232,30 @@ class ToolStage(Stage[Any, Any]):
             _val = getattr(self._context, _runtime_attr, None)
             if _val is not None:
                 setattr(ctx, _runtime_attr, _val)
+
+        return ctx
+
+    async def execute(self, input: Any, state: PipelineState) -> Any:
+        if not state.pending_tool_calls:
+            return input
+
+        tool_calls = list(state.pending_tool_calls)
+
+        binding = self.tool_binding
+        for tc in tool_calls:
+            tool_name = tc.get("tool_name", "")
+            if not binding.is_allowed(tool_name):
+                raise ToolAccessDenied(tool_name, self.order)
+
+        state.add_event(
+            "tool.execute_start",
+            {
+                "count": len(tool_calls),
+                "tools": [tc["tool_name"] for tc in tool_calls],
+            },
+        )
+
+        ctx = self.build_dispatch_context(state)
 
         router = self._router
         if isinstance(router, RegistryRouter):

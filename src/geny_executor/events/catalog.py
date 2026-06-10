@@ -47,7 +47,9 @@ from typing import Any, Dict, List
 #: Bumped when the catalogue gains members (append-only). Hosts can pin
 #: a minimum version to assert the names they consume exist.
 #: v2: + ``agent.delegations_capped`` (Stage 12 max_delegations wiring).
-EVENT_CATALOG_VERSION = 2
+#: v3: + ``api.internal_loop_capped`` (2.3.0 Stage 6 internal agentic
+#: loop hit its turn/budget cap and degraded to the pipeline path).
+EVENT_CATALOG_VERSION = 3
 
 
 class EventTypes(str, Enum):
@@ -122,6 +124,12 @@ class EventTypes(str, Enum):
     API_INPUT_JSON_DELTA = "api.input_json_delta"
     API_CONTENT_BLOCK_STOP = "api.content_block_stop"
     API_TOOL_RESULT = "api.tool_result"
+    # 2.3.0: the Stage 6 internal agentic loop (tool_loop="internal")
+    # stopped resolving tool calls because it hit its turn or budget
+    # cap; the last response is returned with its tool_use blocks
+    # intact so Stage 9/10 pick them up — graceful degradation to the
+    # pipeline path, announced rather than silent.
+    API_INTERNAL_LOOP_CAPPED = "api.internal_loop_capped"
 
     # ── Stage 7: Token ──
     TOKEN_TRACKED = "token.tracked"
@@ -136,6 +144,14 @@ class EventTypes(str, Enum):
     # ── Stage 10: Tool ──
     TOOL_EXECUTE_START = "tool.execute_start"
     TOOL_EXECUTE_COMPLETE = "tool.execute_complete"
+    # Per-call timing pair emitted by the executor strategies around each
+    # individual dispatch (Stage 10 batches AND Stage 6 internal-loop
+    # dispatches — both run through the same executors). Catalogued in
+    # 2.3.0: they had always been emitted through the on_event callback,
+    # which the AST completeness test cannot see — the indirect-emission
+    # blind spot the catalogue's own docstring warns about.
+    TOOL_CALL_START = "tool.call_start"
+    TOOL_CALL_COMPLETE = "tool.call_complete"
 
     # ── Stage 11: Tool review ──
     TOOL_REVIEW_FLAG = "tool_review.flag"
@@ -383,7 +399,11 @@ PAYLOADS: Dict[EventTypes, Dict[str, str]] = {
         "id": "str|None — tool_use block id",
         "name": "str|None — tool name",
         "input": "dict — tool input (may be partial until input_json_delta completes)",
-        "source": "str — 'cli' (executed inside a CLI backend) | 'api' (Stage 10 will dispatch)",
+        "source": (
+            "str — 'cli' (executed inside a CLI backend) | 'api' (Stage 10 "
+            "will dispatch) | 'internal' (the Stage 6 internal loop is about "
+            "to dispatch it)"
+        ),
     },
     EventTypes.API_CLI_TOOL_CALL: {
         "id": "str|None",
@@ -399,7 +419,11 @@ PAYLOADS: Dict[EventTypes, Dict[str, str]] = {
         "tool_use_id": "str — id of the tool_use this result answers",
         "content": "Any — tool result content as the backend reported it",
         "is_error": "bool",
-        "source": "str — 'cli' | 'api'",
+        "source": "str — 'cli' | 'api' | 'internal' (Stage 6 internal loop dispatched it)",
+    },
+    EventTypes.API_INTERNAL_LOOP_CAPPED: {
+        "turns": "int — inner tool turns the loop completed before stopping",
+        "reason": "str — 'max_inner_turns' | 'cost_budget'",
     },
     EventTypes.TOKEN_TRACKED: {
         "input_tokens": "int",
@@ -431,6 +455,17 @@ PAYLOADS: Dict[EventTypes, Dict[str, str]] = {
     EventTypes.TOOL_EXECUTE_COMPLETE: {
         "count": "int",
         "errors": "int — results flagged is_error",
+    },
+    EventTypes.TOOL_CALL_START: {
+        "tool_use_id": "str",
+        "name": "str",
+        "input": "dict",
+    },
+    EventTypes.TOOL_CALL_COMPLETE: {
+        "tool_use_id": "str",
+        "name": "str",
+        "is_error": "bool",
+        "duration_ms": "int",
     },
     EventTypes.TOOL_REVIEW_FLAG: {
         "reviewer": "str — ReviewFlag.to_dict()",
