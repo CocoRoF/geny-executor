@@ -4,6 +4,16 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.4.1] — 2026-06-15
+
+### Fixed
+
+- `__version__` now derives from the installed distribution metadata
+  (`importlib.metadata.version`) instead of a hard-coded string, so it
+  can never drift from `pyproject.toml` again. (2.4.0 shipped with
+  `__version__ == "2.3.0"` while the dist metadata was correct; this
+  reconciles the attribute.)
+
 ## [2.4.0] — 2026-06-15
 
 ### Added
