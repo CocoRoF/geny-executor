@@ -12,4 +12,9 @@ class GuardResult:
     passed: bool
     guard_name: str = ""
     message: str = ""
-    action: str = "reject"  # "reject" | "modify" | "warn"
+    # "reject"  — hard stop (raise GuardRejectError)
+    # "warn"    — log and proceed
+    # "modify"  — reserved
+    # "compact" — recoverable: GuardStage compacts history and re-checks
+    #             once, escalating to a reject only if it still fails.
+    action: str = "reject"

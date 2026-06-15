@@ -2672,6 +2672,26 @@ class Pipeline:
         else:
             state.tool_dispatcher = None
 
+        # Budget-recovery auto-wire (2.5.0): give the Guard stage the same
+        # compactor the Context stage uses so a ``compact`` guard signal
+        # (token-budget pressure) can shrink history and re-check instead
+        # of hard-rejecting. Re-synced each turn so a host that swaps the
+        # Context compactor (e.g. an LLM-backed one) is picked up — unless
+        # the host wired recovery explicitly via attach_budget_recovery.
+        guard_stage = self._stages.get(4)
+        context_stage = self._stages.get(2)
+        if (
+            guard_stage is not None
+            and context_stage is not None
+            and hasattr(guard_stage, "attach_budget_recovery")
+            and not getattr(guard_stage, "_budget_recovery_explicit", False)
+        ):
+            compactor = getattr(context_stage, "_compactor", None)
+            provider = getattr(context_stage, "_provider", None)
+            if compactor is not None:
+                guard_stage._budget_compactor = compactor
+                guard_stage._memory_provider = provider
+
         self._has_started = True
         return state
 

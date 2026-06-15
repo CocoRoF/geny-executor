@@ -3,8 +3,8 @@
 <!-- AUTO-GENERATED — do not edit by hand. -->
 <!-- Regenerate: python scripts/gen_event_docs.py -->
 
-> Generated from `geny_executor.events.catalog` on 2026-06-10.
-> Catalogue version: **3** · events: **106**
+> Generated from `geny_executor.events.catalog` on 2026-06-15.
+> Catalogue version: **3** · events: **109**
 
 Every event name the engine emits, value == wire string. The enum
 is a *names registry*, not a rename — consumers matching raw strings
@@ -196,7 +196,30 @@ Enum member: `EventTypes.CONTEXT_COMPACTED`
 
 | Field | Description |
 |---|---|
-| `strategy` | str — compactor class name |
+| `strategy` | str — compactor name/class |
+| `trigger` | str? — 'proactive' (Stage 2) \| 'guard' (Stage 4) |
+| `messages_before` | int? |
+| `messages_after` | int? |
+| `saved_tokens_estimate` | int? |
+
+### `context.compaction_failed`
+
+Enum member: `EventTypes.CONTEXT_COMPACTION_FAILED`
+
+| Field | Description |
+|---|---|
+| `compactor` | str |
+| `trigger` | str — 'proactive' \| 'guard' |
+| `error` | str |
+
+### `context.compaction_record_failed`
+
+Enum member: `EventTypes.CONTEXT_COMPACTION_RECORD_FAILED`
+
+| Field | Description |
+|---|---|
+| `compactor` | str |
+| `error` | str |
 
 ## Stage 18 — Memory (+ Stage 2 compaction)
 
@@ -251,6 +274,15 @@ Enum member: `EventTypes.GUARD_WARN`
 | Field | Description |
 |---|---|
 | `message` | str |
+
+### `guard.compacting`
+
+Enum member: `EventTypes.GUARD_COMPACTING`
+
+| Field | Description |
+|---|---|
+| `guard_name` | str — guard that signalled compaction (token_budget) |
+| `reason` | str — the guard message |
 
 ## Stage 5 — Cache
 

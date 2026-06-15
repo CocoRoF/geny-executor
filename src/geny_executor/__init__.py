@@ -126,7 +126,6 @@ from geny_executor.stages.s12_agent.subagent_type import (
 # Single source of truth: read the installed distribution version so
 # ``__version__`` can never drift from ``pyproject.toml`` again.
 try:
-    from importlib.metadata import PackageNotFoundError as _PkgNotFound
     from importlib.metadata import version as _pkg_version
 
     __version__ = _pkg_version("geny-executor")

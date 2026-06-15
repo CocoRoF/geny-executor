@@ -6,12 +6,27 @@ from typing import Any, Dict, Optional, Set
 
 from geny_executor.core.schema import ConfigField, ConfigSchema
 from geny_executor.core.state import PipelineState
+from geny_executor.core.token_estimate import estimate_prompt_tokens
 from geny_executor.stages.s04_guard.interface import Guard
 from geny_executor.stages.s04_guard.types import GuardResult
 
 
 class TokenBudgetGuard(Guard):
-    """Check if token budget allows another API call."""
+    """Ensure the NEXT API call still fits in the context window.
+
+    Measures the *projected* input size of the next request (system +
+    messages + tools, via :func:`estimate_prompt_tokens`) against
+    ``state.context_window_budget``, reserving ``min_remaining_tokens``
+    of headroom for the model's response. When the projection leaves too
+    little headroom the guard returns ``action="compact"`` — a *recoverable*
+    signal: :class:`GuardStage` compacts ``state.messages`` and re-checks
+    once, hard-rejecting only if the context still does not fit.
+
+    Before 2.5.0 this guard read session/turn-cumulative ``token_usage``
+    and hard-rejected — a measure compaction could never lower, so a long
+    tool-loop turn died with no recovery. Cumulative *spend* caps remain
+    the job of ``cost_budget`` and the Stage 16 loop's token dimension.
+    """
 
     def __init__(self, min_remaining_tokens: int = 10_000):
         self._min_remaining = min_remaining_tokens
@@ -22,7 +37,10 @@ class TokenBudgetGuard(Guard):
 
     @property
     def description(self) -> str:
-        return f"Ensures at least {self._min_remaining} tokens remaining"
+        return (
+            f"Ensures the next request leaves >= {self._min_remaining} tokens "
+            "of context headroom (compacts history first)"
+        )
 
     @classmethod
     def config_schema(cls) -> ConfigSchema:
@@ -33,7 +51,12 @@ class TokenBudgetGuard(Guard):
                     name="min_remaining_tokens",
                     type="integer",
                     label="Min remaining tokens",
-                    description="Reject the turn if this many tokens aren't free in the context window.",
+                    description=(
+                        "Headroom (for the response) the next request must leave "
+                        "free in the context window. When the projected request "
+                        "would leave less, history is compacted and re-checked "
+                        "before the turn is rejected."
+                    ),
                     default=10_000,
                     min_value=0,
                 ),
@@ -49,14 +72,18 @@ class TokenBudgetGuard(Guard):
         return {"min_remaining_tokens": self._min_remaining}
 
     def check(self, state: PipelineState) -> GuardResult:
-        used = state.token_usage.input_tokens + state.token_usage.output_tokens
-        remaining = state.context_window_budget - used
+        projected = estimate_prompt_tokens(state)
+        remaining = state.context_window_budget - projected
         if remaining < self._min_remaining:
             return GuardResult(
                 passed=False,
                 guard_name=self.name,
-                message=f"Token budget low: {remaining} remaining (min {self._min_remaining})",
-                action="reject",
+                message=(
+                    f"Context near limit: ~{projected} of "
+                    f"{state.context_window_budget} tokens projected, "
+                    f"{remaining} free (need {self._min_remaining})"
+                ),
+                action="compact",
             )
         return GuardResult(passed=True, guard_name=self.name)
 

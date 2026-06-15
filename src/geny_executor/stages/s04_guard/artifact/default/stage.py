@@ -11,6 +11,7 @@ from geny_executor.core.slot import SlotChain
 from geny_executor.core.stage import Stage
 from geny_executor.core.state import PipelineState
 from geny_executor.stages.s04_guard.interface import Guard, GuardChain
+from geny_executor.stages.s04_guard.types import GuardResult
 from geny_executor.stages.s04_guard.artifact.default.guards import (
     CostBudgetGuard,
     IterationGuard,
@@ -48,6 +49,29 @@ class GuardStage(Stage[Any, Any]):
         }
         self._max_chain_length = int(max_chain_length)
         self._fail_fast = bool(fail_fast)
+        # Budget-recovery wiring (2.5.0). A guard may return
+        # ``action="compact"`` (the token-budget guard does when the
+        # projected request is too large). When a compactor is wired,
+        # ``execute`` compacts ``state.messages`` and re-checks once
+        # before rejecting. Auto-wired from the Context stage's compactor
+        # by ``Pipeline._init_state`` each turn; a host may override via
+        # :meth:`attach_budget_recovery`. ``None`` → "compact" degrades
+        # to a hard reject (pre-2.5.0 behaviour).
+        self._budget_compactor: Optional[Any] = None
+        self._memory_provider: Optional[Any] = None
+        # True once a host explicitly wired recovery — stops the
+        # per-turn auto-wire (Pipeline._init_state) from clobbering it.
+        self._budget_recovery_explicit = False
+
+    def attach_budget_recovery(
+        self, compactor: Optional[Any], provider: Optional[Any] = None
+    ) -> "GuardStage":
+        """Wire the compactor (and optional memory provider) used to recover
+        from a ``compact`` guard signal. See class/__init__ notes."""
+        self._budget_compactor = compactor
+        self._memory_provider = provider
+        self._budget_recovery_explicit = True
+        return self
 
     @property
     def guards(self) -> SlotChain:
@@ -153,22 +177,52 @@ class GuardStage(Stage[Any, Any]):
                 },
             )
 
-            if not result.passed:
+            if result.passed:
+                return input
+
+            if result.action == "warn":
+                state.add_event("guard.warn", {"message": result.message})
+                return input
+
+            # Recoverable budget pressure: compact history and re-check
+            # once before giving up. Only the first compact-actionable
+            # failure triggers recovery; a recovered chain re-runs clean.
+            if result.action == "compact" and await self._recover_budget(state, result):
+                result = GuardChain(guards).check_all(state)
+                state.add_event(
+                    "guard.check",
+                    {
+                        "passed": result.passed,
+                        "guard_name": result.guard_name,
+                        "message": result.message,
+                        "recheck": True,
+                    },
+                )
+                if result.passed:
+                    return input
                 if result.action == "warn":
                     state.add_event("guard.warn", {"message": result.message})
                     return input
-                raise GuardRejectError(
-                    result.message,
-                    guard_name=result.guard_name,
-                )
 
-            return input
+            raise GuardRejectError(
+                result.message,
+                guard_name=result.guard_name,
+            )
 
         # fail_fast=False — run EVERY guard and aggregate. Operators use
         # this to see the full violation picture in one turn instead of
         # fixing guards one rejection at a time.
         failures = [r for r in (guard.check(state) for guard in guards) if not r.passed]
-        rejects = [r for r in failures if r.action != "warn"]
+
+        # Recoverable budget pressure: if any failure asked to compact,
+        # compact once and re-evaluate the whole chain before aggregating
+        # rejects (a recovered token_budget guard drops out of the list).
+        if any(r.action == "compact" for r in failures):
+            compact_result = next(r for r in failures if r.action == "compact")
+            if await self._recover_budget(state, compact_result):
+                failures = [r for r in (guard.check(state) for guard in guards) if not r.passed]
+
+        rejects = [r for r in failures if r.action not in ("warn",)]
 
         state.add_event(
             "guard.check",
@@ -194,3 +248,29 @@ class GuardStage(Stage[Any, Any]):
             )
 
         return input
+
+    async def _recover_budget(self, state: PipelineState, result: GuardResult) -> bool:
+        """Compact history in response to a ``compact`` guard signal.
+
+        Returns True iff a compactor was wired and ran (so the caller
+        should re-check the chain). With no compactor wired the signal
+        degrades to a hard reject — the pre-2.5.0 behaviour.
+        """
+        if self._budget_compactor is None:
+            return False
+
+        state.add_event(
+            "guard.compacting",
+            {"guard_name": result.guard_name, "reason": result.message},
+        )
+        # Lazy import: keeps the guard stage import-light and avoids a
+        # core→stage cycle at module load.
+        from geny_executor.core.compaction import run_compaction
+
+        outcome = await run_compaction(
+            state,
+            self._budget_compactor,
+            trigger="guard",
+            provider=self._memory_provider,
+        )
+        return bool(outcome.get("ok"))

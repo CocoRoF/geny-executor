@@ -4,10 +4,12 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional
 
+from geny_executor.core.compaction import run_compaction
 from geny_executor.core.schema import ConfigField, ConfigSchema
 from geny_executor.core.slot import StrategySlot
 from geny_executor.core.stage import Stage
 from geny_executor.core.state import PipelineState
+from geny_executor.core.token_estimate import estimate_prompt_tokens
 from geny_executor.memory.provider import (
     MemoryEvent,
     MemoryProvider,
@@ -24,6 +26,7 @@ from geny_executor.stages.s02_context.artifact.default.strategies import (
     SimpleLoadStrategy,
 )
 from geny_executor.stages.s02_context.artifact.default.compactors import (
+    LLMSummaryCompactor,
     SlidingWindowCompactor,
     SummaryCompactor,
     TruncateCompactor,
@@ -76,6 +79,7 @@ class ContextStage(Stage[Any, Any]):
                 registry={
                     "truncate": TruncateCompactor,
                     "summary": SummaryCompactor,
+                    "llm_summary": LLMSummaryCompactor,
                     "sliding_window": SlidingWindowCompactor,
                 },
                 description="History compaction strategy",
@@ -224,15 +228,15 @@ class ContextStage(Stage[Any, Any]):
                     )
                     state.metadata["memory_context"] = memory_text
 
-        # Compact if needed (rough estimate: 4 chars per token)
-        estimated_tokens = sum(len(str(m.get("content", ""))) // 4 for m in state.messages)
+        # Proactive compaction: when the projected next-call context
+        # (system + messages + tools) crosses 80% of the window, compact
+        # now so the Stage 4 token-budget guard's 95% safety net rarely
+        # has to. Both stages use ``estimate_prompt_tokens`` so compaction
+        # measurably lowers the same number the guard checks.
+        estimated_tokens = estimate_prompt_tokens(state)
         if estimated_tokens > state.context_window_budget * 0.8:
-            await self._compactor.compact(state)
-            state.add_event(
-                "context.compacted",
-                {
-                    "strategy": type(self._compactor).__name__,
-                },
+            await run_compaction(
+                state, self._compactor, trigger="proactive", provider=self._provider
             )
 
         state.add_event(

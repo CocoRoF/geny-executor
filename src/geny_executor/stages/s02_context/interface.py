@@ -21,6 +21,14 @@ class ContextStrategy(Strategy):
 class HistoryCompactor(Strategy):
     """Base interface for compacting conversation history when budget is exceeded."""
 
+    # Set True by compactors that write their own compaction snapshot to a
+    # memory provider (e.g. a host wrapper that records to a vault). When
+    # True, the centralised :func:`geny_executor.core.compaction.run_compaction`
+    # helper skips its own ``provider.record_compaction`` call so the
+    # snapshot is not persisted twice. Plain in-library compactors leave
+    # this False and rely on the helper for persistence.
+    persists_own_compaction: bool = False
+
     @abstractmethod
     async def compact(self, state: PipelineState) -> None:
         """Compact history in state.messages to fit within budget."""
