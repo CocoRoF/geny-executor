@@ -201,3 +201,66 @@ class TestGenyLayoutCompatibility:
     def test_full_21_slot_layout(self, snapshot, preset):
         ours = build_manifest(preset, provider="anthropic").to_dict()["stages"]
         assert [e["order"] for e in ours] == list(range(1, 22))
+
+
+# ── 2.4.0 — host-facing preset catalog ───────────────────────────────
+
+
+class TestPresetCatalog:
+    def test_catalog_keys(self):
+        from geny_executor import preset_catalog
+        keys = [d.key for d in preset_catalog()]
+        assert keys == ["worker_adaptive", "vtuber", "claude_code_worker", "claude_code_vtuber"]
+
+    def test_catalog_entries_have_display_metadata(self):
+        from geny_executor import preset_catalog
+        for d in preset_catalog():
+            assert d.name and d.description
+            assert d.base_preset in ("worker_adaptive", "vtuber")
+            assert isinstance(d.tags, tuple)
+
+    def test_get_preset_descriptor(self):
+        from geny_executor import get_preset_descriptor
+        d = get_preset_descriptor("claude_code_worker")
+        assert d is not None
+        assert d.base_preset == "worker_adaptive"
+        assert d.provider == "claude_code_cli"
+        assert get_preset_descriptor("nope") is None
+
+    def test_descriptor_to_dict(self):
+        from geny_executor import get_preset_descriptor
+        d = get_preset_descriptor("vtuber").to_dict()
+        assert d["key"] == "vtuber" and d["provider"] is None and isinstance(d["tags"], list)
+
+    def test_build_manifest_for_claude_code_worker(self):
+        from geny_executor import build_manifest_for
+        m = build_manifest_for("claude_code_worker")
+        assert m.stages[5]["config"]["provider"] == "claude_code_cli"
+        assert m.metadata.base_preset == "worker_adaptive"
+        assert [e["order"] for e in m.to_dict()["stages"]] == list(range(1, 22))
+
+    def test_build_manifest_for_provider_override(self):
+        from geny_executor import build_manifest_for
+        m = build_manifest_for("worker_adaptive", provider="anthropic")
+        assert m.stages[5]["config"]["provider"] == "anthropic"
+
+    def test_build_manifest_for_requires_provider_when_none(self):
+        from geny_executor import build_manifest_for
+        with pytest.raises(ValueError):
+            build_manifest_for("worker_adaptive")  # catalog provider is None → must pass one
+
+    def test_build_manifest_for_accepts_bare_preset_name(self):
+        from geny_executor import build_manifest_for
+        m = build_manifest_for("vtuber", provider="anthropic")
+        assert m.metadata.base_preset == "vtuber"
+
+    def test_build_manifest_for_unknown_key_raises(self):
+        from geny_executor import build_manifest_for
+        with pytest.raises(ValueError):
+            build_manifest_for("does-not-exist", provider="anthropic")
+
+    def test_claude_code_manifest_builds_strict(self):
+        from geny_executor import Pipeline, build_manifest_for
+        m = build_manifest_for("claude_code_worker")
+        # Round-trips and builds strict like any other manifest.
+        Pipeline.from_manifest(EnvironmentManifest.from_dict(m.to_dict()), strict=True)
