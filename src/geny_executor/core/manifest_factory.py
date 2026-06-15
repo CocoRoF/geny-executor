@@ -798,14 +798,10 @@ def build_manifest_for(
             if not provider:
                 raise ValueError(f"preset {key!r} requires an explicit provider=")
             return build_manifest(key, provider=provider, **kwargs)
-        raise ValueError(
-            f"unknown preset key {key!r}. Catalog: {[d.key for d in _PRESET_CATALOG]}"
-        )
+        raise ValueError(f"unknown preset key {key!r}. Catalog: {[d.key for d in _PRESET_CATALOG]}")
     eff_provider = provider or desc.provider
     if not eff_provider:
-        raise ValueError(
-            f"preset {key!r} has no recommended provider; pass provider= explicitly."
-        )
+        raise ValueError(f"preset {key!r} has no recommended provider; pass provider= explicitly.")
     kwargs.setdefault("name", desc.name)
     kwargs.setdefault("description", desc.description)
     return build_manifest(desc.base_preset, provider=eff_provider, **kwargs)

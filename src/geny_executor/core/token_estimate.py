@@ -65,9 +65,7 @@ def _estimate_content(content: Union[str, List[Any], Any]) -> int:
 def estimate_message_tokens(messages: List[Any]) -> int:
     """Rough token estimate of a message list (content only)."""
     return sum(
-        _estimate_content(m.get("content", ""))
-        for m in (messages or [])
-        if isinstance(m, dict)
+        _estimate_content(m.get("content", "")) for m in (messages or []) if isinstance(m, dict)
     )
 
 

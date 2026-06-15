@@ -37,9 +37,7 @@ def _summary_text(state: PipelineState) -> str:
         return content
     if isinstance(content, list):
         parts = [
-            b.get("text", "")
-            for b in content
-            if isinstance(b, dict) and b.get("type") == "text"
+            b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text"
         ]
         return "\n".join(p for p in parts if p)
     return ""

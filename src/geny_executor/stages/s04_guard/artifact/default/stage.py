@@ -220,9 +220,7 @@ class GuardStage(Stage[Any, Any]):
         if any(r.action == "compact" for r in failures):
             compact_result = next(r for r in failures if r.action == "compact")
             if await self._recover_budget(state, compact_result):
-                failures = [
-                    r for r in (guard.check(state) for guard in guards) if not r.passed
-                ]
+                failures = [r for r in (guard.check(state) for guard in guards) if not r.passed]
 
         rejects = [r for r in failures if r.action not in ("warn",)]
 
