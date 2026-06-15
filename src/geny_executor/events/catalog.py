@@ -93,6 +93,8 @@ class EventTypes(str, Enum):
     # ── Stage 2: Context ──
     CONTEXT_BUILT = "context.built"
     CONTEXT_COMPACTED = "context.compacted"
+    CONTEXT_COMPACTION_FAILED = "context.compaction_failed"
+    CONTEXT_COMPACTION_RECORD_FAILED = "context.compaction_record_failed"
     MEMORY_COMPACTION_SUMMARIZED = "memory.compaction.summarized"
     MEMORY_COMPACTION_LLM_FAILED = "memory.compaction.llm_failed"
 
@@ -102,6 +104,7 @@ class EventTypes(str, Enum):
     # ── Stage 4: Guard ──
     GUARD_CHECK = "guard.check"
     GUARD_WARN = "guard.warn"
+    GUARD_COMPACTING = "guard.compacting"
 
     # ── Stage 5: Cache ──
     CACHE_APPLIED = "cache.applied"
@@ -317,7 +320,20 @@ PAYLOADS: Dict[EventTypes, Dict[str, str]] = {
         "chunks": "int? — RetrievalResult.to_event form (provider-driven path)",
     },
     EventTypes.CONTEXT_COMPACTED: {
-        "strategy": "str — compactor class name",
+        "strategy": "str — compactor name/class",
+        "trigger": "str? — 'proactive' (Stage 2) | 'guard' (Stage 4)",
+        "messages_before": "int?",
+        "messages_after": "int?",
+        "saved_tokens_estimate": "int?",
+    },
+    EventTypes.CONTEXT_COMPACTION_FAILED: {
+        "compactor": "str",
+        "trigger": "str — 'proactive' | 'guard'",
+        "error": "str",
+    },
+    EventTypes.CONTEXT_COMPACTION_RECORD_FAILED: {
+        "compactor": "str",
+        "error": "str",
     },
     EventTypes.MEMORY_COMPACTION_SUMMARIZED: {
         "model": "str",
@@ -341,6 +357,10 @@ PAYLOADS: Dict[EventTypes, Dict[str, str]] = {
     },
     EventTypes.GUARD_WARN: {
         "message": "str",
+    },
+    EventTypes.GUARD_COMPACTING: {
+        "guard_name": "str — guard that signalled compaction (token_budget)",
+        "reason": "str — the guard message",
     },
     EventTypes.CACHE_APPLIED: {
         "strategy": "str — cache strategy class name",

@@ -4,6 +4,52 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.5.0] — 2026-06-15
+
+### Changed
+
+- **Token-budget guard now compacts-and-rechecks instead of hard-failing.**
+  The Stage 4 `token_budget` guard previously read session/turn-cumulative
+  `token_usage` and compared it against the per-call context window — a
+  measure history compaction can never lower — then raised
+  `GuardRejectError`. A long tool-loop turn could therefore die with no
+  recovery, fully decoupled from the Stage 2 compactor. The guard now:
+  - Measures the **projected next request** (system + messages + tools)
+    via the shared `geny_executor.core.token_estimate.estimate_prompt_tokens`,
+    reserving `min_remaining_tokens` of headroom for the response.
+  - Returns the new recoverable `action="compact"` on pressure. The
+    `GuardStage` compacts `state.messages` (via the wired compactor) and
+    **re-checks once**, hard-rejecting only if the context still does not
+    fit (e.g. an irreducibly large system prompt). With no compactor
+    wired the signal degrades to the pre-2.5.0 hard reject.
+  - Cumulative *spend* caps remain the job of the `cost_budget` guard and
+    the Stage 16 loop's token dimension (both unchanged).
+- **Stage 2 proactive compaction uses the same estimator** (system +
+  messages + tools, image blocks counted flat instead of by base64
+  length), so compaction at 80% reliably fires before the guard's 95%
+  safety net and measurably lowers the same number the guard checks.
+
+### Added
+
+- `geny_executor.core.token_estimate.estimate_prompt_tokens(state)` — the
+  single shared next-request token estimator used by Stage 2 and Stage 4.
+- `geny_executor.core.compaction.run_compaction(...)` — one runner that
+  compacts, emits a uniform `context.compacted` event (carrying
+  `trigger`, before/after counts, estimated tokens saved), and records the
+  snapshot to a memory provider's `record_compaction` unless the compactor
+  self-persists (`HistoryCompactor.persists_own_compaction`).
+- `FileMemoryProvider.record_compaction(...)` — persists compaction
+  snapshots to the `compactions` note category (previously only an
+  aspirational comment in the file layout).
+- `LLMSummaryCompactor` is now a first-class, manifest-selectable Stage 2
+  compactor strategy (`"llm_summary"`).
+- `GuardStage.attach_budget_recovery(compactor, provider=None)` plus
+  automatic per-turn wiring of the Context stage's compactor into the
+  Guard stage (`Pipeline._init_state`), so compact-on-pressure works out
+  of the box and picks up a host-swapped (e.g. LLM-backed) compactor.
+- New events: `guard.compacting`, `context.compaction_failed`,
+  `context.compaction_record_failed`.
+
 ## [2.4.1] — 2026-06-15
 
 ### Fixed

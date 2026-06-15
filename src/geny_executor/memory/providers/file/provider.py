@@ -252,6 +252,53 @@ class FileMemoryProvider(MemoryProvider):
         )
         return receipt
 
+    async def record_compaction(
+        self,
+        summary: str,
+        *,
+        replaced_count: int = 0,
+        strategy: str = "",
+        saved_tokens: Optional[int] = None,
+        session_id: str = "",
+        trigger: str = "",
+    ) -> Optional[str]:
+        """Persist a history-compaction snapshot to the "compactions" category.
+
+        Called by :func:`geny_executor.core.compaction.run_compaction` when
+        Stage 2 (proactive) or Stage 4 (token-budget guard) compacts the
+        conversation. Best-effort and standalone-friendly: returns the
+        written note filename, or ``None`` when there is nothing to record.
+        Hosts that maintain a richer compaction archive set
+        ``compactor.persists_own_compaction = True`` so this is skipped.
+        """
+        body = (summary or "").strip()
+        if not body and replaced_count <= 0:
+            return None
+
+        frontmatter: Dict[str, Any] = {
+            "replaced_count": int(replaced_count),
+            "strategy": strategy or "",
+            "trigger": trigger or "",
+            "session_id": session_id or self._session_id,
+        }
+        if saved_tokens is not None:
+            frontmatter["saved_tokens"] = int(saved_tokens)
+
+        title = f"Compaction · {replaced_count} messages" if replaced_count else "Compaction"
+        note_meta = await self._notes.write(
+            NoteDraft(
+                title=title,
+                body=body or f"[{replaced_count} messages compacted.]",
+                importance=Importance.MEDIUM,
+                tags=["compaction", "system-artifact"],
+                category="compactions",
+                scope=self._scope,
+                frontmatter=frontmatter,
+            )
+        )
+        await self._index.rebuild()
+        return note_meta.ref.filename
+
     async def reflect(self, ctx: ReflectionContext) -> Sequence[Insight]:
         # File provider has no LLM; reflection wires in via MemoryHooks
         # / the orchestrating stage. Default is "no insights".
