@@ -54,8 +54,9 @@ intent the host helpers read.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from uuid import uuid4
 
 from geny_executor.core.environment import (
@@ -680,3 +681,131 @@ def build_manifest(
         stages=[e.to_dict() for e in entries],
         tools=tools,
     )
+
+
+# ── Preset catalog (host-facing, generalised) ────────────────────────
+#
+# The manifest presets above are stage blueprints; the *catalog* layers
+# host-facing selection metadata on top so any consumer (Geny or other)
+# can list selectable presets — display name, description, recommended
+# Stage-6 provider, tags — without re-deriving them. A host shows
+# :func:`preset_catalog`, lets the user pick a key, and materialises it
+# via :func:`build_manifest_for`. Geny then builds its *own* custom
+# presets on top of these (its tool-bearing templates reference a
+# ``base_preset`` / catalog key here).
+
+
+@dataclass(frozen=True)
+class PresetDescriptor:
+    """One selectable entry in the built-in preset catalog.
+
+    ``base_preset`` is the canonical 21-stage blueprint (a member of
+    :data:`MANIFEST_PRESETS`). ``provider`` is the recommended/locked
+    Stage-6 backend (``None`` → the host chooses at build time). ``key``
+    is the stable catalog id a host stores; it may differ from
+    ``base_preset`` (e.g. ``claude_code_worker`` → base ``worker_adaptive``
+    + provider ``claude_code_cli``).
+    """
+
+    key: str
+    name: str
+    description: str
+    base_preset: str
+    provider: Optional[str] = None
+    tags: Tuple[str, ...] = ()
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "key": self.key,
+            "name": self.name,
+            "description": self.description,
+            "base_preset": self.base_preset,
+            "provider": self.provider,
+            "tags": list(self.tags),
+        }
+
+
+_PRESET_CATALOG: List[PresetDescriptor] = [
+    PresetDescriptor(
+        key=_WORKER_ADAPTIVE,
+        name="Worker (Adaptive)",
+        description="Autonomous tool-using worker — the full 21-stage agentic loop with an adaptive turn budget.",
+        base_preset=_WORKER_ADAPTIVE,
+        provider=None,
+        tags=("worker", "agent"),
+    ),
+    PresetDescriptor(
+        key=_VTUBER,
+        name="VTuber",
+        description="Conversational persona — a lighter loop with a narrowed tool roster, tuned for TTS replies.",
+        base_preset=_VTUBER,
+        provider=None,
+        tags=("vtuber", "chat"),
+    ),
+    PresetDescriptor(
+        key="claude_code_worker",
+        name="Claude Code · Worker",
+        description="Worker agentic loop backed by the Claude Code CLI provider (subscription auth, native CLI tool loop).",
+        base_preset=_WORKER_ADAPTIVE,
+        provider="claude_code_cli",
+        tags=("worker", "agent", "claude_code"),
+    ),
+    PresetDescriptor(
+        key="claude_code_vtuber",
+        name="Claude Code · VTuber",
+        description="Conversational VTuber persona backed by the Claude Code CLI provider.",
+        base_preset=_VTUBER,
+        provider="claude_code_cli",
+        tags=("vtuber", "chat", "claude_code"),
+    ),
+]
+
+
+def preset_catalog() -> List[PresetDescriptor]:
+    """The built-in, host-facing preset catalog (a fresh list copy)."""
+    return list(_PRESET_CATALOG)
+
+
+def get_preset_descriptor(key: str) -> Optional[PresetDescriptor]:
+    """Look up a catalog entry by its ``key`` (``None`` if absent)."""
+    for d in _PRESET_CATALOG:
+        if d.key == key:
+            return d
+    return None
+
+
+def build_manifest_for(
+    key: str,
+    *,
+    provider: Optional[str] = None,
+    **kwargs: Any,
+) -> EnvironmentManifest:
+    """Materialise an :class:`EnvironmentManifest` from a *catalog* key.
+
+    Resolves the descriptor and calls :func:`build_manifest` with its
+    ``base_preset`` + provider. The ``provider`` argument overrides the
+    descriptor's recommended provider; if neither is set a ``ValueError``
+    is raised (the caller must choose a backend). A bare
+    :data:`MANIFEST_PRESETS` name is also accepted (then ``provider`` is
+    required), so this is a strict superset of :func:`build_manifest`.
+    Display ``name`` / ``description`` default to the descriptor's.
+    Extra kwargs (``model`` / ``built_in_tools`` / ``external_tools`` /
+    ``mcp_servers``) pass through to :func:`build_manifest`.
+    """
+    desc = get_preset_descriptor(key)
+    if desc is None:
+        if key in MANIFEST_PRESETS:
+            if not provider:
+                raise ValueError(f"preset {key!r} requires an explicit provider=")
+            return build_manifest(key, provider=provider, **kwargs)
+        raise ValueError(
+            f"unknown preset key {key!r}. Catalog: {[d.key for d in _PRESET_CATALOG]}"
+        )
+    eff_provider = provider or desc.provider
+    if not eff_provider:
+        raise ValueError(
+            f"preset {key!r} has no recommended provider; pass provider= explicitly."
+        )
+    kwargs.setdefault("name", desc.name)
+    kwargs.setdefault("description", desc.description)
+    return build_manifest(desc.base_preset, provider=eff_provider, **kwargs)

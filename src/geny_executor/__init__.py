@@ -64,7 +64,14 @@ from geny_executor.core.environment import (
     ToolsSnapshot,
     validate_manifest,
 )
-from geny_executor.core.manifest_factory import build_manifest, known_manifest_presets
+from geny_executor.core.manifest_factory import (
+    PresetDescriptor,
+    build_manifest,
+    build_manifest_for,
+    get_preset_descriptor,
+    known_manifest_presets,
+    preset_catalog,
+)
 from geny_executor.core.artifact import (
     ArtifactInfo,
     create_stage,
@@ -153,7 +160,11 @@ __all__ = [
     "ToolsSnapshot",
     "validate_manifest",
     "build_manifest",
+    "build_manifest_for",
     "known_manifest_presets",
+    "preset_catalog",
+    "get_preset_descriptor",
+    "PresetDescriptor",
     "DiffEntry",
     "EnvironmentDiff",
     # Artifact system

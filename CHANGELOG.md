@@ -4,6 +4,31 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.4.0] — 2026-06-15
+
+### Added
+
+- **Host-facing preset catalog — presets are a first-class library
+  surface.** The manifest presets (`worker_adaptive` / `vtuber`) were
+  stage blueprints only; consumers had to know the names and re-derive
+  display metadata + a provider. The catalog generalises them so any
+  host can list selectable presets and materialise one:
+  - `PresetDescriptor` — `key`, `name`, `description`, `base_preset`
+    (a `MANIFEST_PRESETS` blueprint), recommended `provider`
+    (`None` = host chooses), `tags`, plus `to_dict()`.
+  - `preset_catalog()` — the built-in catalog list.
+  - `get_preset_descriptor(key)` — lookup by key.
+  - `build_manifest_for(key, *, provider=None, **kwargs)` — materialise
+    a manifest from a catalog key (a strict superset of
+    `build_manifest`; the `provider` arg overrides the descriptor's
+    recommended provider).
+- **Claude Code presets in the catalog.** `claude_code_worker` and
+  `claude_code_vtuber` bind the worker/vtuber blueprints to the
+  `claude_code_cli` provider, so a host can offer "Claude Code" as a
+  one-click engine preset. New base presets live in the catalog, not
+  hardcoded per host — hosts layer their own custom presets on top via
+  the `base_preset` / catalog `key`.
+
 ## [2.3.0] — 2026-06-10
 
 ### Added
