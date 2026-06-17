@@ -4,6 +4,21 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.6.0] — 2026-06-17
+
+### Added
+
+- **`HostSelections.extras` — a generic per-environment host-binding map.**
+  A `Dict[str, Any]` the library stores and round-trips verbatim through
+  `to_dict`/`from_dict` but **never interprets**. It lets a host attach its
+  own per-env selections (e.g. Geny maps its VTuber thinking-trigger preset
+  with `extras["trigger_preset_id"]`) without the manifest dropping the value
+  on a save/load cycle — previously unknown keys were warned-and-discarded, so
+  there was no durable place for host-specific env bindings. Empty `extras` is
+  omitted from `to_dict` (no churn on existing manifests); pre-2.6.0 manifests
+  load it as `{}`; a non-dict payload coerces to `{}`. The runtime contract is
+  unchanged — selections are still applied by the host, not the library.
+
 ## [2.5.0] — 2026-06-15
 
 ### Changed
