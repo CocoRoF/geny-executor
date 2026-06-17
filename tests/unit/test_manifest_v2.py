@@ -415,6 +415,35 @@ def test_host_selections_roundtrip_through_dict():
     assert restored.permissions == []
 
 
+def test_host_selections_extras_round_trip_preserved():
+    """2.6.0 — ``extras`` is a generic host-binding map the library never
+    interprets but MUST preserve verbatim through to_dict/from_dict, so a host
+    (e.g. Geny) can map per-env resources like a trigger preset without the
+    manifest dropping the value on a save/load cycle."""
+    sel = HostSelections(extras={"trigger_preset_id": "abc123", "nested": {"k": 1}})
+    d = sel.to_dict()
+    assert d["extras"] == {"trigger_preset_id": "abc123", "nested": {"k": 1}}
+    restored = HostSelections.from_dict(d)
+    assert restored.extras == {"trigger_preset_id": "abc123", "nested": {"k": 1}}
+
+
+def test_host_selections_extras_empty_omitted_and_defaults():
+    """Empty extras is NOT emitted (no churn on existing manifests); a payload
+    without extras (pre-2.6.0) loads as an empty dict; a non-dict extras is
+    coerced to {}."""
+    assert "extras" not in HostSelections().to_dict()
+    assert HostSelections.from_dict({"hooks": ["*"]}).extras == {}
+    assert HostSelections.from_dict({"extras": "oops"}).extras == {}
+
+
+def test_manifest_round_trips_host_selection_extras():
+    """A full manifest carries host_selections.extras through to_dict/from_dict."""
+    m = EnvironmentManifest.blank_manifest("extras-roundtrip-test")
+    m.host_selections.extras["trigger_preset_id"] = "preset-xyz"
+    restored = EnvironmentManifest.from_dict(m.to_dict())
+    assert restored.host_selections.extras == {"trigger_preset_id": "preset-xyz"}
+
+
 def test_host_selections_from_dict_missing_payload_defaults_to_wildcards():
     """Pre-1.3.3 manifests omit ``host_selections`` entirely — those
     must load with the all-on default to preserve the implicit

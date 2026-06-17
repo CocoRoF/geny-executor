@@ -160,13 +160,26 @@ class HostSelections:
     hooks: List[str] = field(default_factory=lambda: ["*"])
     skills: List[str] = field(default_factory=lambda: ["*"])
     permissions: List[str] = field(default_factory=lambda: ["*"])
+    #: Host-specific per-env bindings the LIBRARY DOES NOT INTERPRET. A generic
+    #: extension point so a host can attach its own per-environment selections
+    #: (e.g. Geny stores ``{"trigger_preset_id": "..."}`` for its VTuber
+    #: thinking-trigger preset) without the manifest dropping the value on
+    #: round-trip. Preserved verbatim through ``to_dict``/``from_dict``; the
+    #: runtime never reads it. Keys/values are entirely the host's contract.
+    #: Added in 2.6.0 — pre-2.6.0 manifests load it as ``{}``.
+    extras: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        out: Dict[str, Any] = {
             "hooks": list(self.hooks),
             "skills": list(self.skills),
             "permissions": list(self.permissions),
         }
+        # Only emit ``extras`` when non-empty so existing manifests aren't
+        # churned with an empty key.
+        if self.extras:
+            out["extras"] = dict(self.extras)
+        return out
 
     @classmethod
     def from_dict(cls, data: Optional[Dict[str, Any]]) -> "HostSelections":
@@ -176,10 +189,12 @@ class HostSelections:
         # behaviour). An explicit empty list, by contrast, means "none".
         if not data:
             return cls()
+        raw_extras = data.get("extras")
         return cls(
             hooks=list(data.get("hooks", ["*"])),
             skills=list(data.get("skills", ["*"])),
             permissions=list(data.get("permissions", ["*"])),
+            extras=dict(raw_extras) if isinstance(raw_extras, dict) else {},
         )
 
     @staticmethod
