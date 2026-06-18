@@ -21,6 +21,13 @@ from typing import Dict, Iterable, List, Optional, Type
 
 from geny_executor.tools.base import Tool
 from geny_executor.tools.built_in.agent_tool import AgentTool
+from geny_executor.tools.built_in.subagent_tools import (
+    SubAgentAssignTool,
+    SubAgentInboxReadTool,
+    SubAgentListTool,
+    SubAgentSpawnTool,
+    SubAgentStopTool,
+)
 from geny_executor.tools.built_in.ask_user_question_tool import (
     AskUserQuestionTool,
     QuestionCancelled,
@@ -118,6 +125,11 @@ BUILT_IN_TOOL_CLASSES: Dict[str, Type[Tool]] = {
     "TaskUpdate": TaskUpdateTool,
     "TaskOutput": TaskOutputTool,
     "TaskStop": TaskStopTool,
+    "SubAgentSpawn": SubAgentSpawnTool,
+    "SubAgentAssign": SubAgentAssignTool,
+    "SubAgentList": SubAgentListTool,
+    "SubAgentStop": SubAgentStopTool,
+    "SubAgentInboxRead": SubAgentInboxReadTool,
 }
 
 
@@ -133,6 +145,13 @@ BUILT_IN_TOOL_FEATURES: Dict[str, List[str]] = {
     "workflow": ["TodoWrite"],
     "meta": ["ToolSearch", "EnterPlanMode", "ExitPlanMode"],
     "agent": ["Agent"],
+    "subagent": [
+        "SubAgentSpawn",
+        "SubAgentAssign",
+        "SubAgentList",
+        "SubAgentStop",
+        "SubAgentInboxRead",
+    ],
     "tasks": ["TaskCreate", "TaskGet", "TaskList", "TaskUpdate", "TaskOutput", "TaskStop"],
     "interaction": ["AskUserQuestion"],
     "notification": ["PushNotification"],
@@ -200,6 +219,11 @@ def get_builtin_tools(
 
 __all__ = [
     "AgentTool",
+    "SubAgentSpawnTool",
+    "SubAgentAssignTool",
+    "SubAgentListTool",
+    "SubAgentStopTool",
+    "SubAgentInboxReadTool",
     "AskUserQuestionTool",
     "BriefTool",
     "ConfigTool",

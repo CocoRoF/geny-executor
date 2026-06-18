@@ -1,0 +1,442 @@
+"""Persistent sub-agents — the *owned, stateful, autonomous* delegate.
+
+Two delegation primitives now live in the executor, deliberately distinct:
+
+* **sub-worker** (one-shot): :meth:`SubagentTypeOrchestrator.run_subagent`
+  builds a sub-pipeline, runs it once, returns the result, and closes it.
+  Stateless. Use it to delegate a *specific* task and consume the answer in
+  the same reasoning step. (Surfaced to the LLM as the ``Agent`` tool.)
+
+* **sub-agent** (persistent): this module. An owner spawns a *named, kept-
+  alive* sub-agent instance; assigns it a task to complete **autonomously**
+  (in the background); and is **notified on completion** via the owner's
+  inbox. The instance keeps its conversation/state across assignments
+  (multi-turn) and survives until explicitly stopped. This is the
+  "fully delegate → it finishes on its own → you get the alarm" model.
+
+The mechanism — the inbox, the completion notification, the lifecycle — is
+provided *here*, in the framework, so any host (e.g. Geny) is just a
+consumer: it injects a ``session_store`` (where to persist sub-agent state)
+and an ``on_event`` callback (to mirror lifecycle into its own UI / task
+list), then spawns / assigns / drains the inbox. Hosts do not re-implement
+delegation, inboxing, or notification.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import inspect
+import logging
+import uuid
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Union
+
+from geny_executor.core.shared_keys import SharedKeys
+from geny_executor.core.state import PipelineState
+from geny_executor.stages.s12_agent.subagent_type import (
+    SubAgentBuildContext,
+    SubagentTypeRegistry,
+    _resolve_pipeline,
+)
+
+logger = logging.getLogger(__name__)
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+# ── Inbox ────────────────────────────────────────────────────────────
+
+
+@dataclass
+class InboxMessage:
+    """One message in an owner's inbox.
+
+    ``kind`` is the routing discriminator a host renders on:
+        ``completion`` — a sub-agent finished an assignment (the alarm).
+        ``failed``     — an assignment errored.
+        ``message``    — a free-form note from a sub-agent (multi-turn).
+    """
+
+    id: str
+    owner: str          # recipient session id (who is notified)
+    sender: str         # sub_agent_id that produced it
+    kind: str
+    body: str
+    data: Dict[str, Any] = field(default_factory=dict)
+    ts: str = field(default_factory=_now_iso)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "id": self.id,
+            "owner": self.owner,
+            "sender": self.sender,
+            "kind": self.kind,
+            "body": self.body,
+            "data": dict(self.data),
+            "ts": self.ts,
+        }
+
+
+class SubAgentInbox:
+    """In-process mailbox keyed by owner session id.
+
+    The completion-notification substrate: when a persistent sub-agent
+    finishes an assignment, the manager delivers an :class:`InboxMessage`
+    here for its owner. The owner (host) drains it to surface the alarm.
+    Bounded per owner so a runaway producer can't grow unboundedly.
+    """
+
+    def __init__(self, *, max_per_owner: int = 200) -> None:
+        self._by_owner: Dict[str, List[InboxMessage]] = {}
+        self._max = max_per_owner
+
+    def deliver(self, msg: InboxMessage) -> None:
+        box = self._by_owner.setdefault(msg.owner, [])
+        box.append(msg)
+        if len(box) > self._max:
+            del box[: len(box) - self._max]  # drop oldest
+
+    def peek(self, owner: str) -> List[InboxMessage]:
+        return list(self._by_owner.get(owner, []))
+
+    def drain(self, owner: str) -> List[InboxMessage]:
+        return self._by_owner.pop(owner, [])
+
+    def count(self, owner: str) -> int:
+        return len(self._by_owner.get(owner, []))
+
+
+# ── Persistent sub-agent handle ──────────────────────────────────────
+
+
+@dataclass
+class PersistentSubAgent:
+    """A live, owned sub-agent instance.
+
+    Holds the kept-alive sub-pipeline plus the persisted state that makes
+    it stateful across assignments. ``status`` is observational:
+    ``idle`` | ``running`` | ``stopped``.
+    """
+
+    sub_agent_id: str
+    agent_type: str
+    owner_session_id: str
+    pipeline: Any
+    state: PipelineState
+    status: str = "idle"
+    created_at: str = field(default_factory=_now_iso)
+    last_assigned_at: Optional[str] = None
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+
+    def summary(self) -> Dict[str, Any]:
+        return {
+            "sub_agent_id": self.sub_agent_id,
+            "agent_type": self.agent_type,
+            "owner_session_id": self.owner_session_id,
+            "status": self.status,
+            "created_at": self.created_at,
+            "last_assigned_at": self.last_assigned_at,
+            "messages": len(getattr(self.state, "messages", []) or []),
+        }
+
+
+# ── Manager ──────────────────────────────────────────────────────────
+
+# session_store contract (host-supplied): an object with async or sync
+# ``load(sub_agent_id) -> PipelineState | None`` and ``save(sub_agent_id,
+# state) -> None``. Optional; without it sub-agents are still persistent
+# in-process but do not survive a host restart.
+EventCallback = Callable[[str, Dict[str, Any]], Union[None, Awaitable[None]]]
+
+
+class SubAgentManager:
+    """Owns persistent sub-agent instances + the notification inbox.
+
+    Host wires one instance into ``ToolContext.extras['subagent_manager']``
+    (and, for background tasks, onto its app state). The SubAgent* tools
+    and the host both drive it through this surface.
+    """
+
+    def __init__(
+        self,
+        registry: SubagentTypeRegistry,
+        *,
+        inbox: Optional[SubAgentInbox] = None,
+        session_store: Any = None,
+        on_event: Optional[EventCallback] = None,
+    ) -> None:
+        self._registry = registry
+        self.inbox = inbox or SubAgentInbox()
+        self._session_store = session_store
+        self._on_event = on_event
+        self._agents: Dict[str, PersistentSubAgent] = {}
+        self._tasks: Dict[str, asyncio.Task] = {}  # assignment_id -> task
+
+    # ---- lifecycle ----
+
+    async def spawn(
+        self,
+        agent_type: str,
+        owner_session_id: str,
+        *,
+        sub_agent_id: Optional[str] = None,
+        credentials: Any = None,
+        parent_provider: Optional[str] = None,
+        workspace_snapshot: Optional[Dict[str, Any]] = None,
+    ) -> PersistentSubAgent:
+        """Create (or reattach) a persistent sub-agent owned by *owner*.
+
+        Builds the sub-pipeline via the descriptor's factory and keeps it
+        alive. When a ``session_store`` is wired and a prior state exists
+        for ``sub_agent_id``, the conversation is restored (restart /
+        reattach). Raises ``KeyError`` for an unknown ``agent_type``.
+        """
+        descriptor = self._registry.get(agent_type)
+        if descriptor is None:
+            raise KeyError(agent_type)
+
+        sid = sub_agent_id or f"{owner_session_id}-{agent_type}-{uuid.uuid4().hex[:8]}"
+        if sid in self._agents:
+            return self._agents[sid]  # idempotent reattach
+
+        ctx = SubAgentBuildContext(
+            parent_session_id=owner_session_id,
+            sub_session_id=sid,
+            credentials=credentials,
+            descriptor=descriptor,
+            workspace_snapshot=workspace_snapshot,
+            parent_state_shared={SharedKeys.PRIMARY_PROVIDER: parent_provider or ""},
+            parent_provider=parent_provider,
+        )
+        pipeline = await _resolve_pipeline(descriptor.factory, ctx)
+
+        state = await self._load_state(sid)
+        if state is None:
+            state = PipelineState(session_id=sid)
+        if credentials is not None:
+            try:
+                state.credentials = credentials
+            except Exception:  # noqa: BLE001
+                pass
+        if workspace_snapshot is not None:
+            state.shared["workspace_snapshot"] = workspace_snapshot
+
+        agent = PersistentSubAgent(
+            sub_agent_id=sid,
+            agent_type=agent_type,
+            owner_session_id=owner_session_id,
+            pipeline=pipeline,
+            state=state,
+        )
+        self._agents[sid] = agent
+        await self._emit("subagent.spawned", agent.summary())
+        return agent
+
+    def get(self, sub_agent_id: str) -> Optional[PersistentSubAgent]:
+        return self._agents.get(sub_agent_id)
+
+    def list(self, owner_session_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        out = [
+            a.summary()
+            for a in self._agents.values()
+            if owner_session_id is None or a.owner_session_id == owner_session_id
+        ]
+        return sorted(out, key=lambda s: s["created_at"])
+
+    async def stop(self, sub_agent_id: str) -> bool:
+        """Cancel any in-flight assignment, close the pipeline, drop it."""
+        agent = self._agents.pop(sub_agent_id, None)
+        if agent is None:
+            return False
+        for aid, task in list(self._tasks.items()):
+            if aid.startswith(f"{sub_agent_id}:") and not task.done():
+                task.cancel()
+                self._tasks.pop(aid, None)
+        await self._aclose(agent.pipeline)
+        agent.status = "stopped"
+        await self._emit("subagent.stopped", {"sub_agent_id": sub_agent_id})
+        return True
+
+    async def shutdown(self) -> None:
+        for sid in list(self._agents.keys()):
+            await self.stop(sid)
+
+    # ---- assignment (autonomous + notify) ----
+
+    async def assign(
+        self,
+        sub_agent_id: str,
+        task: str,
+        *,
+        background: bool = True,
+    ) -> Dict[str, Any]:
+        """Assign a task to a persistent sub-agent.
+
+        ``background=True`` (default) schedules autonomous execution and
+        returns immediately with ``{assignment_id, status: "running"}`` —
+        the owner is notified via its inbox on completion (the alarm).
+        ``background=False`` awaits and returns the full result record
+        (useful for tests / synchronous hosts). Raises ``KeyError`` for an
+        unknown ``sub_agent_id``.
+        """
+        agent = self._agents.get(sub_agent_id)
+        if agent is None:
+            raise KeyError(sub_agent_id)
+
+        assignment_id = f"{sub_agent_id}:{uuid.uuid4().hex[:8]}"
+        if not background:
+            return await self._run_assignment(agent, assignment_id, task)
+
+        async def _runner() -> None:
+            try:
+                await self._run_assignment(agent, assignment_id, task)
+            finally:
+                self._tasks.pop(assignment_id, None)
+
+        self._tasks[assignment_id] = asyncio.ensure_future(_runner())
+        return {
+            "assignment_id": assignment_id,
+            "sub_agent_id": sub_agent_id,
+            "status": "running",
+        }
+
+    async def _run_assignment(
+        self, agent: PersistentSubAgent, assignment_id: str, task: str
+    ) -> Dict[str, Any]:
+        # Serialize per-agent: one assignment at a time mutates its state.
+        async with agent.lock:
+            agent.status = "running"
+            agent.last_assigned_at = _now_iso()
+            await self._emit(
+                "subagent.assigned",
+                {"assignment_id": assignment_id, **agent.summary(), "task": task},
+            )
+            record: Dict[str, Any]
+            try:
+                result = await agent.pipeline.run(task, agent.state)
+                record = {
+                    "assignment_id": assignment_id,
+                    "sub_agent_id": agent.sub_agent_id,
+                    "agent_type": agent.agent_type,
+                    "success": bool(getattr(result, "success", True)),
+                    "text": getattr(result, "text", "") or "",
+                    "error": getattr(result, "error", None),
+                }
+            except asyncio.CancelledError:
+                agent.status = "idle"
+                raise
+            except Exception as exc:  # noqa: BLE001 — isolate; report as failed
+                logger.warning(
+                    "SubAgentManager: assignment %s for %r failed: %s",
+                    assignment_id, agent.agent_type, exc, exc_info=True,
+                )
+                record = {
+                    "assignment_id": assignment_id,
+                    "sub_agent_id": agent.sub_agent_id,
+                    "agent_type": agent.agent_type,
+                    "success": False,
+                    "text": "",
+                    "error": f"run_error: {exc}",
+                }
+            agent.status = "idle"
+
+        # Persist accumulated state (multi-turn survives restart).
+        await self._save_state(agent.sub_agent_id, agent.state)
+
+        # Deliver the completion alarm to the owner's inbox + emit event.
+        kind = "completion" if record.get("success") else "failed"
+        msg = InboxMessage(
+            id=uuid.uuid4().hex,
+            owner=agent.owner_session_id,
+            sender=agent.sub_agent_id,
+            kind=kind,
+            body=record.get("text") or (record.get("error") or ""),
+            data=record,
+        )
+        self.inbox.deliver(msg)
+        event_payload = {
+            **record,
+            "owner_session_id": agent.owner_session_id,
+            "inbox_message_id": msg.id,
+        }
+        # Literal event names (the catalogue honesty test scans _emit sites).
+        if record.get("success"):
+            await self._emit("subagent.completed", event_payload)
+        else:
+            await self._emit("subagent.failed", event_payload)
+        return record
+
+    # ---- inbox surface ----
+
+    def read_inbox(
+        self, owner_session_id: str, *, drain: bool = True
+    ) -> List[Dict[str, Any]]:
+        msgs = (
+            self.inbox.drain(owner_session_id)
+            if drain
+            else self.inbox.peek(owner_session_id)
+        )
+        return [m.to_dict() for m in msgs]
+
+    # ---- internals ----
+
+    async def _emit(self, event_type: str, payload: Dict[str, Any]) -> None:
+        if self._on_event is None:
+            return
+        try:
+            result = self._on_event(event_type, payload)
+            if asyncio.iscoroutine(result):
+                await result
+        except Exception:  # noqa: BLE001 — observers must not break the run
+            logger.debug("SubAgentManager: on_event(%s) raised", event_type, exc_info=True)
+
+    async def _load_state(self, sub_agent_id: str) -> Optional[PipelineState]:
+        if self._session_store is None:
+            return None
+        try:
+            load = getattr(self._session_store, "load", None)
+            if load is None:
+                return None
+            result = load(sub_agent_id)
+            if asyncio.iscoroutine(result):
+                result = await result
+            return result
+        except Exception:  # noqa: BLE001
+            logger.debug("SubAgentManager: state load failed for %s", sub_agent_id, exc_info=True)
+            return None
+
+    async def _save_state(self, sub_agent_id: str, state: PipelineState) -> None:
+        if self._session_store is None:
+            return
+        try:
+            save = getattr(self._session_store, "save", None)
+            if save is None:
+                return
+            result = save(sub_agent_id, state)
+            if asyncio.iscoroutine(result):
+                await result
+        except Exception:  # noqa: BLE001
+            logger.debug("SubAgentManager: state save failed for %s", sub_agent_id, exc_info=True)
+
+    @staticmethod
+    async def _aclose(pipeline: Any) -> None:
+        aclose = getattr(pipeline, "aclose", None)
+        if not callable(aclose):
+            return
+        try:
+            result = aclose()
+            if inspect.isawaitable(result):
+                await result
+        except Exception:  # noqa: BLE001
+            logger.debug("SubAgentManager: pipeline aclose failed", exc_info=True)
+
+
+__all__ = [
+    "InboxMessage",
+    "SubAgentInbox",
+    "PersistentSubAgent",
+    "SubAgentManager",
+]

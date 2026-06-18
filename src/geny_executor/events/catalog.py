@@ -49,7 +49,8 @@ from typing import Any, Dict, List
 #: v2: + ``agent.delegations_capped`` (Stage 12 max_delegations wiring).
 #: v3: + ``api.internal_loop_capped`` (2.3.0 Stage 6 internal agentic
 #: loop hit its turn/budget cap and degraded to the pipeline path).
-EVENT_CATALOG_VERSION = 3
+#: v4: + ``subagent.*`` (2.7.0 persistent sub-agent lifecycle).
+EVENT_CATALOG_VERSION = 4
 
 
 class EventTypes(str, Enum):
@@ -165,6 +166,13 @@ class EventTypes(str, Enum):
     AGENT_ORCHESTRATE_START = "agent.orchestrate_start"
     AGENT_ORCHESTRATE_COMPLETE = "agent.orchestrate_complete"
     AGENT_DELEGATIONS_CAPPED = "agent.delegations_capped"
+
+    # ── Persistent sub-agents (2.7.0) ──
+    SUBAGENT_SPAWNED = "subagent.spawned"
+    SUBAGENT_ASSIGNED = "subagent.assigned"
+    SUBAGENT_COMPLETED = "subagent.completed"
+    SUBAGENT_FAILED = "subagent.failed"
+    SUBAGENT_STOPPED = "subagent.stopped"
 
     # ── Stage 13: Task registry ──
     TASK_REGISTERED = "task.registered"
@@ -513,6 +521,33 @@ PAYLOADS: Dict[EventTypes, Dict[str, str]] = {
     EventTypes.AGENT_DELEGATIONS_CAPPED: {
         "requested": "int — delegate requests queued this turn",
         "cap": "int — the max_delegations limit that truncated them",
+    },
+    EventTypes.SUBAGENT_SPAWNED: {
+        "sub_agent_id": "str",
+        "agent_type": "str",
+        "owner_session_id": "str",
+        "status": "str — idle|running|stopped",
+    },
+    EventTypes.SUBAGENT_ASSIGNED: {
+        "assignment_id": "str",
+        "sub_agent_id": "str",
+        "task": "str — the delegated task",
+    },
+    EventTypes.SUBAGENT_COMPLETED: {
+        "assignment_id": "str",
+        "sub_agent_id": "str",
+        "owner_session_id": "str — who is notified",
+        "text": "str — result",
+        "inbox_message_id": "str",
+    },
+    EventTypes.SUBAGENT_FAILED: {
+        "assignment_id": "str",
+        "sub_agent_id": "str",
+        "owner_session_id": "str",
+        "error": "str",
+    },
+    EventTypes.SUBAGENT_STOPPED: {
+        "sub_agent_id": "str",
     },
     EventTypes.TASK_REGISTERED: {
         "task_id": "str",
