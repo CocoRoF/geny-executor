@@ -149,6 +149,14 @@ class SubagentTypeDescriptor:
     max_concurrent: int = 1
     extras: Mapping[str, Any] = field(default_factory=dict)
     env_id: Optional[str] = None
+    #: Optional system prompt for the sub-agent (2.7.0). ``None`` inherits
+    #: the factory's default. Factories that build from a preset/manifest
+    #: should thread this into the sub-pipeline's Stage-2 system text.
+    system_prompt: Optional[str] = None
+    #: Optional named tool-preset macro (2.7.0), e.g. ``"read_only"`` /
+    #: ``"full"``. A factory may expand it into ``allowed_tools``; ``None``
+    #: leaves ``allowed_tools`` as-is. Additive — unset means no change.
+    tool_preset: Optional[str] = None
 
 
 class SubagentTypeRegistry:

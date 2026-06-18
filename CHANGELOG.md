@@ -4,6 +4,33 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.7.0] — 2026-06-18
+
+### Added
+
+- **Persistent sub-agents — the owned, autonomous, notify-on-completion
+  delegate.** The executor now offers *two* distinct delegation primitives:
+  - **sub-worker** (one-shot): the existing `Agent` tool /
+    `SubagentTypeOrchestrator.run_subagent` — build, run once, return, close.
+    Stateless; delegate a specific task and consume the answer inline.
+  - **sub-agent** (persistent): new
+    `geny_executor.stages.s12_agent.persistent_subagent.SubAgentManager`. An
+    owner *spawns* a named, kept-alive instance; *assigns* it a task it
+    completes **autonomously** in the background; and is **notified on
+    completion** via the owner's inbox (`SubAgentInbox`). State accumulates
+    across assignments (multi-turn) and a host-supplied `session_store`
+    persists it across restarts.
+  - Agent-facing tools: `SubAgentSpawn` / `SubAgentAssign` / `SubAgentList` /
+    `SubAgentStop` / `SubAgentInboxRead` (feature group `subagent`), reading
+    `ToolContext.extras["subagent_manager"]`.
+  - The mechanism (inbox, notification, lifecycle) lives in the framework;
+    hosts inject a `session_store` + `on_event` callback and consume it —
+    they do not re-implement delegation/inboxing/notification.
+- **`SubagentTypeDescriptor.system_prompt` / `.tool_preset`** — optional,
+  additive per-type config knobs.
+- **Event catalogue v4** — `subagent.spawned/assigned/completed/failed/
+  stopped` (+ PAYLOADS docs).
+
 ## [2.6.0] — 2026-06-17
 
 ### Added
