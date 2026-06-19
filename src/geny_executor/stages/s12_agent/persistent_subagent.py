@@ -182,6 +182,7 @@ class SubAgentManager:
         agent_type: str,
         owner_session_id: str,
         *,
+        factory: Any = None,
         sub_agent_id: Optional[str] = None,
         credentials: Any = None,
         parent_provider: Optional[str] = None,
@@ -196,27 +197,42 @@ class SubAgentManager:
         for ``sub_agent_id``, the conversation is restored (restart /
         reattach). Raises ``KeyError`` for an unknown ``agent_type``.
 
-        ``model`` / ``system_prompt`` are per-spawn overrides applied to the
-        resolved descriptor (``model_override`` / ``system_prompt``) so a host
-        can tune *this* owned instance without registering a new type — the
-        descriptor's factory then honours them when building the pipeline.
+        ``factory`` (optional) is a host-supplied ``PipelineFactory`` used
+        instead of the registry's — e.g. to build the companion from the
+        PARENT agent's environment (so it inherits the parent's tools / model
+        / stages). When given, ``agent_type`` is just a label and the registry
+        is not consulted.
+
+        ``model`` / ``system_prompt`` are per-spawn overrides carried on the
+        descriptor (``model_override`` / ``system_prompt``) so the factory can
+        honour them when building the pipeline.
         """
-        descriptor = self._registry.get(agent_type)
-        if descriptor is None:
-            raise KeyError(agent_type)
+        from dataclasses import replace as _replace
+        from geny_executor.stages.s12_agent.subagent_type import (
+            SubagentTypeDescriptor as _Descriptor,
+        )
 
-        if model is not None or system_prompt is not None:
-            from dataclasses import replace as _replace
-
-            descriptor = _replace(
-                descriptor,
-                model_override=model or descriptor.model_override,
-                system_prompt=(
-                    system_prompt
-                    if system_prompt is not None
-                    else descriptor.system_prompt
-                ),
+        if factory is not None:
+            descriptor = _Descriptor(
+                agent_type=agent_type or "owned",
+                factory=factory,
+                model_override=model,
+                system_prompt=system_prompt,
             )
+        else:
+            descriptor = self._registry.get(agent_type)
+            if descriptor is None:
+                raise KeyError(agent_type)
+            if model is not None or system_prompt is not None:
+                descriptor = _replace(
+                    descriptor,
+                    model_override=model or descriptor.model_override,
+                    system_prompt=(
+                        system_prompt
+                        if system_prompt is not None
+                        else descriptor.system_prompt
+                    ),
+                )
 
         sid = sub_agent_id or f"{owner_session_id}-{agent_type}-{uuid.uuid4().hex[:8]}"
         if sid in self._agents:

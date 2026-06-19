@@ -226,3 +226,23 @@ async def test_spawn_applies_model_and_system_prompt_overrides():
     )
     assert seen["model_override"] == "claude-opus-4-8"
     assert seen["system_prompt"] == "You are a strict reviewer."
+
+
+@pytest.mark.asyncio
+async def test_spawn_with_host_factory_override():
+    """factory= bypasses the registry and builds via the host's callable."""
+    built = {}
+
+    def _host_factory(ctx):
+        built["agent_type"] = ctx.descriptor.agent_type
+        built["system_prompt"] = ctx.descriptor.system_prompt
+        return _FakePipeline()
+
+    mgr = SubAgentManager(SubagentTypeRegistry())  # empty registry
+    agent = await mgr.spawn(
+        "owned", "owner1", factory=_host_factory, sub_agent_id="sa1",
+        system_prompt="companion role",
+    )
+    assert agent.sub_agent_id == "sa1"
+    assert built["agent_type"] == "owned"
+    assert built["system_prompt"] == "companion role"

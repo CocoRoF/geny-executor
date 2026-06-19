@@ -4,6 +4,16 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.7.2] — 2026-06-19
+
+### Added
+
+- **`SubAgentManager.spawn(factory=...)`** — optional host-supplied
+  `PipelineFactory` used instead of the registry's, so a host can build an
+  owned sub-agent from an arbitrary pipeline (e.g. the PARENT agent's
+  environment, inheriting its tools / model / stages). `agent_type` becomes a
+  label in that mode. Additive; existing calls unaffected.
+
 ## [2.7.1] — 2026-06-19
 
 ### Added
