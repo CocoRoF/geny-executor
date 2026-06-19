@@ -3,8 +3,8 @@
 <!-- AUTO-GENERATED — do not edit by hand. -->
 <!-- Regenerate: python scripts/gen_event_docs.py -->
 
-> Generated from `geny_executor.events.catalog` on 2026-06-15.
-> Catalogue version: **3** · events: **109**
+> Generated from `geny_executor.events.catalog` on 2026-06-20.
+> Catalogue version: **4** · events: **115**
 
 Every event name the engine emits, value == wire string. The enum
 is a *names registry*, not a rename — consumers matching raw strings
@@ -599,6 +599,60 @@ Enum member: `EventTypes.AGENT_DELEGATIONS_CAPPED`
 | `requested` | int — delegate requests queued this turn |
 | `cap` | int — the max_delegations limit that truncated them |
 
+## `subagent.*`
+
+### `subagent.spawned`
+
+Enum member: `EventTypes.SUBAGENT_SPAWNED`
+
+| Field | Description |
+|---|---|
+| `sub_agent_id` | str |
+| `agent_type` | str |
+| `owner_session_id` | str |
+| `status` | str — idle\|running\|stopped |
+
+### `subagent.assigned`
+
+Enum member: `EventTypes.SUBAGENT_ASSIGNED`
+
+| Field | Description |
+|---|---|
+| `assignment_id` | str |
+| `sub_agent_id` | str |
+| `task` | str — the delegated task |
+
+### `subagent.completed`
+
+Enum member: `EventTypes.SUBAGENT_COMPLETED`
+
+| Field | Description |
+|---|---|
+| `assignment_id` | str |
+| `sub_agent_id` | str |
+| `owner_session_id` | str — who is notified |
+| `text` | str — result |
+| `inbox_message_id` | str |
+
+### `subagent.failed`
+
+Enum member: `EventTypes.SUBAGENT_FAILED`
+
+| Field | Description |
+|---|---|
+| `assignment_id` | str |
+| `sub_agent_id` | str |
+| `owner_session_id` | str |
+| `error` | str |
+
+### `subagent.stopped`
+
+Enum member: `EventTypes.SUBAGENT_STOPPED`
+
+| Field | Description |
+|---|---|
+| `sub_agent_id` | str |
+
 ## Stage 13 — Task registry
 
 ### `task.registered`
@@ -1122,6 +1176,15 @@ Enum member: `EventTypes.LLM_CLIENT_UNKNOWN_WIRE_SHAPE`
 | `unknown_line_count` | int |
 | `malformed_line_count` | int |
 | `cli_version` | str |
+
+### `llm_client.tool_args_repaired`
+
+Enum member: `EventTypes.LLM_CLIENT_TOOL_ARGS_REPAIRED`
+
+| Field | Description |
+|---|---|
+| `provider` | str — local provider whose tool-call JSON was repaired |
+| `raw_length` | int — length of the malformed arguments string |
 
 ---
 
