@@ -4,6 +4,61 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.9.0] — 2026-06-20
+
+### Added
+
+- **Declarative provider profiles for local (OpenAI-compatible) LLMs**
+  (`geny_executor.llm_client.profiles`): a `ProviderProfile` dataclass
+  describes an OpenAI-compatible backend as *data* (name, aliases, default
+  endpoint, token-cap floor, capabilities) and the client class is
+  generated from it (`llm_client.openai_compatible`). Adding a local
+  backend is now one profile, not one hand-written class.
+- **Three branded local providers**, registered in `ClientRegistry`:
+  - `ollama` — Ollama's OpenAI endpoint, default `http://localhost:11434/v1`
+  - `lmstudio` — LM Studio local server, default `http://127.0.0.1:1234/v1`
+  - `custom` (alias `local`) — any OpenAI-compatible endpoint; `base_url`
+    required (no sane default)
+  All three pin at `stages[6].config["provider"]` like any other provider
+  and are tool-capable by default (downgrade per-deployment with
+  `client.configure_capabilities(supports_tools=False, ...)`).
+- **Local-backend quirks** baked into the generated clients: API key
+  defaults to `"EMPTY"` so `AsyncOpenAI` constructs against a keyless local
+  server; a `max_tokens` floor is sent when the request carries none (guards
+  Ollama's `num_predict=128` truncation footgun); `num_ctx` / `think` flow
+  from `ProviderCredentials.extras` into `extra_body`
+  (`options.num_ctx` + Ollama's native `think` toggle).
+- **`ProviderProfile`, `builtin_profiles`, `BUILTIN_PROFILES`** exported
+  from `geny_executor.llm_client` for host introspection (e.g. a "local
+  model" picker UI).
+- **Context-window auto-probe** (`geny_executor.llm_client.local_probe`):
+  `probe_ollama_num_ctx(base_url, model)` and `resolve_local_context_window(
+  provider, base_url, model)` read a local model's real context window from
+  Ollama's native `/api/show` (Modelfile `num_ctx` → GGUF
+  `*.context_length`) so a host can set `PipelineConfig.context_window_budget`
+  to match — instead of the 200_000 cloud default silently disabling
+  compaction on an 8K-context local model. Explicit + best-effort (any
+  failure → `None`); an injectable `transport` makes it testable without a
+  live server. Pipeline build does no implicit network I/O.
+- **Tolerant tool-call JSON repair** for the local clients: malformed
+  tool-call arguments that local servers (Ollama / llama.cpp / GLM-family)
+  emit — trailing commas, `None`/`True`/`False` literals, markdown fences,
+  surrounding prose — are conservatively repaired before falling back to
+  `{}`, so the model's real tool arguments aren't silently dropped. A repair
+  is reported (WARNING + `llm_client.tool_args_repaired` event). The strict
+  parse is factored into `OpenAIClient._parse_tool_arguments` (overridable);
+  the cloud `openai` path is byte-for-byte unchanged.
+
+### Notes
+
+- Lazy-import contract preserved: registering the local providers pulls no
+  SDK; the OpenAI client path is imported only when a local client is
+  actually constructed (same contract as `openai` / `vllm`).
+- Implements the hermes-agent benchmark roadmap `hermes_docs/` P0-A:
+  A-1/A-2 (declarative profiles + branded local providers), A-3 (Ollama
+  `/api/show` context probe), A-4 (local tool-call JSON repair). Host-side
+  exposure (Geny "local model" card / picker, A-6) is a separate change.
+
 ## [2.8.0] — 2026-06-19
 
 ### Added

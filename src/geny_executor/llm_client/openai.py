@@ -254,10 +254,7 @@ class OpenAIClient(BaseClient):
                 )
             )
         for tc in accumulated_tool_calls.values():
-            try:
-                tool_input = json.loads(tc["arguments"])
-            except (json.JSONDecodeError, TypeError):
-                tool_input = {}
+            tool_input = self._parse_tool_arguments(tc["arguments"])
             blocks.append(
                 ContentBlock(
                     type="tool_use",
@@ -339,10 +336,7 @@ class OpenAIClient(BaseClient):
 
         if choice.message.tool_calls:
             for tc in choice.message.tool_calls:
-                try:
-                    tool_input = json.loads(tc.function.arguments)
-                except (json.JSONDecodeError, TypeError):
-                    tool_input = {}
+                tool_input = self._parse_tool_arguments(tc.function.arguments)
                 blocks.append(
                     ContentBlock(
                         type="tool_use",
@@ -372,6 +366,22 @@ class OpenAIClient(BaseClient):
             message_id=raw.id,
             raw=provenance,
         )
+
+    def _parse_tool_arguments(self, raw: Any) -> Any:
+        """Parse a tool-call ``arguments`` JSON string into Python.
+
+        Default: strict ``json.loads`` with a ``{}`` fallback — the OpenAI
+        SDK emits well-formed JSON, so nothing fancier is warranted. The
+        OpenAI-compatible *local* clients (Ollama / LM Studio / custom)
+        override this to repair the malformed JSON that local servers
+        commonly emit (trailing commas, ``None``/``True`` literals,
+        markdown fences) before giving up. Shared by the streaming and
+        non-streaming parse paths so the two can't drift.
+        """
+        try:
+            return json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            return {}
 
     def _parse_usage(self, usage_data: Any) -> TokenUsage:
         """OpenAI usage object → canonical :class:`TokenUsage`.

@@ -74,8 +74,41 @@ def _claude_code_cli_factory() -> Type[BaseClient]:
     return ClaudeCodeCLIClient
 
 
+def _profile_factory(provider_name: str) -> Callable[[], Type[BaseClient]]:
+    """Factory for a profile-driven OpenAI-compatible local client.
+
+    The client class is built from a :class:`ProviderProfile` and pulls the
+    OpenAI client path — imported lazily here so merely registering
+    ``ollama`` / ``lmstudio`` / ``custom`` costs no SDK import (same lazy
+    contract as ``_openai_factory`` / ``_vllm_factory``).
+    """
+
+    def factory() -> Type[BaseClient]:
+        from geny_executor.llm_client.profiles import get_profiled_client_class
+
+        return get_profiled_client_class(provider_name)
+
+    return factory
+
+
 ClientRegistry.register("anthropic", _anthropic_factory)
 ClientRegistry.register("openai", _openai_factory)
 ClientRegistry.register("google", _google_factory)
 ClientRegistry.register("vllm", _vllm_factory)
 ClientRegistry.register("claude_code_cli", _claude_code_cli_factory)
+
+
+# Branded local (OpenAI-compatible) providers, generated from profiles.
+# Registered under their primary name and every alias (e.g. custom→local)
+# so the manifest can pin any of them at stages[6].config["provider"].
+def _register_profile_providers() -> None:
+    from geny_executor.llm_client.profiles import (
+        BUILTIN_PROFILES,
+    )
+
+    for profile in BUILTIN_PROFILES:
+        for name in profile.all_names():
+            ClientRegistry.register(name, _profile_factory(name))
+
+
+_register_profile_providers()

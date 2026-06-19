@@ -14,6 +14,15 @@ from geny_executor.llm_client.credentials import (
     CredentialBundle,
     ProviderCredentials,
 )
+from geny_executor.llm_client.local_probe import (
+    probe_ollama_num_ctx,
+    resolve_local_context_window,
+)
+from geny_executor.llm_client.profiles import (
+    BUILTIN_PROFILES,
+    ProviderProfile,
+    builtin_profiles,
+)
 from geny_executor.llm_client.registry import ClientRegistry
 from geny_executor.llm_client.types import APIRequest, APIResponse, ContentBlock
 
@@ -22,6 +31,7 @@ __all__ = [
     "APIResponse",
     "AnthropicClient",
     "BaseClient",
+    "BUILTIN_PROFILES",
     "ClaudeCodeCLIClient",
     "ClientCapabilities",
     "ClientRegistry",
@@ -29,4 +39,8 @@ __all__ = [
     "ContentBlock",
     "CredentialBundle",
     "ProviderCredentials",
+    "ProviderProfile",
+    "builtin_profiles",
+    "probe_ollama_num_ctx",
+    "resolve_local_context_window",
 ]

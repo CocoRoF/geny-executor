@@ -114,6 +114,17 @@ def _creds_to_client_kwargs(provider: str, creds: ProviderCredentials) -> Dict[s
     Each provider's client takes a slightly different constructor surface;
     this is the single place those shapes are encoded.
     """
+    # Branded local (OpenAI-compatible) providers — ollama / lmstudio /
+    # custom (+ aliases). Their constructor takes base_url + the
+    # num_ctx / think wire knobs; the mapping lives next to the profiles.
+    from geny_executor.llm_client.profiles import (
+        is_profiled_provider,
+        profiled_client_kwargs,
+    )
+
+    if is_profiled_provider(provider):
+        return profiled_client_kwargs(provider, creds)
+
     if provider == "vllm":
         kwargs: Dict[str, Any] = {}
         if creds.api_key:

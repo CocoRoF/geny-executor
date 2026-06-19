@@ -15,6 +15,12 @@ def test_available_lists_four_builtins():
     assert {"anthropic", "openai", "google", "vllm"} <= names
 
 
+def test_available_lists_branded_local_providers():
+    names = set(ClientRegistry.available())
+    # Profile-driven OpenAI-compatible local backends + the custom alias.
+    assert {"ollama", "lmstudio", "custom", "local"} <= names
+
+
 def test_get_anthropic_returns_class():
     cls = ClientRegistry.get("anthropic")
     assert issubclass(cls, BaseClient)
@@ -35,18 +41,22 @@ def test_unknown_provider_raises_value_error():
 
 
 def test_register_custom_provider():
+    # NB: ``custom`` is now a real built-in provider (the generic
+    # OpenAI-compatible local backend), so this host-extension test uses a
+    # clearly-fake name it can safely register + pop without clobbering a
+    # shipped factory.
     class _Custom(BaseClient):
-        provider = "custom"
+        provider = "host_probe_provider"
 
         async def _send(self, request, *, purpose=""):
             raise NotImplementedError
 
-    ClientRegistry.register("custom", lambda: _Custom)
+    ClientRegistry.register("host_probe_provider", lambda: _Custom)
     try:
-        cls = ClientRegistry.get("custom")
+        cls = ClientRegistry.get("host_probe_provider")
         assert cls is _Custom
     finally:
-        ClientRegistry._factories.pop("custom", None)
+        ClientRegistry._factories.pop("host_probe_provider", None)
 
 
 def test_vllm_requires_base_url():
