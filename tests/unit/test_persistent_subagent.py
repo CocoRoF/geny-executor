@@ -205,3 +205,24 @@ def test_inbox_bounded():
     msgs = inbox.peek("o")
     assert len(msgs) == 3
     assert [m.id for m in msgs] == ["2", "3", "4"]  # oldest dropped
+
+
+@pytest.mark.asyncio
+async def test_spawn_applies_model_and_system_prompt_overrides():
+    """model / system_prompt are applied to the descriptor the factory sees."""
+    seen = {}
+
+    def _factory(ctx):
+        seen["model_override"] = ctx.descriptor.model_override
+        seen["system_prompt"] = ctx.descriptor.system_prompt
+        return _FakePipeline()
+
+    reg = SubagentTypeRegistry()
+    reg.register(SubagentTypeDescriptor(agent_type="worker", factory=_factory))
+    mgr = SubAgentManager(reg)
+    await mgr.spawn(
+        "worker", "owner1", sub_agent_id="sa1",
+        model="claude-opus-4-8", system_prompt="You are a strict reviewer.",
+    )
+    assert seen["model_override"] == "claude-opus-4-8"
+    assert seen["system_prompt"] == "You are a strict reviewer."
