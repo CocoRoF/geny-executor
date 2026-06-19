@@ -4,6 +4,18 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.8.0] — 2026-06-19
+
+### Added
+
+- **Generalized sub-agent type catalog** (`geny_executor.stages.s12_agent`):
+  `SubagentTypeSpec`, `BUILTIN_SUBAGENT_TYPES` (worker / researcher /
+  summarizer / critic — app-neutral specs with strong default system
+  prompts + tool shapes), `default_subagent_specs()`, and
+  `specs_to_descriptors(factory, specs=)` to wire them with a host factory.
+- **`DEFAULT_PERSISTENT_SUBAGENT_PROMPT`** — strong default persona for an
+  owned persistent companion sub-agent when no custom role is pinned.
+
 ## [2.7.2] — 2026-06-19
 
 ### Added
