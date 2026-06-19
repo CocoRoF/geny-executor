@@ -4,6 +4,15 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.7.1] — 2026-06-19
+
+### Added
+
+- **`SubAgentManager.spawn(model=, system_prompt=)`** — per-spawn overrides
+  applied to the resolved descriptor (`model_override` / `system_prompt`) so a
+  host can tune an individual owned sub-agent instance without registering a
+  new agent-type. Additive; existing calls unaffected.
+
 ## [2.7.0] — 2026-06-18
 
 ### Added

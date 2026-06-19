@@ -186,6 +186,8 @@ class SubAgentManager:
         credentials: Any = None,
         parent_provider: Optional[str] = None,
         workspace_snapshot: Optional[Dict[str, Any]] = None,
+        model: Optional[str] = None,
+        system_prompt: Optional[str] = None,
     ) -> PersistentSubAgent:
         """Create (or reattach) a persistent sub-agent owned by *owner*.
 
@@ -193,10 +195,28 @@ class SubAgentManager:
         alive. When a ``session_store`` is wired and a prior state exists
         for ``sub_agent_id``, the conversation is restored (restart /
         reattach). Raises ``KeyError`` for an unknown ``agent_type``.
+
+        ``model`` / ``system_prompt`` are per-spawn overrides applied to the
+        resolved descriptor (``model_override`` / ``system_prompt``) so a host
+        can tune *this* owned instance without registering a new type — the
+        descriptor's factory then honours them when building the pipeline.
         """
         descriptor = self._registry.get(agent_type)
         if descriptor is None:
             raise KeyError(agent_type)
+
+        if model is not None or system_prompt is not None:
+            from dataclasses import replace as _replace
+
+            descriptor = _replace(
+                descriptor,
+                model_override=model or descriptor.model_override,
+                system_prompt=(
+                    system_prompt
+                    if system_prompt is not None
+                    else descriptor.system_prompt
+                ),
+            )
 
         sid = sub_agent_id or f"{owner_session_id}-{agent_type}-{uuid.uuid4().hex[:8]}"
         if sid in self._agents:
