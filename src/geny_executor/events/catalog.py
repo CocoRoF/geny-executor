@@ -245,6 +245,7 @@ class EventTypes(str, Enum):
     LLM_CLIENT_PARAMETER_DROPPED = "llm_client.parameter_dropped"
     LLM_CLIENT_DRIFT_HEALED = "llm_client.drift_healed"
     LLM_CLIENT_UNKNOWN_WIRE_SHAPE = "llm_client.unknown_wire_shape"
+    LLM_CLIENT_TOOL_ARGS_REPAIRED = "llm_client.tool_args_repaired"
 
 
 #: Field-level payload documentation, one entry per :class:`EventTypes`
@@ -784,6 +785,10 @@ PAYLOADS: Dict[EventTypes, Dict[str, str]] = {
         "unknown_line_count": "int",
         "malformed_line_count": "int",
         "cli_version": "str",
+    },
+    EventTypes.LLM_CLIENT_TOOL_ARGS_REPAIRED: {
+        "provider": "str — local provider whose tool-call JSON was repaired",
+        "raw_length": "int — length of the malformed arguments string",
     },
 }
 
