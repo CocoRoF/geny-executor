@@ -97,6 +97,7 @@ ClientRegistry.register("google", _google_factory)
 ClientRegistry.register("vllm", _vllm_factory)
 ClientRegistry.register("claude_code_cli", _claude_code_cli_factory)
 
+
 # Branded local (OpenAI-compatible) providers, generated from profiles.
 # Registered under their primary name and every alias (e.g. custom→local)
 # so the manifest can pin any of them at stages[6].config["provider"].

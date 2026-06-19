@@ -156,9 +156,7 @@ async def resolve_local_context_window(
     if not profile.is_local:
         return None
     if profile.name == "ollama":
-        return await probe_ollama_num_ctx(
-            base_url, model, transport=transport, timeout=timeout
-        )
+        return await probe_ollama_num_ctx(base_url, model, transport=transport, timeout=timeout)
     return None
 
 

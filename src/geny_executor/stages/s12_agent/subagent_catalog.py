@@ -132,8 +132,7 @@ BUILTIN_SUBAGENT_TYPES: Tuple[SubagentTypeSpec, ...] = (
     SubagentTypeSpec(
         agent_type="critic",
         description=(
-            "Rigorous read-only review — surfaces substantiated defects "
-            "ranked by severity."
+            "Rigorous read-only review — surfaces substantiated defects ranked by severity."
         ),
         allowed_tools=("Read", "Grep", "Glob"),
         system_prompt=_CRITIC_PROMPT,

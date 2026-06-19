@@ -61,8 +61,8 @@ class InboxMessage:
     """
 
     id: str
-    owner: str          # recipient session id (who is notified)
-    sender: str         # sub_agent_id that produced it
+    owner: str  # recipient session id (who is notified)
+    sender: str  # sub_agent_id that produced it
     kind: str
     body: str
     data: Dict[str, Any] = field(default_factory=dict)
@@ -228,9 +228,7 @@ class SubAgentManager:
                     descriptor,
                     model_override=model or descriptor.model_override,
                     system_prompt=(
-                        system_prompt
-                        if system_prompt is not None
-                        else descriptor.system_prompt
+                        system_prompt if system_prompt is not None else descriptor.system_prompt
                     ),
                 )
 
@@ -367,7 +365,10 @@ class SubAgentManager:
             except Exception as exc:  # noqa: BLE001 — isolate; report as failed
                 logger.warning(
                     "SubAgentManager: assignment %s for %r failed: %s",
-                    assignment_id, agent.agent_type, exc, exc_info=True,
+                    assignment_id,
+                    agent.agent_type,
+                    exc,
+                    exc_info=True,
                 )
                 record = {
                     "assignment_id": assignment_id,
@@ -407,14 +408,8 @@ class SubAgentManager:
 
     # ---- inbox surface ----
 
-    def read_inbox(
-        self, owner_session_id: str, *, drain: bool = True
-    ) -> List[Dict[str, Any]]:
-        msgs = (
-            self.inbox.drain(owner_session_id)
-            if drain
-            else self.inbox.peek(owner_session_id)
-        )
+    def read_inbox(self, owner_session_id: str, *, drain: bool = True) -> List[Dict[str, Any]]:
+        msgs = self.inbox.drain(owner_session_id) if drain else self.inbox.peek(owner_session_id)
         return [m.to_dict() for m in msgs]
 
     # ---- internals ----

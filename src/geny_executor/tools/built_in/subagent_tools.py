@@ -94,7 +94,9 @@ class SubAgentSpawnTool(Tool):
             )
         except KeyError as exc:
             return ToolResult(
-                content={"error": {"code": "UNKNOWN_TYPE", "message": f"unknown subagent_type: {exc}"}},
+                content={
+                    "error": {"code": "UNKNOWN_TYPE", "message": f"unknown subagent_type: {exc}"}
+                },
                 is_error=True,
             )
         except Exception as exc:  # noqa: BLE001
@@ -142,14 +144,21 @@ class SubAgentAssignTool(Tool):
         task = input.get("task") or ""
         if not sub_agent_id or not task:
             return ToolResult(
-                content={"error": {"code": "BAD_INPUT", "message": "sub_agent_id and task are required"}},
+                content={
+                    "error": {"code": "BAD_INPUT", "message": "sub_agent_id and task are required"}
+                },
                 is_error=True,
             )
         try:
             out = await mgr.assign(sub_agent_id, task, background=True)
         except KeyError:
             return ToolResult(
-                content={"error": {"code": "UNKNOWN_SUBAGENT", "message": f"no such sub_agent_id: {sub_agent_id}"}},
+                content={
+                    "error": {
+                        "code": "UNKNOWN_SUBAGENT",
+                        "message": f"no such sub_agent_id: {sub_agent_id}",
+                    }
+                },
                 is_error=True,
             )
         return ToolResult(content=out)
@@ -210,7 +219,12 @@ class SubAgentStopTool(Tool):
         stopped = await mgr.stop(sub_agent_id)
         if not stopped:
             return ToolResult(
-                content={"error": {"code": "UNKNOWN_SUBAGENT", "message": f"no such sub_agent_id: {sub_agent_id}"}},
+                content={
+                    "error": {
+                        "code": "UNKNOWN_SUBAGENT",
+                        "message": f"no such sub_agent_id: {sub_agent_id}",
+                    }
+                },
                 is_error=True,
             )
         return ToolResult(content={"sub_agent_id": sub_agent_id, "stopped": True})

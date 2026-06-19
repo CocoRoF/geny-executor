@@ -78,9 +78,7 @@ def _repair_json(raw: str) -> Optional[Dict[str, Any]]:
         _TRAILING_COMMA_RE.sub(r"\1", candidate),
     ]
     # Python-literal fix applied on top of the comma-stripped form.
-    attempts.append(
-        _PY_LITERALS_RE.sub(lambda m: _PY_TO_JSON[m.group(0)], attempts[1])
-    )
+    attempts.append(_PY_LITERALS_RE.sub(lambda m: _PY_TO_JSON[m.group(0)], attempts[1]))
 
     for attempt in attempts:
         try:
