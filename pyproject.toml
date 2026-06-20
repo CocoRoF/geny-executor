@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "geny-executor"
-version = "2.11.0"
+version = "2.12.0"
 description = "Harness-engineered agent pipeline library with 21-stage dual-abstraction architecture, built on the Anthropic API"
 readme = "README.md"
 license = "MIT"
@@ -45,6 +45,9 @@ dependencies = [
     # httpx — declared explicitly because WebFetch imports it directly
     # (also a transitive dep via anthropic).
     "httpx>=0.27",
+    # websockets — the gateway's Discord (Gateway) + Slack (Socket Mode)
+    # adapters import it directly for inbound WebSocket connections.
+    "websockets>=12.0",
     # Skills system loads SKILL.md frontmatter as YAML.
     "pyyaml>=6.0",
 

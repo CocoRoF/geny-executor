@@ -20,19 +20,25 @@ import logging
 from typing import Any, Callable, Dict, Iterable, Mapping, Optional, Tuple
 
 from geny_executor.gateway.adapter import PlatformAdapter
+from geny_executor.gateway.discord import DiscordGatewayAdapter
 from geny_executor.gateway.runner import GatewayHandler, GatewayRunner
+from geny_executor.gateway.slack import SlackGatewayAdapter
 from geny_executor.gateway.telegram import TelegramGatewayAdapter
 
 logger = logging.getLogger(__name__)
 
 
 _ADAPTER_BUILDERS: Dict[str, Callable[[Dict[str, Any]], PlatformAdapter]] = {
+    # Telegram — HTTP long-poll (no SDK, no public endpoint).
     "telegram": lambda cfg: TelegramGatewayAdapter(**cfg),
+    # Discord — Gateway WebSocket (no public endpoint; needs the Message
+    # Content privileged intent enabled).
+    "discord": lambda cfg: DiscordGatewayAdapter(**cfg),
+    # Slack — Socket Mode WebSocket (no public endpoint; app-level + bot token).
+    "slack": lambda cfg: SlackGatewayAdapter(**cfg),
 }
 
-#: Platform ids the executor builds out of the box. (Telegram is HTTP
-#: long-poll — no SDK, no public endpoint. WebSocket platforms such as Discord
-#: slot in here as adapters are added.)
+#: Platform ids the executor builds out of the box.
 BUILTIN_GATEWAY_PLATFORMS: Tuple[str, ...] = tuple(sorted(_ADAPTER_BUILDERS))
 
 
