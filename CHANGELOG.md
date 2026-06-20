@@ -4,6 +4,31 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.12.0] — 2026-06-20
+
+### Added
+
+- **Discord + Slack inbound gateway adapters** (`geny_executor.gateway`) — the
+  gateway is no longer Telegram-only. Both are real WebSocket adapters needing
+  no public endpoint:
+  - **`DiscordGatewayAdapter`** — Discord Gateway (v10) over WebSocket: HELLO →
+    heartbeat → IDENTIFY (with the message-content intent) → `MESSAGE_CREATE`;
+    replies via the REST API. Ignores bot/self messages; `allowed_channel_ids`
+    gating. (Enable the privileged **Message Content Intent** in the Dev
+    Portal.)
+  - **`SlackGatewayAdapter`** — Slack **Socket Mode**: opens a socket via
+    `apps.connections.open` (app token), ACKs Events API envelopes, turns
+    `message` events into inbound; replies via `chat.postMessage` (bot token).
+    Drops bot/subtype messages.
+  - Shared `_QueuedWSAdapter` base: runs the WS connection in a background task
+    that buffers inbound messages into a queue (so the runner's `fetch()`
+    batch model fits a push transport), with auto-reconnect + backoff. REST
+    calls have an injectable transport for offline tests.
+- `BUILTIN_GATEWAY_PLATFORMS` is now `("discord", "slack", "telegram")`;
+  `build_gateway` / `build_platform_adapter` build all three from config.
+- `websockets>=12.0` is now a declared dependency (the Discord/Slack adapters
+  import it directly).
+
 ## [2.11.0] — 2026-06-20
 
 ### Added
