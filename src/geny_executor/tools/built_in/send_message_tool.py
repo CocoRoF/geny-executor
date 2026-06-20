@@ -15,8 +15,10 @@ class SendMessageTool(Tool):
     @property
     def description(self) -> str:
         return (
-            "Send a message via a registered SendMessageChannel "
-            "(Discord / Slack / SMS / etc — channel impl is host-specific)."
+            "Send a message to an external output channel by name "
+            "(Telegram / Discord / Slack / ntfy / webhook). The available "
+            "channels are configured by the host; an unknown name returns the "
+            "list of valid channels."
         )
 
     @property
@@ -47,11 +49,13 @@ class SendMessageTool(Tool):
         channel_name = input["channel"]
         channel = registry.get(channel_name)
         if channel is None:
+            available = registry.list() if hasattr(registry, "list") else []
             return ToolResult(
                 content={
                     "error": {
                         "code": "UNKNOWN_CHANNEL",
                         "message": f"unknown channel: {channel_name}",
+                        "available_channels": available,
                     }
                 },
                 is_error=True,

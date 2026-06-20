@@ -1,11 +1,24 @@
-"""Host-supplied delivery channels — files / messages / events.
+"""Delivery channels — files / messages / events.
 
-The framework ships ABCs; hosts implement and inject impls via
-``ToolContext.extras``. Keeping channel impls out of the framework
-means the host owns transport (HTTP / Slack / SMS / queue) and we
-don't add unnecessary deps.
+The framework ships the ABCs *and*, as of 2.10.0, built-in HTTP transports
+(webhook / telegram / discord / slack / ntfy) so a host only supplies config.
+Build them from config dicts with :func:`build_channel_registry`; the agent's
+``SendMessage`` tool dispatches to them by name. Every transport is a plain
+HTTP POST over ``httpx`` — no vendor SDKs, no extra deps.
 """
 
+from geny_executor.channels.built_in import (
+    DiscordSendMessageChannel,
+    NtfySendMessageChannel,
+    SlackSendMessageChannel,
+    TelegramSendMessageChannel,
+    WebhookSendMessageChannel,
+)
+from geny_executor.channels.factory import (
+    BUILTIN_CHANNEL_KINDS,
+    build_channel_registry,
+    build_send_message_channel,
+)
 from geny_executor.channels.send_message_channel import (
     SendMessageChannel,
     SendMessageChannelRegistry,
@@ -18,4 +31,13 @@ __all__ = [
     "SendMessageChannelRegistry",
     "StdoutSendMessageChannel",
     "UserFileChannel",
+    # built-in transports (2.10.0)
+    "WebhookSendMessageChannel",
+    "TelegramSendMessageChannel",
+    "DiscordSendMessageChannel",
+    "SlackSendMessageChannel",
+    "NtfySendMessageChannel",
+    "BUILTIN_CHANNEL_KINDS",
+    "build_send_message_channel",
+    "build_channel_registry",
 ]
