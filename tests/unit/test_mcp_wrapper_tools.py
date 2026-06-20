@@ -40,7 +40,7 @@ class _FakeMgr:
             raise self.raise_exc
         return self.response
 
-    async def start_oauth(self, *, server_name):
+    async def start_oauth(self, server_name):
         self.calls.append(("start_oauth", server_name))
         if self.raise_exc is not None:
             raise self.raise_exc
@@ -120,19 +120,20 @@ class TestReadResource:
 
 class TestMcpAuth:
     @pytest.mark.asyncio
-    async def test_returns_url_from_dict(self):
-        mgr = _FakeMgr(response={"url": "https://auth/start", "state": "x"})
+    async def test_returns_status_dict_verbatim(self):
+        mgr = _FakeMgr(response={"status": "authorized", "server": "s", "expires_at": 1.0})
         ctx = ToolContext(extras={"mcp_manager": mgr})
         result = await McpAuthTool().execute({"server": "s"}, ctx)
-        assert result.content["auth_url"] == "https://auth/start"
-        assert "instructions" in result.content
+        assert result.content["status"] == "authorized"
+        assert mgr.calls[0] == ("start_oauth", "s")  # called positionally
 
     @pytest.mark.asyncio
-    async def test_returns_url_from_string(self):
-        mgr = _FakeMgr(response="https://auth/raw-string")
+    async def test_wraps_non_dict_status(self):
+        mgr = _FakeMgr(response="some-status")
         ctx = ToolContext(extras={"mcp_manager": mgr})
         result = await McpAuthTool().execute({"server": "s"}, ctx)
-        assert result.content["auth_url"] == "https://auth/raw-string"
+        assert result.content["raw"] == "some-status"
+        assert result.content["server"] == "s"
 
     @pytest.mark.asyncio
     async def test_failure(self):

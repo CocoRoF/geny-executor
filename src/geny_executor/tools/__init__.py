@@ -23,6 +23,12 @@ from geny_executor.tools.composer import ToolComposer, ToolInfo, ToolPreset
 from geny_executor.tools.providers import AdhocToolProvider
 from geny_executor.tools.scope import ToolScope, ToolScopeRule, ToolScopeManager
 from geny_executor.tools.sandbox import ToolSandbox, SandboxConfig, SandboxPolicy
+from geny_executor.tools.plugin import (
+    TOOL_ENTRY_POINT_GROUP,
+    ToolPluginRegistry,
+    discover_tool_plugins,
+    register_tool_plugins,
+)
 
 __all__ = [
     # Base
@@ -56,6 +62,11 @@ __all__ = [
     "ToolSandbox",
     "SandboxConfig",
     "SandboxPolicy",
+    # Plugin discovery (entry-point group: geny_executor.tools)
+    "TOOL_ENTRY_POINT_GROUP",
+    "ToolPluginRegistry",
+    "discover_tool_plugins",
+    "register_tool_plugins",
 ]
 
 

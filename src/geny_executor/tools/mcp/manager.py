@@ -18,10 +18,11 @@ import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Mapping, Optional
 
 from geny_executor.tools.base import Tool
 from geny_executor.tools.mcp.errors import MCPConnectionError
+from geny_executor.tools.mcp.oauth import OAuthAuthConfig, OAuthFlow
 from geny_executor.tools.mcp.state import MCPConnectionState
 from geny_executor.tools.registry import ToolRegistry
 
@@ -578,18 +579,34 @@ class MCPManager:
         registry = await manager.build_registry()
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        oauth_flow: Optional[OAuthFlow] = None,
+        oauth_configs: Optional[Mapping[str, OAuthAuthConfig]] = None,
+    ) -> None:
         self._servers: Dict[str, MCPServerConnection] = {}
         self._configs: Dict[str, MCPServerConfig] = {}
+        # Optional, host-supplied OAuth wiring. When present, ``connect``
+        # reuses a cached bearer token and ``start_oauth`` can drive the
+        # authorization-code flow. Headless hosts that run their own OAuth UI
+        # leave these as ``None`` and just set auth headers on the config.
+        self._oauth_flow = oauth_flow
+        self._oauth_configs: Dict[str, OAuthAuthConfig] = dict(oauth_configs or {})
 
     async def connect(self, name: str, config: MCPServerConfig) -> None:
         """Connect to an MCP server by config.
+
+        When OAuth is wired and a non-expired token is cached for *name*, its
+        bearer header is injected before connecting so restarts reuse the token
+        without a fresh consent round-trip.
 
         Raises:
             MCPConnectionError: On any connection / initialize / list_tools failure.
         """
         if name in self._servers:
             await self.disconnect(name)
+        self._inject_cached_token(name, config)
         conn = MCPServerConnection(config)
         self._configs[name] = config
         try:
@@ -598,6 +615,79 @@ class MCPManager:
             self._configs.pop(name, None)
             raise
         self._servers[name] = conn
+
+    def _inject_cached_token(self, name: str, config: MCPServerConfig) -> None:
+        """Add a cached OAuth bearer header to *config* if one is available."""
+        if self._oauth_flow is None or config.transport not in _HTTP_TRANSPORTS:
+            return
+        if "Authorization" in config.headers:
+            return  # caller set an explicit header — respect it
+        cached = self._oauth_flow.load_cached_token(name)
+        if cached is None or cached.is_expired():
+            return
+        config.headers = {
+            **config.headers,
+            "Authorization": f"Bearer {cached.access_token}",
+        }
+
+    async def start_oauth(self, server_name: str) -> Dict[str, Any]:
+        """Run the OAuth authorization-code flow for *server_name*, inject the
+        bearer token, and reconnect.
+
+        Requires the manager to have been built with an ``OAuthFlow`` and an
+        ``OAuthAuthConfig`` for this server. When OAuth is not configured this
+        returns a structured ``not_configured`` result (with guidance) rather
+        than raising — headless hosts complete authorization through their own
+        UI and just set an ``Authorization`` header on the server config.
+
+        Returns a status dict: ``{"status": "authorized"|"not_configured"|
+        "error"|"authorized_reconnect_failed", "server": ..., ...}``.
+        """
+        cfg = self._oauth_configs.get(server_name)
+        if self._oauth_flow is None or cfg is None:
+            return {
+                "status": "not_configured",
+                "server": server_name,
+                "message": (
+                    "OAuth is not configured for this MCP server. Provide an "
+                    "OAuthFlow + OAuthAuthConfig when constructing MCPManager, "
+                    "set a static 'Authorization' header in the server config, "
+                    "or complete authorization through your host application's "
+                    "own OAuth flow."
+                ),
+            }
+        try:
+            token = await self._oauth_flow.authorize(server_name, cfg)
+        except Exception as exc:  # noqa: BLE001 — surfaced as structured status
+            return {"status": "error", "server": server_name, "message": str(exc)}
+
+        self._apply_bearer_token(server_name, token.access_token)
+        reconnected = False
+        if server_name in self._configs:
+            try:
+                await self.connect(server_name, self._configs[server_name])
+                reconnected = True
+            except Exception as exc:  # noqa: BLE001
+                return {
+                    "status": "authorized_reconnect_failed",
+                    "server": server_name,
+                    "message": f"token acquired but reconnect failed: {exc}",
+                }
+        return {
+            "status": "authorized",
+            "server": server_name,
+            "reconnected": reconnected,
+            "expires_at": token.expires_at,
+        }
+
+    def _apply_bearer_token(self, server_name: str, access_token: str) -> None:
+        header = {"Authorization": f"Bearer {access_token}"}
+        cfg = self._configs.get(server_name)
+        if cfg is not None:
+            cfg.headers = {**cfg.headers, **header}
+        conn = self._servers.get(server_name)
+        if conn is not None:
+            conn.config.headers = {**conn.config.headers, **header}
 
     async def connect_all(self, configs: Dict[str, MCPServerConfig]) -> None:
         """Connect to multiple MCP servers concurrently.

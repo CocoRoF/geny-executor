@@ -202,7 +202,11 @@ class McpAuthTool(Tool):
 
     @property
     def description(self) -> str:
-        return "Trigger OAuth flow for an MCP server requiring auth. Returns auth URL."
+        return (
+            "Complete OAuth authorization for an MCP server that needs auth "
+            "(when the host has wired OAuth) and reconnect. Returns a status "
+            "object; if OAuth isn't configured it explains how to authorize."
+        )
 
     @property
     def input_schema(self) -> Dict[str, Any]:
@@ -219,34 +223,21 @@ class McpAuthTool(Tool):
         mgr = _mgr(context)
         if mgr is None:
             return _err("NO_MANAGER", "mcp_manager not wired into ctx.extras")
-        try:
-            status = await _try_call(
-                mgr,
-                ["start_oauth", "begin_oauth", "auth"],
-                server_name=input["server"],
+        start = getattr(mgr, "start_oauth", None)
+        if not callable(start):
+            return _err(
+                "MCP_AUTH_UNSUPPORTED",
+                "this MCP manager does not support start_oauth()",
             )
-        except (AttributeError, TypeError):
-            try:
-                status = await _try_call(
-                    mgr,
-                    ["start_oauth", "begin_oauth", "auth"],
-                    input["server"],
-                )
-            except Exception as exc:  # noqa: BLE001
-                return _err("MCP_AUTH_FAILED", str(exc))
-        except Exception as exc:  # noqa: BLE001
+        try:
+            status = await start(input["server"])
+        except Exception as exc:  # noqa: BLE001 — surfaced as a tool error
             return _err("MCP_AUTH_FAILED", str(exc))
-        # Status can be a dict, an object with .url/.state, or just a URL str.
-        url = getattr(status, "url", None) if not isinstance(status, dict) else status.get("url")
-        if url is None and isinstance(status, str):
-            url = status
+        # start_oauth returns a structured status dict.
         return ToolResult(
-            content={
-                "server": input["server"],
-                "auth_url": url,
-                "raw": (status if isinstance(status, (dict, str)) else str(status)),
-                "instructions": "Visit auth_url and complete authorization.",
-            },
+            content=status
+            if isinstance(status, dict)
+            else {"server": input["server"], "raw": str(status)},
         )
 
 
