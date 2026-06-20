@@ -212,6 +212,95 @@ class TestConnectionLifecycleErrors:
 
 
 # ══════════════════════════════════════════════════════════
+# Remote transport selection: Streamable HTTP (modern) vs SSE (legacy)
+# ══════════════════════════════════════════════════════════
+
+
+class TestRemoteTransportSelection:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "transport,streamable",
+        [
+            ("http", True),
+            ("streamable-http", True),
+            ("streamable_http", True),
+            ("sse", False),
+        ],
+    )
+    async def test_connect_http_picks_client(self, transport, streamable, monkeypatch):
+        """``http``/``streamable-http`` use the modern Streamable HTTP client;
+        ``sse`` uses the deprecated SSE client. Headers + url flow through, and
+        the Streamable HTTP 3-tuple yield unpacks to (read, write)."""
+        import mcp.client.sse as sse_mod
+        import mcp.client.streamable_http as shttp_mod
+
+        calls = {"streamable": 0, "sse": 0, "url": None, "headers": "unset"}
+
+        class _DummyCtx:
+            async def __aenter__(self_inner):
+                # Streamable HTTP yields a 3-tuple; SSE a 2-tuple.
+                return (
+                    (object(), object(), object())
+                    if streamable
+                    else (object(), object())
+                )
+
+            async def __aexit__(self_inner, *a):
+                return False
+
+        def fake_streamable(url, headers=None):
+            calls["streamable"] += 1
+            calls["url"] = url
+            calls["headers"] = headers
+            return _DummyCtx()
+
+        def fake_sse(url, headers=None):
+            calls["sse"] += 1
+            calls["url"] = url
+            calls["headers"] = headers
+            return _DummyCtx()
+
+        monkeypatch.setattr(shttp_mod, "streamablehttp_client", fake_streamable)
+        monkeypatch.setattr(sse_mod, "sse_client", fake_sse)
+
+        conn = MCPServerConnection(
+            MCPServerConfig(
+                name="r", transport=transport, url="https://x/mcp", headers={"A": "b"}
+            )
+        )
+
+        async def fake_attach(transport_factory, *, client_session_cls):
+            ctx = transport_factory()
+            streams = await ctx.__aenter__()  # exercise 2-/3-tuple unpacking
+            _read, _write = streams[0], streams[1]
+            await ctx.__aexit__(None, None, None)
+
+        monkeypatch.setattr(conn, "_attach_session", fake_attach)
+
+        await conn._connect_http()  # type: ignore[attr-defined]
+
+        if streamable:
+            assert calls["streamable"] == 1 and calls["sse"] == 0
+        else:
+            assert calls["sse"] == 1 and calls["streamable"] == 0
+        assert calls["url"] == "https://x/mcp"
+        assert calls["headers"] == {"A": "b"}
+
+    @pytest.mark.asyncio
+    async def test_streamable_http_alias_routed_by_connect(self):
+        """connect() recognises the streamable-http alias (routes to the HTTP
+        path, which then complains about the missing url rather than calling it
+        an unsupported transport)."""
+        conn = MCPServerConnection(
+            MCPServerConfig(name="r", transport="streamable-http", url="")
+        )
+        with pytest.raises(MCPConnectionError) as excinfo:
+            await conn.connect()
+        assert excinfo.value.phase == "connect"
+        assert "url" in str(excinfo.value).lower()
+
+
+# ══════════════════════════════════════════════════════════
 # MCPManager.connect_all — fail-fast + cleanup
 # ══════════════════════════════════════════════════════════
 

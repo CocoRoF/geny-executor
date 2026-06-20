@@ -84,6 +84,14 @@ def _serialise_mcp_tool(t: Any) -> Dict[str, Any]:
     }
 
 
+# Remote transports handled by ``_connect_http``. ``sse`` uses the deprecated
+# SSE client; ``http`` / ``streamable-http`` use the modern Streamable HTTP
+# client (the current MCP standard, replacing SSE).
+_SSE_TRANSPORTS = frozenset({"sse"})
+_STREAMABLE_HTTP_TRANSPORTS = frozenset({"http", "streamable-http", "streamable_http"})
+_HTTP_TRANSPORTS = _SSE_TRANSPORTS | _STREAMABLE_HTTP_TRANSPORTS
+
+
 @dataclass
 class MCPServerConfig:
     """Configuration for an MCP server connection."""
@@ -92,8 +100,8 @@ class MCPServerConfig:
     command: str = ""
     args: List[str] = field(default_factory=list)
     env: Dict[str, str] = field(default_factory=dict)
-    transport: str = "stdio"  # stdio | http | sse
-    url: str = ""  # for http/sse transport
+    transport: str = "stdio"  # stdio | http (streamable) | streamable-http | sse
+    url: str = ""  # for http/streamable-http/sse transport
     headers: Dict[str, str] = field(default_factory=dict)
 
 
@@ -175,7 +183,7 @@ class MCPServerConnection:
         try:
             if self.config.transport == "stdio":
                 await self._connect_stdio()
-            elif self.config.transport in ("http", "sse"):
+            elif self.config.transport in _HTTP_TRANSPORTS:
                 await self._connect_http()
             else:
                 raise MCPConnectionError(
@@ -184,7 +192,7 @@ class MCPServerConnection:
                     message=(
                         f"MCP server '{self.config.name}' has unsupported "
                         f"transport '{self.config.transport}' (expected "
-                        "stdio | http | sse)"
+                        "stdio | http | streamable-http | sse)"
                     ),
                 )
         except BaseException as exc:
@@ -230,10 +238,25 @@ class MCPServerConnection:
         )
 
     async def _connect_http(self) -> None:
-        """Connect via HTTP/SSE transport (remote server)."""
+        """Connect via a remote transport: Streamable HTTP (default) or SSE.
+
+        ``transport='sse'`` uses the deprecated SSE client; ``'http'`` /
+        ``'streamable-http'`` use the modern Streamable HTTP client — the
+        current MCP standard that replaced SSE. Both require ``url``.
+        """
+        use_sse = self.config.transport in _SSE_TRANSPORTS
+        remote_client: Any
         try:
             from mcp import ClientSession
-            from mcp.client.sse import sse_client
+
+            if use_sse:
+                from mcp.client.sse import sse_client
+
+                remote_client = sse_client
+            else:
+                from mcp.client.streamable_http import streamablehttp_client
+
+                remote_client = streamablehttp_client
         except ImportError as exc:
             raise MCPConnectionError(
                 self.config.name,
@@ -251,13 +274,15 @@ class MCPServerConnection:
                 self.config.name,
                 "connect",
                 message=(
-                    f"MCP HTTP server '{self.config.name}' is missing a URL "
+                    f"MCP {'SSE' if use_sse else 'HTTP'} server "
+                    f"'{self.config.name}' is missing a URL "
                     "(set MCPServerConfig.url)"
                 ),
             )
 
+        headers = self.config.headers or None
         await self._attach_session(
-            lambda: sse_client(self.config.url, headers=self.config.headers),
+            lambda: remote_client(self.config.url, headers=headers),
             client_session_cls=ClientSession,
         )
 
@@ -269,7 +294,10 @@ class MCPServerConnection:
         """
         try:
             self._transport_ctx = transport_factory()
-            read_stream, write_stream = await self._transport_ctx.__aenter__()
+            streams = await self._transport_ctx.__aenter__()
+            # stdio/SSE yield (read, write); Streamable HTTP yields
+            # (read, write, get_session_id_callback) — take the first two.
+            read_stream, write_stream = streams[0], streams[1]
             self._client_session = client_session_cls(read_stream, write_stream)
             await self._client_session.__aenter__()
         except BaseException as exc:

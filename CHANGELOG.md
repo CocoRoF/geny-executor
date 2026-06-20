@@ -4,6 +4,26 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.13.0] — 2026-06-20
+
+### Added
+
+- **Streamable HTTP transport for remote MCP servers** (`geny_executor.tools.mcp`)
+  — `MCPServerConnection` now connects to remote MCP servers over the modern
+  **Streamable HTTP** client (the current MCP standard that replaced SSE),
+  instead of silently using the deprecated SSE client for every `http` config.
+  - `transport="http"` (and the explicit aliases `"streamable-http"` /
+    `"streamable_http"`) → Streamable HTTP client.
+  - `transport="sse"` → the legacy SSE client, unchanged, for older servers.
+  - `_attach_session` now tolerates the Streamable HTTP client's 3-tuple yield
+    `(read, write, get_session_id)` as well as the stdio/SSE 2-tuple.
+
+### Fixed
+
+- Remote MCP servers that only speak Streamable HTTP (most current hosted MCP
+  servers) previously failed to connect because `_connect_http` always used the
+  SSE client despite the module documenting "HTTP (streamable)" support.
+
 ## [2.12.0] — 2026-06-20
 
 ### Added
