@@ -4,6 +4,39 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.14.0] — 2026-06-20
+
+### Added
+
+- **Tool plugin entry-points** (`geny_executor.tools`) — external/host packages
+  can now register custom `Tool`s via the `geny_executor.tools` entry-point
+  group, mirroring the existing preset plugin system. `ToolPluginRegistry`
+  (+ `discover_tool_plugins` / `register_tool_plugins`) scans entry-points,
+  accepts a `Tool` subclass, a list of them, a zero-arg factory, or a
+  `{"tools": [...], "description": ...}` dict, and registers them into a
+  `ToolRegistry` — skipping (and logging) name collisions so a plugin can never
+  shadow a built-in. Opt-in: nothing auto-loads into a session; a host calls the
+  API explicitly. Broken plugins are logged and skipped, never fatal.
+- **Pluggable web-search backends** for the `WebSearch` tool — DuckDuckGo stays
+  the zero-config default, with Brave / Tavily / SearXNG selectable per call
+  (`backend` input field), per host (`ctx.extras["web_search"]`), or by env
+  (`GENY_WEBSEARCH_BACKEND`, `BRAVE_SEARCH_API_KEY`, `TAVILY_API_KEY`,
+  `SEARXNG_URL`). API backends use the existing `httpx` dep — no new required
+  packages; `ddgs` stays the optional `[web]` extra. The ddg output is unchanged.
+- **MCP OAuth wiring** — `MCPManager` accepts an optional host-supplied
+  `oauth_flow` + `oauth_configs`. `connect()` now reuses a cached, non-expired
+  bearer token (so restarts skip re-consent), and a real `start_oauth(server)`
+  runs the authorization-code flow, injects the bearer token, and reconnects —
+  returning a structured status. `oauth.py` is no longer orphaned.
+
+### Fixed
+
+- **`McpAuth` tool was broken** — it called `MCPManager` methods that don't exist
+  (`start_oauth`/`begin_oauth`/`auth` via name-probing) and always errored. It
+  now calls the real `MCPManager.start_oauth()` and surfaces its structured
+  status, including an actionable `not_configured` message for headless hosts
+  that run their own OAuth flow.
+
 ## [2.13.0] — 2026-06-20
 
 ### Added

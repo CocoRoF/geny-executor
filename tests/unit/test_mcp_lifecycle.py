@@ -301,6 +301,122 @@ class TestRemoteTransportSelection:
 
 
 # ══════════════════════════════════════════════════════════
+# MCPManager OAuth wiring (oauth.py is no longer orphaned)
+# ══════════════════════════════════════════════════════════
+
+
+class TestMCPManagerOAuth:
+    @pytest.mark.asyncio
+    async def test_start_oauth_not_configured_is_structured(self):
+        """No OAuth wired → an actionable status, not an opaque error."""
+        mgr = MCPManager()
+        result = await mgr.start_oauth("gh")
+        assert result["status"] == "not_configured"
+        assert result["server"] == "gh"
+        assert "OAuth" in result["message"]
+
+    @pytest.mark.asyncio
+    async def test_start_oauth_authorizes_injects_token_reconnects(self, monkeypatch):
+        from geny_executor.tools.mcp.oauth import OAuthAuthConfig, OAuthToken
+
+        cfg = OAuthAuthConfig(
+            client_id="c",
+            client_secret="s",
+            authorize_url="https://a/authorize",
+            token_url="https://a/token",
+        )
+
+        class _FakeFlow:
+            def __init__(self):
+                self.authorized: List[str] = []
+
+            def load_cached_token(self, name):
+                return None
+
+            async def authorize(self, server, auth_config):
+                self.authorized.append(server)
+                return OAuthToken(access_token="TOK123", expires_at=12345.0)
+
+        flow = _FakeFlow()
+        mgr = MCPManager(oauth_flow=flow, oauth_configs={"gh": cfg})
+        mgr._configs["gh"] = MCPServerConfig(name="gh", transport="http", url="https://x/mcp")
+
+        reconnects: List[tuple] = []
+
+        async def fake_connect(self, name, config):
+            reconnects.append((name, dict(config.headers)))
+
+        monkeypatch.setattr(MCPManager, "connect", fake_connect)
+
+        result = await mgr.start_oauth("gh")
+        assert result["status"] == "authorized"
+        assert result["reconnected"] is True
+        assert flow.authorized == ["gh"]
+        assert mgr._configs["gh"].headers["Authorization"] == "Bearer TOK123"
+        assert reconnects == [("gh", {"Authorization": "Bearer TOK123"})]
+
+    @pytest.mark.asyncio
+    async def test_start_oauth_error_is_structured(self):
+        from geny_executor.tools.mcp.oauth import OAuthAuthConfig
+
+        cfg = OAuthAuthConfig(
+            client_id="c",
+            client_secret="s",
+            authorize_url="https://a/authorize",
+            token_url="https://a/token",
+        )
+
+        class _BoomFlow:
+            def load_cached_token(self, name):
+                return None
+
+            async def authorize(self, server, auth_config):
+                raise RuntimeError("consent denied")
+
+        mgr = MCPManager(oauth_flow=_BoomFlow(), oauth_configs={"gh": cfg})
+        result = await mgr.start_oauth("gh")
+        assert result["status"] == "error"
+        assert "denied" in result["message"]
+
+    @pytest.mark.asyncio
+    async def test_connect_injects_cached_bearer_token(self, monkeypatch):
+        """A cached, non-expired token is reused on connect (oauth.py wired)."""
+        from geny_executor.tools.mcp.oauth import OAuthToken
+
+        class _CachedFlow:
+            def load_cached_token(self, name):
+                return OAuthToken(access_token="CACHED", expires_at=None)
+
+        mgr = MCPManager(oauth_flow=_CachedFlow())
+        cfg = MCPServerConfig(name="gh", transport="http", url="https://x/mcp")
+
+        seen: Dict[str, Any] = {}
+
+        async def fake_conn_connect(self):
+            seen["headers"] = dict(self.config.headers)
+            self._state = MCPConnectionState.CONNECTED
+
+        monkeypatch.setattr(MCPServerConnection, "connect", fake_conn_connect)
+        await mgr.connect("gh", cfg)
+        assert seen["headers"]["Authorization"] == "Bearer CACHED"
+
+    @pytest.mark.asyncio
+    async def test_mcp_auth_tool_surfaces_status(self):
+        from geny_executor.tools.base import ToolContext
+        from geny_executor.tools.built_in.mcp_wrapper_tools import McpAuthTool
+
+        class _Mgr:
+            async def start_oauth(self, server):
+                return {"status": "not_configured", "server": server, "message": "x"}
+
+        result = await McpAuthTool().execute(
+            {"server": "gh"}, ToolContext(extras={"mcp_manager": _Mgr()})
+        )
+        assert not result.is_error
+        assert result.content["status"] == "not_configured"
+
+
+# ══════════════════════════════════════════════════════════
 # MCPManager.connect_all — fail-fast + cleanup
 # ══════════════════════════════════════════════════════════
 
