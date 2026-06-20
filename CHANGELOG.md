@@ -4,6 +4,38 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.11.0] — 2026-06-20
+
+### Added
+
+- **Inbound chat gateway** (`geny_executor.gateway`): the executor now owns the
+  bidirectional gateway — receive a message from a chat platform, run an agent
+  turn, reply — so a host ships no transport code and only supplies config + a
+  handler (`message in → reply text out`).
+  - `PlatformAdapter` ABC (`fetch()` inbound batch + `send()` + `allow()`
+    allow-list hook) and a **Telegram adapter** (`TelegramGatewayAdapter`):
+    Bot API long-polling (`getUpdates` with offset tracking) + `sendMessage`,
+    pure `httpx` — no telegram SDK, no public endpoint. Non-text updates are
+    skipped; an `allowed_chat_ids` config gates unknown chats.
+  - `GatewayRunner`: an asyncio daemon (lifecycle mirrors `cron.CronRunner` —
+    `start()` / `shutdown()`) that polls each adapter, dispatches each message
+    to the handler **concurrently** (bounded by `max_concurrent_turns` so a
+    burst can't spawn unbounded turns), and sends the reply. Fetch/handler/send
+    errors are isolated and logged; a slow turn never stalls the poll loop.
+  - `build_gateway(specs, handler)` builds a runner from
+    `[{"platform", "config"}]` dicts; `BUILTIN_GATEWAY_PLATFORMS` enumerates
+    the supported platforms (telegram today — the adapter registry is
+    extensible for WebSocket platforms like Discord). Lenient: a bad spec is
+    logged + skipped.
+  - `InboundMessage` / `GatewayReply` value types.
+
+### Notes
+
+- Run the gateway from the host's app lifespan (an `asyncio` task) so the
+  agent-running deps it calls through the handler are already wired. The
+  handler returns reply text; the gateway owns the loop, allow-list, backoff,
+  and concurrency. Pairs with the 2.10.0 output channels (same transports).
+
 ## [2.10.0] — 2026-06-20
 
 ### Added
