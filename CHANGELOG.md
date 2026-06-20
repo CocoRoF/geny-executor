@@ -4,6 +4,43 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.10.0] — 2026-06-20
+
+### Added
+
+- **Built-in output-channel transports** (`geny_executor.channels`): the
+  framework now ships the common `SendMessageChannel` transports instead of
+  leaving every one to the host —
+  `WebhookSendMessageChannel`, `TelegramSendMessageChannel`,
+  `DiscordSendMessageChannel`, `SlackSendMessageChannel`,
+  `NtfySendMessageChannel` (plus the existing `StdoutSendMessageChannel`).
+  Every transport is a plain HTTP POST over `httpx` (already a base dep) — no
+  vendor SDKs, no new dependencies. Each `send()` is best-effort and returns a
+  status dict; an injectable `transport` hook keeps them testable offline.
+- **Config-driven channel factory** (`channels/factory.py`):
+  `build_send_message_channel(kind, config)` and
+  `build_channel_registry(specs)` build a ready-to-use
+  `SendMessageChannelRegistry` from plain dicts
+  (`{"name", "kind", "config"}`). A host (e.g. Geny) now declares channels in
+  config and the executor constructs them — the host ships no channel code.
+  `BUILTIN_CHANNEL_KINDS` enumerates the supported kinds. The registry builder
+  is lenient: a malformed/unbuildable entry is logged and skipped so one bad
+  channel can't abort the agent.
+
+### Changed
+
+- **`SendMessage` tool**: description now names the concrete channel kinds, and
+  an unknown-channel error returns `available_channels` so the agent can
+  discover the valid names. (The tool already dispatched by name; it now works
+  out of the box against the built-in transports.)
+
+### Notes
+
+- The previous design deliberately kept transports out of the framework ("the
+  host owns transport"); 2.10.0 flips that for the HTTP-based channels because
+  they need no extra deps and the boilerplate was duplicated across hosts. A
+  host can still register its own `SendMessageChannel` for anything exotic.
+
 ## [2.9.0] — 2026-06-20
 
 ### Added
