@@ -4,6 +4,20 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.15.0] — 2026-06-20
+
+### Added
+
+- **Per-provider model discovery** (`geny_executor.llm_client.discover_models`):
+  best-effort live listing of the models a backend serves — OpenAI/LM Studio/
+  vLLM/custom (`/v1/models`), Ollama (`/api/tags`), Anthropic (`/v1/models`,
+  incl. `display_name`), Google (`/v1beta/models`, generateContent-only).
+  Returns `ModelDiscovery(source="live"|"unavailable")` so hosts populate
+  model pickers dynamically and fall back to a static catalogue only when
+  discovery is impossible. `claude_code_cli` reports `unavailable` (the CLI
+  has no model-list command). Host-driven; a `transport` hook stubs HTTP for
+  tests.
+
 ## [2.14.0] — 2026-06-20
 
 ### Added
@@ -205,20 +219,6 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   A-1/A-2 (declarative profiles + branded local providers), A-3 (Ollama
   `/api/show` context probe), A-4 (local tool-call JSON repair). Host-side
   exposure (Geny "local model" card / picker, A-6) is a separate change.
-
-## [2.9.0] — 2026-06-19
-
-### Added
-
-- **Per-provider model discovery** (`geny_executor.llm_client.discover_models`):
-  best-effort live listing of the models a backend actually serves —
-  OpenAI/LM Studio/vLLM/custom (`/v1/models`), Ollama (`/api/tags`), Anthropic
-  (`/v1/models`, incl. `display_name`), Google (`/v1beta/models`,
-  generateContent-only). Returns `ModelDiscovery(source="live"|"unavailable")`
-  so hosts dynamically populate model pickers and fall back to a static
-  catalogue only when discovery is impossible. `claude_code_cli` reports
-  `unavailable` (the CLI has no model-list command). Host-driven, never
-  auto-run during pipeline build; a `transport` hook stubs HTTP for tests.
 
 ## [2.8.0] — 2026-06-19
 
