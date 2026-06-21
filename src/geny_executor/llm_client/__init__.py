@@ -18,6 +18,11 @@ from geny_executor.llm_client.local_probe import (
     probe_ollama_num_ctx,
     resolve_local_context_window,
 )
+from geny_executor.llm_client.model_discovery import (
+    ModelDiscovery,
+    ModelInfo,
+    discover_models,
+)
 from geny_executor.llm_client.profiles import (
     BUILTIN_PROFILES,
     ProviderProfile,
@@ -43,4 +48,7 @@ __all__ = [
     "builtin_profiles",
     "probe_ollama_num_ctx",
     "resolve_local_context_window",
+    "discover_models",
+    "ModelDiscovery",
+    "ModelInfo",
 ]
