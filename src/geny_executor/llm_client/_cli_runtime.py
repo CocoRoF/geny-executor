@@ -417,14 +417,16 @@ class ContainerCLIRunner(CLIProcessRunner):
     container_binary: str = "claude"
 
     def __post_init__(self) -> None:
-        # Deliberately do NOT call super().__post_init__(): the parent
-        # validates that ``binary`` exists on the *host*, but for a container
-        # runner the agent binary lives in the image. Validate the launcher
-        # (and that a sandbox was supplied) instead.
+        # Deliberately do NOT call super().__post_init__(): the parent validates
+        # that ``binary`` exists on the *host*, but for a container runner the
+        # agent binary lives in the image. We also do NOT eagerly check that the
+        # ``launcher`` exists — that is a runtime concern (a missing ``docker``
+        # surfaces a clear error at ``exec`` time) and an eager check would
+        # couple construction to the host, breaking docker-less test/CI paths
+        # that intercept the spawn. Only the invariant the runner cannot work
+        # without — a sandbox — is enforced here.
         if self.sandbox is None:
             raise ValueError("ContainerCLIRunner requires sandbox=")
-        if not (shutil.which(self.launcher) or Path(self.launcher).exists()):
-            raise CLIBinaryNotFound(f"container launcher not found: {self.launcher!r}")
 
     async def _spawn(
         self, argv: Sequence[str]
