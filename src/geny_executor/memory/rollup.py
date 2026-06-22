@@ -98,11 +98,47 @@ def build_segment_instruction(
     )
 
 
+#: The evergreen note — a single rewritable pinned ``critical`` note that is
+#: ALWAYS injected (retriever L1.5 ``load_pinned``) and never compacted away.
+EVERGREEN_FILENAME = "__evergreen__.md"
+EVERGREEN_CATEGORY = "critical"
+
+
+def build_evergreen_instruction(
+    *, current: str, recent_digest: str, max_chars: int
+) -> str:
+    """Instruction for the L3 EVERGREEN merge — the durable, always-loaded core.
+
+    Merges the latest rolling digest into the current evergreen, keeping only
+    durable knowledge (identity, who the user is, long-running facts /
+    preferences / commitments / threads), never losing a load-bearing fact.
+    """
+    return (
+        "You maintain the EVERGREEN MEMORY — the durable, always-loaded core an "
+        "agent carries across ALL sessions: stable identity, who the user is, "
+        "long-running facts, preferences, commitments, and threads that persist "
+        "beyond any single session. Update it by merging the latest rolling "
+        "digest into the current evergreen.\n\n"
+        f"{PRESERVE_CLAUSE}\n"
+        "RULES: keep ONLY durable knowledge — drop ephemeral / one-off chatter "
+        "(the rolling digest already holds the recent detail); merge duplicates; "
+        "NEVER lose a durable fact, name, preference, or commitment; prefer the "
+        "user's own wording. Return structured Markdown (## Identity / ## User / "
+        "## Durable Facts / ## Preferences & Commitments / ## Long-running Threads "
+        "— omit empty sections). "
+        f"Keep the whole evergreen under ~{max_chars} characters.\n\n"
+        f"CURRENT EVERGREEN (+ pinned critical facts):\n"
+        f"{current.strip() or '(none yet)'}\n\n"
+        f"LATEST ROLLING DIGEST:\n{recent_digest.strip() or '(none)'}\n"
+    )
+
+
 @dataclass
 class RollupReport:
     """Outcome of a rollup pass (diagnostics; never raises to the caller)."""
 
     segment_written: bool = False
+    evergreen_written: bool = False
     turns_seen: int = 0
     chars_in: int = 0
     chars_out: int = 0
@@ -126,6 +162,7 @@ class MemoryRollup:
         summarize: Summarize,
         max_turns: int = 300,
         digest_max_chars: int = 6000,
+        evergreen_max_chars: int = 8000,
     ) -> None:
         if provider is None:
             raise ValueError("MemoryRollup requires a provider")
@@ -135,6 +172,7 @@ class MemoryRollup:
         self._summarize = summarize
         self._max_turns = max(1, int(max_turns))
         self._digest_max_chars = max(500, int(digest_max_chars))
+        self._evergreen_max_chars = max(1000, int(evergreen_max_chars))
 
     async def summarize_segment(self) -> Optional[str]:
         """Fold the prior digest + recent raw turns into an updated rolling digest and
@@ -179,11 +217,64 @@ class MemoryRollup:
             return None
         return digest
 
-    async def run(self) -> RollupReport:
+    async def rollup_evergreen(self) -> Optional[str]:
+        """Maintain the L3 EVERGREEN — merge the latest rolling digest into the
+        durable, always-injected evergreen note (a rewritable pinned ``critical``
+        note). Returns the merged evergreen or None. Never raises — best-effort."""
+        try:
+            notes = self._provider.notes()
+        except Exception:  # noqa: BLE001
+            return None
+
+        try:
+            current = await notes.load_pinned(
+                category=EVERGREEN_CATEGORY, max_chars=self._evergreen_max_chars
+            )
+        except Exception:  # noqa: BLE001
+            current = ""
+        try:
+            recent = (await self._provider.stm().read_summary()) or ""
+        except Exception:  # noqa: BLE001
+            recent = ""
+        if not (current or "").strip() and not (recent or "").strip():
+            return None
+
+        instruction = build_evergreen_instruction(
+            current=current or "", recent_digest=recent or "",
+            max_chars=self._evergreen_max_chars,
+        )
+        try:
+            merged = (await self._summarize(instruction) or "").strip()
+        except Exception:  # noqa: BLE001 — host LLM; never fatal
+            logger.warning("rollup: evergreen summarize failed", exc_info=True)
+            return None
+        if not merged:
+            return None
+
+        try:
+            from geny_executor.memory.provider import Importance, NoteDraft
+
+            await notes.write(
+                NoteDraft(
+                    title="Evergreen Memory",
+                    body=merged,
+                    importance=Importance.CRITICAL,
+                    category=EVERGREEN_CATEGORY,
+                    filename=EVERGREEN_FILENAME,
+                    tags=["evergreen", "memory"],
+                )
+            )
+        except Exception:  # noqa: BLE001
+            logger.warning("rollup: evergreen write failed", exc_info=True)
+            return None
+        return merged
+
+    async def run(self, *, evergreen: bool = False) -> RollupReport:
         """Run a rollup pass (host calls this on idle / context-pressure / lazily).
 
-        Currently performs the L1 rolling-digest fold. Higher tiers (daily/topic
-        rollups, evergreen, compressed map) are layered on in later phases.
+        Always folds the L1 rolling digest. When ``evergreen=True`` (a slower
+        cadence the host controls), also merges it into the L3 durable evergreen.
+        Daily/topic tiers + the compressed map are layered on in later phases.
         """
         report = RollupReport()
         try:
@@ -191,6 +282,9 @@ class MemoryRollup:
             if digest:
                 report.segment_written = True
                 report.chars_out = len(digest)
+            if evergreen:
+                ever = await self.rollup_evergreen()
+                report.evergreen_written = bool(ever)
         except Exception as exc:  # noqa: BLE001 — diagnostics only
             report.error = str(exc)
             logger.debug("rollup.run failed", exc_info=True)
@@ -203,4 +297,7 @@ __all__ = [
     "Summarize",
     "PRESERVE_CLAUSE",
     "build_segment_instruction",
+    "build_evergreen_instruction",
+    "EVERGREEN_FILENAME",
+    "EVERGREEN_CATEGORY",
 ]

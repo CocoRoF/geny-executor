@@ -4,6 +4,18 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.18.0] — 2026-06-22
+
+### Added
+
+- **`MemoryRollup.rollup_evergreen()`** — the L3 EVERGREEN tier: merges the latest
+  rolling digest into a durable, always-injected evergreen note (a single
+  rewritable pinned ``critical`` note, retriever L1.5, never compacted away),
+  keeping only durable knowledge (identity / who the user is / long-running facts
+  / preferences / commitments / threads) while never losing a load-bearing fact.
+  `run(evergreen=True)` folds the segment digest then merges the evergreen.
+  `build_evergreen_instruction` exposes the merge instruction.
+
 ## [2.17.0] — 2026-06-22
 
 ### Fixed
