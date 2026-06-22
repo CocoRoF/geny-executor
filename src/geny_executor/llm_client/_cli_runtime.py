@@ -39,6 +39,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import logging
 import os
 import shutil
 import signal
@@ -54,8 +55,12 @@ from typing import (
     Mapping,
     NamedTuple,
     Optional,
+    Protocol,
     Sequence,
+    runtime_checkable,
 )
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -353,6 +358,114 @@ class CLIProcessRunner:
             await asyncio.wait_for(proc.wait(), timeout=1.0)
         except asyncio.TimeoutError:
             pass
+
+
+# ---------------------------------------------------------------------------
+# Container sandbox runner
+# ---------------------------------------------------------------------------
+
+
+@runtime_checkable
+class SandboxHandle(Protocol):
+    """Minimal handle the :class:`ContainerCLIRunner` needs to target a
+    sandbox container.
+
+    Any object exposing a ``container_name`` and an idempotent async
+    ``ensure()`` satisfies this — e.g. GAPT's ``WorkspaceSandbox``. The
+    executor deliberately knows nothing about *how* the container is created,
+    cloned, or mounted (that is the host platform's concern). It only needs
+    the running container's name and a way to make sure it is up before the
+    first spawn.
+    """
+
+    @property
+    def container_name(self) -> str: ...
+
+    async def ensure(self) -> None: ...
+
+
+@dataclass
+class ContainerCLIRunner(CLIProcessRunner):
+    """``CLIProcessRunner`` that spawns the CLI *inside* a sandbox container.
+
+    Generalises the ``SandboxedCLIProcessRunner`` that previously lived in
+    GAPT: only ``_spawn`` differs from the parent — argv becomes
+
+        <launcher> exec -i -w <workdir> --env K=V ... <container> <bin> <argv>
+
+    so the agent only ever sees the container's ``<workdir>`` (a bind mount),
+    never the host filesystem. Everything else (timeout ladder,
+    SIGTERM→SIGKILL process-group teardown via the host-side ``exec``, stderr
+    collection, stream-json line buffering) is inherited unchanged:
+    ``start_new_session`` is preserved on POSIX so killing the host-side
+    ``exec`` group propagates to the CLI inside the container.
+
+    The host needs the ``launcher`` (``docker`` by default) on PATH; it does
+    **not** need the agent binary — that lives in the container image. The
+    parent's host-binary existence check is therefore intentionally skipped.
+    """
+
+    sandbox: Optional[SandboxHandle] = None
+    #: Working directory *inside* the container (the bind-mounted project root).
+    workdir: str = "/workspace"
+    #: Host launcher that enters the container. ``docker`` by default; any
+    #: ``exec``-compatible CLI works (``podman`` etc.).
+    launcher: str = "docker"
+    #: The agent binary *inside* the container — always on PATH there (the
+    #: image installs it). The host-side ``binary`` field is ignored for the
+    #: actual spawn (it need not exist on the host).
+    container_binary: str = "claude"
+
+    def __post_init__(self) -> None:
+        # Deliberately do NOT call super().__post_init__(): the parent
+        # validates that ``binary`` exists on the *host*, but for a container
+        # runner the agent binary lives in the image. Validate the launcher
+        # (and that a sandbox was supplied) instead.
+        if self.sandbox is None:
+            raise ValueError("ContainerCLIRunner requires sandbox=")
+        if not (shutil.which(self.launcher) or Path(self.launcher).exists()):
+            raise CLIBinaryNotFound(f"container launcher not found: {self.launcher!r}")
+
+    async def _spawn(
+        self, argv: Sequence[str]
+    ) -> tuple[asyncio.subprocess.Process, float]:
+        sandbox = self.sandbox
+        assert sandbox is not None  # guaranteed by __post_init__
+        # First spawn after a host restart may hit a stopped container.
+        # ensure() is idempotent; a failure here is non-fatal — the exec
+        # below surfaces the real error if the container truly isn't up.
+        try:
+            await sandbox.ensure()
+        except Exception:  # pragma: no cover - defensive
+            logger.warning(
+                "container_cli_runner.ensure_failed container=%s",
+                getattr(sandbox, "container_name", "?"),
+            )
+
+        exec_argv: list[str] = ["exec", "-i", "-w", self.workdir]
+        for k, v in dict(self.env_extras or {}).items():
+            exec_argv += ["--env", f"{k}={v}"]
+        # Inside the container the agent CLI is on PATH (the image installs
+        # it). We deliberately don't forward ``self.binary`` — a host path
+        # that need not exist in the container.
+        exec_argv += [sandbox.container_name, self.container_binary, *list(argv)]
+
+        kwargs: dict[str, Any] = dict(
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            # The launcher needs the *host* env (PATH, DOCKER_HOST, ...). The
+            # child's env is what we passed via --env flags above; that is
+            # separate and already scoped.
+            env=os.environ.copy(),
+            cwd=None,
+        )
+        if sys.platform != "win32":
+            kwargs["start_new_session"] = True
+        proc = await asyncio.create_subprocess_exec(
+            self.launcher, *exec_argv, **kwargs
+        )
+        return proc, time.monotonic()
 
 
 # ---------------------------------------------------------------------------
