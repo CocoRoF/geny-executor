@@ -46,6 +46,8 @@ from geny_executor.llm_client._cli_runtime import (
     CLIProtocolError,
     CLIResult,
     CLITimeout,
+    ContainerCLIRunner,
+    SandboxHandle,
     aiter_bytes,
     detect_binary,
 )
@@ -252,18 +254,21 @@ class ClaudeCodeCLIClient(BaseClient):
         return extras
 
     def _make_runner(self, *, timeout_s: Optional[float] = None) -> CLIProcessRunner:
-        if not self._binary:
-            raise CLIBinaryNotFound(
-                "claude binary not found. Set binary_path=, CLAUDE_CODE_BINARY env var, "
-                "or ensure 'claude' is on PATH."
-            )
         effective_timeout = self._timeout_s if timeout_s is None else timeout_s
+        # A host-supplied runner factory (e.g. a container sandbox) runs the
+        # CLI elsewhere — the agent binary need not exist on this host — so the
+        # host-binary check is the *default* in-process runner's concern only.
         if self._runner_factory is not None:
             return self._runner_factory(
                 binary=self._binary,
                 cwd=self._workspace_dir,
                 env_extras=self._env_extras(),
                 timeout_s=effective_timeout,
+            )
+        if not self._binary:
+            raise CLIBinaryNotFound(
+                "claude binary not found. Set binary_path=, CLAUDE_CODE_BINARY env var, "
+                "or ensure 'claude' is on PATH."
             )
         return CLIProcessRunner(
             binary=self._binary,
@@ -591,3 +596,53 @@ class ClaudeCodeCLIClient(BaseClient):
             raise APIError(
                 self._with_version(str(e)), category=ErrorCategory.CLI_PROTOCOL_ERROR
             ) from e
+
+
+def build_container_cli_client(
+    *,
+    sandbox: SandboxHandle,
+    workdir: str = "/workspace",
+    launcher: str = "docker",
+    container_binary: str = "claude",
+    **client_kwargs: Any,
+) -> "ClaudeCodeCLIClient":
+    """Build a :class:`ClaudeCodeCLIClient` whose every process spawn — the
+    per-request CLI run *and* the one-time ``--version`` handshake — happens
+    inside ``sandbox``'s container via :class:`ContainerCLIRunner`.
+
+    This is the supported, host-agnostic way to run the agent CLI in a
+    sandbox; it absorbs the bespoke ``SandboxedCLIProcessRunner`` that hosts
+    (GAPT) previously had to carry. The host does **not** need the agent
+    binary installed — it lives in the container image — only the ``launcher``
+    (``docker`` by default).
+
+    ``client_kwargs`` are forwarded verbatim to :class:`ClaudeCodeCLIClient`
+    (``api_key``, ``auth_mode``, ``mcp_config``, ``allow_tools``,
+    ``workspace_dir``, ...). ``runner_factory`` must not be passed — it is set
+    here.
+
+    Example::
+
+        client = build_container_cli_client(
+            sandbox=workspace_sandbox,   # has .container_name + async .ensure()
+            api_key=api_key,
+            mcp_config=mcp_config,
+        )
+        pipeline.attach_runtime(llm_client=client, hook_runner=hook_runner)
+    """
+    if "runner_factory" in client_kwargs:
+        raise TypeError(
+            "build_container_cli_client sets runner_factory itself; "
+            "do not pass it in client_kwargs"
+        )
+
+    def _factory(**runner_kwargs: Any) -> CLIProcessRunner:
+        return ContainerCLIRunner(
+            sandbox=sandbox,
+            workdir=workdir,
+            launcher=launcher,
+            container_binary=container_binary,
+            **runner_kwargs,
+        )
+
+    return ClaudeCodeCLIClient(**client_kwargs, runner_factory=_factory)

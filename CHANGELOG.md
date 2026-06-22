@@ -4,6 +4,35 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.21.0] — 2026-06-22
+
+### Added
+
+- **`ContainerCLIRunner` + `SandboxHandle` — the sandbox-execution primitive,
+  now first-class in the executor.** Generalises the bespoke
+  `SandboxedCLIProcessRunner` that hosts (GAPT) previously had to carry: a
+  `CLIProcessRunner` subclass that spawns the agent CLI *inside* a sandbox
+  container via `<launcher> exec -i -w <workdir> --env … <container> <bin>
+  <argv>`, so the agent only ever sees the container's bind-mounted workdir,
+  never the host filesystem. `SandboxHandle` is the minimal Protocol it needs
+  (`container_name` + idempotent async `ensure()`); any object satisfying it
+  (e.g. GAPT's `WorkspaceSandbox`) drops in. The timeout ladder, SIGTERM→SIGKILL
+  process-group teardown, and stream-json buffering are all inherited unchanged.
+- **`build_container_cli_client(sandbox=…, **client_kwargs)`** — the supported,
+  host-agnostic way to build a `ClaudeCodeCLIClient` whose every spawn (including
+  the one-time `--version` handshake) runs in the container. The host no longer
+  needs the agent binary installed — only the `launcher` (`docker` by default).
+- Exported at the package top level: `ContainerCLIRunner`, `SandboxHandle`,
+  `build_container_cli_client`, plus `ClaudeCodeCLIClient` / `CLIProcessRunner`.
+
+### Changed
+
+- **`ClaudeCodeCLIClient._make_runner`** no longer requires the agent binary on
+  the *host* when a `runner_factory` is set — a factory-backed runner (e.g. a
+  container sandbox) runs the CLI elsewhere, so the host-binary existence check
+  is now the default in-process runner's concern only. Fully backward-compatible
+  (the default path is unchanged).
+
 ## [2.20.0] — 2026-06-22
 
 ### Changed
