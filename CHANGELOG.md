@@ -4,6 +4,16 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.20.0] — 2026-06-22
+
+### Changed
+
+- **`IndexHandle.render_vault_map`** now leads with a compressed-first /
+  progressive-disclosure preamble: the always-injected summary digest + pinned
+  `critical` notes are the compressed memory to rely on first, and the map is the
+  index for stepwise drill-down (map → `memory_list` → `memory_read` → raw).
+  Makes the always-injected map an explicit L4 navigation surface.
+
 ## [2.19.0] — 2026-06-22
 
 ### Added
