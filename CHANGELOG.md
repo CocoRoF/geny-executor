@@ -4,6 +4,26 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.23.0] — 2026-06-22
+
+### Added
+
+- **SDK-provider sandboxing — built-in fs/shell tools run inside the container.**
+  Previously only the `claude_code_cli` path was sandboxed (the CLI ran its own
+  tools in-container); SDK providers (anthropic/openai/google/vllm) dispatched
+  tools host-side. Now, when a `SandboxHandle` is attached, the built-in
+  **bash / read / write / edit / grep / glob** tools route their I/O through
+  `docker exec` into the container — so an SDK-provider agent is sandboxed the
+  same way. New `tools/_sandbox.py` (`sandbox_exec`, `sb_read_bytes`,
+  `sb_write_bytes`, `sb_run`, `container_path` with traversal guard);
+  `ToolContext.sandbox` field. **Gated entirely by `context.sandbox`** — `None`
+  (the default) is byte-for-byte the old host path, so no behavior change for
+  existing sessions.
+- **`attach_runtime(sandbox=)` now also propagates to the Tool stage** (via
+  `_set_tool_stage_sandbox`), so a host that attaches a sandbox gets *both* the
+  CLI-client wrap (2.22.0) *and* SDK-path tool sandboxing from the one call — no
+  extra wiring.
+
 ## [2.22.0] — 2026-06-22
 
 ### Added

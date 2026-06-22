@@ -1757,6 +1757,10 @@ class Pipeline:
             # their client through the sandbox on the next turn.
             self._attached_sandbox = sandbox
             self._client_generation += 1
+            # Also stamp it onto the Tool stage's context so the built-in
+            # fs/shell tools run inside the container on the SDK-provider path
+            # (the CLI path runs its own tools in-container already).
+            self._set_tool_stage_sandbox(sandbox)
 
         if session_runtime is not None:
             self._attached_session_runtime = session_runtime
@@ -1899,6 +1903,24 @@ class Pipeline:
                 ctx = ToolContext()
                 stage._context = ctx
             ctx.hook_runner = hook_runner
+            return
+
+    def _set_tool_stage_sandbox(self, sandbox: Any) -> None:
+        """Attach ``sandbox`` to the Tool stage's ``ToolContext`` so the
+        built-in fs/shell tools run inside the container (SDK-path sandboxing).
+
+        Idempotent; no-op if no Tool stage is registered.
+        """
+        for stage in self._stages.values():
+            if getattr(stage, "name", "") != "tool":
+                continue
+            ctx = getattr(stage, "_context", None)
+            if ctx is None:
+                from geny_executor.tools.base import ToolContext
+
+                ctx = ToolContext()
+                stage._context = ctx
+            ctx.sandbox = sandbox
             return
 
     def _set_stage_slot_strategy(self, *, stage_name: str, slot_name: str, strategy: Any) -> None:
