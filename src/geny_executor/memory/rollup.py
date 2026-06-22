@@ -139,6 +139,7 @@ class RollupReport:
 
     segment_written: bool = False
     evergreen_written: bool = False
+    daily_written: bool = False
     turns_seen: int = 0
     chars_in: int = 0
     chars_out: int = 0
@@ -269,12 +270,46 @@ class MemoryRollup:
             return None
         return merged
 
-    async def run(self, *, evergreen: bool = False) -> RollupReport:
+    async def rollup_daily(self, *, day: str) -> Optional[str]:
+        """Persist the current rolling digest as the L2 DAILY digest note for
+        ``day`` (``YYYY-MM-DD``) — idempotent per day (overwrites as the day
+        progresses). Gives a date-navigable series of per-day compressed digests
+        the agent (and Opsidian) can drill into. Host supplies ``day`` (the
+        library takes no wall-clock). Best-effort."""
+        if not day:
+            return None
+        try:
+            recent = (await self._provider.stm().read_summary()) or ""
+        except Exception:  # noqa: BLE001
+            recent = ""
+        if not recent.strip():
+            return None
+        try:
+            from geny_executor.memory.provider import Importance, NoteDraft
+
+            await self._provider.notes().write(
+                NoteDraft(
+                    title=f"Daily Digest · {day}",
+                    body=recent,
+                    importance=Importance.HIGH,
+                    category="daily",
+                    filename=f"__digest_{day}__.md",
+                    tags=["digest", "daily"],
+                )
+            )
+        except Exception:  # noqa: BLE001
+            logger.warning("rollup: daily write failed", exc_info=True)
+            return None
+        return recent
+
+    async def run(
+        self, *, evergreen: bool = False, daily_key: Optional[str] = None
+    ) -> RollupReport:
         """Run a rollup pass (host calls this on idle / context-pressure / lazily).
 
-        Always folds the L1 rolling digest. When ``evergreen=True`` (a slower
-        cadence the host controls), also merges it into the L3 durable evergreen.
-        Daily/topic tiers + the compressed map are layered on in later phases.
+        Always folds the L1 rolling digest. ``evergreen=True`` (slower cadence)
+        merges the L3 durable evergreen; ``daily_key`` (``YYYY-MM-DD``) writes the
+        L2 daily digest note. The compressed map is layered on separately.
         """
         report = RollupReport()
         try:
@@ -285,6 +320,9 @@ class MemoryRollup:
             if evergreen:
                 ever = await self.rollup_evergreen()
                 report.evergreen_written = bool(ever)
+            if daily_key:
+                day = await self.rollup_daily(day=daily_key)
+                report.daily_written = bool(day)
         except Exception as exc:  # noqa: BLE001 — diagnostics only
             report.error = str(exc)
             logger.debug("rollup.run failed", exc_info=True)

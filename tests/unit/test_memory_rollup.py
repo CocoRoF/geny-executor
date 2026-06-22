@@ -147,3 +147,23 @@ async def test_run_with_evergreen_flag():
     report = await r.run(evergreen=True)
     assert report.segment_written is True
     assert report.evergreen_written is True
+
+
+@pytest.mark.asyncio
+async def test_daily_writes_dated_digest_note():
+    stm = _STM([], summary="## Summary\ntoday's digest")
+    notes = _Notes()
+    r = MemoryRollup(_ProviderWithNotes(stm, notes), summarize=_summarizer({}))
+    out = await r.rollup_daily(day="2026-06-22")
+    assert out and "today's digest" in out
+    assert notes.written.filename == "__digest_2026-06-22__.md"
+    assert notes.written.category == "daily"
+
+
+@pytest.mark.asyncio
+async def test_daily_noop_without_digest():
+    stm = _STM([], summary="")
+    notes = _Notes()
+    r = MemoryRollup(_ProviderWithNotes(stm, notes), summarize=_summarizer({}))
+    assert await r.rollup_daily(day="2026-06-22") is None
+    assert notes.written is None
