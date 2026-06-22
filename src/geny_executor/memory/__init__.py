@@ -85,10 +85,19 @@ from geny_executor.memory.factory import MemoryProviderFactory
 # (typically a CompositeMemoryProvider) and pass a MemoryHooks bag
 # carrying retrieval policy + post-write callbacks.
 from geny_executor.memory.retriever import MemoryAwareRetriever
+from geny_executor.memory.rollup import (
+    MemoryRollup,
+    RollupReport,
+    build_segment_instruction,
+)
 from geny_executor.memory.strategy import ProviderDrivenStrategy
 from geny_executor.memory.presets import GenyPresets
 
 __all__ = [
+    # semantic compaction / rollup
+    "MemoryRollup",
+    "RollupReport",
+    "build_segment_instruction",
     # contract
     "MemoryProvider",
     "MemoryDescriptor",
