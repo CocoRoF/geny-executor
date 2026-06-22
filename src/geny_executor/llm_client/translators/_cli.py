@@ -235,6 +235,21 @@ def claude_code_argv(
         elif sid:
             argv += ["--session-id", str(sid)]
 
+    # Prompt delivery.
+    #   * Streaming  → messages travel via stream-json STDIN
+    #     (``build_stream_json_stdin``), so nothing goes in argv here.
+    #   * Non-streaming (``--print --output-format json``) has NO stdin wired
+    #     by ``_send``, so the prompt MUST be the trailing positional argument
+    #     (``claude --print --output-format json --model X "<prompt>"``).
+    #     Without this, the CLI exits 1 with "input must be provided either
+    #     through stdin or as a prompt argument when using --print" — which
+    #     broke every non-streaming ``create_message`` (e.g. offline memory
+    #     summarisation) while streaming sessions worked.
+    if not request.stream:
+        prompt_text = flatten_messages_to_prompt(request.messages)
+        if prompt_text:
+            argv.append(prompt_text)
+
     # Caller-supplied escape hatch.
     if extra_args:
         argv += list(extra_args)
@@ -300,6 +315,52 @@ def _render_content_for_history(content: Any) -> str:
         rendered = [_render_block_for_history(b) for b in content]
         return "\n".join(s for s in rendered if s).strip()
     return str(content)
+
+
+def flatten_messages_to_prompt(messages: List[Dict[str, Any]]) -> str:
+    """Flatten canonical messages into a single plain-text prompt.
+
+    The non-streaming counterpart to :func:`build_stream_json_stdin` (which
+    wraps the equivalent text in a stream-json envelope): used for the
+    ``--print`` positional prompt argument. Single-turn user messages render
+    their content directly; multi-turn history collapses into a
+    "Conversation so far / Current input" structure mirroring the streaming
+    flatten, so non-stream and stream see the same prompt contract.
+    """
+    if not messages:
+        return ""
+    if len(messages) == 1 and str(messages[0].get("role", "")) == "user":
+        return _render_content_for_history(messages[0].get("content", "")).strip()
+
+    parts: List[str] = []
+    last_user_idx = -1
+    for i, m in enumerate(messages):
+        if str(m.get("role", "")) == "user":
+            last_user_idx = i
+    for i, m in enumerate(messages):
+        role = str(m.get("role", "user"))
+        text = _render_content_for_history(m.get("content", ""))
+        if not text and role != "assistant":
+            continue
+        if role == "user":
+            parts.append(text if i == last_user_idx else f"### User\n{text}")
+        elif role == "assistant":
+            if text:
+                parts.append(f"### Assistant\n{text}")
+        elif role == "tool":
+            parts.append(f"### Tool result\n{text}")
+        else:
+            parts.append(f"### {role.capitalize()}\n{text}")
+
+    current_input = parts[-1] if parts else ""
+    preamble = ""
+    if len(parts) > 1:
+        preamble = (
+            "## Conversation so far\n\n"
+            + "\n\n".join(parts[:-1])
+            + "\n\n## Current input\n"
+        )
+    return (preamble + current_input).strip()
 
 
 def build_stream_json_stdin(messages: List[Dict[str, Any]]) -> bytes:

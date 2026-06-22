@@ -4,6 +4,19 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.17.0] — 2026-06-22
+
+### Fixed
+
+- **Claude Code CLI non-streaming `create_message` delivered no prompt** — the
+  `--print --output-format json` path wired neither stdin nor a positional
+  prompt, so the CLI exited 1 with "input must be provided either through stdin
+  or as a prompt argument when using --print". Streaming worked (stdin
+  stream-json), so live sessions were fine but every non-stream call (e.g.
+  offline memory summarisation / rollup) failed. The non-stream path now appends
+  the flattened prompt as the trailing positional argument; `flatten_messages_to_prompt`
+  exposes the shared flattener.
+
 ## [2.16.0] — 2026-06-22
 
 ### Added
