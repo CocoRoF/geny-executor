@@ -4,6 +4,20 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.16.0] — 2026-06-22
+
+### Added
+
+- **`MemoryRollup`** (`geny_executor.memory.rollup`) — semantic memory compaction
+  tier 1: folds the prior rolling digest + recent raw STM turns into an updated,
+  preservation-focused **rolling digest** and persists it to the summary slot
+  (`STMHandle.write_summary`, retriever L1, always injected) — replacing mechanical
+  transcript dumps. Summarization is a host-injected `async (instruction) -> digest`
+  callable (host owns model + transport); the engine owns the orchestration and the
+  PRESERVE clause (facts / decisions / entities / user preferences+commitments / open
+  threads / relationship+affect are never dropped). Host-driven (idle / context-
+  pressure / lazy) — no network on pipeline build. Best-effort; never raises.
+
 ## [2.15.0] — 2026-06-20
 
 ### Added
