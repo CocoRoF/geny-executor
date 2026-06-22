@@ -4,6 +4,24 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.19.0] — 2026-06-22
+
+### Added
+
+- **`MemoryRollup.rollup_daily(day=)`** — the L2 DAILY digest tier: persists the
+  current rolling digest as a per-day note (`daily/__digest_<day>__.md`,
+  idempotent per day) for a date-navigable series of compressed daily digests.
+  `run(daily_key=)` wires it.
+
+### Changed
+
+- **`LLMSummaryCompactor` self-wires its model** — when no `resolve_cfg` is
+  supplied it now derives the `ModelConfig` from the live `state.model`, so
+  selecting the `llm_summary` compactor in a manifest performs real LLM
+  context-pressure compaction (preservation-focused prompt) instead of silently
+  falling back to the static placeholder. Backward-compatible (explicit wiring
+  and the no-model path are unchanged).
+
 ## [2.18.0] — 2026-06-22
 
 ### Added

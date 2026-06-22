@@ -185,7 +185,24 @@ class LLMSummaryCompactor(SummaryCompactor):
         if len(state.messages) <= self._keep_recent:
             return
 
-        if not self._has_override() or self._resolve_cfg is None:
+        # Resolve the model config. Explicit wiring wins; otherwise self-wire
+        # from the live state's model so selecting the ``llm_summary`` compactor
+        # in a manifest "just works" (proper LLM compaction instead of the
+        # static placeholder) without the host threading resolve_cfg through.
+        resolve = self._resolve_cfg
+        has_override = self._has_override()
+        if resolve is None:
+            state_model = getattr(state, "model", None)
+            if state_model:
+                resolve = lambda s: ModelConfig(  # noqa: E731
+                    model=getattr(s, "model", state_model) or state_model,
+                    max_tokens=2048,
+                    temperature=0.0,
+                    thinking_enabled=False,
+                )
+                has_override = True
+
+        if not has_override or resolve is None:
             await super().compact(state)
             return
 
@@ -213,13 +230,17 @@ class LLMSummaryCompactor(SummaryCompactor):
         transcript = "\n".join(transcript_lines)[:12000]
 
         prompt = (
-            "Summarize the following conversation transcript so the essential "
-            "facts, user requests, decisions, and unresolved items are preserved. "
-            "Keep it under ~500 words. Write a flat recap, not a bullet list.\n\n"
+            "The conversation context is too long for the model. Compress the OLDER "
+            "portion below into a faithful recap so the agent loses nothing "
+            "load-bearing. ALWAYS preserve: concrete facts & figures, the user's "
+            "requests / preferences / commitments, decisions made and why, named "
+            "entities, and any unresolved items / open threads. Drop only redundant "
+            "chatter. Keep it under ~500 words; write a flowing recap, not a bullet "
+            "list, in the conversation's own language.\n\n"
             f"<transcript>\n{transcript}\n</transcript>"
         )
 
-        cfg = self._resolve_cfg(state)
+        cfg = resolve(state)
         try:
             resp = await client.create_message(
                 model_config=cfg,
