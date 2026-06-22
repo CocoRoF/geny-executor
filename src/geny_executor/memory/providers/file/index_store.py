@@ -335,7 +335,14 @@ class _FileIndexStore:
             top_tags=top_tags,
             category_descriptions=category_descriptions,
         )
-        lines: List[str] = ["## Vault Map"]
+        lines: List[str] = [
+            "## Vault Map",
+            "_Compressed-first: your always-injected summary digest + pinned "
+            "`critical` notes ARE the compressed memory — rely on those first. "
+            "This map is the index for PROGRESSIVE drill-down; open detail only "
+            "when needed: map → `memory_list(category=…)` → "
+            "`memory_read(filename=…)` → raw turns. Raw is kept but not preloaded._",
+        ]
         cats = vmap.get("categories") or {}
         if cats:
             lines.append("- Categories:")
