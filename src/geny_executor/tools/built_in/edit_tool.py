@@ -63,6 +63,43 @@ class EditTool(Tool):
         if old_string == new_string:
             return ToolResult(content="old_string and new_string must be different", is_error=True)
 
+        # Sandbox: read-modify-write the file inside the container.
+        if context.sandbox is not None:
+            from geny_executor.tools._sandbox import sb_read_bytes, sb_write_bytes
+
+            wd = context.working_dir or "/workspace"
+            try:
+                content = (await sb_read_bytes(context.sandbox, file_path, workdir=wd)).decode("utf-8")
+            except FileNotFoundError:
+                return ToolResult(content=f"File not found: {file_path}", is_error=True)
+            except PermissionError as e:
+                return ToolResult(content=str(e), is_error=True)
+            except Exception as e:  # noqa: BLE001
+                return ToolResult(content=f"Read error: {e}", is_error=True)
+            count = content.count(old_string)
+            if count == 0:
+                return ToolResult(
+                    content="old_string not found in file. Ensure the string matches exactly, including whitespace and indentation.",
+                    is_error=True,
+                )
+            if not replace_all and count > 1:
+                return ToolResult(
+                    content=f"old_string appears {count} times in file. Provide more context to make it unique, or set replace_all=true.",
+                    is_error=True,
+                )
+            new_content = content.replace(
+                old_string, new_string, count if replace_all else 1
+            )
+            try:
+                await sb_write_bytes(
+                    context.sandbox, file_path, new_content.encode("utf-8"), workdir=wd
+                )
+            except Exception as e:  # noqa: BLE001
+                return ToolResult(content=f"Write error: {e}", is_error=True)
+            return ToolResult(
+                content=f"Successfully edited {file_path} ({count} replacement{'s' if count > 1 else ''})"
+            )
+
         try:
             resolved = resolve_and_validate(file_path, context.working_dir, context.allowed_paths)
         except (PermissionError, ValueError) as e:

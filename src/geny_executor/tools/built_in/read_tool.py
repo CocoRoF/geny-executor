@@ -65,6 +65,47 @@ class ReadTool(Tool):
         offset = input.get("offset", 0)
         limit = input.get("limit", _DEFAULT_LIMIT)
 
+        # Sandbox: read the file inside the container (docker exec cat).
+        if context.sandbox is not None:
+            from geny_executor.tools._sandbox import sb_read_bytes
+
+            wd = context.working_dir or "/workspace"
+            try:
+                raw = await sb_read_bytes(context.sandbox, file_path, workdir=wd)
+            except FileNotFoundError:
+                return ToolResult(content=f"File not found: {file_path}", is_error=True)
+            except PermissionError as e:
+                return ToolResult(content=str(e), is_error=True)
+            except Exception as e:  # noqa: BLE001
+                return ToolResult(content=f"Read error: {e}", is_error=True)
+            if b"\x00" in raw[:8192]:
+                return ToolResult(content=f"[Binary file: {file_path}, {len(raw)} bytes]")
+            try:
+                text = raw.decode("utf-8")
+            except UnicodeDecodeError:
+                try:
+                    text = raw.decode("latin-1")
+                except Exception:
+                    return ToolResult(
+                        content=f"[Binary file: {file_path}, {len(raw)} bytes]"
+                    )
+            lines = text.splitlines(keepends=True)
+            total = len(lines)
+            selected = lines[offset : offset + limit]
+            if not selected and total > 0:
+                return ToolResult(
+                    content=f"Offset {offset} is beyond file end ({total} lines).",
+                    is_error=True,
+                )
+            numbered = [
+                f"{i}\t{line.rstrip()}"
+                for i, line in enumerate(selected, start=offset + 1)
+            ]
+            output = "\n".join(numbered)
+            if offset + limit < total:
+                output += f"\n\n... ({total - offset - limit} more lines, {total} total)"
+            return ToolResult(content=output)
+
         try:
             resolved = resolve_and_validate(file_path, context.working_dir, context.allowed_paths)
         except (PermissionError, ValueError) as e:

@@ -46,6 +46,21 @@ class WriteTool(Tool):
         file_path = input.get("file_path", "")
         content = input.get("content", "")
 
+        # Sandbox: write the file inside the container (docker exec).
+        if context.sandbox is not None:
+            from geny_executor.tools._sandbox import sb_write_bytes
+
+            wd = context.working_dir or "/workspace"
+            try:
+                n = await sb_write_bytes(
+                    context.sandbox, file_path, content.encode("utf-8"), workdir=wd
+                )
+                return ToolResult(content=f"Successfully wrote {n} bytes to {file_path}")
+            except PermissionError as e:
+                return ToolResult(content=str(e), is_error=True)
+            except Exception as e:  # noqa: BLE001
+                return ToolResult(content=f"Write error: {e}", is_error=True)
+
         try:
             resolved = resolve_and_validate(file_path, context.working_dir, context.allowed_paths)
         except (PermissionError, ValueError) as e:

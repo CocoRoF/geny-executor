@@ -58,6 +58,42 @@ class BashTool(Tool):
         timeout_ms = min(input.get("timeout", _DEFAULT_TIMEOUT_MS), _MAX_TIMEOUT_MS)
         timeout_s = timeout_ms / 1000.0
 
+        # Sandbox: run the command inside the container (docker exec) instead
+        # of on the host. Same output shaping as the host path below.
+        if context.sandbox is not None:
+            from geny_executor.tools._sandbox import sb_run
+
+            try:
+                exit_code, stdout, stderr = await sb_run(
+                    context.sandbox,
+                    command,
+                    workdir=context.working_dir or "/workspace",
+                    env=context.env_vars,
+                    timeout_s=timeout_s,
+                )
+            except asyncio.TimeoutError:
+                return ToolResult(
+                    content=f"Command timed out after {timeout_ms}ms", is_error=True
+                )
+            except Exception as e:  # noqa: BLE001
+                return ToolResult(content=f"Sandbox exec failed: {e}", is_error=True)
+            if len(stdout) > _MAX_OUTPUT:
+                stdout = stdout[:_MAX_OUTPUT] + "\n\n... (truncated)"
+            if len(stderr) > _MAX_OUTPUT:
+                stderr = stderr[:_MAX_OUTPUT] + "\n\n... (truncated)"
+            parts = []
+            if stdout:
+                parts.append(stdout)
+            if stderr:
+                parts.append(f"STDERR:\n{stderr}")
+            if exit_code != 0:
+                parts.append(f"Exit code: {exit_code}")
+            return ToolResult(
+                content="\n".join(parts) if parts else "(no output)",
+                is_error=exit_code != 0,
+                metadata={"exit_code": exit_code, "sandboxed": True},
+            )
+
         cwd = context.working_dir or None
 
         # Build environment: inherit current env + inject context env_vars

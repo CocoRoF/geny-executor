@@ -92,6 +92,34 @@ class GrepTool(Tool):
         except re.error as e:
             return ToolResult(content=f"Invalid regex: {e}", is_error=True)
 
+        # Sandbox: run grep inside the container (the files live there).
+        if context.sandbox is not None:
+            import shlex
+
+            from geny_executor.tools._sandbox import sb_run
+
+            wd = context.working_dir or "/workspace"
+            spath = input.get("path", "") or "."
+            opts = ["-rEn", "-I"]  # recursive, extended-regex, line-num, skip binary
+            if case_insensitive:
+                opts.append("-i")
+            if output_mode == "files":
+                opts.append("-l")
+            elif output_mode == "count":
+                opts.append("-c")
+            elif ctx_lines:
+                opts.append(f"-C{int(ctx_lines)}")
+            excludes = "--exclude-dir=.git --exclude-dir=node_modules --exclude-dir=__pycache__ --exclude-dir=.venv"
+            cmd = (
+                f"grep {' '.join(opts)} {excludes} -e {shlex.quote(pattern_str)} "
+                f"-- {shlex.quote(spath)} 2>/dev/null | head -n {_MAX_MATCHES}"
+            )
+            rc, out, _err = await sb_run(context.sandbox, cmd, workdir=wd)
+            out = out.strip()
+            if not out:
+                return ToolResult(content=f"No matches for '{pattern_str}'")
+            return ToolResult(content=out)
+
         base = Path(search_path)
         if not base.exists():
             return ToolResult(content=f"Path not found: {search_path}", is_error=True)
