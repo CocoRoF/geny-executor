@@ -725,6 +725,7 @@ class Pipeline:
             False  # flips once run()/run_stream() begins; gates attach_runtime
         )
         self._attached_llm_client: Any = None  # set by attach_runtime; propagated in _init_state
+        self._attached_sandbox: Any = None  # SandboxHandle; wraps a resolved claude_code_cli client in a container runner
         self._credentials: CredentialBundle = CredentialBundle()  # set by from_manifest_async
         self._subagent_registry: Any = None  # set by attach_runtime; populates state + agent stage
         self._attached_session_runtime: Any = None  # v0.30.0 plugin slot; propagated in _init_state
@@ -1460,6 +1461,7 @@ class Pipeline:
         permission_rules: Optional[Any] = None,
         permission_mode: Optional[str] = None,
         subagent_registry: Optional[Any] = None,
+        sandbox: Optional[Any] = None,
         override_manifest: bool = False,
     ) -> None:
         """Inject session-scoped runtime objects into a manifest-built pipeline.
@@ -1611,6 +1613,7 @@ class Pipeline:
             permission_rules=permission_rules,
             permission_mode=permission_mode,
             subagent_registry=subagent_registry,
+            sandbox=sandbox,
             override_manifest=override_manifest,
         )
 
@@ -1669,6 +1672,7 @@ class Pipeline:
         permission_rules: Optional[Any] = None,
         permission_mode: Optional[str] = None,
         subagent_registry: Optional[Any] = None,
+        sandbox: Optional[Any] = None,
         override_manifest: bool = False,
     ) -> None:
         """Shared wiring behind :meth:`attach_runtime` / :meth:`refresh_runtime`.
@@ -1741,6 +1745,17 @@ class Pipeline:
             # Bump the generation so reused states drop any previously
             # pipeline-resolved client and capture this one at the next
             # _init_state (credential-rotation symmetry, audit §3.3).
+            self._client_generation += 1
+
+        if sandbox is not None:
+            # A sandbox handle (container_name + async ensure()). When the
+            # pipeline resolves a ``claude_code_cli`` client from the
+            # credential bundle, it wraps it in a ContainerCLIRunner so the
+            # agent CLI spawns inside the sandbox container — see
+            # ``_build_client_for``. Ignored for SDK providers (they never
+            # spawn the CLI). Bump the generation so reused states rebuild
+            # their client through the sandbox on the next turn.
+            self._attached_sandbox = sandbox
             self._client_generation += 1
 
         if session_runtime is not None:
@@ -2846,6 +2861,20 @@ class Pipeline:
                 if entry not in allow:
                     allow.append(entry)
             kwargs["allow_tools"] = tuple(allow)
+        # Sandbox wrap: when a SandboxHandle is attached and this is the CLI
+        # provider, build the client so every spawn (and the --version probe)
+        # runs inside the sandbox container via ContainerCLIRunner. Reuses the
+        # exact kwargs resolved above (api_key, mcp_config, allow_tools,
+        # workspace_dir, ...) — the host never replicates them. SDK providers
+        # ignore the sandbox (they don't spawn a CLI).
+        if provider == "claude_code_cli" and self._attached_sandbox is not None:
+            from geny_executor.llm_client.claude_code import (
+                build_container_cli_client,
+            )
+
+            return build_container_cli_client(
+                sandbox=self._attached_sandbox, **kwargs
+            )
         return client_cls(**kwargs)
 
     async def _try_run_stage(self, order: int, current: Any, state: PipelineState) -> Any:

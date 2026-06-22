@@ -4,6 +4,24 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.22.0] — 2026-06-22
+
+### Added
+
+- **`Pipeline.attach_runtime(sandbox=…)`** — attach a `SandboxHandle` to a
+  session. When the pipeline resolves a `claude_code_cli` client from the
+  credential bundle, it now wraps it with the `ContainerCLIRunner` (2.21.0) so
+  every CLI spawn — and the `--version` probe — runs inside the sandbox
+  container. Crucially this **reuses the host's already-resolved client kwargs**
+  (api_key, mcp_config, allow_tools, workspace_dir, CLI MCP passthrough, …) —
+  the host never replicates them; it just passes `sandbox=`. SDK providers
+  (anthropic/openai/google/vllm) ignore the sandbox (they never spawn a CLI).
+  Bumps the client generation so reused states rebuild through the sandbox on
+  the next turn; `invalidate_client()` keeps the sandbox binding (cred rotation
+  ≠ workspace change). This is the supported seam for hosts (Geny) that run
+  agent sessions inside a managed workspace container — no `llm_client=` build
+  required on the host side.
+
 ## [2.21.1] — 2026-06-22
 
 ### Changed
