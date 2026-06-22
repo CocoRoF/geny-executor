@@ -42,22 +42,13 @@ def test_fake_sandbox_satisfies_protocol() -> None:
 
 def test_requires_sandbox() -> None:
     with pytest.raises(ValueError):
-        ContainerCLIRunner(binary="", sandbox=None, launcher="sh")
+        ContainerCLIRunner(binary="", sandbox=None, launcher="docker")
 
 
-def test_bad_launcher_raises() -> None:
-    with pytest.raises(CLIBinaryNotFound):
-        ContainerCLIRunner(
-            binary="",
-            sandbox=FakeSandbox("c"),
-            launcher="definitely-not-a-launcher-xyz",
-        )
-
-
-def test_host_binary_not_required() -> None:
-    # The agent binary lives in the container; an empty/absent host binary
-    # must NOT trip the parent's host-binary existence check.
-    runner = ContainerCLIRunner(binary="", sandbox=FakeSandbox("c"), launcher="sh")
+def test_constructs_without_host_binary_or_launcher() -> None:
+    # The agent binary lives in the container, and the launcher is a runtime
+    # concern — neither must trip construction (docker-less test/CI must work).
+    runner = ContainerCLIRunner(binary="", sandbox=FakeSandbox("c"), launcher="docker")
     assert runner.workdir == "/workspace"
     assert runner.container_binary == "claude"
 

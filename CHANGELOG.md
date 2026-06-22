@@ -4,6 +4,16 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.21.1] — 2026-06-22
+
+### Changed
+
+- **`ContainerCLIRunner` no longer eagerly validates the `launcher` at
+  construction.** A missing `docker`/`podman` is a runtime concern (it surfaces a
+  clear error at `exec` time); the eager check coupled construction to the host
+  and broke docker-less test/CI paths that intercept the spawn. `__post_init__`
+  now enforces only the invariant the runner cannot work without — a `sandbox`.
+
 ## [2.21.0] — 2026-06-22
 
 ### Added
