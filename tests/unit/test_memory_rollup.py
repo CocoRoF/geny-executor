@@ -85,3 +85,65 @@ def test_instruction_has_structure_and_preserve():
     assert PRESERVE_CLAUSE.split("\n")[0] in instr
     assert "## Facts & Decisions" in instr
     assert "4000" in instr
+
+
+class _Notes:
+    def __init__(self, pinned=""):
+        self._pinned = pinned
+        self.written = None
+    async def load_pinned(self, *, category="critical", max_chars=3000):
+        return self._pinned
+    async def write(self, draft):
+        self.written = draft
+        return draft
+
+
+class _ProviderWithNotes:
+    def __init__(self, stm, notes):
+        self._stm = stm
+        self._notes = notes
+    def stm(self):
+        return self._stm
+    def notes(self):
+        return self._notes
+
+
+@pytest.mark.asyncio
+async def test_evergreen_merges_current_and_recent_then_writes_pinned_critical():
+    from geny_executor.memory.rollup import EVERGREEN_FILENAME, EVERGREEN_CATEGORY
+    stm = _STM([], summary="## Summary\n사장님 prefers rhythm games")
+    notes = _Notes(pinned="## Identity\nGeny, a VTuber")
+    captured = {}
+    async def s(instr):
+        captured["instr"] = instr
+        return "## Identity\nGeny\n## User\n사장님 — likes rhythm games"
+    r = MemoryRollup(_ProviderWithNotes(stm, notes), summarize=s)
+    out = await r.rollup_evergreen()
+    assert out and "사장님" in out
+    # written as the rewritable pinned critical evergreen note
+    assert notes.written is not None
+    assert notes.written.filename == EVERGREEN_FILENAME
+    assert notes.written.category == EVERGREEN_CATEGORY
+    # merge saw both current evergreen + the latest rolling digest
+    assert "Geny, a VTuber" in captured["instr"]
+    assert "rhythm games" in captured["instr"]
+    assert "ALWAYS PRESERVE" in captured["instr"]
+
+
+@pytest.mark.asyncio
+async def test_evergreen_noop_when_nothing():
+    stm = _STM([], summary="")
+    notes = _Notes(pinned="")
+    r = MemoryRollup(_ProviderWithNotes(stm, notes), summarize=_summarizer({}))
+    assert await r.rollup_evergreen() is None
+    assert notes.written is None
+
+
+@pytest.mark.asyncio
+async def test_run_with_evergreen_flag():
+    stm = _STM([_Turn("user", "hi")], summary="prior")
+    notes = _Notes(pinned="x")
+    r = MemoryRollup(_ProviderWithNotes(stm, notes), summarize=_summarizer({}))
+    report = await r.run(evergreen=True)
+    assert report.segment_written is True
+    assert report.evergreen_written is True
