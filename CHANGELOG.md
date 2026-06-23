@@ -4,6 +4,29 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.30.0] — 2026-06-23
+
+### Added
+
+- **`SandboxExecTool`** (`tools/built_in/sandbox_exec_tool.py`) — a tool whose
+  implementation is *code that runs inside a sandbox container* (`docker exec`).
+  The execution core of **Sandbox Tool Packs**: an agent authors a script in an
+  isolated workspace, and this tool dispatches the tool's `input` as JSON on
+  stdin and reads a JSON result on stdout (`{"error": ...}` or a non-zero exit →
+  `is_error`). Carries a `SandboxHandle`; **no host fallback** (isolation is the
+  point). Spec is serializable (`to_dict`/`from_dict`) so a host can persist the
+  tool and rebuild it against a freshly-provisioned sandbox. Not in
+  `BUILT_IN_TOOL_CLASSES` — it is instantiated per pack, not activated by name.
+- **Public container-exec API** on `geny_executor.tools`: `sandbox_exec`,
+  `sb_run`, `sb_read_bytes`, `sb_write_bytes`, `container_path`,
+  `SandboxExecError` (previously only the private `_sandbox` module). `tools/
+  sandbox.py` (the policy `ToolSandbox`) is unchanged — this is the container
+  channel.
+
+This is **P0** of the Sandbox Tool Packs plan (a session creates/tests/saves a
+`[sandbox + tools + skills]` bundle, reusable across sessions). Additive; no
+existing behavior changes.
+
 ## [2.29.0] — 2026-06-23
 
 ### Fixed

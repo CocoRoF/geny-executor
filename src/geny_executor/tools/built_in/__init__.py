@@ -85,6 +85,9 @@ from geny_executor.tools.built_in.plan_mode_tools import (
     ExitPlanModeTool,
 )
 from geny_executor.tools.built_in.env_tools import EnvTool
+# NOT in BUILT_IN_TOOL_CLASSES: SandboxExecTool is instantiated per Sandbox Tool
+# Pack (with a spec + a live SandboxHandle), not activated by a manifest name.
+from geny_executor.tools.built_in.sandbox_exec_tool import SandboxExecTool
 
 
 BUILT_IN_TOOL_CLASSES: Dict[str, Type[Tool]] = {
@@ -268,6 +271,7 @@ __all__ = [
     "EnterPlanModeTool",
     "ExitPlanModeTool",
     "EnvTool",
+    "SandboxExecTool",
     "BUILT_IN_TOOL_CLASSES",
     "BUILT_IN_TOOL_FEATURES",
     "get_builtin_tools",
