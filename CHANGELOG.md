@@ -4,6 +4,28 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.25.0] — 2026-06-23
+
+### Added
+
+- **Skills Level 3 — bundled resources load on demand (true progressive
+  disclosure, uniform across ALL backends).** A skill folder can now ship extra
+  files (`REFERENCE.md`, `FORMS.md`, `scripts/*.py`, …) alongside `SKILL.md`.
+  They are NOT in context at rest (Level 1 = name + description only) nor when
+  the body is returned (Level 2); they load ONLY when the caller asks for one.
+  - `Skill.list_resources()` discovers the colocated files (POSIX-relative,
+    excludes `SKILL.md` + dotfiles).
+  - `SkillTool` advertises a `resource` arg (only when the skill ships files);
+    calling the skill with `resource="REFERENCE.md"` returns THAT file's content
+    instead of running the skill — traversal-guarded to the skill dir, text only.
+  - The Level 2 body now lists the available bundled resources (names only, so
+    Level 1/2 stay cheap) so the model knows what it can pull on demand.
+
+  This is the executor's OWN implementation of the 3-tier model — it does NOT
+  rely on a backend's native skill machinery (e.g. Claude Code), so
+  claude_code_cli / anthropic / openai / local all get identical behaviour
+  through the normal tool-result channel.
+
 ## [2.24.0] — 2026-06-23
 
 ### Added

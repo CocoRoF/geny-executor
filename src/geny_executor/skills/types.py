@@ -177,6 +177,36 @@ class Skill:
             return None
         return self.source.parent
 
+    def list_resources(self) -> Tuple[str, ...]:
+        """Level 3 (progressive disclosure) — the bundled resource files that
+        live next to this skill (``FORMS.md``, ``REFERENCE.md``,
+        ``scripts/fill_form.py``, …), as POSIX-relative paths under
+        :attr:`assets_dir`, EXCLUDING ``SKILL.md`` itself and dotfiles.
+
+        These are NOT loaded into context at rest (Level 1) nor when the skill
+        body is returned (Level 2) — only when the caller explicitly asks for
+        one via the SkillTool ``resource`` argument (Level 3). The skill body
+        references them so the model knows what it can pull on demand.
+
+        Empty for in-code bundled skills (no on-disk ``source``)."""
+        d = self.assets_dir
+        if d is None:
+            return ()
+        out: list[str] = []
+        try:
+            for p in sorted(d.rglob("*")):
+                if not p.is_file():
+                    continue
+                rel = p.relative_to(d)
+                if rel.name == "SKILL.md":
+                    continue
+                if any(part.startswith(".") for part in rel.parts):
+                    continue  # skip .gitkeep / .DS_Store / hidden dirs
+                out.append(rel.as_posix())
+        except OSError:
+            return ()
+        return tuple(out)
+
 
 @dataclass
 class SkillContext:

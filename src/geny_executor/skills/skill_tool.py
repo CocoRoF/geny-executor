@@ -180,15 +180,30 @@ class SkillTool(Tool):
             hint = self._skill.metadata.argument_hint
             if hint:
                 args_doc = f"{args_doc} Hint: {hint}"
+        props: Dict[str, Any] = {
+            "args": {
+                "type": "object",
+                "description": args_doc,
+                "additionalProperties": True,
+            },
+        }
+        # Level 3 progressive disclosure — only advertise the ``resource``
+        # arg when the skill actually ships bundled files, so skills with no
+        # resources keep the minimal uniform schema.
+        if self._skill.list_resources():
+            props["resource"] = {
+                "type": "string",
+                "description": (
+                    "Level 3: load ONE bundled resource file by its relative "
+                    "path (e.g. 'REFERENCE.md', 'scripts/fill_form.py') instead "
+                    "of running the skill — its content is returned so it only "
+                    "enters context on demand. The skill body lists what's "
+                    "available. Omit to run the skill normally."
+                ),
+            }
         return {
             "type": "object",
-            "properties": {
-                "args": {
-                    "type": "object",
-                    "description": args_doc,
-                    "additionalProperties": True,
-                },
-            },
+            "properties": props,
         }
 
     def capabilities(self, input: Dict[str, Any]) -> ToolCapabilities:
@@ -209,6 +224,16 @@ class SkillTool(Tool):
 
     async def execute(self, input: Dict[str, Any], context: ToolContext) -> ToolResult:
         mode = self._skill.metadata.execution_mode
+
+        # Level 3 progressive disclosure — when the caller names a bundled
+        # ``resource``, return THAT file's content instead of running the
+        # skill. This is what keeps a large REFERENCE.md / FORMS.md / helper
+        # script out of context until the moment it's actually needed —
+        # uniformly across every backend (the content rides the normal
+        # tool-result channel, no Claude-Code-native skill machinery).
+        requested_resource = input.get("resource")
+        if requested_resource:
+            return self._load_resource(str(requested_resource))
 
         raw_args = input.get("args") or {}
         if not isinstance(raw_args, dict):
@@ -268,6 +293,15 @@ class SkillTool(Tool):
             header_lines.append(
                 f"model override: {self._skill.metadata.model_override} (advisory in inline mode)"
             )
+        # Level 3 — tell the model which bundled resources it can pull on
+        # demand (and how). Names only, so this stays cheap; contents load
+        # only when requested via the ``resource`` arg.
+        resources = self._skill.list_resources()
+        if resources:
+            header_lines.append(
+                "bundled resources (load on demand — call this skill again with "
+                'resource="<path>"): ' + ", ".join(resources)
+            )
         if shell_summary.outcomes:
             ran = sum(1 for o in shell_summary.outcomes if not o.skipped)
             skipped = sum(1 for o in shell_summary.outcomes if o.skipped)
@@ -319,6 +353,56 @@ class SkillTool(Tool):
                     "session_id": skill_ctx.session_id,
                     "parent_tool_use_id": skill_ctx.parent_tool_use_id,
                 },
+            },
+        )
+
+    def _load_resource(self, rel: str) -> ToolResult:
+        """Level 3 — read one bundled resource file and return its content.
+
+        Traversal-guarded: the resolved path must stay inside the skill's
+        ``assets_dir``. Refuses absolute paths / ``..`` escapes. Text only."""
+        d = self._skill.assets_dir
+        if d is None:
+            return ToolResult(
+                content=(
+                    f"skill {self._skill.id!r} ships no bundled resources "
+                    "(it has no on-disk source)."
+                ),
+                is_error=True,
+            )
+        try:
+            base = d.resolve()
+            target = (base / rel).resolve()
+        except (OSError, ValueError) as exc:
+            return ToolResult(content=f"resource {rel!r}: {exc}", is_error=True)
+        # Guard: target must be base itself's child (within the skill dir).
+        if base != target and base not in target.parents:
+            return ToolResult(
+                content=(
+                    f"resource {rel!r} escapes the skill directory — refused."
+                ),
+                is_error=True,
+            )
+        if not target.is_file():
+            avail = ", ".join(self._skill.list_resources()) or "(none)"
+            return ToolResult(
+                content=f"resource {rel!r} not found. Available: {avail}",
+                is_error=True,
+            )
+        try:
+            data = target.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            return ToolResult(
+                content=f"resource {rel!r} could not be read as UTF-8 text: {exc}",
+                is_error=True,
+            )
+        header = f"Skill resource: {self._skill.id}/{target.relative_to(base).as_posix()}"
+        return ToolResult(
+            content=f"{header}\n\n{data}".rstrip() + "\n",
+            metadata={
+                "skill_id": self._skill.id,
+                "resource": target.relative_to(base).as_posix(),
+                "resource_chars": len(data),
             },
         )
 
