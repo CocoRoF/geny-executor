@@ -46,9 +46,19 @@ class MutablePromptBuilder(PromptBuilder):
     edited — so it is a safe drop-in default.
     """
 
-    def __init__(self, prompt: str = "", sections: Optional[List[str]] = None):
+    def __init__(
+        self,
+        prompt: str = "",
+        sections: Optional[List[str]] = None,
+        blocks: Optional[List[PromptBlock]] = None,
+    ):
         self._base = prompt
         self._sections: List[str] = [str(s) for s in (sections or [])]
+        # Dynamic blocks (e.g. datetime / memory) rendered per turn AFTER the
+        # editable base + sections. The session edits the base; these keep
+        # working. Lets a host (Geny) use MutablePromptBuilder in place of a
+        # ComposablePromptBuilder without losing its dynamic content.
+        self._blocks: List[PromptBlock] = list(blocks or [])
 
     @property
     def name(self) -> str:
@@ -82,16 +92,30 @@ class MutablePromptBuilder(PromptBuilder):
         """Drop all appended sections (keeps the base)."""
         self._sections = []
 
-    def current_text(self) -> str:
-        """The fully-rendered prompt as it stands now."""
-        return self._render()
+    def add_block(self, block: PromptBlock) -> "MutablePromptBuilder":
+        """Append a dynamic block (rendered per turn). Chainable."""
+        self._blocks.append(block)
+        return self
 
-    def _render(self) -> str:
+    def current_text(self) -> str:
+        """The editable prompt (base + appended sections) as it stands now.
+        Excludes dynamic blocks — that's the part the session owns/edits."""
         parts = [self._base, *self._sections]
         return "\n\n".join(p for p in parts if p and p.strip())
 
+    def _render(self, state: Optional[PipelineState]) -> str:
+        parts: List[str] = [self._base, *self._sections]
+        for block in self._blocks:
+            try:
+                rendered = block.render(state)  # type: ignore[arg-type]
+            except Exception:  # noqa: BLE001 — a broken block never breaks the prompt
+                continue
+            if rendered:
+                parts.append(rendered if isinstance(rendered, str) else str(rendered))
+        return "\n\n".join(p for p in parts if p and p.strip())
+
     def build(self, state: PipelineState) -> str:
-        return self._render()
+        return self._render(state)
 
 
 class PersonaBlock(PromptBlock):

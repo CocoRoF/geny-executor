@@ -4,6 +4,18 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.27.0] — 2026-06-23
+
+### Changed
+
+- **`MutablePromptBuilder` now hosts dynamic blocks** (`blocks=[...]` +
+  `add_block`) in addition to its editable base + sections. `build(state)`
+  renders base + sections + per-turn blocks (datetime / memory / …);
+  `current_text()` returns just the editable base+sections (the part a session
+  owns). This lets a host (Geny) install a `MutablePromptBuilder` in place of a
+  `ComposablePromptBuilder` — so a session can edit its persona via the `env`
+  tool while the dynamic blocks keep rendering each turn.
+
 ## [2.26.0] — 2026-06-23
 
 ### Added
