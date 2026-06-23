@@ -218,6 +218,17 @@ class ToolStage(Stage[Any, Any]):
             # (the default) means no matrix is configured and dispatch
             # behaves exactly as it did pre-Phase-7.
             permission_rules=list(getattr(self._context, "permission_rules", None) or []),
+            # Host-attached tool settings (e.g. ``extras["web_search"]
+            # ["brave_api_key"]``) read LIVE off ``self._context`` each
+            # dispatch — so a value edited at runtime (the ``env`` tool's
+            # set_setting) is visible on the very next tool call. Shallow-
+            # copied so a buggy tool can't drop session-wide keys; nested
+            # setting dicts stay shared (the edit path the controller uses).
+            extras=dict(getattr(self._context, "extras", None) or {}),
+            # The self-modifying-environment controller — likewise read live
+            # so the built-in ``env`` tool reaches it through real dispatch
+            # (not just direct calls). Without this it would see ``None``.
+            environment=getattr(self._context, "environment", None),
         )
 
         # 2.2.0 (audit §1-5 — policy via config): the permission posture

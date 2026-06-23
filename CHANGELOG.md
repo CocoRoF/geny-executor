@@ -4,6 +4,42 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.28.0] — 2026-06-23
+
+### Fixed
+
+- **`build_dispatch_context` now propagates `extras` and `environment`** to the
+  per-call ToolContext (s10 Tool stage). Previously both were dropped when the
+  stage built each dispatch context, so (a) host-attached tool settings
+  (`extras["web_search"]["brave_api_key"]`, …) never reached the dispatched
+  tool — it silently fell back to env vars — and (b) the built-in `env` tool,
+  when actually called by the model through dispatch, saw `environment=None` and
+  errored. Both are read LIVE off `self._context` each dispatch, so a value
+  edited at runtime is visible on the very next tool call. (Extras shallow-
+  copied per call so a buggy tool can't drop session-wide keys.)
+
+### Added
+
+- **Self-modifying environment now controls tool settings + tunable config**, so
+  a session has precise control over everything it runs in *except* core
+  identity (model / provider / credentials, which stay locked):
+  - `env(action="get_settings"/"set_setting")` — inspect/edit the values tools
+    need (API keys, search backend, URLs). Edits land on the live dispatch
+    context's `extras[group][field]` and take effect next tool call. Secrets are
+    masked in `get_settings` (reveal with `{"reveal": true}`). A host can supply
+    a settings descriptor via `attach_runtime(env_settings_schemas=...)` for
+    accurate masking + discovery.
+  - `env(action="get_config"/"set_config")` — model tunables (temperature,
+    max_tokens, top_p/top_k, thinking_enabled, thinking_budget_tokens) +
+    pipeline limits (max_iterations, cost_budget_usd, context_window_budget,
+    single_turn), applied next turn. **Core keys refused**: `model`, `provider`,
+    `api_key`, `base_url`, `credentials`, `name`.
+  - `PipelineEnvironment` gained `tool_context` / `config` / `settings_schemas`
+    (with `attach_*` setters); the overlay now carries `tool_settings` + `config`
+    for host persistence + restore.
+  - The disable guard now protects the `env` tool by exact name (was `env_*`
+    only — the dispatcher is named `env`, so it could previously be disabled).
+
 ## [2.27.0] — 2026-06-23
 
 ### Changed

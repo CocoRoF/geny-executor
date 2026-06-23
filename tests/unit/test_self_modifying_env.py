@@ -148,3 +148,82 @@ async def test_env_save_calls_host_persistence_with_overlay() -> None:
     assert "web_search" in saved["active_tools"]
     actions = {c["action"] for c in saved["changelog"]}
     assert {"set_prompt", "enable_tool"} <= actions
+
+
+# ── dispatch-path wiring: the env tool + tool settings must survive the
+#    per-call ToolContext that the Tool stage builds (build_dispatch_context).
+
+
+def _tool_stage(pipeline: Pipeline):
+    return next(s for s in pipeline._stages.values() if getattr(s, "name", "") == "tool")
+
+
+@pytest.mark.asyncio
+async def test_env_controller_survives_dispatch_context() -> None:
+    """The env tool reads ctx.environment; the Tool stage builds a fresh
+    ToolContext per call — that context MUST carry environment + extras."""
+    from geny_executor.core.state import PipelineState
+
+    prov = _Provider({"read": _NamedTool("read")})
+    pipeline = await _build(prov)
+    stage = _tool_stage(pipeline)
+    # Seed a tool setting on the live stage context.
+    stage._context.extras = {"web_search": {"brave_api_key": "SEEDKEY"}}
+    pipeline._set_tool_stage_environment(pipeline.environment)
+
+    state = PipelineState(session_id="s1")
+    dispatch_ctx = stage.build_dispatch_context(state)
+    assert dispatch_ctx.environment is pipeline.environment   # env tool can reach it
+    assert dispatch_ctx.extras.get("web_search", {}).get("brave_api_key") == "SEEDKEY"
+
+
+@pytest.mark.asyncio
+async def test_set_setting_reaches_next_dispatch() -> None:
+    from geny_executor.core.state import PipelineState
+
+    prov = _Provider({"read": _NamedTool("read")})
+    pipeline = await _build(prov)
+    stage = _tool_stage(pipeline)
+    stage._context.extras = {}
+    pipeline._set_tool_stage_environment(pipeline.environment)
+    env = pipeline.environment
+
+    ok, _ = env.set_setting("web_search", "brave_api_key", "LIVEKEY")
+    assert ok
+    # The NEXT dispatch context sees the value the controller just wrote.
+    ctx = stage.build_dispatch_context(PipelineState(session_id="s1"))
+    assert ctx.extras["web_search"]["brave_api_key"] == "LIVEKEY"
+    # get_settings masks the secret by default but reveals on request.
+    masked = env.get_settings()["groups"]["web_search"]["brave_api_key"]
+    assert "LIVEKEY" not in masked and masked.endswith("EKEY")
+    assert env.get_settings(reveal=True)["groups"]["web_search"]["brave_api_key"] == "LIVEKEY"
+
+
+@pytest.mark.asyncio
+async def test_config_tunables_editable_core_locked() -> None:
+    prov = _Provider({"read": _NamedTool("read")})
+    pipeline = await _build(prov)
+    env = pipeline.environment
+
+    ok, _ = env.set_config("temperature", 0.7)
+    assert ok
+    assert pipeline._config.model.temperature == 0.7
+    ok, _ = env.set_config("max_iterations", 12)
+    assert ok
+    assert pipeline._config.max_iterations == 12
+    # Core stays locked.
+    ok, msg = env.set_config("model", "claude-opus-4-8")
+    assert not ok and "core" in msg.lower()
+    ok, msg = env.set_config("provider", "openai")
+    assert not ok
+    assert "model" in env.get_config()["locked"]
+
+
+@pytest.mark.asyncio
+async def test_env_tool_cannot_be_disabled() -> None:
+    prov = _Provider({"read": _NamedTool("read")})
+    pipeline = await _build(prov)
+    env = pipeline.environment
+    ok, msg = env.disable_tool("env")
+    assert not ok and "refusing" in msg.lower()
+    assert "env" in env.active_tools()

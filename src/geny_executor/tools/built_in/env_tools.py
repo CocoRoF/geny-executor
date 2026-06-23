@@ -46,6 +46,10 @@ _ACTIONS = {
         ("skill_id", "description", "body", "allowed_tools"),
     ),
     "edit_skill": ("edit_skill", False, ("skill_id", "description", "body", "allowed_tools")),
+    "get_settings": ("get_settings", False, ("reveal",)),
+    "set_setting": ("set_setting", False, ("key", "field", "value")),
+    "get_config": ("get_config", False, ()),
+    "set_config": ("set_config", False, ("key", "value")),
     "changelog": ("changelog", False, ("limit",)),
     "save": ("save", True, ()),
 }
@@ -100,7 +104,7 @@ class EnvTool(Tool):
 
     def capabilities(self, input: Dict[str, Any]) -> ToolCapabilities:
         action = (input or {}).get("action")
-        read_only = action in ("view", "get_prompt", "changelog")
+        read_only = action in ("view", "get_prompt", "changelog", "get_settings", "get_config")
         # Env edits change the active toolset/prompt — never run them in parallel
         # with other tools.
         return ToolCapabilities(concurrency_safe=False, read_only=read_only)

@@ -37,6 +37,56 @@ logger = logging.getLogger(__name__)
 EnvPersistence = Callable[[Dict[str, Any]], Awaitable[None]]
 
 
+# ── editable env-config surface ────────────────────────────────────────
+# Model generation knobs that ``PipelineConfig.apply_to_state`` stamps onto
+# state EVERY turn — so editing them on the live config takes effect next turn.
+# The MODEL ID and PROVIDER are deliberately absent: those are "core" and stay
+# locked (a session must not silently switch which model it is).
+_TUNABLE_MODEL_KEYS: Dict[str, type] = {
+    "temperature": float,
+    "max_tokens": int,
+    "top_p": float,
+    "top_k": int,
+    "thinking_enabled": bool,
+    "thinking_budget_tokens": int,
+}
+# Top-level PipelineConfig limits re-applied to state every run.
+_TUNABLE_PIPELINE_KEYS: Dict[str, type] = {
+    "max_iterations": int,
+    "cost_budget_usd": float,
+    "context_window_budget": int,
+    "single_turn": bool,
+}
+# Never editable at runtime — identity / credentials / wiring.
+_CORE_LOCKED_KEYS = frozenset(
+    {"model", "provider", "api_key", "base_url", "name", "credentials"}
+)
+# extras keys that are runtime HANDLES (objects), not editable settings. The
+# value-is-a-dict heuristic already excludes most; this names the known ones
+# defensively so they never surface as "settings" even if dict-shaped.
+_RESERVED_EXTRAS_KEYS = frozenset(
+    {
+        "workspace_stack", "task_registry", "task_runner", "cron_store",
+        "cron_runner", "agent_orchestrator", "subagent_manager", "mcp_manager",
+        "mcp_config", "notification_endpoints", "env_extras",
+    }
+)
+_SECRET_NAME_HINTS = ("key", "token", "secret", "password", "passwd", "credential")
+
+
+def _coerce(value: Any, typ: type) -> Any:
+    """Best-effort coerce a JSON value to the config field's type."""
+    if typ is bool:
+        if isinstance(value, bool):
+            return value
+        return str(value).strip().lower() in ("1", "true", "yes", "on")
+    if typ is int:
+        return int(float(value))
+    if typ is float:
+        return float(value)
+    return value
+
+
 @dataclass
 class EnvChangeEntry:
     """One change-log entry for an environment mutation."""
@@ -75,6 +125,9 @@ class PipelineEnvironment:
         skill_registry: Optional[Any] = None,
         skill_fork_runner: Optional[Any] = None,
         persistence: Optional[EnvPersistence] = None,
+        tool_context: Optional[Any] = None,
+        config: Optional[Any] = None,
+        settings_schemas: Optional[List[Dict[str, Any]]] = None,
     ) -> None:
         self._registry = registry
         self._providers: Tuple[Any, ...] = tuple(providers or ())
@@ -82,6 +135,19 @@ class PipelineEnvironment:
         self._skill_registry = skill_registry
         self._skill_fork_runner = skill_fork_runner
         self._persistence = persistence
+        # Live tool-dispatch context — its ``.extras`` carries per-tool
+        # settings (e.g. ``extras["web_search"]["brave_api_key"]``). Editing
+        # this dict takes effect on the next tool call (the Tool stage reads
+        # ``self._context.extras`` live per dispatch).
+        self._tool_context = tool_context
+        # The running PipelineConfig — model tunables (temperature / max_tokens
+        # / thinking) + pipeline limits (max_iterations) are applied to state
+        # every turn, so editing them here takes effect next turn.
+        self._config = config
+        # Optional host-supplied descriptor of the configurable tool settings
+        # (groups + fields + which fields are secret) for richer discovery +
+        # accurate secret masking. The executor stays host-agnostic without it.
+        self._settings_schemas: List[Dict[str, Any]] = list(settings_schemas or [])
         self._log: List[EnvChangeEntry] = []
         self._seq = 0
         # Session-authored skills (create_skill/edit_skill) — kept so the
@@ -98,6 +164,20 @@ class PipelineEnvironment:
     def attach_persistence(self, persistence: Optional[EnvPersistence]) -> None:
         """Set/replace the host persistence callback (``env_save``)."""
         self._persistence = persistence
+
+    def attach_tool_context(self, tool_context: Optional[Any]) -> None:
+        """Re-point at the live tool-dispatch context (its ``.extras`` holds
+        the editable per-tool settings). Called when a host swaps the context
+        via attach_runtime/refresh_runtime."""
+        self._tool_context = tool_context
+
+    def attach_config(self, config: Optional[Any]) -> None:
+        """Re-point at the running PipelineConfig (model tunables + limits)."""
+        self._config = config
+
+    def attach_settings_schemas(self, schemas: Optional[List[Dict[str, Any]]]) -> None:
+        """Set/replace the host descriptor of configurable tool settings."""
+        self._settings_schemas = list(schemas or [])
 
     # ── change log ────────────────────────────────────────────────────
     def _record(self, action: str, target: str, detail: str, ok: bool = True) -> None:
@@ -159,6 +239,8 @@ class PipelineEnvironment:
             "available_tools": self.available_tools(),
             "active_skills": self.active_skills(),
             "available_skills": self.available_skills(),
+            "setting_groups": self._setting_groups(),
+            "config": {**self.get_config().get("model", {}), **self.get_config().get("pipeline", {})},
             "changes": len(self._log),
             "persistable": self._persistence is not None,
         }
@@ -231,8 +313,9 @@ class PipelineEnvironment:
             msg = f"tool '{name}' is not active"
             self._record("disable_tool", name, msg, ok=False)
             return False, msg
-        # Guard the self-modification tools so a session can't strand itself.
-        if name.startswith("env_"):
+        # Guard the self-modification tool so a session can't strand itself
+        # (the built-in dispatcher is named "env"; older builds used "env_*").
+        if name == "env" or name.startswith("env_"):
             msg = f"refusing to disable the environment control tool '{name}'"
             self._record("disable_tool", name, msg, ok=False)
             return False, msg
@@ -371,6 +454,165 @@ class PipelineEnvironment:
         self._record("edit_skill", sid, msg)
         return True, msg
 
+    # ── tool settings (values tools need — e.g. API keys) ─────────────
+    def _extras(self) -> Optional[Dict[str, Any]]:
+        ctx = self._tool_context
+        if ctx is None:
+            return None
+        ex = getattr(ctx, "extras", None)
+        if ex is None:  # late-attached context with no extras dict yet
+            ex = {}
+            try:
+                ctx.extras = ex  # type: ignore[attr-defined]
+            except Exception:  # noqa: BLE001
+                return None
+        return ex if isinstance(ex, dict) else None
+
+    def _setting_groups(self) -> List[str]:
+        """extras keys that are editable setting groups (dict-shaped, not a
+        reserved runtime handle, not an internal ``__key__``)."""
+        ex = self._extras()
+        if not ex:
+            return []
+        groups = []
+        for k, v in ex.items():
+            if k in _RESERVED_EXTRAS_KEYS or str(k).startswith("__"):
+                continue
+            if isinstance(v, dict):
+                groups.append(k)
+        return sorted(groups)
+
+    def _schema_for(self, group: str) -> Optional[Dict[str, Any]]:
+        for sch in self._settings_schemas:
+            if sch.get("key") == group:
+                return sch
+        return None
+
+    def _is_secret(self, group: str, field: str) -> bool:
+        sch = self._schema_for(group)
+        if sch:
+            for f in sch.get("fields", []) or []:
+                if f.get("name") == field:
+                    return bool(f.get("secret") or f.get("secure"))
+        low = field.lower()
+        return any(h in low for h in _SECRET_NAME_HINTS)
+
+    @staticmethod
+    def _mask(value: Any) -> str:
+        s = str(value)
+        if not s:
+            return ""
+        return "•" * 6 + (s[-4:] if len(s) > 4 else "")
+
+    def get_settings(self, *, reveal: bool = False) -> Dict[str, Any]:
+        """Current per-tool settings (secrets masked unless ``reveal``), plus
+        any host-declared schema so the agent can discover what's configurable."""
+        out: Dict[str, Any] = {"groups": {}, "schemas": self._settings_schemas}
+        ex = self._extras()
+        if ex is None:
+            out["note"] = "no settings context is available in this environment"
+            return out
+        for group in self._setting_groups():
+            vals = {}
+            for field, raw in (ex.get(group) or {}).items():
+                if not reveal and self._is_secret(group, field):
+                    vals[field] = self._mask(raw) if raw not in (None, "") else ""
+                else:
+                    vals[field] = raw
+            out["groups"][group] = vals
+        return out
+
+    def set_setting(self, key: str, field: str, value: Any) -> Tuple[bool, str]:
+        """Set a single tool-setting value (e.g. an API key). Takes effect on
+        the next call of the tool that reads ``extras[key][field]``."""
+        ex = self._extras()
+        if ex is None:
+            msg = "no settings context is available in this environment"
+            self._record("set_setting", f"{key}.{field}", msg, ok=False)
+            return False, msg
+        key = str(key).strip()
+        field = str(field).strip()
+        if not key or not field:
+            return False, "both 'key' and 'field' are required"
+        if key in _RESERVED_EXTRAS_KEYS or key.startswith("__"):
+            msg = f"'{key}' is a protected runtime handle, not an editable setting"
+            self._record("set_setting", f"{key}.{field}", msg, ok=False)
+            return False, msg
+        group = ex.get(key)
+        if not isinstance(group, dict):
+            group = {}
+            ex[key] = group
+        group[field] = value
+        shown = self._mask(value) if self._is_secret(key, field) else value
+        msg = f"set {key}.{field} = {shown}"
+        self._record("set_setting", f"{key}.{field}", msg)
+        return True, msg
+
+    # ── env config (model tunables + pipeline limits; core stays locked) ─
+    def get_config(self) -> Dict[str, Any]:
+        """Editable config knobs + their current values, plus the locked core
+        (model / provider) so the agent knows what it may and may not change."""
+        model_vals: Dict[str, Any] = {}
+        pipe_vals: Dict[str, Any] = {}
+        core: Dict[str, Any] = {}
+        cfg = self._config
+        if cfg is not None:
+            mc = getattr(cfg, "model", None)
+            if mc is not None:
+                for k in _TUNABLE_MODEL_KEYS:
+                    if hasattr(mc, k):
+                        model_vals[k] = getattr(mc, k)
+                core["model"] = getattr(mc, "model", None)
+            for k in _TUNABLE_PIPELINE_KEYS:
+                if hasattr(cfg, k):
+                    pipe_vals[k] = getattr(cfg, k)
+        return {
+            "model": model_vals,
+            "pipeline": pipe_vals,
+            "locked": sorted(_CORE_LOCKED_KEYS),
+            "core": core,
+        }
+
+    def set_config(self, key: str, value: Any) -> Tuple[bool, str]:
+        """Edit one tunable config knob. Refuses core/locked keys (model,
+        provider, credentials). Takes effect next turn."""
+        key = str(key).strip()
+        if key in _CORE_LOCKED_KEYS:
+            msg = f"'{key}' is a core setting and cannot be changed at runtime"
+            self._record("set_config", key, msg, ok=False)
+            return False, msg
+        cfg = self._config
+        if cfg is None:
+            msg = "no config is available in this environment"
+            self._record("set_config", key, msg, ok=False)
+            return False, msg
+        try:
+            if key in _TUNABLE_MODEL_KEYS:
+                mc = getattr(cfg, "model", None)
+                if mc is None:
+                    return False, "no model config available"
+                coerced = _coerce(value, _TUNABLE_MODEL_KEYS[key])
+                setattr(mc, key, coerced)
+            elif key in _TUNABLE_PIPELINE_KEYS:
+                coerced = _coerce(value, _TUNABLE_PIPELINE_KEYS[key])
+                setattr(cfg, key, coerced)
+            else:
+                msg = f"'{key}' is not an editable config knob"
+                self._record("set_config", key, msg, ok=False)
+                return False, msg
+        except Exception as exc:  # noqa: BLE001
+            msg = f"could not set {key}: {exc}"
+            self._record("set_config", key, msg, ok=False)
+            return False, msg
+        msg = f"set config {key} = {coerced}"
+        self._record("set_config", key, msg)
+        return True, msg
+
+    def _config_overrides(self) -> Dict[str, Any]:
+        """The tunable config values (for the overlay) — restored on resume."""
+        snap = self.get_config()
+        return {"model": snap.get("model", {}), "pipeline": snap.get("pipeline", {})}
+
     # ── persistence (save the evolved env overlay) ────────────────────
     def overlay(self) -> Dict[str, Any]:
         """Serialise the session-scoped environment overlay (what changed)
@@ -380,6 +622,12 @@ class PipelineEnvironment:
             "active_tools": self.active_tools(),
             "active_skills": self.active_skills(),
             "authored_skills": list(self._authored_skills.values()),
+            # Real (unmasked) values so a resume restores working settings —
+            # stored in the session's own scoped storage, like the manifest.
+            "tool_settings": {g: dict(self._extras().get(g, {})) for g in self._setting_groups()}
+            if self._extras() is not None
+            else {},
+            "config": self._config_overrides(),
             "changelog": self.changelog(),
         }
 

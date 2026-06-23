@@ -735,6 +735,7 @@ class Pipeline:
         #   _environment — the live PipelineEnvironment controller (lazy).
         self._adhoc_providers: List[Any] = []
         self._env_persistence: Any = None
+        self._env_settings_schemas: Any = None
         self._environment: Any = None
         self._has_started: bool = (
             False  # flips once run()/run_stream() begins; gates attach_runtime
@@ -1487,6 +1488,7 @@ class Pipeline:
         subagent_registry: Optional[Any] = None,
         sandbox: Optional[Any] = None,
         env_persistence: Optional[Any] = None,
+        env_settings_schemas: Optional[Any] = None,
         override_manifest: bool = False,
     ) -> None:
         """Inject session-scoped runtime objects into a manifest-built pipeline.
@@ -1640,6 +1642,7 @@ class Pipeline:
             subagent_registry=subagent_registry,
             sandbox=sandbox,
             env_persistence=env_persistence,
+            env_settings_schemas=env_settings_schemas,
             override_manifest=override_manifest,
         )
 
@@ -1700,6 +1703,7 @@ class Pipeline:
         subagent_registry: Optional[Any] = None,
         sandbox: Optional[Any] = None,
         env_persistence: Optional[Any] = None,
+        env_settings_schemas: Optional[Any] = None,
         override_manifest: bool = False,
     ) -> None:
         """Shared wiring behind :meth:`attach_runtime` / :meth:`refresh_runtime`.
@@ -1737,6 +1741,13 @@ class Pipeline:
             self._env_persistence = env_persistence
             if self._environment is not None:
                 self._environment.attach_persistence(env_persistence)
+
+        if env_settings_schemas is not None:
+            # Host descriptor of configurable tool settings (groups + fields +
+            # which are secret) for accurate masking / discovery by env_get_settings.
+            self._env_settings_schemas = env_settings_schemas
+            if self._environment is not None:
+                self._environment.attach_settings_schemas(env_settings_schemas)
 
         if tool_context is not None:
             self._set_tool_stage_context(tool_context)
@@ -1992,6 +2003,10 @@ class Pipeline:
             skill_registry=getattr(sp, "_registry", None) if sp else None,
             skill_fork_runner=getattr(sp, "_fork_runner", None) if sp else None,
             persistence=self._env_persistence,
+            # Model tunables + pipeline limits (core model/provider stay locked).
+            config=self._config,
+            # Host descriptor of configurable tool settings (optional).
+            settings_schemas=getattr(self, "_env_settings_schemas", None),
         )
 
     def _init_environment_controller(self) -> None:
@@ -2021,6 +2036,10 @@ class Pipeline:
                 ctx = ToolContext()
                 stage._context = ctx
             ctx.environment = environment
+            # Give the controller the SAME context object so its setting edits
+            # land on the dict the dispatch reads live (build_dispatch_context).
+            if environment is not None and hasattr(environment, "attach_tool_context"):
+                environment.attach_tool_context(ctx)
             return
 
     def _set_stage_slot_strategy(self, *, stage_name: str, slot_name: str, strategy: Any) -> None:

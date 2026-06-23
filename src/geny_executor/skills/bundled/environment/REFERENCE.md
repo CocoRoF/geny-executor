@@ -59,11 +59,44 @@ write actions return a short status string (and set an error flag on failure).
 - Updates only the provided fields. If the skill is active, its surfaced tool is
   refreshed to the new body.
 
+## Tool settings (values tools need — API keys, backends, URLs)
+
+These are the variables a tool reads at run time (e.g. the web_search backend +
+its API key). They live in the tool-dispatch context's `extras[group][field]`.
+
+### `get_settings`
+- args: `{ "reveal": <bool?> }` — set `reveal: true` to see secret values
+  unmasked (default masks them).
+- returns: `{ "groups": { "<group>": { "<field>": value }, ... },
+  "schemas": [...] }`. `schemas` (when the host declares them) lists each
+  group's fields + which are secret.
+
+### `set_setting`
+- args: `{ "key": "<group, e.g. web_search>", "field": "<e.g. brave_api_key>",
+  "value": <any> }`
+- Sets one value. Effective on the NEXT call of the tool that reads it. Refuses
+  protected runtime handles (`workspace_stack`, `task_registry`, …).
+
+## Config (tunable knobs; core stays locked)
+
+### `get_config`
+- args: none
+- returns: `{ "model": {temperature, max_tokens, top_p, top_k, thinking_enabled,
+  thinking_budget_tokens}, "pipeline": {max_iterations, cost_budget_usd,
+  context_window_budget, single_turn}, "locked": [...], "core": {model} }`.
+
+### `set_config`
+- args: `{ "key": "<knob>", "value": <number/bool> }`
+- Edits one tunable knob (values coerced to the field's type). Takes effect next
+  turn. **Refuses** core keys: `model`, `provider`, `api_key`, `base_url`,
+  `credentials`, `name` — the model identity and credentials cannot be changed
+  at runtime.
+
 ## Persistence
 
 ### `save`
 - args: none
 - Persists the overlay (prompt + active tools + active skills + authored skills
-  + changelog) for THIS session via the host's persistence callback, so it is
-  restored on resume. Returns an error string if no persistence is configured
-  (changes still remain live for the current session).
+  + tool_settings + config + changelog) for THIS session via the host's
+  persistence callback, so it is restored on resume. Returns an error string if
+  no persistence is configured (changes still remain live for the session).

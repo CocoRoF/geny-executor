@@ -36,6 +36,17 @@ template) and take effect **from the next turn**. Every change is logged.
   "description": "one line — when to use it", "body": "# Title\n\nstep-by-step
   instructions"})`. It is enabled immediately. Edit later with
   `env(action="edit_skill", args={"skill_id": "...", "body": "..."})`.
+- **Inspect tool settings** — `env(action="get_settings")`. Shows the
+  configurable values tools need (e.g. a search backend + API key); secrets are
+  masked. `args.schemas` describes what each group accepts when the host declares it.
+- **Set a tool's value** (API key, backend, URL, …) — `env(action="set_setting",
+  args={"key": "web_search", "field": "brave_api_key", "value": "..."})`. Takes
+  effect on the next call of that tool.
+- **Inspect tunable config** — `env(action="get_config")`. Model knobs
+  (temperature, max_tokens, thinking…) + pipeline limits (max_iterations); plus
+  the LOCKED core (model, provider) you cannot change.
+- **Set a config knob** — `env(action="set_config", args={"key": "temperature",
+  "value": 0.7})`. Takes effect next turn. Core keys (model/provider) are refused.
 - **Review your changes** — `env(action="changelog")`.
 - **Save** — `env(action="save")`. Persists your evolved environment for THIS
   session so it is restored next time. (If saving isn't configured the call
