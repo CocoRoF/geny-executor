@@ -163,6 +163,13 @@ def _creds_to_client_kwargs(provider: str, creds: ProviderCredentials) -> Dict[s
             "extra_args",
             "timeout_s",
             "strict_wire",
+            # Extra env vars handed to every CLI spawn (host runner AND the
+            # sandbox ContainerCLIRunner via ``--env``). The host's escape
+            # hatch for credential channels the constructor doesn't model —
+            # e.g. ``CLAUDE_CODE_OAUTH_TOKEN`` for a long-lived setup token,
+            # which (unlike the rotating OAuth file) is safe to share across
+            # many sandbox containers.
+            "env_extras",
         ):
             if key in extras:
                 # workspace_root is the settings-side name; the client takes workspace_dir
