@@ -227,3 +227,36 @@ async def test_env_tool_cannot_be_disabled() -> None:
     ok, msg = env.disable_tool("env")
     assert not ok and "refusing" in msg.lower()
     assert "env" in env.active_tools()
+
+
+class _NoGetProvider:
+    """An MCP-style provider (startup/list_tools) with no ``get`` — what a
+    SkillToolProvider looks like. Holds a skill-registry-like object."""
+
+    class _Reg:
+        def list_ids(self):
+            return ["probe"]
+
+    def __init__(self):
+        self._registry = self._Reg()
+
+    async def startup(self):
+        return []
+
+    def list_tools(self):
+        return []
+
+
+@pytest.mark.asyncio
+async def test_adhoc_provider_without_get_does_not_crash_resolution() -> None:
+    # A provider lacking ``get`` in adhoc_providers must be skipped by external
+    # resolution (not crash), and the controller must still find its registry.
+    real = _Provider({"read": _NamedTool("read")})
+    pipeline = await Pipeline.from_manifest_async(
+        _manifest(built_in=["env"], external=["read"]),
+        api_key="sk-test",
+        adhoc_providers=[real, _NoGetProvider()],
+        strict=False,
+    )
+    assert "read" in pipeline.tool_registry.list_names()      # resolution survived
+    assert pipeline.environment._skill_registry is not None     # controller found it

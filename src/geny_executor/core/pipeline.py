@@ -579,7 +579,14 @@ def _register_external_tools(
     for name, required in entries:
         tool = None
         for provider in providers:
-            tool = provider.get(name)
+            # Adhoc providers resolve by name via ``get``. A provider without
+            # one is the wrong shape for this channel (e.g. an MCP-style
+            # ToolProvider mistakenly passed via adhoc_providers instead of
+            # tool_providers) — skip it rather than crash external resolution.
+            getter = getattr(provider, "get", None)
+            if not callable(getter):
+                continue
+            tool = getter(name)
             if tool is not None:
                 break
         if tool is None:
@@ -1984,9 +1991,11 @@ class Pipeline:
         return None
 
     def _find_skill_provider(self) -> Any:
-        """The started SkillToolProvider, if any (duck-typed: holds a
-        SkillRegistry with ``list_ids``)."""
-        for p in list(self._tool_providers):
+        """The SkillToolProvider, if any (duck-typed: holds a SkillRegistry
+        with ``list_ids``). Scans both the started ``tool_providers`` (the
+        correct channel) and ``adhoc_providers`` — some hosts pass the skill
+        provider via adhoc, and the controller must still find it."""
+        for p in list(self._tool_providers) + list(self._adhoc_providers or []):
             reg = getattr(p, "_registry", None)
             if reg is not None and hasattr(reg, "list_ids"):
                 return p

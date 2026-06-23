@@ -4,6 +4,22 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.29.0] — 2026-06-23
+
+### Fixed
+
+- **External tool resolution no longer crashes on a non-`get` provider.**
+  `_register_external_tools` called `provider.get(name)` unconditionally on
+  every adhoc provider; an MCP-style `ToolProvider` (startup/list_tools, no
+  `get`) accidentally passed via `adhoc_providers` instead of `tool_providers`
+  would `AttributeError` the whole build the moment an external name didn't
+  resolve earlier in the list. Such providers are now skipped (they're the
+  wrong shape for name resolution) instead of crashing.
+- **`PipelineEnvironment` finds the skill registry whether the skill provider
+  was wired via `tool_providers` or `adhoc_providers`.** `_find_skill_provider`
+  now scans both lists, so the self-modifying-environment skill actions
+  (create/enable/disable skill) work regardless of which channel a host used.
+
 ## [2.28.0] — 2026-06-23
 
 ### Fixed
