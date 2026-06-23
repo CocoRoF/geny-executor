@@ -4,6 +4,21 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.24.0] — 2026-06-23
+
+### Added
+
+- **`env_extras` threaded through the `claude_code_cli` client kwargs.**
+  `_creds_to_client_kwargs` now passes the `env_extras` extra to
+  `ClaudeCodeCLIClient`, so it reaches every CLI spawn — the host runner AND the
+  sandbox `ContainerCLIRunner` (`--env K=V`). This lets a host inject credential
+  env vars into the in-container agent, e.g. `CLAUDE_CODE_OAUTH_TOKEN` for a
+  long-lived `claude setup-token` value. Unlike the rotating OAuth credential
+  file (which 401s when shared because refresh rotates the token and the copies
+  invalidate each other), a setup token is non-rotating and safe to share across
+  geny-backend + many per-session sandbox containers off one subscription.
+  Additive + gated on the extra being present — no behavior change otherwise.
+
 ## [2.23.0] — 2026-06-22
 
 ### Added
