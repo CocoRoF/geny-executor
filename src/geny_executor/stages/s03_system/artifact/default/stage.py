@@ -11,6 +11,7 @@ from geny_executor.core.state import PipelineState
 from geny_executor.stages.s03_system.interface import PromptBuilder
 from geny_executor.stages.s03_system.artifact.default.builders import (
     ComposablePromptBuilder,
+    MutablePromptBuilder,
     StaticPromptBuilder,
 )
 from geny_executor.stages.s03_system.persona import DynamicPersonaPromptBuilder
@@ -41,6 +42,7 @@ class SystemStage(Stage[Any, Any]):
                 strategy=builder,
                 registry={
                     "static": StaticPromptBuilder,
+                    "mutable": MutablePromptBuilder,
                     "composable": ComposablePromptBuilder,
                     # Phase 7 S7.1 — host-attached PersonaProvider
                     # drives this. Manifests can name it; the actual
@@ -159,9 +161,19 @@ class SystemStage(Stage[Any, Any]):
             system = self._apply_template_vars(system)
         state.system = system
 
-        # Register tools in state if registry provided
-        if self._tool_registry and not state.tools:
-            state.tools = self._tool_registry.to_api_format()
+        # Register tools in state if registry provided. Snapshotted on the first
+        # turn, then rebuilt only when the live registry's version moves — so a
+        # tool/skill enabled/disabled/created mid-session (self-modifying
+        # environment), or an MCP re-seed, takes effect on the next turn. The
+        # version guard keeps the steady-state cost at one int compare per turn.
+        if self._tool_registry is not None:
+            reg_version = getattr(self._tool_registry, "version", None)
+            if not state.tools or (
+                reg_version is not None and reg_version != state.tools_version
+            ):
+                state.tools = self._tool_registry.to_api_format()
+                if reg_version is not None:
+                    state.tools_version = reg_version
 
         state.add_event(
             "system.built",

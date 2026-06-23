@@ -39,6 +39,7 @@ EXPECTED_BUNDLED: Set[str] = {
     "simplify",
     "skillify",
     "loop",
+    "environment",
 }
 
 

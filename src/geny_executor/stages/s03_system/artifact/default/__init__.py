@@ -3,6 +3,7 @@
 from geny_executor.stages.s03_system.artifact.default.stage import SystemStage
 from geny_executor.stages.s03_system.artifact.default.builders import (
     StaticPromptBuilder,
+    MutablePromptBuilder,
     ComposablePromptBuilder,
     PersonaBlock,
     RulesBlock,
@@ -18,6 +19,7 @@ __all__ = [
     "Stage",
     "SystemStage",
     "StaticPromptBuilder",
+    "MutablePromptBuilder",
     "ComposablePromptBuilder",
     "PersonaBlock",
     "RulesBlock",

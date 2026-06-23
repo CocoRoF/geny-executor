@@ -159,6 +159,11 @@ class PipelineState:
     tools: List[Dict[str, Any]] = field(default_factory=list)
     tool_choice: Optional[Dict[str, Any]] = None
     stop_sequences: Optional[List[str]] = None
+    # Self-modifying environment: the ToolRegistry.version baked into the
+    # current ``tools`` snapshot. Stage 3 rebuilds ``tools`` whenever the live
+    # registry's version moves past this (a tool/skill enabled/disabled/created
+    # mid-session, or an MCP re-seed). ``-1`` = no snapshot yet (first turn).
+    tools_version: int = -1
 
     # ── Extended Thinking ──
     thinking_enabled: bool = False

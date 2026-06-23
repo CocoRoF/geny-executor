@@ -4,6 +4,7 @@ from geny_executor.stages.s03_system.interface import PromptBuilder, PromptBlock
 from geny_executor.stages.s03_system.artifact.default import (
     SystemStage,
     StaticPromptBuilder,
+    MutablePromptBuilder,
     ComposablePromptBuilder,
     PersonaBlock,
     RulesBlock,
@@ -23,6 +24,7 @@ __all__ = [
     "PromptBuilder",
     "PromptBlock",
     "StaticPromptBuilder",
+    "MutablePromptBuilder",
     "ComposablePromptBuilder",
     "PersonaBlock",
     "RulesBlock",

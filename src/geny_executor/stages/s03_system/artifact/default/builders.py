@@ -35,6 +35,65 @@ class StaticPromptBuilder(PromptBuilder):
         return self._prompt
 
 
+class MutablePromptBuilder(PromptBuilder):
+    """A system prompt the running session can EDIT in place.
+
+    The self-modifying-environment feature installs this as the system builder;
+    the :class:`~geny_executor.core.environment_control.PipelineEnvironment`
+    controller holds a reference and edits the base text / appends sections at
+    runtime. Because Stage 3 calls :meth:`build` every turn, edits take effect
+    on the NEXT turn. Behaves like :class:`StaticPromptBuilder` when never
+    edited — so it is a safe drop-in default.
+    """
+
+    def __init__(self, prompt: str = "", sections: Optional[List[str]] = None):
+        self._base = prompt
+        self._sections: List[str] = [str(s) for s in (sections or [])]
+
+    @property
+    def name(self) -> str:
+        return "mutable"
+
+    @property
+    def description(self) -> str:
+        return "Editable system prompt (self-modifying environment)"
+
+    def configure(self, config: Dict[str, Any]) -> None:
+        prompt = config.get("prompt")
+        if isinstance(prompt, str):
+            self._base = prompt
+        sections = config.get("sections")
+        if isinstance(sections, list):
+            self._sections = [str(s) for s in sections]
+
+    def get_config(self) -> Dict[str, Any]:
+        return {"prompt": self._base, "sections": list(self._sections)}
+
+    # ── Runtime edit API (driven by PipelineEnvironment) ──────────────
+    def set_base(self, text: str) -> None:
+        """Replace the base prompt."""
+        self._base = str(text)
+
+    def append_section(self, text: str) -> None:
+        """Append an extra section after the base prompt."""
+        self._sections.append(str(text))
+
+    def clear_sections(self) -> None:
+        """Drop all appended sections (keeps the base)."""
+        self._sections = []
+
+    def current_text(self) -> str:
+        """The fully-rendered prompt as it stands now."""
+        return self._render()
+
+    def _render(self) -> str:
+        parts = [self._base, *self._sections]
+        return "\n\n".join(p for p in parts if p and p.strip())
+
+    def build(self, state: PipelineState) -> str:
+        return self._render()
+
+
 class PersonaBlock(PromptBlock):
     """Character/role persona."""
 

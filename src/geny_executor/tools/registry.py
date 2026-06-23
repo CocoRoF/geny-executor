@@ -21,6 +21,17 @@ class ToolRegistry:
 
     def __init__(self) -> None:
         self._tools: Dict[str, Tool] = {}
+        # Monotonic counter bumped on every register/unregister. Stage 3 (System)
+        # compares it against the version baked into the last ``state.tools``
+        # snapshot; a mismatch triggers a per-turn rebuild so a tool
+        # enabled/disabled mid-session (self-modifying environment) takes effect
+        # on the next turn. Also catches MCP re-seeds.
+        self._version: int = 0
+
+    @property
+    def version(self) -> int:
+        """Monotonic mutation counter (bumped on register/unregister)."""
+        return self._version
 
     def register(self, tool: Tool) -> ToolRegistry:
         """Register a tool. Chaining supported.
@@ -41,11 +52,13 @@ class ToolRegistry:
                 type(tool).__name__,
             )
         self._tools[tool.name] = tool
+        self._version += 1
         return self
 
     def unregister(self, name: str) -> None:
         """Remove a tool by name."""
-        self._tools.pop(name, None)
+        if self._tools.pop(name, None) is not None:
+            self._version += 1
 
     def get(self, name: str) -> Optional[Tool]:
         """Get a tool by name."""

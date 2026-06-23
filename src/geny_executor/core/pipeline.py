@@ -728,6 +728,14 @@ class Pipeline:
         self._tool_providers: List[
             Any
         ] = []  # started ToolProvider list — set by from_manifest_async
+        # Self-modifying environment (env_* tools):
+        #   _adhoc_providers — the AdhocToolProviders (e.g. GenyToolProvider)
+        #     that define the AVAILABLE tool set a session can enable.
+        #   _env_persistence — host callback for ``env_save`` (set via attach_runtime).
+        #   _environment — the live PipelineEnvironment controller (lazy).
+        self._adhoc_providers: List[Any] = []
+        self._env_persistence: Any = None
+        self._environment: Any = None
         self._has_started: bool = (
             False  # flips once run()/run_stream() begins; gates attach_runtime
         )
@@ -1184,6 +1192,10 @@ class Pipeline:
         )
         pipeline.tool_resolution_report = resolution_report
         pipeline._tool_registry = registry
+        # Retain the adhoc providers so the self-modifying-environment controller
+        # can enumerate + enable tools from the AVAILABLE set (not just the
+        # active ones the manifest pre-selected into the registry).
+        pipeline._adhoc_providers = list(adhoc_providers or [])
 
         # Stages that hold a tool-registry reference are instantiated at
         # line 287 *before* `_register_external_tools` populates the
@@ -1423,6 +1435,11 @@ class Pipeline:
         pipeline._mcp_manager = manager
         pipeline._tool_registry = registry
         pipeline._tool_providers = started_providers
+        # Self-modifying environment: build the live controller now that the
+        # registry, providers and stages are all wired, and inject it into the
+        # Tool stage's ToolContext so the built-in env_* tools can reach it.
+        # A later attach_runtime(system_builder=/env_persistence=) updates it.
+        pipeline._init_environment_controller()
         return pipeline
 
     # ── Stage management ──
@@ -1469,6 +1486,7 @@ class Pipeline:
         permission_mode: Optional[str] = None,
         subagent_registry: Optional[Any] = None,
         sandbox: Optional[Any] = None,
+        env_persistence: Optional[Any] = None,
         override_manifest: bool = False,
     ) -> None:
         """Inject session-scoped runtime objects into a manifest-built pipeline.
@@ -1621,6 +1639,7 @@ class Pipeline:
             permission_mode=permission_mode,
             subagent_registry=subagent_registry,
             sandbox=sandbox,
+            env_persistence=env_persistence,
             override_manifest=override_manifest,
         )
 
@@ -1680,6 +1699,7 @@ class Pipeline:
         permission_mode: Optional[str] = None,
         subagent_registry: Optional[Any] = None,
         sandbox: Optional[Any] = None,
+        env_persistence: Optional[Any] = None,
         override_manifest: bool = False,
     ) -> None:
         """Shared wiring behind :meth:`attach_runtime` / :meth:`refresh_runtime`.
@@ -1707,9 +1727,23 @@ class Pipeline:
             self._set_stage_slot_strategy(
                 stage_name="system", slot_name="builder", strategy=system_builder
             )
+            # Keep the self-modifying-environment controller pointed at the
+            # live builder so ``env_set_prompt`` edits the one Stage 3 uses.
+            if self._environment is not None:
+                self._environment.attach_prompt_builder(system_builder)
+
+        if env_persistence is not None:
+            # Host callback for ``env_save`` (durable per-session env overlay).
+            self._env_persistence = env_persistence
+            if self._environment is not None:
+                self._environment.attach_persistence(env_persistence)
 
         if tool_context is not None:
             self._set_tool_stage_context(tool_context)
+            # A host-supplied tool_context replaces the Tool stage's context —
+            # re-stamp the env controller onto it so env_* tools keep working.
+            if self._environment is not None:
+                self._set_tool_stage_environment(self._environment)
 
         if llm_client is not None:
             # #866 guard (2.2.0, audit §2.7): an attached client beats
@@ -1928,6 +1962,65 @@ class Pipeline:
                 ctx = ToolContext()
                 stage._context = ctx
             ctx.sandbox = sandbox
+            return
+
+    # ── Self-modifying environment ───────────────────────────────────
+    def _current_system_builder(self) -> Any:
+        """The live system prompt builder (Stage 3's ``builder`` slot)."""
+        for stage in self._stages.values():
+            if getattr(stage, "name", "") == "system":
+                return getattr(stage, "_builder", None)
+        return None
+
+    def _find_skill_provider(self) -> Any:
+        """The started SkillToolProvider, if any (duck-typed: holds a
+        SkillRegistry with ``list_ids``)."""
+        for p in list(self._tool_providers):
+            reg = getattr(p, "_registry", None)
+            if reg is not None and hasattr(reg, "list_ids"):
+                return p
+        return None
+
+    def _build_environment_controller(self) -> Any:
+        from geny_executor.core.environment_control import PipelineEnvironment
+
+        sp = self._find_skill_provider()
+        return PipelineEnvironment(
+            registry=self._tool_registry,
+            providers=tuple(self._adhoc_providers or ()),
+            prompt_builder=self._current_system_builder(),
+            skill_registry=getattr(sp, "_registry", None) if sp else None,
+            skill_fork_runner=getattr(sp, "_fork_runner", None) if sp else None,
+            persistence=self._env_persistence,
+        )
+
+    def _init_environment_controller(self) -> None:
+        if self._tool_registry is None:
+            return
+        self._environment = self._build_environment_controller()
+        self._set_tool_stage_environment(self._environment)
+
+    @property
+    def environment(self) -> Any:
+        """The live :class:`PipelineEnvironment` controller for self-modifying
+        environment, or ``None`` if the pipeline has no tool registry."""
+        if self._environment is None and self._tool_registry is not None:
+            self._init_environment_controller()
+        return self._environment
+
+    def _set_tool_stage_environment(self, environment: Any) -> None:
+        """Attach the env controller to the Tool stage's ``ToolContext`` so the
+        built-in ``env_*`` tools can reach it. No-op if no Tool stage."""
+        for stage in self._stages.values():
+            if getattr(stage, "name", "") != "tool":
+                continue
+            ctx = getattr(stage, "_context", None)
+            if ctx is None:
+                from geny_executor.tools.base import ToolContext
+
+                ctx = ToolContext()
+                stage._context = ctx
+            ctx.environment = environment
             return
 
     def _set_stage_slot_strategy(self, *, stage_name: str, slot_name: str, strategy: Any) -> None:

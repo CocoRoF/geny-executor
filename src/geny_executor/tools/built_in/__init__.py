@@ -84,6 +84,7 @@ from geny_executor.tools.built_in.plan_mode_tools import (
     EnterPlanModeTool,
     ExitPlanModeTool,
 )
+from geny_executor.tools.built_in.env_tools import EnvTool
 
 
 BUILT_IN_TOOL_CLASSES: Dict[str, Type[Tool]] = {
@@ -130,6 +131,9 @@ BUILT_IN_TOOL_CLASSES: Dict[str, Type[Tool]] = {
     "SubAgentList": SubAgentListTool,
     "SubAgentStop": SubAgentStopTool,
     "SubAgentInboxRead": SubAgentInboxReadTool,
+    # Self-modifying environment — one lean dispatcher; detailed guidance lives
+    # in the bundled ``environment`` skill (progressive disclosure).
+    "env": EnvTool,
 }
 
 
@@ -161,6 +165,7 @@ BUILT_IN_TOOL_FEATURES: Dict[str, List[str]] = {
     "operator": ["Config", "Monitor", "SendUserFile"],
     "messaging": ["SendMessage"],
     "cron": ["CronCreate", "CronDelete", "CronList"],
+    "environment": ["env"],
 }
 
 
@@ -262,6 +267,7 @@ __all__ = [
     "ToolSearchTool",
     "EnterPlanModeTool",
     "ExitPlanModeTool",
+    "EnvTool",
     "BUILT_IN_TOOL_CLASSES",
     "BUILT_IN_TOOL_FEATURES",
     "get_builtin_tools",

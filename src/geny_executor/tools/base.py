@@ -151,6 +151,12 @@ class ToolContext:
     # claude_code_cli path already is. ``None`` (default) = host execution,
     # unchanged. Typed ``Any`` to avoid importing the llm_client SandboxHandle.
     sandbox: Optional[Any] = None
+    # Self-modifying environment: the live PipelineEnvironment controller for
+    # this session. The built-in ``env_*`` tools read it to view/edit the
+    # running environment (prompt, active tools, skills). ``None`` (default)
+    # means the host did not enable self-modification. Typed ``Any`` to avoid a
+    # core import cycle.
+    environment: Optional[Any] = None
     extras: Dict[str, Any] = field(default_factory=dict)
 
 

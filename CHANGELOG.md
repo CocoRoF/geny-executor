@@ -4,6 +4,41 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.26.0] — 2026-06-23
+
+### Added
+
+- **Self-modifying environment — a session can edit its OWN environment at
+  runtime.** A new built-in `env` tool lets the agent inspect and change its
+  operating environment within what the host made available — rewrite its
+  system prompt, enable/disable tools and skills, author/edit session-scoped
+  skills — and persist the result for itself. Changes take effect on the NEXT
+  turn and every change is logged. Pieces:
+  - `ToolRegistry.version` (bumped on register/unregister) + Stage 3 re-derives
+    `state.tools` when it moves — so a tool enabled/disabled mid-session (or an
+    MCP re-seed) surfaces immediately instead of being frozen at the first-turn
+    snapshot. Steady-state cost: one int compare per turn.
+  - `MutablePromptBuilder` (s03_system) — an editable system prompt; Stage 3
+    rebuilds the prompt every turn, so edits show up next turn.
+  - `PipelineEnvironment` controller (`core/environment_control.py`) — the live
+    surface behind the `env` tool: snapshot / get_prompt / set_prompt /
+    append_prompt / enable_tool / disable_tool / enable_skill / disable_skill /
+    create_skill / edit_skill / changelog / save. Self-protects (won't disable
+    `env`). Bounded to the available providers + skill registry.
+  - Built-in **`env`** tool (one lean dispatcher, not a dozen always-on
+    schemas — minimal context). `ToolContext.environment` carries the
+    controller; the pipeline builds + injects it in `from_manifest_async`.
+  - `attach_runtime(env_persistence=...)` — optional host callback `env_save`
+    invokes with the serialised overlay (prompt + active tools/skills + authored
+    skills + changelog). The executor owns the live state + log; the host owns
+    durable storage. Session-scoped by design.
+  - Bundled **`environment`** skill (+ `REFERENCE.md`, Level 3) — the detailed
+    how-to, loaded on demand rather than occupying context.
+
+  All additive: existing pipelines are unaffected unless `env` is in their
+  `tools.built_in` (e.g. via `["*"]`) and they attach a mutable prompt builder /
+  persistence callback.
+
 ## [2.25.0] — 2026-06-23
 
 ### Added
