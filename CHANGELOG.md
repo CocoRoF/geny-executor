@@ -4,6 +4,22 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.31.0] — 2026-06-24
+
+### Added
+
+- **`env(action="forge_tool")`** — author a NEW tool live this session.
+  `PipelineEnvironment.forge_tool(name, entrypoint, …)` builds a
+  `SandboxExecTool` bound to the session's sandbox and registers it in the live
+  tool registry, so a tool you just wrote + tested in your workspace is callable
+  from the next turn. Ephemeral (this session); guards: needs a sandbox, refuses
+  to clobber an active name, requires name + entrypoint.
+- **Bundled `tool-builder` skill** (`skills/bundled/tool-builder/`) — teaches the
+  authoring loop: write a stdin-JSON→stdout-JSON script in the sandbox, test it,
+  `forge_tool` it, then persist it as a reusable Sandbox Tool Pack
+  (`[workspace snapshot] + [N tool specs] + [M skills]`). L1 SKILL.md + L2
+  REFERENCE.md (contract, runtimes, multi-tool packs, troubleshooting).
+
 ## [2.30.0] — 2026-06-23
 
 ### Added

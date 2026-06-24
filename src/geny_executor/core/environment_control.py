@@ -324,6 +324,68 @@ class PipelineEnvironment:
         self._record("disable_tool", name, msg)
         return True, msg
 
+    def forge_tool(
+        self,
+        name: str,
+        description: str = "",
+        entrypoint: str = "",
+        *,
+        runtime: str = "python3",
+        input_schema: Optional[Dict[str, Any]] = None,
+        argv: Any = (),
+        timeout_s: float = 60.0,
+        workdir: str = "/workspace",
+        network_egress: bool = False,
+        read_only: bool = False,
+    ) -> Tuple[bool, str]:
+        """Register a NEW sandboxed tool LIVE this turn.
+
+        The tool's implementation is an authored script (``entrypoint``,
+        relative to ``workdir``) that the session wrote into its sandbox; the
+        tool runs it INSIDE the sandbox (stdin JSON → stdout JSON) on each call.
+        Callable from the next turn. Ephemeral (this session) — to keep it, the
+        host persists a snapshot + spec as a reusable Sandbox Tool Pack.
+        """
+        name = str(name or "").strip()
+        if not name:
+            return False, "a tool name is required"
+        if not entrypoint:
+            return False, "an entrypoint (path to the tool's script in the sandbox) is required"
+        if self._registry.get(name) is not None:
+            msg = f"tool '{name}' is already active — choose another name or disable it first"
+            self._record("forge_tool", name, msg, ok=False)
+            return False, msg
+        sandbox = getattr(self._tool_context, "sandbox", None) if self._tool_context else None
+        if sandbox is None:
+            msg = (
+                "no sandbox is attached to this session — forge_tool needs an "
+                "isolated workspace to run the tool's code in"
+            )
+            self._record("forge_tool", name, msg, ok=False)
+            return False, msg
+        from geny_executor.tools.built_in.sandbox_exec_tool import SandboxExecTool
+
+        tool = SandboxExecTool(
+            name=name,
+            description=str(description or name),
+            input_schema=input_schema,
+            entrypoint=str(entrypoint),
+            runtime=str(runtime or "python3"),
+            argv=argv or (),
+            timeout_s=float(timeout_s),
+            workdir=str(workdir or "/workspace"),
+            sandbox=sandbox,
+            network_egress=bool(network_egress),
+            read_only=bool(read_only),
+        )
+        self._registry.register(tool)
+        msg = (
+            f"forged sandboxed tool '{name}' (runs `{runtime} {entrypoint}` in the "
+            f"sandbox) — callable next turn"
+        )
+        self._record("forge_tool", name, msg)
+        return True, msg
+
     # ── skills (enable/disable existing) ──────────────────────────────
     def enable_skill(self, skill_id: str) -> Tuple[bool, str]:
         if self._skill_registry is None:

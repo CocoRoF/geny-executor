@@ -40,6 +40,7 @@ EXPECTED_BUNDLED: Set[str] = {
     "skillify",
     "loop",
     "environment",
+    "tool-builder",
 }
 
 
