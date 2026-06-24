@@ -36,6 +36,14 @@ logger = logging.getLogger(__name__)
 # Async; host-supplied via ``Pipeline.attach_runtime(env_persistence=...)``.
 EnvPersistence = Callable[[Dict[str, Any]], Awaitable[None]]
 
+# A pack-persistence callback: given {name, description, tools[spec], skills[spec],
+# sandbox}, snapshot the sandbox + durably store it as a reusable Sandbox Tool
+# Pack, returning a result dict (e.g. {"pack_id": ...}). Async; host-supplied via
+# ``Pipeline.attach_runtime(pack_persistence=...)``. The executor gathers what to
+# save (forged tools + authored skills + the live sandbox) and delegates the
+# host-specific storage (snapshot + DB row) to this callback.
+PackPersistence = Callable[[Dict[str, Any]], Awaitable[Dict[str, Any]]]
+
 
 # ── editable env-config surface ────────────────────────────────────────
 # Model generation knobs that ``PipelineConfig.apply_to_state`` stamps onto
@@ -125,6 +133,7 @@ class PipelineEnvironment:
         skill_registry: Optional[Any] = None,
         skill_fork_runner: Optional[Any] = None,
         persistence: Optional[EnvPersistence] = None,
+        pack_persistence: Optional[PackPersistence] = None,
         tool_context: Optional[Any] = None,
         config: Optional[Any] = None,
         settings_schemas: Optional[List[Dict[str, Any]]] = None,
@@ -153,6 +162,11 @@ class PipelineEnvironment:
         # Session-authored skills (create_skill/edit_skill) — kept so the
         # overlay can carry them for host persistence + restore on resume.
         self._authored_skills: Dict[str, Dict[str, Any]] = {}
+        # Tools forged this session (forge_tool) — kept so save_pack knows what
+        # to persist into a reusable Sandbox Tool Pack.
+        self._forged_tools: Dict[str, Any] = {}
+        # Host callback that snapshots the sandbox + stores a pack (save_pack).
+        self._pack_persistence: Optional[PackPersistence] = pack_persistence
 
     # ── late binding (pipeline updates these post-build) ──────────────
     def attach_prompt_builder(self, builder: Any) -> None:
@@ -164,6 +178,10 @@ class PipelineEnvironment:
     def attach_persistence(self, persistence: Optional[EnvPersistence]) -> None:
         """Set/replace the host persistence callback (``env_save``)."""
         self._persistence = persistence
+
+    def attach_pack_persistence(self, pack_persistence: Optional[PackPersistence]) -> None:
+        """Set/replace the host pack-persistence callback (``save_pack``)."""
+        self._pack_persistence = pack_persistence
 
     def attach_tool_context(self, tool_context: Optional[Any]) -> None:
         """Re-point at the live tool-dispatch context (its ``.extras`` holds
@@ -379,11 +397,81 @@ class PipelineEnvironment:
             read_only=bool(read_only),
         )
         self._registry.register(tool)
+        self._forged_tools[name] = tool
         msg = (
             f"forged sandboxed tool '{name}' (runs `{runtime} {entrypoint}` in the "
             f"sandbox) — callable next turn"
         )
         self._record("forge_tool", name, msg)
+        return True, msg
+
+    async def save_pack(
+        self,
+        name: str,
+        *,
+        description: str = "",
+        tools: Any = None,
+        skills: Any = None,
+    ) -> Tuple[bool, str]:
+        """Persist **[this session's sandbox + the tools you forged + the skills
+        you authored]** as one reusable **Sandbox Tool Pack**.
+
+        The host snapshots the sandbox workspace (code + artifacts) and stores
+        the pack (default disabled until an owner enables it). ``tools`` / ``skills``
+        optionally restrict which forged tools / authored skills go in; omit to
+        include all. The pack can later be enabled per-environment and restored
+        into any fresh workspace.
+        """
+        name = str(name or "").strip()
+        if not name:
+            return False, "a pack name is required"
+        if self._pack_persistence is None:
+            msg = "this host doesn't support saving sandbox tool packs"
+            self._record("save_pack", name, msg, ok=False)
+            return False, msg
+        sandbox = getattr(self._tool_context, "sandbox", None) if self._tool_context else None
+        if sandbox is None:
+            msg = "no sandbox is attached — there's no workspace to snapshot into a pack"
+            self._record("save_pack", name, msg, ok=False)
+            return False, msg
+        want_tools = {str(t) for t in tools} if tools else None
+        tool_specs = [
+            t.to_dict()
+            for n, t in self._forged_tools.items()
+            if (want_tools is None or n in want_tools) and self._registry.get(n) is not None
+        ]
+        if not tool_specs:
+            msg = "no forged tools to save — use forge_tool to build at least one first"
+            self._record("save_pack", name, msg, ok=False)
+            return False, msg
+        want_skills = {str(s) for s in skills} if skills else None
+        skill_specs = [
+            dict(s)
+            for sid, s in self._authored_skills.items()
+            if want_skills is None or sid in want_skills
+        ]
+        payload = {
+            "name": name,
+            "description": str(description or ""),
+            "tools": tool_specs,
+            "skills": skill_specs,
+            "sandbox": sandbox,
+        }
+        try:
+            result = await self._pack_persistence(payload)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("env: pack persistence callback failed: %s", exc, exc_info=True)
+            msg = f"save_pack failed: {exc}"
+            self._record("save_pack", name, msg, ok=False)
+            return False, msg
+        pid = (result or {}).get("pack_id") if isinstance(result, dict) else None
+        msg = (
+            f"saved Sandbox Tool Pack '{name}'"
+            + (f" (id {pid})" if pid else "")
+            + f" with {len(tool_specs)} tool(s) + {len(skill_specs)} skill(s); "
+            "enable it for an environment to reuse it"
+        )
+        self._record("save_pack", name, msg)
         return True, msg
 
     # ── skills (enable/disable existing) ──────────────────────────────

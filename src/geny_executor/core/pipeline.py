@@ -742,6 +742,7 @@ class Pipeline:
         #   _environment — the live PipelineEnvironment controller (lazy).
         self._adhoc_providers: List[Any] = []
         self._env_persistence: Any = None
+        self._pack_persistence: Any = None
         self._env_settings_schemas: Any = None
         self._environment: Any = None
         self._has_started: bool = (
@@ -1495,6 +1496,7 @@ class Pipeline:
         subagent_registry: Optional[Any] = None,
         sandbox: Optional[Any] = None,
         env_persistence: Optional[Any] = None,
+        pack_persistence: Optional[Any] = None,
         env_settings_schemas: Optional[Any] = None,
         override_manifest: bool = False,
     ) -> None:
@@ -1649,6 +1651,7 @@ class Pipeline:
             subagent_registry=subagent_registry,
             sandbox=sandbox,
             env_persistence=env_persistence,
+            pack_persistence=pack_persistence,
             env_settings_schemas=env_settings_schemas,
             override_manifest=override_manifest,
         )
@@ -1710,6 +1713,7 @@ class Pipeline:
         subagent_registry: Optional[Any] = None,
         sandbox: Optional[Any] = None,
         env_persistence: Optional[Any] = None,
+        pack_persistence: Optional[Any] = None,
         env_settings_schemas: Optional[Any] = None,
         override_manifest: bool = False,
     ) -> None:
@@ -1748,6 +1752,12 @@ class Pipeline:
             self._env_persistence = env_persistence
             if self._environment is not None:
                 self._environment.attach_persistence(env_persistence)
+
+        if pack_persistence is not None:
+            # Host callback for ``save_pack`` (snapshot sandbox → reusable pack).
+            self._pack_persistence = pack_persistence
+            if self._environment is not None:
+                self._environment.attach_pack_persistence(pack_persistence)
 
         if env_settings_schemas is not None:
             # Host descriptor of configurable tool settings (groups + fields +
@@ -2012,6 +2022,7 @@ class Pipeline:
             skill_registry=getattr(sp, "_registry", None) if sp else None,
             skill_fork_runner=getattr(sp, "_fork_runner", None) if sp else None,
             persistence=self._env_persistence,
+            pack_persistence=self._pack_persistence,
             # Model tunables + pipeline limits (core model/provider stay locked).
             config=self._config,
             # Host descriptor of configurable tool settings (optional).

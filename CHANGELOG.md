@@ -4,6 +4,20 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.32.0] — 2026-06-24
+
+### Added
+
+- **`env(action="save_pack")`** — persist **[the session's sandbox + the tools
+  you forged + the skills you authored]** as one reusable Sandbox Tool Pack.
+  `PipelineEnvironment.save_pack(name, …)` gathers forged-tool specs (`to_dict()`)
+  + authored-skill specs + the live sandbox and delegates durable storage
+  (snapshot + record) to a host **`pack_persistence`** callback — wired through
+  `Pipeline.attach_runtime(pack_persistence=…)`, symmetric with `env_persistence`.
+  `tools`/`skills` args optionally restrict what's included; default = all.
+  `forge_tool` now records each tool so `save_pack` knows what to save.
+- tool-builder skill updated to teach `save_pack` as the persist step. +3 tests.
+
 ## [2.31.0] — 2026-06-24
 
 ### Added

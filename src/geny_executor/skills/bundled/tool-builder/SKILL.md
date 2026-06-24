@@ -58,11 +58,18 @@ don't have one, `forge_tool` will tell you.
 
 ## Persisting it (reuse across sessions)
 
-`forge_tool` is for **this session**. To keep a tool — and make it a strong,
-reusable **Sandbox Tool Pack** — the host saves a snapshot of your workspace
-(its code + artifacts) together with the tool spec(s) and any how-to skills. A
-pack can bundle **several tools + several skills** into one unit that can be
-re-enabled, restored into a fresh workspace, or forked later.
+`forge_tool` is for **this session**. To keep it, save a **Sandbox Tool Pack**:
+
+```
+env(action="save_pack", args={"name": "text-utils", "description": "word + slug tools"})
+```
+
+This snapshots your workspace (code + artifacts) together with **every tool you
+forged + every skill you authored** this session, and stores it as one reusable
+unit (default disabled until an owner enables it for an environment). Pass
+`tools`/`skills` (lists of names) to include only some. A pack can bundle
+**several tools + several skills** and later be enabled per-environment, restored
+into a fresh workspace, or forked.
 
 See **REFERENCE.md** for: the full stdin/stdout contract, non-Python runtimes,
 multi-tool packs, `input_schema` design, network/read-only options, and

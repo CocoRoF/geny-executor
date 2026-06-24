@@ -68,6 +68,7 @@ _ACTIONS = {
     "set_config": ("set_config", False, ("key", "value")),
     "changelog": ("changelog", False, ("limit",)),
     "save": ("save", True, ()),
+    "save_pack": ("save_pack", True, ("name", "description", "tools", "skills")),
 }
 
 
