@@ -507,6 +507,11 @@ async def _drain_stdin(
                 continue
             stdin.write(chunk)
             await stdin.drain()
+    except (ConnectionResetError, BrokenPipeError):
+        # The child stopped reading stdin — it got what it needed and exited /
+        # closed its end (asyncio surfaces this as "Connection lost"). Feeding
+        # the rest is moot; this is normal completion, not a failure to raise.
+        pass
     finally:
         try:
             stdin.close()
