@@ -4,6 +4,19 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.33.0] — 2026-06-24
+
+### Added
+
+- **`attach_runtime(..., containerize_cli=False)`** — decouple sandboxed TOOL
+  execution from claude_code_cli containerization. With it, an attached sandbox
+  sets `ctx.sandbox` (so `forge_tool` / `SandboxExecTool` / bridged tools run in
+  the workspace via docker exec) while the claude_code_cli client keeps running on
+  the **host** — so a rotating-OAuth session can use sandboxed GAPT/forge tools
+  without the in-container OAuth-rotation 401. `_build_client_for` wraps the CLI
+  only when `_attached_sandbox and _containerize_cli`. Default True preserves the
+  full CLI-in-container behaviour. +2 tests.
+
 ## [2.32.0] — 2026-06-24
 
 ### Added

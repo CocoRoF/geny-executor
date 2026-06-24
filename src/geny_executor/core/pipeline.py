@@ -750,6 +750,11 @@ class Pipeline:
         )
         self._attached_llm_client: Any = None  # set by attach_runtime; propagated in _init_state
         self._attached_sandbox: Any = None  # SandboxHandle; wraps a resolved claude_code_cli client in a container runner
+        # When False, an attached sandbox is used for TOOL execution (ctx.sandbox)
+        # only — the claude_code_cli client is NOT wrapped in a ContainerCLIRunner,
+        # so the CLI keeps running on the host (OAuth-safe). Tools still run in the
+        # sandbox via docker exec. Default True preserves full CLI-in-container.
+        self._containerize_cli: bool = True
         self._credentials: CredentialBundle = CredentialBundle()  # set by from_manifest_async
         self._subagent_registry: Any = None  # set by attach_runtime; populates state + agent stage
         self._attached_session_runtime: Any = None  # v0.30.0 plugin slot; propagated in _init_state
@@ -1498,6 +1503,7 @@ class Pipeline:
         env_persistence: Optional[Any] = None,
         pack_persistence: Optional[Any] = None,
         env_settings_schemas: Optional[Any] = None,
+        containerize_cli: Optional[bool] = None,
         override_manifest: bool = False,
     ) -> None:
         """Inject session-scoped runtime objects into a manifest-built pipeline.
@@ -1653,6 +1659,7 @@ class Pipeline:
             env_persistence=env_persistence,
             pack_persistence=pack_persistence,
             env_settings_schemas=env_settings_schemas,
+            containerize_cli=containerize_cli,
             override_manifest=override_manifest,
         )
 
@@ -1715,6 +1722,7 @@ class Pipeline:
         env_persistence: Optional[Any] = None,
         pack_persistence: Optional[Any] = None,
         env_settings_schemas: Optional[Any] = None,
+        containerize_cli: Optional[bool] = None,
         override_manifest: bool = False,
     ) -> None:
         """Shared wiring behind :meth:`attach_runtime` / :meth:`refresh_runtime`.
@@ -1758,6 +1766,14 @@ class Pipeline:
             self._pack_persistence = pack_persistence
             if self._environment is not None:
                 self._environment.attach_pack_persistence(pack_persistence)
+
+        if containerize_cli is not None:
+            # Whether an attached sandbox also runs the claude_code_cli client
+            # in-container. False → CLI stays on host (OAuth-safe), tools still
+            # sandboxed. Bump the generation so the client rebuilds accordingly.
+            if bool(containerize_cli) != self._containerize_cli:
+                self._client_generation += 1
+            self._containerize_cli = bool(containerize_cli)
 
         if env_settings_schemas is not None:
             # Host descriptor of configurable tool settings (groups + fields +
@@ -3028,7 +3044,11 @@ class Pipeline:
         # exact kwargs resolved above (api_key, mcp_config, allow_tools,
         # workspace_dir, ...) — the host never replicates them. SDK providers
         # ignore the sandbox (they don't spawn a CLI).
-        if provider == "claude_code_cli" and self._attached_sandbox is not None:
+        if (
+            provider == "claude_code_cli"
+            and self._attached_sandbox is not None
+            and self._containerize_cli
+        ):
             from geny_executor.llm_client.claude_code import (
                 build_container_cli_client,
             )

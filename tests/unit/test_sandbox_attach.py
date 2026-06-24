@@ -73,3 +73,35 @@ def test_no_sandbox_builds_plain_cli_client() -> None:
     client = p._build_client_for("claude_code_cli")
     runner = client._make_runner()
     assert not isinstance(runner, ContainerCLIRunner)
+
+
+def test_containerize_cli_false_keeps_cli_on_host_but_attaches_sandbox() -> None:
+    """Decouple: a sandbox attached with containerize_cli=False is used for TOOL
+    execution (ctx.sandbox) but the claude_code_cli client stays on the host —
+    so an OAuth (rotating-token) session can use sandboxed GAPT/forge tools
+    without the in-container OAuth rotation problem."""
+    p = Pipeline()
+    p._credentials = CredentialBundle(
+        by_provider={
+            "claude_code_cli": ProviderCredentials(api_key="sk-test", binary_path="/bin/sh")
+        }
+    )
+    p.attach_runtime(sandbox=_FakeSandbox(), containerize_cli=False)
+    # Sandbox is attached (tools get ctx.sandbox)…
+    assert isinstance(p._attached_sandbox, _FakeSandbox)
+    assert p._containerize_cli is False
+    # …but the CLI client is NOT wrapped in a container runner.
+    client = p._build_client_for("claude_code_cli")
+    runner = client._make_runner()
+    assert not isinstance(runner, ContainerCLIRunner)
+
+
+def test_containerize_cli_default_true_still_wraps() -> None:
+    p = Pipeline()
+    p._credentials = CredentialBundle(
+        by_provider={"claude_code_cli": ProviderCredentials(api_key="sk-test")}
+    )
+    p.attach_runtime(sandbox=_FakeSandbox())  # default containerize_cli=True
+    assert p._containerize_cli is True
+    runner = p._build_client_for("claude_code_cli")._make_runner()
+    assert isinstance(runner, ContainerCLIRunner)
