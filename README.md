@@ -2,7 +2,7 @@
 
 [![PyPI version](https://img.shields.io/pypi/v/geny-executor.svg)](https://pypi.org/project/geny-executor/)
 [![Python 3.11+](https://img.shields.io/pypi/pyversions/geny-executor.svg)](https://pypi.org/project/geny-executor/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![CI](https://github.com/CocoRoF/geny-executor/actions/workflows/ci.yml/badge.svg)](https://github.com/CocoRoF/geny-executor/actions/workflows/ci.yml)
 
 **A harness-engineered agent pipeline library — 21 stages, 5 LLM providers, MCP-native, fully introspectable.**
@@ -20,7 +20,7 @@ These projects are built to work together. **Geny** is the product at the top of
 | Project | What it is | Role in the stack |
 |---|---|---|
 | [**Geny**](https://github.com/CocoRoF/Geny) | Multi-agent VTuber + autonomous-worker platform | The product — uses every project below |
-| ➡️ [**geny-executor**](https://github.com/CocoRoF/geny-executor) | 21-stage, manifest-driven agent pipeline · PyPI · MIT | The engine everything runs on |
+| ➡️ [**geny-executor**](https://github.com/CocoRoF/geny-executor) | 21-stage, manifest-driven agent pipeline · PyPI · Apache-2.0 | The engine everything runs on |
 | [**GAPT**](https://github.com/CocoRoF/geny-adapted-project-toolkit) | Self-hosted AI DevOps platform — sandbox · edit · build · deploy | Where agents safely touch real repos |
 | [**geny-avatar**](https://github.com/CocoRoF/geny-avatar) | 2D live-avatar editor with AI texture generation | Where Geny's faces are made |
 
@@ -427,7 +427,7 @@ geny-executor/
 ├── docs/                    # Architecture, providers, manifest, error codes, MCP, hooks
 ├── tests/                   # 3100+ unit, conformance, contract, integration tests
 ├── pyproject.toml           # Package configuration (Hatch)
-└── LICENSE                  # MIT
+└── LICENSE                  # Apache-2.0
 ```
 
 ---
@@ -466,7 +466,7 @@ See [CHANGELOG](https://github.com/CocoRoF/geny-executor/releases) for the full 
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+[Apache License 2.0](LICENSE). Copyright 2026 CocoRoF — see [NOTICE](NOTICE).
 
 ---
 

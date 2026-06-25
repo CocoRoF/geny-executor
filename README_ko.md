@@ -2,7 +2,7 @@
 
 [![PyPI version](https://img.shields.io/pypi/v/geny-executor.svg)](https://pypi.org/project/geny-executor/)
 [![Python 3.11+](https://img.shields.io/pypi/pyversions/geny-executor.svg)](https://pypi.org/project/geny-executor/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![CI](https://github.com/CocoRoF/geny-executor/actions/workflows/ci.yml/badge.svg)](https://github.com/CocoRoF/geny-executor/actions/workflows/ci.yml)
 
 **하네스 엔지니어링 기반 Agent 파이프라인 라이브러리 — 21단계, 5개 LLM provider, MCP 네이티브, 완전 introspectable.**
@@ -20,7 +20,7 @@ geny-executor는 **21단계 파이프라인**과 **이중 추상화 (Dual Abstra
 | 프로젝트 | 무엇인가 | 스택에서의 역할 |
 |---|---|---|
 | [**Geny**](https://github.com/CocoRoF/Geny) | 멀티 에이전트 VTuber + 자율 워커 플랫폼 | 최상위 제품 — 아래 전부를 사용 |
-| ➡️ [**geny-executor**](https://github.com/CocoRoF/geny-executor) | 21단계 manifest 기반 에이전트 파이프라인 · PyPI · MIT | 모든 것이 돌아가는 엔진 |
+| ➡️ [**geny-executor**](https://github.com/CocoRoF/geny-executor) | 21단계 manifest 기반 에이전트 파이프라인 · PyPI · Apache-2.0 | 모든 것이 돌아가는 엔진 |
 | [**GAPT**](https://github.com/CocoRoF/geny-adapted-project-toolkit) | 셀프호스트 AI DevOps 플랫폼 — 샌드박스·편집·빌드·배포 | 에이전트가 실제 레포를 안전하게 다루는 곳 |
 | [**geny-avatar**](https://github.com/CocoRoF/geny-avatar) | AI 텍스처 생성 기반 2D 라이브 아바타 에디터 | Geny 의 얼굴이 만들어지는 곳 |
 
@@ -427,7 +427,7 @@ geny-executor/
 ├── docs/                    # Architecture, providers, manifest, error codes, MCP, hooks
 ├── tests/                   # 3100+ unit / conformance / contract / integration test
 ├── pyproject.toml           # Package config (Hatch)
-└── LICENSE                  # MIT
+└── LICENSE                  # Apache-2.0
 ```
 
 ---
@@ -466,7 +466,7 @@ ruff format src/ tests/
 
 ## 라이선스
 
-MIT — [LICENSE](LICENSE) 참조.
+[Apache License 2.0](LICENSE). Copyright 2026 CocoRoF — [NOTICE](NOTICE) 참조.
 
 ---
 
