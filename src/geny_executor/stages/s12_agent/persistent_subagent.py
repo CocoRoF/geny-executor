@@ -331,11 +331,21 @@ class SubAgentManager:
         inbox: Optional[SubAgentInbox] = None,
         session_store: Any = None,
         on_event: Optional[EventCallback] = None,
+        credentials_provider: Optional[
+            Callable[[str], Union[Optional[Dict[str, Any]], Awaitable[Optional[Dict[str, Any]]]]]
+        ] = None,
     ) -> None:
         self._registry = registry
         self.inbox = inbox or SubAgentInbox()
         self._session_store = session_store
         self._on_event = on_event
+        # Host callback ``owner_session_id -> {"credentials", "provider"} | None``,
+        # consulted by spawn() when no explicit credentials are passed (e.g. an
+        # ad-hoc SubAgentSpawn tool call, which can't know the owner's bundle).
+        # Without it, an ad-hoc-spawned sub-agent has no credentials and its
+        # Stage-6 auth fails — only the host-spawned owned companion (which
+        # passes credentials=) worked (integrity audit 2026-06-25). May be async.
+        self._credentials_provider = credentials_provider
         self._agents: Dict[str, PersistentSubAgent] = {}
         self._tasks: Dict[str, asyncio.Task] = {}  # assignment_id -> task
         # Serializes spawn(): the check→build→store sequence awaits (pipeline
@@ -418,6 +428,25 @@ class SubAgentManager:
                 if workspace_snapshot is not None:
                     existing.state.shared["workspace_snapshot"] = workspace_snapshot
                 return existing
+
+            # Resolve credentials/provider from the host when the caller didn't
+            # supply them (the ad-hoc SubAgentSpawn tool path). The owned
+            # companion is spawned host-side WITH credentials, so this only fires
+            # for tool-initiated spawns that would otherwise fail Stage-6 auth.
+            if credentials is None and self._credentials_provider is not None:
+                try:
+                    resolved = self._credentials_provider(owner_session_id)
+                    if inspect.isawaitable(resolved):
+                        resolved = await resolved
+                    if resolved:
+                        credentials = resolved.get("credentials")
+                        parent_provider = parent_provider or resolved.get("provider")
+                except Exception:  # noqa: BLE001 — best effort; fall through to resolve error
+                    logger.debug(
+                        "credentials_provider failed for owner %s",
+                        owner_session_id,
+                        exc_info=True,
+                    )
 
             ctx = SubAgentBuildContext(
                 parent_session_id=owner_session_id,

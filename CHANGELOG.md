@@ -4,6 +4,24 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.36.0] — 2026-06-25
+
+### Fixed (sub-agent credential/provider inheritance — integrity audit 2026-06-25)
+
+- **`SubAgentManager(credentials_provider=…)`** — a host callback
+  `owner_session_id -> {"credentials", "provider"} | None`, consulted by
+  `spawn()` when no explicit credentials are passed. An ad-hoc `SubAgentSpawn`
+  tool call can't know the owner's credential bundle, so the spawned sub-agent
+  had empty Stage-6 credentials and failed to authenticate; only the host-spawned
+  owned companion (which passes `credentials=`) worked. May be sync or async.
+- **`run_subagent(parent_provider=…, credentials=…)`** — the one-shot sub-worker
+  (Agent tool) has no parent `PipelineState` handle, so a provider-less descriptor
+  fell through to the empty-bundle rung and raised `ConfigError`. The ephemeral
+  state it mints now seeds `PRIMARY_PROVIDER` + credentials from these hints so
+  `resolve_subagent_provider` and Stage-6 auth inherit the parent's. `AgentTool`
+  forwards `ctx.extras["subagent_parent_provider"]` / `["subagent_credentials"]`,
+  passing only the kwargs the resolved runner accepts (legacy `spawn` unaffected).
+
 ## [2.35.0] — 2026-06-25
 
 ### Fixed (SubAgentManager integrity audit 2026-06-25)

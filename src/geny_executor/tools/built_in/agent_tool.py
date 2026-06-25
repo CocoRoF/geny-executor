@@ -145,8 +145,27 @@ class AgentTool(Tool):
                 is_error=True,
             )
 
+        # Forward the parent's provider/credentials so a one-shot sub-worker
+        # inherits Stage-6 auth even for a provider-less descriptor (the tool has
+        # no PipelineState handle). Only pass kwargs the runner actually accepts
+        # so the legacy ``spawn`` fallback / older orchestrators don't break.
+        extra_kwargs: Dict[str, Any] = {}
+        _prov = context.extras.get("subagent_parent_provider")
+        _creds = context.extras.get("subagent_credentials")
+        if _prov is not None or _creds is not None:
+            try:
+                import inspect as _inspect
+
+                _params = _inspect.signature(runner).parameters
+                if _prov is not None and "parent_provider" in _params:
+                    extra_kwargs["parent_provider"] = _prov
+                if _creds is not None and "credentials" in _params:
+                    extra_kwargs["credentials"] = _creds
+            except (TypeError, ValueError):
+                pass
+
         try:
-            result = await runner(subagent_type, prompt, model=model)
+            result = await runner(subagent_type, prompt, model=model, **extra_kwargs)
         except KeyError as exc:
             return ToolResult(
                 content={

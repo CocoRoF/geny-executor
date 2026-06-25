@@ -533,6 +533,8 @@ class SubagentTypeOrchestrator(AgentOrchestrator):
         *,
         model: Optional[str] = None,
         state: Optional[PipelineState] = None,
+        parent_provider: Optional[str] = None,
+        credentials: Any = None,
     ) -> Dict[str, Any]:
         """Single-call delegation surface (2.2.0 Wave 3).
 
@@ -579,7 +581,20 @@ class SubagentTypeOrchestrator(AgentOrchestrator):
         if model:
             descriptor = replace(descriptor, model_override=model)
         if state is None:
+            # Tool-context callers (AgentTool) have no parent state handle, so
+            # provider/credential inheritance would otherwise fall through to the
+            # descriptor / empty-bundle rungs and a provider-less descriptor would
+            # raise ConfigError (audit 2026-06-25). Seed the ephemeral state from
+            # the parent hints the caller forwards so resolve_subagent_provider's
+            # PRIMARY_PROVIDER rung + Stage-6 credentials inherit correctly.
             state = PipelineState(session_id=f"subagent-adhoc-{uuid.uuid4().hex[:8]}")
+            if parent_provider:
+                state.shared[SharedKeys.PRIMARY_PROVIDER] = parent_provider
+            if credentials is not None:
+                try:
+                    state.credentials = credentials
+                except Exception:  # noqa: BLE001
+                    pass
         record = await self._run_descriptor(state, descriptor, agent_type, prompt)
         if not record.get("success", False):
             raise RuntimeError(record.get("error") or "sub-pipeline reported success=False")
