@@ -43,6 +43,125 @@ from geny_executor.stages.s12_agent.subagent_type import (
 logger = logging.getLogger(__name__)
 
 
+# ── Assignment transcript capture (2.34.0) ──────────────────────────────
+# A sub-agent runs its OWN pipeline; without observing it the host only sees
+# the final result, never *how* it got there. We subscribe to the sub-
+# pipeline's event bus for the duration of an assignment and normalize the
+# tool / result / error traffic into a compact, bounded transcript that the
+# completion event carries. A host (e.g. Geny) can then render the sub-
+# agent's own TOOL/RESULT trail instead of falling back to the owner's
+# pipeline log. Capture is best-effort: a collector that raises must never
+# break the run.
+
+_MAX_TRANSCRIPT_STEPS = 400
+_TRANSCRIPT_FIELD_LIMIT = 4000
+_TRANSCRIPT_INPUT_LIMIT = 1000
+
+
+def _truncate_text(value: Any, limit: int = _TRANSCRIPT_FIELD_LIMIT) -> str:
+    s = value if isinstance(value, str) else ("" if value is None else str(value))
+    return s if len(s) <= limit else (s[:limit] + f"… (+{len(s) - limit} chars)")
+
+
+def _clip_input(value: Any) -> Any:
+    """Keep an input's shape but bound any long string values."""
+    if isinstance(value, dict):
+        return {
+            k: (_truncate_text(v, _TRANSCRIPT_INPUT_LIMIT) if isinstance(v, str) else v)
+            for k, v in value.items()
+        }
+    if isinstance(value, str):
+        return _truncate_text(value, _TRANSCRIPT_INPUT_LIMIT)
+    return value
+
+
+def _result_to_text(content: Any) -> str:
+    """Flatten a tool_result ``content`` (str | list[block] | dict) to text."""
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return _truncate_text(content)
+    if isinstance(content, list):
+        parts: List[str] = []
+        for block in content:
+            if isinstance(block, dict):
+                parts.append(str(block.get("text") or block.get("content") or ""))
+            else:
+                parts.append(str(block))
+        return _truncate_text("\n".join(p for p in parts if p))
+    if isinstance(content, dict):
+        return _truncate_text(content.get("text") or content.get("content") or content)
+    return _truncate_text(content)
+
+
+class _TranscriptCollector:
+    """Subscribe to a sub-pipeline bus and build a normalized step list.
+
+    Steps (plain dicts, host-agnostic)::
+
+        {"type": "tool", "id", "name", "input", "is_error", "duration_ms", "result", "ts"}
+        {"type": "error", "message", "ts"}
+
+    Covers BOTH provider paths so the trail is complete regardless of backend:
+      * Stage-10 dispatch — ``tool.call_start`` / ``tool.call_complete``
+      * CLI provider      — ``api.cli_tool_call`` / ``api.tool_result``
+    """
+
+    def __init__(self) -> None:
+        self.steps: List[Dict[str, Any]] = []
+        self._by_id: Dict[str, Dict[str, Any]] = {}
+
+    def _open_tool(self, tid: str, name: str, tool_input: Any, ts: str) -> None:
+        if not name or len(self.steps) >= _MAX_TRANSCRIPT_STEPS:
+            return
+        step: Dict[str, Any] = {
+            "type": "tool",
+            "id": tid,
+            "name": name,
+            "input": _clip_input(tool_input),
+            "ts": ts,
+        }
+        self.steps.append(step)
+        if tid:
+            self._by_id[tid] = step
+
+    def __call__(self, event: Any) -> None:
+        try:
+            et = getattr(event, "type", "") or ""
+            data = getattr(event, "data", None) or {}
+            ts = getattr(event, "timestamp", "") or ""
+            if et == "tool.call_start":
+                self._open_tool(
+                    str(data.get("tool_use_id") or ""),
+                    str(data.get("name") or ""),
+                    data.get("input"),
+                    ts,
+                )
+            elif et == "api.cli_tool_call":
+                name = str(data.get("name") or "")
+                if name and not name.startswith("mcp__"):
+                    self._open_tool(str(data.get("id") or ""), name, data.get("input"), ts)
+            elif et == "tool.call_complete":
+                step = self._by_id.get(str(data.get("tool_use_id") or ""))
+                if step is not None:
+                    step["is_error"] = bool(data.get("is_error"))
+                    step["duration_ms"] = data.get("duration_ms")
+            elif et == "api.tool_result":
+                step = self._by_id.get(str(data.get("tool_use_id") or ""))
+                if step is not None:
+                    step["result"] = _result_to_text(data.get("content"))
+                    if data.get("is_error"):
+                        step["is_error"] = True
+            elif et in ("api.error", "pipeline.error"):
+                if len(self.steps) < _MAX_TRANSCRIPT_STEPS:
+                    msg = data.get("message") if isinstance(data, dict) else data
+                    self.steps.append(
+                        {"type": "error", "message": _truncate_text(msg or data), "ts": ts}
+                    )
+        except Exception:  # noqa: BLE001 — observability must never break a run
+            pass
+
+
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -348,6 +467,17 @@ class SubAgentManager:
                 "subagent.assigned",
                 {"assignment_id": assignment_id, **agent.summary(), "task": task},
             )
+            # Observe the sub-pipeline's OWN tool/result/error traffic for the
+            # duration of this assignment so the completion event can carry a
+            # real trail (see _TranscriptCollector). pipeline.on("*") is a
+            # complete feed — Stage-10 tool.* and CLI api.* alike are bridged
+            # onto the bus via state.add_event (executor ≥2.2.0).
+            collector = _TranscriptCollector()
+            unsub: Optional[Callable[[], Any]] = None
+            try:
+                unsub = agent.pipeline.on("*", collector)
+            except Exception:  # noqa: BLE001 — capture is strictly optional
+                unsub = None
             record: Dict[str, Any]
             try:
                 result = await agent.pipeline.run(task, agent.state)
@@ -378,6 +508,12 @@ class SubAgentManager:
                     "text": "",
                     "error": f"run_error: {exc}",
                 }
+            finally:
+                if unsub is not None:
+                    try:
+                        unsub()
+                    except Exception:  # noqa: BLE001
+                        pass
             agent.status = "idle"
 
         # Persist accumulated state (multi-turn survives restart).
@@ -398,6 +534,10 @@ class SubAgentManager:
             **record,
             "owner_session_id": agent.owner_session_id,
             "inbox_message_id": msg.id,
+            # The sub-agent's own normalized tool/result/error trail (2.34.0).
+            # Carried on the event (NOT the lean inbox record) so a host can
+            # render the sub-agent's activity; absent ⇒ host falls back.
+            "transcript": collector.steps,
         }
         # Literal event names (the catalogue honesty test scans _emit sites).
         if record.get("success"):
