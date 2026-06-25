@@ -13,19 +13,19 @@ geny-executor는 **21단계 파이프라인**과 **이중 추상화 (Dual Abstra
 
 ---
 
-## 🌐 Geny 에코시스템 — 연관 프로젝트
+## Geny 에코시스템
 
 이 프로젝트들은 함께 동작하도록 만들어졌습니다. **Geny** 가 스택 최상단의 제품이고, 그 아래는 전부 단독으로도 쓸 수 있는 빌딩 블록입니다. **➡️ 가 현재 위치입니다.**
 
 | 프로젝트 | 무엇인가 | 스택에서의 역할 |
 |---|---|---|
-| [**Geny**](https://github.com/CocoRoF/Geny) | 멀티 에이전트 VTuber + 자율 워커 플랫폼 | 🏛️ 최상위 제품 — 아래 전부를 사용 |
-| ➡️ [**geny-executor**](https://github.com/CocoRoF/geny-executor) | 21단계 manifest 기반 에이전트 파이프라인 · PyPI · MIT | ⚙️ 모든 것이 돌아가는 엔진 |
-| [**GAPT**](https://github.com/CocoRoF/geny-adapted-project-toolkit) | 셀프호스트 AI DevOps 플랫폼 — 샌드박스·편집·빌드·배포 | 🛠️ 에이전트가 실제 레포를 안전하게 다루는 곳 |
-| [**geny-avatar**](https://github.com/CocoRoF/geny-avatar) | AI 텍스처 생성 기반 2D 라이브 아바타 에디터 | 🎭 Geny 의 얼굴이 만들어지는 곳 |
+| [**Geny**](https://github.com/CocoRoF/Geny) | 멀티 에이전트 VTuber + 자율 워커 플랫폼 | 최상위 제품 — 아래 전부를 사용 |
+| ➡️ [**geny-executor**](https://github.com/CocoRoF/geny-executor) | 21단계 manifest 기반 에이전트 파이프라인 · PyPI · MIT | 모든 것이 돌아가는 엔진 |
+| [**GAPT**](https://github.com/CocoRoF/geny-adapted-project-toolkit) | 셀프호스트 AI DevOps 플랫폼 — 샌드박스·편집·빌드·배포 | 에이전트가 실제 레포를 안전하게 다루는 곳 |
+| [**geny-avatar**](https://github.com/CocoRoF/geny-avatar) | AI 텍스처 생성 기반 2D 라이브 아바타 에디터 | Geny 의 얼굴이 만들어지는 곳 |
 
 <details>
-<summary>📐 서로 어떻게 연결되는가</summary>
+<summary>서로 어떻게 연결되는가</summary>
 
 ```
                   Geny — 최상위 제품 (아래 전부를 사용)
@@ -472,7 +472,7 @@ MIT — [LICENSE](LICENSE) 참조.
 
 ## 관련 프로젝트
 
-**Geny 에코시스템** (이 엔진 위에 세워진 형제 프로젝트) → 위 [Geny 에코시스템](#-geny-에코시스템) 섹션 참조:
+**Geny 에코시스템** (이 엔진 위에 세워진 형제 프로젝트) → 위 [Geny 에코시스템](#geny-에코시스템) 섹션 참조:
 [Geny](https://github.com/CocoRoF/Geny) · [GAPT](https://github.com/CocoRoF/geny-adapted-project-toolkit) · [geny-avatar](https://github.com/CocoRoF/geny-avatar)
 
 **기반 / 상호운용:**

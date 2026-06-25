@@ -13,19 +13,19 @@ geny-executor implements a **21-stage pipeline** with **dual-abstraction archite
 
 ---
 
-## 🌐 The Geny ecosystem — related projects
+## The Geny ecosystem
 
 These projects are built to work together. **Geny** is the product at the top of the stack; everything below is a building block you can also use on its own. **➡️ marks where you are.**
 
 | Project | What it is | Role in the stack |
 |---|---|---|
-| [**Geny**](https://github.com/CocoRoF/Geny) | Multi-agent VTuber + autonomous-worker platform | 🏛️ The product — uses every project below |
-| ➡️ [**geny-executor**](https://github.com/CocoRoF/geny-executor) | 21-stage, manifest-driven agent pipeline · PyPI · MIT | ⚙️ The engine everything runs on |
-| [**GAPT**](https://github.com/CocoRoF/geny-adapted-project-toolkit) | Self-hosted AI DevOps platform — sandbox · edit · build · deploy | 🛠️ Where agents safely touch real repos |
-| [**geny-avatar**](https://github.com/CocoRoF/geny-avatar) | 2D live-avatar editor with AI texture generation | 🎭 Where Geny's faces are made |
+| [**Geny**](https://github.com/CocoRoF/Geny) | Multi-agent VTuber + autonomous-worker platform | The product — uses every project below |
+| ➡️ [**geny-executor**](https://github.com/CocoRoF/geny-executor) | 21-stage, manifest-driven agent pipeline · PyPI · MIT | The engine everything runs on |
+| [**GAPT**](https://github.com/CocoRoF/geny-adapted-project-toolkit) | Self-hosted AI DevOps platform — sandbox · edit · build · deploy | Where agents safely touch real repos |
+| [**geny-avatar**](https://github.com/CocoRoF/geny-avatar) | 2D live-avatar editor with AI texture generation | Where Geny's faces are made |
 
 <details>
-<summary>📐 How they fit together</summary>
+<summary>How they fit together</summary>
 
 ```
                   Geny — the product (uses everything below)
@@ -472,7 +472,7 @@ MIT — see [LICENSE](LICENSE).
 
 ## Related projects
 
-**The Geny ecosystem** (sibling projects built on this engine) → see [The Geny ecosystem](#-the-geny-ecosystem) above:
+**The Geny ecosystem** (sibling projects built on this engine) → see [The Geny ecosystem](#the-geny-ecosystem) above:
 [Geny](https://github.com/CocoRoF/Geny) · [GAPT](https://github.com/CocoRoF/geny-adapted-project-toolkit) · [geny-avatar](https://github.com/CocoRoF/geny-avatar)
 
 **Built on & interoperates with:**
