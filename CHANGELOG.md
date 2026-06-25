@@ -4,6 +4,26 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.34.0] — 2026-06-25
+
+### Added
+
+- **Sub-agent assignment transcripts** — a persistent sub-agent runs its OWN
+  pipeline, but `SubAgentManager._run_assignment` used the non-streaming
+  `pipeline.run()`, so a host only ever saw the final result, never the tool
+  calls the sub-agent made. Hosts mirroring sub-agent tasks (e.g. Geny's 작업
+  tab) therefore had to fall back to the OWNER session's pipeline-stage log —
+  the wrong trail. Now each assignment subscribes a `_TranscriptCollector` to
+  the sub-pipeline's bus (`pipeline.on("*")`, a complete feed since 2.2.0 —
+  Stage-10 `tool.*` and CLI `api.*` both bridge through `state.add_event`) for
+  its duration, normalizing `tool.call_start`/`tool.call_complete` +
+  `api.cli_tool_call`/`api.tool_result` + `*.error` into a compact, bounded
+  transcript (≤400 steps; inputs/results clipped). The transcript rides on the
+  `subagent.completed`/`subagent.failed` event payload (NOT the lean inbox
+  record) as `payload["transcript"]`, so a host can render the sub-agent's real
+  TOOL/RESULT/error trail. Absent ⇒ host falls back as before. Capture is
+  best-effort: a collector raising never breaks the run; unsubscribe in `finally`.
+
 ## [2.33.0] — 2026-06-24
 
 ### Added
