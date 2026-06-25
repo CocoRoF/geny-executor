@@ -11,16 +11,21 @@ geny-executor implements a **21-stage pipeline** with **dual-abstraction archite
 
 [한국어 README](README_ko.md) · [Architecture](docs/architecture.md) · [Providers](docs/providers.md) · [Error codes](docs/error_codes.md) · [Claude Code CLI host](docs/claude_code_cli.md)
 
-<!-- 📸 IMAGE NEEDED: hero banner — the 21-stage pipeline as a clean horizontal flow graphic -->
-> 📸 **Image needed** — _hero banner: the 21-stage pipeline rendered as a polished flow graphic._
-
 ---
 
-## 🌐 The Geny ecosystem
+## 🌐 The Geny ecosystem — related projects
 
-geny-executor is the **engine** at the bottom of the stack. Everything else in the ecosystem is built on it — and **Geny**, the product, ultimately uses them all.
+These projects are built to work together. **Geny** is the product at the top of the stack; everything below is a building block you can also use on its own. **➡️ marks where you are.**
 
-<!-- 📸 IMAGE NEEDED: a polished ecosystem diagram to replace the ASCII map below -->
+| Project | What it is | Role in the stack |
+|---|---|---|
+| [**Geny**](https://github.com/CocoRoF/Geny) | Multi-agent VTuber + autonomous-worker platform | 🏛️ The product — uses every project below |
+| ➡️ [**geny-executor**](https://github.com/CocoRoF/geny-executor) | 21-stage, manifest-driven agent pipeline · PyPI · MIT | ⚙️ The engine everything runs on |
+| [**GAPT**](https://github.com/CocoRoF/geny-adapted-project-toolkit) | Self-hosted AI DevOps platform — sandbox · edit · build · deploy | 🛠️ Where agents safely touch real repos |
+| [**geny-avatar**](https://github.com/CocoRoF/geny-avatar) | 2D live-avatar editor with AI texture generation | 🎭 Where Geny's faces are made |
+
+<details>
+<summary>📐 How they fit together</summary>
 
 ```
                   Geny — the product (uses everything below)
@@ -33,14 +38,12 @@ geny-executor is the **engine** at the bottom of the stack. Everything else in t
   (the engine)  (avatar editor)  (AI DevOps platform)
 ```
 
-| Project | What it is | Role in the stack |
-|---|---|---|
-| [**Geny**](https://github.com/CocoRoF/Geny) | Multi-agent VTuber + autonomous-worker platform | 🏛️ The product — consumes every project below |
-| [**geny-executor**](https://github.com/CocoRoF/geny-executor) | 21-stage, manifest-driven agent pipeline · PyPI · MIT | ⚙️ The engine everything runs on |
-| [**GAPT**](https://github.com/CocoRoF/geny-adapted-project-toolkit) | Self-hosted AI DevOps platform — sandbox · edit · build · deploy | 🛠️ Where agents safely touch real repos |
-| [**geny-avatar**](https://github.com/CocoRoF/geny-avatar) | 2D live-avatar editor with AI texture generation | 🎭 Where Geny's faces are made |
+</details>
 
-> **➡️ You are here: `geny-executor`** — the engine the rest of the ecosystem is built on.
+---
+
+<!-- 📸 IMAGE NEEDED: hero banner — the 21-stage pipeline as a clean horizontal flow graphic -->
+> 📸 **Image needed** — _hero banner: the 21-stage pipeline rendered as a polished flow graphic._
 
 ---
 

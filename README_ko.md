@@ -11,16 +11,21 @@ geny-executor는 **21단계 파이프라인**과 **이중 추상화 (Dual Abstra
 
 [English README](README.md) · [아키텍처](docs/architecture.md) · [Providers](docs/providers.md) · [Error codes](docs/error_codes.md) · [Claude Code CLI 호스트](docs/claude_code_cli.md)
 
-<!-- 📸 IMAGE NEEDED: hero 배너 — 21단계 파이프라인을 깔끔한 흐름 그래픽으로 -->
-> 📸 **이미지 필요** — _hero 배너: 21단계 파이프라인 흐름 그래픽._
-
 ---
 
-## 🌐 Geny 에코시스템
+## 🌐 Geny 에코시스템 — 연관 프로젝트
 
-geny-executor 는 스택 맨 아래의 **엔진**입니다. 에코시스템의 나머지는 전부 이 위에 세워지며, 제품인 **Geny** 가 최종적으로 그 모두를 사용합니다.
+이 프로젝트들은 함께 동작하도록 만들어졌습니다. **Geny** 가 스택 최상단의 제품이고, 그 아래는 전부 단독으로도 쓸 수 있는 빌딩 블록입니다. **➡️ 가 현재 위치입니다.**
 
-<!-- 📸 IMAGE NEEDED: 아래 ASCII 맵을 대체할 다이어그램 -->
+| 프로젝트 | 무엇인가 | 스택에서의 역할 |
+|---|---|---|
+| [**Geny**](https://github.com/CocoRoF/Geny) | 멀티 에이전트 VTuber + 자율 워커 플랫폼 | 🏛️ 최상위 제품 — 아래 전부를 사용 |
+| ➡️ [**geny-executor**](https://github.com/CocoRoF/geny-executor) | 21단계 manifest 기반 에이전트 파이프라인 · PyPI · MIT | ⚙️ 모든 것이 돌아가는 엔진 |
+| [**GAPT**](https://github.com/CocoRoF/geny-adapted-project-toolkit) | 셀프호스트 AI DevOps 플랫폼 — 샌드박스·편집·빌드·배포 | 🛠️ 에이전트가 실제 레포를 안전하게 다루는 곳 |
+| [**geny-avatar**](https://github.com/CocoRoF/geny-avatar) | AI 텍스처 생성 기반 2D 라이브 아바타 에디터 | 🎭 Geny 의 얼굴이 만들어지는 곳 |
+
+<details>
+<summary>📐 서로 어떻게 연결되는가</summary>
 
 ```
                   Geny — 최상위 제품 (아래 전부를 사용)
@@ -33,14 +38,12 @@ geny-executor 는 스택 맨 아래의 **엔진**입니다. 에코시스템의 �
   (엔진)        (아바타 에디터)  (AI DevOps 플랫폼)
 ```
 
-| 프로젝트 | 무엇인가 | 스택에서의 역할 |
-|---|---|---|
-| [**Geny**](https://github.com/CocoRoF/Geny) | 멀티 에이전트 VTuber + 자율 워커 플랫폼 | 🏛️ 최상위 제품 — 아래 전부를 사용 |
-| [**geny-executor**](https://github.com/CocoRoF/geny-executor) | 21단계 manifest 기반 에이전트 파이프라인 · PyPI · MIT | ⚙️ 모든 것이 돌아가는 엔진 |
-| [**GAPT**](https://github.com/CocoRoF/geny-adapted-project-toolkit) | 셀프호스트 AI DevOps 플랫폼 — 샌드박스·편집·빌드·배포 | 🛠️ 에이전트가 실제 레포를 안전하게 다루는 곳 |
-| [**geny-avatar**](https://github.com/CocoRoF/geny-avatar) | AI 텍스처 생성 기반 2D 라이브 아바타 에디터 | 🎭 Geny 의 얼굴이 만들어지는 곳 |
+</details>
 
-> **➡️ 현재 위치: `geny-executor`** — 나머지 전부가 그 위에 세워지는 엔진.
+---
+
+<!-- 📸 IMAGE NEEDED: hero 배너 — 21단계 파이프라인을 깔끔한 흐름 그래픽으로 -->
+> 📸 **이미지 필요** — _hero 배너: 21단계 파이프라인 흐름 그래픽._
 
 ---
 
