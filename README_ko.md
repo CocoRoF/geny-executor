@@ -11,6 +11,42 @@ geny-executor는 **21단계 파이프라인**과 **이중 추상화 (Dual Abstra
 
 [English README](README.md) · [아키텍처](docs/architecture.md) · [Providers](docs/providers.md) · [Error codes](docs/error_codes.md) · [Claude Code CLI 호스트](docs/claude_code_cli.md)
 
+<!-- 📸 IMAGE NEEDED: hero 배너 — 21단계 파이프라인을 깔끔한 흐름 그래픽으로, 또는 geny-executor-web 실행 스크린샷 -->
+> 📸 **이미지 필요** — _hero 배너: 21단계 파이프라인 흐름 그래픽 (또는 [geny-executor-web](https://github.com/CocoRoF/geny-executor-web) 실시간 스크린샷)._
+
+---
+
+## 🌐 Geny 에코시스템
+
+geny-executor 는 스택 맨 아래의 **엔진**입니다. 에코시스템의 나머지는 전부 이 위에 세워지며, 제품인 **Geny** 가 최종적으로 그 모두를 사용합니다.
+
+<!-- 📸 IMAGE NEEDED: 아래 ASCII 맵을 대체할 다이어그램 -->
+
+```
+                  Geny — 최상위 제품 (아래 전부를 사용)
+                    │
+      ┌─────────────┼──────────────┐
+   에이전트 엔진     아바타        샌드박스 + 배포
+      │             │              │
+      ▼             ▼              ▼
+ geny-executor  geny-avatar      GAPT
+  (엔진)        (아바타 에디터)  (AI DevOps 플랫폼)
+      ▲
+      │ 엔진을 시각화 / 구동
+      │
+ geny-executor-web (파이프라인 스튜디오)
+```
+
+| 프로젝트 | 무엇인가 | 스택에서의 역할 |
+|---|---|---|
+| [**Geny**](https://github.com/CocoRoF/Geny) | 멀티 에이전트 VTuber + 자율 워커 플랫폼 | 🏛️ 최상위 제품 — 아래 전부를 사용 |
+| [**geny-executor**](https://github.com/CocoRoF/geny-executor) | 21단계 manifest 기반 에이전트 파이프라인 · PyPI · MIT | ⚙️ 모든 것이 돌아가는 엔진 |
+| [**geny-executor-web**](https://github.com/CocoRoF/geny-executor-web) | 파이프라인 시각화 스튜디오 — React Flow + 실시간 WebSocket | 🔬 엔진을 보고·검사하고·실행 |
+| [**GAPT**](https://github.com/CocoRoF/geny-adapted-project-toolkit) | 셀프호스트 AI DevOps 플랫폼 — 샌드박스·편집·빌드·배포 | 🛠️ 에이전트가 실제 레포를 안전하게 다루는 곳 |
+| [**geny-avatar**](https://github.com/CocoRoF/geny-avatar) | AI 텍스처 생성 기반 2D 라이브 아바타 에디터 | 🎭 Geny 의 얼굴이 만들어지는 곳 |
+
+> **➡️ 현재 위치: `geny-executor`** — 나머지 전부가 그 위에 세워지는 엔진.
+
 ---
 
 ## 왜 geny-executor 인가?
@@ -44,6 +80,11 @@ Phase C — Surface (1회)
 ```
 
 각 stage의 strategy 옵션을 포함한 전체 리스트는 [`docs/architecture.md`](docs/architecture.md) 참조.
+
+> 💡 **실시간으로 보세요.** 모든 stage·이벤트·비용이 [**geny-executor-web**](https://github.com/CocoRoF/geny-executor-web) 로 스트리밍됩니다 — 실행하는 그대로 파이프라인을 그려주는 인터랙티브 React Flow 스튜디오.
+>
+> <!-- 📸 IMAGE NEEDED: geny-executor-web 스크린샷 — 실행 중인 21단계 흐름 그래프 + 이벤트 로그 -->
+> 📸 _이미지 필요: geny-executor-web 실행 중 화면 (stage 그래프 + 실시간 이벤트 로그)._
 
 ### 이중 추상화 — 두 단계의 swap
 
@@ -438,10 +479,14 @@ MIT — [LICENSE](LICENSE) 참조.
 
 ## 관련 프로젝트
 
+**Geny 에코시스템** (이 엔진 위에 세워진 형제 프로젝트) → 위 [Geny 에코시스템](#-geny-에코시스템) 섹션 참조:
+[Geny](https://github.com/CocoRoF/Geny) · [geny-executor-web](https://github.com/CocoRoF/geny-executor-web) · [GAPT](https://github.com/CocoRoF/geny-adapted-project-toolkit) · [geny-avatar](https://github.com/CocoRoF/geny-avatar)
+
+**기반 / 상호운용:**
+
 - [Anthropic SDK](https://github.com/anthropics/anthropic-sdk-python)
 - [OpenAI SDK](https://github.com/openai/openai-python)
 - [Google GenAI SDK](https://github.com/googleapis/python-genai)
 - [vLLM](https://github.com/vllm-project/vllm)
 - [Claude Code CLI](https://docs.anthropic.com/claude/code/) — geny-executor가 `claude_code_cli` provider로 host
 - [MCP](https://modelcontextprotocol.io/) — Model Context Protocol; 호스트-attached 서버 + per-session CLI wrap 둘 다 first-class
-- [Geny](https://github.com/CocoRoF/Geny) — geny-executor 위에서 동작하는 멀티 agent 플랫폼
