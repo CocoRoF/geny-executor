@@ -54,8 +54,11 @@ logger = logging.getLogger(__name__)
 # break the run.
 
 _MAX_TRANSCRIPT_STEPS = 400
+_MAX_TRANSCRIPT_BYTES = 256_000
 _TRANSCRIPT_FIELD_LIMIT = 4000
 _TRANSCRIPT_INPUT_LIMIT = 1000
+_MAX_CLIP_DEPTH = 4
+_MAX_LIST_ITEMS = 50
 
 
 def _truncate_text(value: Any, limit: int = _TRANSCRIPT_FIELD_LIMIT) -> str:
@@ -63,13 +66,23 @@ def _truncate_text(value: Any, limit: int = _TRANSCRIPT_FIELD_LIMIT) -> str:
     return s if len(s) <= limit else (s[:limit] + f"… (+{len(s) - limit} chars)")
 
 
-def _clip_input(value: Any) -> Any:
-    """Keep an input's shape but bound any long string values."""
+def _clip_input(value: Any, depth: int = 0) -> Any:
+    """Keep an input's shape but bound long strings AND nested containers.
+
+    Recurses (bounded depth + list width) so a tool input with deeply nested
+    or list-of-long-string payloads (e.g. a structured file-write) cannot blow
+    past the transcript budget — the pre-2.35 version only clipped top-level
+    string values (audit 2026-06-25).
+    """
+    if depth >= _MAX_CLIP_DEPTH:
+        return "… (nested)"
     if isinstance(value, dict):
-        return {
-            k: (_truncate_text(v, _TRANSCRIPT_INPUT_LIMIT) if isinstance(v, str) else v)
-            for k, v in value.items()
-        }
+        return {k: _clip_input(v, depth + 1) for k, v in value.items()}
+    if isinstance(value, list):
+        clipped = [_clip_input(v, depth + 1) for v in value[:_MAX_LIST_ITEMS]]
+        if len(value) > _MAX_LIST_ITEMS:
+            clipped.append(f"… (+{len(value) - _MAX_LIST_ITEMS} items)")
+        return clipped
     if isinstance(value, str):
         return _truncate_text(value, _TRANSCRIPT_INPUT_LIMIT)
     return value
@@ -101,32 +114,67 @@ class _TranscriptCollector:
 
         {"type": "tool", "id", "name", "input", "is_error", "duration_ms", "result", "ts"}
         {"type": "error", "message", "ts"}
+        {"type": "truncated", "note"}     # appended once when a bound is hit
 
     Covers BOTH provider paths so the trail is complete regardless of backend:
       * Stage-10 dispatch — ``tool.call_start`` / ``tool.call_complete``
       * CLI provider      — ``api.cli_tool_call`` / ``api.tool_result``
+
+    ``session_id`` scopes the feed: ``pipeline.on("*")`` is a complete bus feed,
+    so on a pipeline shared across runs (e.g. a host factory that reuses the
+    parent's pipeline) events from a *different* conversation would otherwise
+    cross-contaminate this transcript. We drop any event whose ``session_id``
+    is set and differs (audit 2026-06-25). Bounded by BOTH a step count and a
+    cumulative byte budget; on either limit a single ``truncated`` sentinel is
+    appended so the host can show the trail was cut.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, session_id: str = "") -> None:
         self.steps: List[Dict[str, Any]] = []
         self._by_id: Dict[str, Dict[str, Any]] = {}
+        self._session_id = session_id or ""
+        self._bytes = 0
+        self._truncated = False
+
+    def _full(self) -> bool:
+        if self._truncated:
+            return True
+        if len(self.steps) >= _MAX_TRANSCRIPT_STEPS or self._bytes >= _MAX_TRANSCRIPT_BYTES:
+            self.steps.append({"type": "truncated", "note": "trail truncated (limit reached)"})
+            self._truncated = True
+            return True
+        return False
+
+    def _append(self, step: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        if self._full():
+            return None
+        self.steps.append(step)
+        try:
+            self._bytes += len(repr(step))
+        except Exception:  # noqa: BLE001
+            pass
+        return step
 
     def _open_tool(self, tid: str, name: str, tool_input: Any, ts: str) -> None:
-        if not name or len(self.steps) >= _MAX_TRANSCRIPT_STEPS:
+        if not name:
             return
-        step: Dict[str, Any] = {
+        step = self._append({
             "type": "tool",
             "id": tid,
             "name": name,
             "input": _clip_input(tool_input),
             "ts": ts,
-        }
-        self.steps.append(step)
-        if tid:
+        })
+        if step is not None and tid:
             self._by_id[tid] = step
 
     def __call__(self, event: Any) -> None:
         try:
+            # Run scoping: ignore traffic from other conversations on a shared bus.
+            if self._session_id:
+                ev_sid = getattr(event, "session_id", "") or ""
+                if ev_sid and ev_sid != self._session_id:
+                    return
             et = getattr(event, "type", "") or ""
             data = getattr(event, "data", None) or {}
             ts = getattr(event, "timestamp", "") or ""
@@ -153,11 +201,8 @@ class _TranscriptCollector:
                     if data.get("is_error"):
                         step["is_error"] = True
             elif et in ("api.error", "pipeline.error"):
-                if len(self.steps) < _MAX_TRANSCRIPT_STEPS:
-                    msg = data.get("message") if isinstance(data, dict) else data
-                    self.steps.append(
-                        {"type": "error", "message": _truncate_text(msg or data), "ts": ts}
-                    )
+                msg = data.get("message") if isinstance(data, dict) else data
+                self._append({"type": "error", "message": _truncate_text(msg or data), "ts": ts})
         except Exception:  # noqa: BLE001 — observability must never break a run
             pass
 
@@ -293,6 +338,10 @@ class SubAgentManager:
         self._on_event = on_event
         self._agents: Dict[str, PersistentSubAgent] = {}
         self._tasks: Dict[str, asyncio.Task] = {}  # assignment_id -> task
+        # Serializes spawn(): the check→build→store sequence awaits (pipeline
+        # build, state load), so without this two concurrent spawns of the same
+        # sub_agent_id both build a pipeline and the loser leaks (live MCP child).
+        self._spawn_lock = asyncio.Lock()
 
     # ---- lifecycle ----
 
@@ -352,39 +401,54 @@ class SubAgentManager:
                 )
 
         sid = sub_agent_id or f"{owner_session_id}-{agent_type}-{uuid.uuid4().hex[:8]}"
-        if sid in self._agents:
-            return self._agents[sid]  # idempotent reattach
 
-        ctx = SubAgentBuildContext(
-            parent_session_id=owner_session_id,
-            sub_session_id=sid,
-            credentials=credentials,
-            descriptor=descriptor,
-            workspace_snapshot=workspace_snapshot,
-            parent_state_shared={SharedKeys.PRIMARY_PROVIDER: parent_provider or ""},
-            parent_provider=parent_provider,
-        )
-        pipeline = await _resolve_pipeline(descriptor.factory, ctx)
+        # Serialize the check→build→store so concurrent spawns of the same id
+        # don't both build a pipeline (the loser would leak its MCP child).
+        async with self._spawn_lock:
+            existing = self._agents.get(sid)
+            if existing is not None:
+                # Idempotent reattach. Refresh rotated credentials / snapshot so a
+                # re-spawn with new auth doesn't keep authenticating with stale
+                # creds (audit 2026-06-25); the live conversation is preserved.
+                if credentials is not None:
+                    try:
+                        existing.state.credentials = credentials
+                    except Exception:  # noqa: BLE001
+                        pass
+                if workspace_snapshot is not None:
+                    existing.state.shared["workspace_snapshot"] = workspace_snapshot
+                return existing
 
-        state = await self._load_state(sid)
-        if state is None:
-            state = PipelineState(session_id=sid)
-        if credentials is not None:
-            try:
-                state.credentials = credentials
-            except Exception:  # noqa: BLE001
-                pass
-        if workspace_snapshot is not None:
-            state.shared["workspace_snapshot"] = workspace_snapshot
+            ctx = SubAgentBuildContext(
+                parent_session_id=owner_session_id,
+                sub_session_id=sid,
+                credentials=credentials,
+                descriptor=descriptor,
+                workspace_snapshot=workspace_snapshot,
+                parent_state_shared={SharedKeys.PRIMARY_PROVIDER: parent_provider or ""},
+                parent_provider=parent_provider,
+            )
+            pipeline = await _resolve_pipeline(descriptor.factory, ctx)
 
-        agent = PersistentSubAgent(
-            sub_agent_id=sid,
-            agent_type=agent_type,
-            owner_session_id=owner_session_id,
-            pipeline=pipeline,
-            state=state,
-        )
-        self._agents[sid] = agent
+            state = await self._load_state(sid)
+            if state is None:
+                state = PipelineState(session_id=sid)
+            if credentials is not None:
+                try:
+                    state.credentials = credentials
+                except Exception:  # noqa: BLE001
+                    pass
+            if workspace_snapshot is not None:
+                state.shared["workspace_snapshot"] = workspace_snapshot
+
+            agent = PersistentSubAgent(
+                sub_agent_id=sid,
+                agent_type=agent_type,
+                owner_session_id=owner_session_id,
+                pipeline=pipeline,
+                state=state,
+            )
+            self._agents[sid] = agent
         await self._emit("subagent.spawned", agent.summary())
         return agent
 
@@ -399,15 +463,53 @@ class SubAgentManager:
         ]
         return sorted(out, key=lambda s: s["created_at"])
 
+    async def cancel_assignment(self, assignment_id: str) -> bool:
+        """Cancel ONE in-flight assignment WITHOUT tearing down the sub-agent.
+
+        This is what a host's per-task "stop" should call: it cancels just that
+        assignment's task and AWAITS it (so the run fully unwinds — state reload,
+        lock release — before we return), leaving the persistent sub-agent alive
+        and reusable. Idempotent; returns False for an unknown/finished id.
+
+        Contrast :meth:`stop`, which destroys the whole sub-agent.
+        """
+        task = self._tasks.get(assignment_id)
+        if task is None or task.done():
+            return False
+        task.cancel()
+        try:
+            await task  # let the assignment unwind (CancelledError path)
+        except (asyncio.CancelledError, Exception):  # noqa: BLE001
+            pass
+        self._tasks.pop(assignment_id, None)
+        return True
+
     async def stop(self, sub_agent_id: str) -> bool:
-        """Cancel any in-flight assignment, close the pipeline, drop it."""
+        """Cancel in-flight assignments, close the pipeline, drop the sub-agent.
+
+        Destroys the persistent sub-agent entirely — use for an explicit "kill
+        this companion" / shutdown, NOT for cancelling a single task (that's
+        :meth:`cancel_assignment`). Cancels then AWAITS each assignment before
+        closing the pipeline, so a still-running assignment can't resume on a
+        half-closed pipeline or deliver a spurious completion (audit 2026-06-25).
+        """
         agent = self._agents.pop(sub_agent_id, None)
         if agent is None:
             return False
-        for aid, task in list(self._tasks.items()):
-            if aid.startswith(f"{sub_agent_id}:") and not task.done():
-                task.cancel()
-                self._tasks.pop(aid, None)
+        prefix = f"{sub_agent_id}:"
+        to_cancel = [
+            t for aid, t in list(self._tasks.items())
+            if aid.startswith(prefix) and not t.done()
+        ]
+        for t in to_cancel:
+            t.cancel()
+        for t in to_cancel:
+            try:
+                await t
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                pass
+        for aid in [a for a in list(self._tasks) if a.startswith(prefix)]:
+            self._tasks.pop(aid, None)
         await self._aclose(agent.pipeline)
         agent.status = "stopped"
         await self._emit("subagent.stopped", {"sub_agent_id": sub_agent_id})
@@ -472,7 +574,7 @@ class SubAgentManager:
             # real trail (see _TranscriptCollector). pipeline.on("*") is a
             # complete feed — Stage-10 tool.* and CLI api.* alike are bridged
             # onto the bus via state.add_event (executor ≥2.2.0).
-            collector = _TranscriptCollector()
+            collector = _TranscriptCollector(session_id=agent.sub_agent_id)
             unsub: Optional[Callable[[], Any]] = None
             try:
                 unsub = agent.pipeline.on("*", collector)
@@ -491,6 +593,15 @@ class SubAgentManager:
                 }
             except asyncio.CancelledError:
                 agent.status = "idle"
+                # The turn was mutated in-place mid-run; discard the partial turn
+                # by reloading the last persisted state so a cancelled assignment
+                # can't corrupt the agent's conversation (audit 2026-06-25).
+                try:
+                    restored = await self._load_state(agent.sub_agent_id)
+                    if restored is not None:
+                        agent.state = restored
+                except Exception:  # noqa: BLE001 — best effort on the cancel path
+                    pass
                 raise
             except Exception as exc:  # noqa: BLE001 — isolate; report as failed
                 logger.warning(

@@ -4,6 +4,33 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.35.0] — 2026-06-25
+
+### Fixed (SubAgentManager integrity audit 2026-06-25)
+
+- **`cancel_assignment(assignment_id)`** (new) — cancel ONE in-flight assignment
+  WITHOUT destroying the persistent sub-agent, and AWAIT it so the run fully
+  unwinds before returning. A host's per-task "stop" must call this; previously
+  the only option was `stop(sub_agent_id)`, which tears down the whole companion
+  — so stopping a single task silently killed the owner's delegate and broke all
+  future delegation.
+- **`stop()` now awaits cancelled assignments before `aclose()`** — it used to
+  `cancel()` then immediately close the pipeline, racing a still-running
+  assignment onto a half-closed pipeline (MCP disconnected mid-call) and letting
+  it deliver a spurious completion alarm after the agent was already dropped.
+- **Cancelled assignments no longer corrupt state** — the `CancelledError` path
+  reloads the last persisted state, discarding the partially-mutated in-memory
+  turn (the conversation was appended in place during `run`).
+- **`spawn()` is race-safe** — the check→build→store now holds a spawn lock, so
+  two concurrent spawns of the same `sub_agent_id` can't both build a pipeline
+  and leak the loser's MCP child. Reattach also refreshes rotated
+  credentials / workspace snapshot.
+- **Transcript collector hardened** — scoped by `session_id` (ignores other
+  conversations' events on a shared bus), bounded by a cumulative BYTE budget
+  (not just step count) with a one-shot `truncated` sentinel, and `_clip_input`
+  now recurses into nested dicts/lists (the old version only clipped top-level
+  strings).
+
 ## [2.34.0] — 2026-06-25
 
 ### Added
