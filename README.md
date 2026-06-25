@@ -11,8 +11,8 @@ geny-executor implements a **21-stage pipeline** with **dual-abstraction archite
 
 [한국어 README](README_ko.md) · [Architecture](docs/architecture.md) · [Providers](docs/providers.md) · [Error codes](docs/error_codes.md) · [Claude Code CLI host](docs/claude_code_cli.md)
 
-<!-- 📸 IMAGE NEEDED: hero banner — the 21-stage pipeline as a clean horizontal flow graphic, or a screenshot of geny-executor-web running a live pipeline -->
-> 📸 **Image needed** — _hero banner: the 21-stage pipeline rendered as a polished flow graphic (or a live screenshot from [geny-executor-web](https://github.com/CocoRoF/geny-executor-web))._
+<!-- 📸 IMAGE NEEDED: hero banner — the 21-stage pipeline as a clean horizontal flow graphic -->
+> 📸 **Image needed** — _hero banner: the 21-stage pipeline rendered as a polished flow graphic._
 
 ---
 
@@ -31,17 +31,12 @@ geny-executor is the **engine** at the bottom of the stack. Everything else in t
       ▼             ▼              ▼
  geny-executor  geny-avatar      GAPT
   (the engine)  (avatar editor)  (AI DevOps platform)
-      ▲
-      │ visualizes / drives the engine
-      │
- geny-executor-web (pipeline studio)
 ```
 
 | Project | What it is | Role in the stack |
 |---|---|---|
 | [**Geny**](https://github.com/CocoRoF/Geny) | Multi-agent VTuber + autonomous-worker platform | 🏛️ The product — consumes every project below |
 | [**geny-executor**](https://github.com/CocoRoF/geny-executor) | 21-stage, manifest-driven agent pipeline · PyPI · MIT | ⚙️ The engine everything runs on |
-| [**geny-executor-web**](https://github.com/CocoRoF/geny-executor-web) | Visual studio for the pipeline — React Flow + live WebSocket events | 🔬 See, inspect & run the engine |
 | [**GAPT**](https://github.com/CocoRoF/geny-adapted-project-toolkit) | Self-hosted AI DevOps platform — sandbox · edit · build · deploy | 🛠️ Where agents safely touch real repos |
 | [**geny-avatar**](https://github.com/CocoRoF/geny-avatar) | 2D live-avatar editor with AI texture generation | 🎭 Where Geny's faces are made |
 
@@ -80,11 +75,6 @@ Phase C — Surface (once)
 ```
 
 The full stage list with strategy options lives in [`docs/architecture.md`](docs/architecture.md).
-
-> 💡 **Watch it run live.** Every stage, every event, every cost tick streams into [**geny-executor-web**](https://github.com/CocoRoF/geny-executor-web) — an interactive React Flow studio that renders the pipeline as you execute it.
->
-> <!-- 📸 IMAGE NEEDED: geny-executor-web screenshot — the 21-stage flow graph mid-execution with the event log -->
-> 📸 _Image needed: geny-executor-web mid-execution (stage graph + live event log)._
 
 ### Dual abstraction — two levels of swap
 
@@ -480,7 +470,7 @@ MIT — see [LICENSE](LICENSE).
 ## Related projects
 
 **The Geny ecosystem** (sibling projects built on this engine) → see [The Geny ecosystem](#-the-geny-ecosystem) above:
-[Geny](https://github.com/CocoRoF/Geny) · [geny-executor-web](https://github.com/CocoRoF/geny-executor-web) · [GAPT](https://github.com/CocoRoF/geny-adapted-project-toolkit) · [geny-avatar](https://github.com/CocoRoF/geny-avatar)
+[Geny](https://github.com/CocoRoF/Geny) · [GAPT](https://github.com/CocoRoF/geny-adapted-project-toolkit) · [geny-avatar](https://github.com/CocoRoF/geny-avatar)
 
 **Built on & interoperates with:**
 
