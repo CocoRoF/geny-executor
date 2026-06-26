@@ -4,6 +4,26 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.37.0] — 2026-06-26
+
+### Added (tool config-gating + native Google Workspace tools)
+
+- **`Tool.required_config_keys() -> list[str]`** (default `[]`) — opaque
+  config-requirement tokens a tool needs to be usable. The executor treats them
+  as opaque; the HOST decides what's satisfied (it owns the config system).
+- **`from_manifest` / `from_manifest_async` `satisfied_config: set[str]` param** —
+  after registration, `_gate_unconfigured_tools` drops any tool whose
+  `required_config_keys()` aren't all satisfied (recorded in
+  `ToolResolutionReport.gated_unconfigured`), so an unconfigured tool is never
+  registered and never reaches the model (progressive disclosure).
+  `satisfied_config=None` → no gating (back-compat).
+- **`tools/built_in/google_tools.py`** — native Gmail / Calendar / Drive / Tasks
+  (9 tools) over the Google REST APIs via `httpx`, reading OAuth creds from
+  `ctx.extras['google']` (Bearer + one-shot 401 refresh). Each declares
+  `required_config_keys() == ["feature:google_connected"]`. Registered in
+  `BUILT_IN_TOOL_CLASSES` + a `google` feature group. Additive + gated → no
+  impact on existing sessions.
+
 ## [2.36.0] — 2026-06-25
 
 ### Fixed (sub-agent credential/provider inheritance — integrity audit 2026-06-25)
