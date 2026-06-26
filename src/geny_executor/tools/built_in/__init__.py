@@ -85,6 +85,10 @@ from geny_executor.tools.built_in.plan_mode_tools import (
     ExitPlanModeTool,
 )
 from geny_executor.tools.built_in.env_tools import EnvTool
+# Google Workspace — native Gmail/Calendar/Drive/Tasks tools. Read the OAuth token
+# from ``ctx.extras['google']``; gated via required_config_keys → hidden until the
+# host marks ``feature:google_connected`` satisfied.
+from geny_executor.tools.built_in.google_tools import GOOGLE_TOOL_CLASSES
 # NOT in BUILT_IN_TOOL_CLASSES: SandboxExecTool is instantiated per Sandbox Tool
 # Pack (with a spec + a live SandboxHandle), not activated by a manifest name.
 from geny_executor.tools.built_in.sandbox_exec_tool import SandboxExecTool
@@ -137,6 +141,9 @@ BUILT_IN_TOOL_CLASSES: Dict[str, Type[Tool]] = {
     # Self-modifying environment — one lean dispatcher; detailed guidance lives
     # in the bundled ``environment`` skill (progressive disclosure).
     "env": EnvTool,
+    # Google Workspace (gated on feature:google_connected — hidden until the host
+    # injects OAuth creds + marks Google connected).
+    **GOOGLE_TOOL_CLASSES,
 }
 
 
@@ -169,6 +176,7 @@ BUILT_IN_TOOL_FEATURES: Dict[str, List[str]] = {
     "messaging": ["SendMessage"],
     "cron": ["CronCreate", "CronDelete", "CronList"],
     "environment": ["env"],
+    "google": list(GOOGLE_TOOL_CLASSES.keys()),
 }
 
 

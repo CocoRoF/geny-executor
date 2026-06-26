@@ -20,6 +20,7 @@ from typing import (
     Mapping,
     Optional,
     Sequence,
+    Set,
     Tuple,
 )
 
@@ -413,6 +414,10 @@ class ToolResolutionReport:
     unresolved: List[str] = field(default_factory=list)
     shadowed: List[str] = field(default_factory=list)
     required_unresolved: List[str] = field(default_factory=list)
+    # Tools registered but then DROPPED because their ``required_config_keys()``
+    # weren't all satisfied (progressive disclosure). They never reach the model.
+    # Only populated when ``from_manifest(..., satisfied_config=…)`` is passed.
+    gated_unconfigured: List[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -623,6 +628,40 @@ def _register_external_tools(
                 report.shadowed.append(name)
             report.resolved.append(name)
         registry.register(tool)
+
+
+def _gate_unconfigured_tools(
+    registry: "ToolRegistry",
+    satisfied_config: Optional[Set[str]],
+    report: Optional[ToolResolutionReport] = None,
+) -> None:
+    """Drop registered tools whose ``required_config_keys()`` are not all in
+    *satisfied_config* (progressive disclosure).
+
+    ``satisfied_config=None`` is a no-op (gating disabled — back-compat). The host
+    computes the satisfied token set from its own config/credential system and
+    passes it to ``from_manifest``; a tool whose required tokens are unmet is
+    unregistered here, before the registry becomes the pipeline's tool surface, so
+    it never appears in ``state.tools`` and never reaches the model.
+    """
+    if satisfied_config is None:
+        return
+    for name in list(registry.list_names()):
+        tool = registry.get(name)
+        if tool is None:
+            continue
+        try:
+            required = list(tool.required_config_keys())
+        except Exception:  # noqa: BLE001 — a tool that can't report stays available
+            continue
+        if required and not all(tok in satisfied_config for tok in required):
+            registry.unregister(name)
+            logger.info(
+                "tool '%s' gated out — unsatisfied config %s (progressive disclosure)",
+                name, [t for t in required if t not in satisfied_config],
+            )
+            if report is not None:
+                report.gated_unconfigured.append(name)
 
 
 def _stage_kwargs_for_entry(entry: "StageManifestEntry") -> Dict[str, Any]:
@@ -975,6 +1014,7 @@ class Pipeline:
         strict: bool = True,
         adhoc_providers: Sequence["AdhocToolProvider"] = (),
         tool_registry: Optional["ToolRegistry"] = None,
+        satisfied_config: Optional[Set[str]] = None,
     ) -> "Pipeline":
         """Construct a ready-to-run Pipeline from an :class:`EnvironmentManifest`.
 
@@ -1204,6 +1244,10 @@ class Pipeline:
             report=resolution_report,
             strict=strict,
         )
+        # Progressive disclosure: drop tools whose required config isn't satisfied
+        # (no-op when satisfied_config is None). Runs after both registration
+        # passes so it sees the full built-in + external surface.
+        _gate_unconfigured_tools(registry, satisfied_config, resolution_report)
         pipeline.tool_resolution_report = resolution_report
         pipeline._tool_registry = registry
         # Retain the adhoc providers so the self-modifying-environment controller
@@ -1326,6 +1370,7 @@ class Pipeline:
         adhoc_providers: Sequence["AdhocToolProvider"] = (),
         tool_registry: Optional["ToolRegistry"] = None,
         tool_providers: Optional[Sequence["ToolProvider"]] = None,
+        satisfied_config: Optional[Set[str]] = None,
     ) -> "Pipeline":
         """Async sibling of :meth:`from_manifest` that also wires MCP.
 
@@ -1377,6 +1422,7 @@ class Pipeline:
             strict=strict,
             adhoc_providers=adhoc_providers,
             tool_registry=registry,
+            satisfied_config=satisfied_config,
         )
 
         # Register self-contained ToolProvider bundles before MCP so

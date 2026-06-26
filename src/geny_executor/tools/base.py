@@ -397,6 +397,18 @@ class Tool(ABC):
         """
         return True
 
+    def required_config_keys(self) -> List[str]:
+        """Opaque config-requirement tokens this tool needs to be usable.
+
+        Progressive disclosure: ``from_manifest(..., satisfied_config=…)`` drops
+        any tool whose tokens are not all present in the host-supplied satisfied
+        set — so a tool whose API key / OAuth / feature flag isn't configured is
+        never registered and never reaches the model. The executor treats tokens
+        as opaque strings; the HOST decides what is satisfied (it owns the config
+        system). Empty (the default) → always available (back-compat).
+        """
+        return []
+
     # ── API format ───────────────────────────────────────────────
 
     def to_api_format(self) -> Dict[str, Any]:
