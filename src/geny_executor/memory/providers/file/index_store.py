@@ -22,6 +22,7 @@ from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 from geny_executor.memory._locks import LoopAgnosticLock
 from geny_executor.memory.provider import NoteGraph, NoteMeta, NoteOutline, NoteSummary
+from geny_executor.memory.providers.file.graph_edges import derive_graph_edges
 from geny_executor.memory.providers.file.layout import DirectoryLayout
 from geny_executor.memory.providers.file.notes_store import _FilesystemNotesStore
 from geny_executor.memory.providers.file.timezone import now_in
@@ -73,6 +74,10 @@ class _FileIndexStore:
         self._tz = tz
         self._lock = LoopAgnosticLock()
         self._category_descriptions: Dict[str, str] = dict(category_descriptions or {})
+        # Cache for the derived graph edges (TF-IDF k-NN is the costly part);
+        # keyed by a cheap (filename, updated_at) signature of the vault.
+        self._edges_sig: Optional[tuple] = None
+        self._edges_cache: Optional[List[Dict[str, Any]]] = None
 
     def set_category_descriptions(self, descriptions: Dict[str, str]) -> None:
         """Late-set or replace the canonical description map. Called
@@ -135,6 +140,30 @@ class _FileIndexStore:
             for tgt in targets or []:
                 edges.append((src, tgt))
         return NoteGraph(nodes=nodes, edges=edges)
+
+    async def graph_edges(self) -> List[Dict[str, Any]]:
+        """Rich, de-clumped edge list for the knowledge graph: ``wikilink`` +
+        IDF-weighted ``tag`` + lexical TF-IDF ``semantic`` k-NN edges. The
+        ``semantic`` layer is what makes vaults with no wikilinks/tags
+        (e.g. auto-archived notes) form a meaningful graph, and the same
+        edges can drive graph-aware retrieval later. Returns
+        ``[{source, target, type, weight, label?}]``.
+
+        Cached against a cheap note signature so repeated graph renders skip
+        the TF-IDF recompute; invalidated automatically when any note's
+        filename or ``updated_at`` changes.
+        """
+        notes = await self._notes.all()
+        sig = tuple(
+            (n.ref.filename, n.updated_at.isoformat() if n.updated_at else "")
+            for n in notes
+        )
+        if sig == self._edges_sig and self._edges_cache is not None:
+            return self._edges_cache
+        edges = derive_graph_edges(notes)
+        self._edges_sig = sig
+        self._edges_cache = edges
+        return edges
 
     async def rebuild(self) -> None:
         async with self._lock:

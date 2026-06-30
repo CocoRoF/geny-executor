@@ -4,6 +4,33 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.38.0] — 2026-06-30
+
+### Added (knowledge-graph edge derivation)
+
+- **`memory/providers/file/graph_edges.py` — `derive_graph_edges(notes)`** — pure,
+  dependency-free derivation of a rich, de-clumped edge set for the memory
+  knowledge graph. Three edge types (at most one per unordered pair, priority
+  wikilink > tag > semantic):
+  - `wikilink` — explicit `[[links]]` (weight 1.0).
+  - `tag` — shared tag, IDF-weighted (`0.5·log((1+N)/(1+df))`) and de-clumped:
+    meta-tag denylist, per-tag document-frequency cutoff (`df>max(12,0.33N)` and
+    universal-tag drop), and a per-node fanout cap so the force layout shows
+    topical clusters instead of a hairball.
+  - `semantic` — lexical **TF-IDF cosine k-NN** over note title+body via a sparse
+    inverted index, with a per-term DF cutoff that drops boilerplate. This is the
+    populator for vaults that have no user-authored wikilinks and only meta tags
+    (e.g. auto-archived notes) — it connects notes by content similarity at zero
+    token cost, no embeddings, no LLM. The same edges can later drive
+    graph-aware retrieval (Personalized PageRank).
+- **`_FileIndexStore.graph_edges() -> list[dict]`** — exposes the derived edges
+  (`{source, target, type, weight, label?}`), cached against a cheap
+  `(filename, updated_at)` vault signature so repeated graph renders skip the
+  TF-IDF recompute. Additive; reachable through `CompositeMemoryProvider.index()`.
+  Not added to the `IndexHandle` Protocol (which is `@runtime_checkable`) so
+  existing SQL/ephemeral index stores keep passing `isinstance` checks; hosts
+  feature-detect with `getattr`.
+
 ## [2.37.0] — 2026-06-26
 
 ### Added (tool config-gating + native Google Workspace tools)
