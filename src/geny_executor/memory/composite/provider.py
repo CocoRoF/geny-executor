@@ -26,6 +26,7 @@ from geny_executor.memory.composite.handles import (
     _CompositeGlobalHandle,
 )
 from geny_executor.memory.composite.routing import LayerRouting
+from geny_executor.memory.graph_rank import personalized_pagerank
 from geny_executor.memory.composite.snapshot import decode_snapshot, encode_snapshot
 from geny_executor.memory.provider import (
     BackendInfo,
@@ -305,6 +306,22 @@ class CompositeMemoryProvider(MemoryProvider):
                 chunks.extend(vec_chunks)
                 breakdown[Layer.VECTOR] = len(vec_chunks)
 
+        # ── Graph-aware additive expansion (opt-in via hooks.graph_aware) ──
+        # Append graph-connected notes (Personalized PageRank over the
+        # knowledge-graph edges, seeded by the direct note hits) AFTER the
+        # direct hits, so the char-budget loop below can only ever drop the
+        # graph extras — never a direct hit. Best-effort: any failure leaves
+        # retrieval exactly as it was.
+        hooks = getattr(self, "_hooks", None)
+        if hooks is not None and getattr(hooks, "graph_aware", False) and query.text:
+            try:
+                expanded = await self._graph_expand(chunks, hooks)
+                chunks.extend(expanded)
+                if expanded:
+                    breakdown[Layer.NOTES] = breakdown.get(Layer.NOTES, 0) + len(expanded)
+            except Exception:  # noqa: BLE001 — graph enrichment never breaks retrieval
+                logging.getLogger(__name__).debug("graph expansion skipped", exc_info=True)
+
         kept: List[MemoryChunk] = []
         used = 0
         for c in chunks:
@@ -319,6 +336,65 @@ class CompositeMemoryProvider(MemoryProvider):
             layer_breakdown=breakdown,
             total_chars=used,
         )
+
+    async def _graph_expand(
+        self, chunks: List[MemoryChunk], hooks: "MemoryHooks"
+    ) -> List[MemoryChunk]:
+        """Return up to ``hooks.graph_top_k`` graph-connected notes not already
+        present, ranked by Personalized PageRank seeded by the direct note hits.
+        Returns ``[]`` when the index can't supply edges (older executor / no
+        graph) or no seed lands on a graph node."""
+        index = self.index()
+        edges_fn = getattr(index, "graph_edges", None)
+        if edges_fn is None:
+            return []
+        edges = await edges_fn()
+        if not edges:
+            return []
+        node_set: Set[str] = set()
+        for e in edges:
+            node_set.add(e.get("source"))
+            node_set.add(e.get("target"))
+        existing = {c.key for c in chunks}
+        seeds = {
+            c.key: max(float(c.relevance_score), 0.05)
+            for c in chunks
+            if c.key in node_set
+        }
+        if not seeds:
+            return []
+        ranked = personalized_pagerank(
+            edges, seeds, alpha=float(getattr(hooks, "graph_alpha", 0.5))
+        )
+        top_k = max(0, int(getattr(hooks, "graph_top_k", 5)))
+        fresh = [
+            (n, sc)
+            for n, sc in sorted(ranked.items(), key=lambda kv: kv[1], reverse=True)
+            if n not in existing and sc > 0.0
+        ][:top_k]
+        if not fresh:
+            return []
+        notes = self.notes()
+        out: List[MemoryChunk] = []
+        for name, score in fresh:
+            try:
+                note = await notes.read(name)
+            except Exception:  # noqa: BLE001
+                note = None
+            if note is None:
+                continue
+            body = note.body or ""
+            out.append(
+                MemoryChunk(
+                    key=name,
+                    content=body[:800],
+                    source="graph",
+                    # kept below direct hits (which use their own scores up to 1.0)
+                    relevance_score=round(min(0.5, float(score)), 4),
+                    metadata={"graph_expanded": True, "ppr": round(float(score), 5)},
+                )
+            )
+        return out
 
     async def snapshot(self) -> MemorySnapshot:
         by_id: Dict[str, MemorySnapshot] = {}

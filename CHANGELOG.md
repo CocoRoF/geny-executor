@@ -4,6 +4,28 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.39.0] — 2026-06-30
+
+### Added (graph-aware retrieval — the graph now influences search)
+
+- **`memory/graph_rank.py` — `personalized_pagerank(edges, seeds)`** — pure,
+  dependency-free (no numpy) sparse Random-Walk-with-Restart / Personalized
+  PageRank over the knowledge-graph edge list. `r = α·s + (1-α)·Pᵀr`, α=0.5
+  (HippoRAG convention), O(iters·|E|) sparse power-iteration. Ranks notes by
+  graph proximity to a seed set.
+- **`CompositeMemoryProvider.retrieve()` additive graph expansion** — when
+  `MemoryHooks.graph_aware` is on, retrieval seeds PPR with the direct
+  vector/keyword note hits (over `index().graph_edges()`), then APPENDS up to
+  `graph_top_k` graph-connected notes that weren't already retrieved. Additive
+  by construction: graph notes are appended after the direct hits and capped at
+  `relevance_score ≤ 0.5`, and the existing char-budget loop only ever drops the
+  graph extras — so a direct hit is never reordered or evicted (no single-hop
+  regression). Best-effort: any failure (older executor without `graph_edges`,
+  no graph, read error) leaves retrieval byte-for-byte unchanged.
+- **`MemoryHooks.graph_aware` / `.graph_top_k` / `.graph_alpha`** — host policy
+  for the above (default `graph_aware=False`, so behaviour is unchanged unless a
+  host opts in).
+
 ## [2.38.0] — 2026-06-30
 
 ### Added (knowledge-graph edge derivation)

@@ -1287,6 +1287,21 @@ class MemoryHooks:
     # Cap on the query text actually sent to keyword/vector layers.
     search_chars: int = 500
 
+    # ── Graph-aware retrieval (additive expansion) ──────────────────
+    # When True, retrieval augments the vector/keyword hits with
+    # graph-connected notes found via Personalized PageRank over the
+    # knowledge-graph edges (wikilink + tag + semantic k-NN). ADDITIVE:
+    # graph notes are appended after the direct hits and only fill the
+    # remaining char budget, so they never reorder or evict a direct hit
+    # (no single-hop regression). No-op unless the provider's index
+    # exposes graph_edges() (geny-executor >= 2.38.0).
+    graph_aware: bool = False
+    # Max number of graph-expanded notes appended per retrieval.
+    graph_top_k: int = 5
+    # PageRank restart probability (HippoRAG convention; higher = more
+    # query-local). 0.5 keeps the walk near the seed hits.
+    graph_alpha: float = 0.5
+
 
 # ─────────────────────────────────────────────────────────────────────
 # Internal helpers
