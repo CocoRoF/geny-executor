@@ -4,6 +4,29 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.40.0] — 2026-07-02
+
+### Added (tool-result images render across all backends)
+
+- **Canonical translators lift IMAGE content out of a `tool_result` and
+  re-attach it per backend.** A tool may return structured content — a list of
+  canonical blocks mixing `{type:text}` and
+  `{type:image, source:{type:base64, media_type, data}}` (e.g. a computer-use
+  screenshot). Previously only the Anthropic path carried it (it passes
+  tool_result content blocks through natively); OpenAI/Gemini stringified the
+  whole list, losing the image and dumping base64 as text.
+  - **OpenAI / vllm** (`canonical_messages_to_openai`): the `tool` role is
+    text-only, so the tool message carries the text and a **follow-up `user`
+    message** carries the image(s) as `image_url` parts (the only OpenAI role
+    that accepts images).
+  - **Gemini** (`canonical_messages_to_google`): the `functionResponse` carries
+    the text `result` and `inlineData` image parts are appended in the same turn.
+  - **Anthropic**: unchanged — image blocks stay inside the `tool_result` content.
+- **`_tool_result_text_and_images()`** helper (`translators/_canonical.py`).
+  Purely additive + guarded: plain-string tool results (the common case) are
+  untouched; the new path only triggers when a tool_result's content is a list
+  containing image blocks.
+
 ## [2.39.0] — 2026-06-30
 
 ### Added (graph-aware retrieval — the graph now influences search)
