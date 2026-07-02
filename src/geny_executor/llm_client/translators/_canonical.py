@@ -349,6 +349,46 @@ def split_tool_results(
     return tool_results, other
 
 
+def _tool_result_text_and_images(
+    tool_result: Dict[str, Any],
+) -> Tuple[str, List[Dict[str, Any]]]:
+    """Split a tool_result block's content into (text, canonical image blocks).
+
+    A tool may return structured content — a list of canonical blocks mixing
+    ``{"type": "text", ...}`` and ``{"type": "image", "source": {...}}`` (e.g.
+    a computer-use screenshot). Anthropic carries image blocks inside a
+    tool_result natively, but OpenAI/Gemini tool results are text-only — those
+    translators lift the images out and re-attach them in the backend's own way.
+    Plain-string content (the common case) returns ``(text, [])`` unchanged.
+    """
+    content = tool_result.get("content", "")
+    if isinstance(content, str):
+        return content, []
+    if isinstance(content, list):
+        texts: List[str] = []
+        images: List[Dict[str, Any]] = []
+        for b in content:
+            if not isinstance(b, dict):
+                texts.append(str(b))
+                continue
+            btype = b.get("type")
+            if btype == "image":
+                images.append(b)
+            elif btype == "text":
+                if b.get("text"):
+                    texts.append(str(b["text"]))
+            else:
+                try:
+                    texts.append(json.dumps(b, ensure_ascii=False, default=str))
+                except (TypeError, ValueError):
+                    texts.append(str(b))
+        return "\n".join(texts), images
+    try:
+        return json.dumps(content, ensure_ascii=False, default=str), []
+    except (TypeError, ValueError):
+        return str(content), []
+
+
 def split_tool_uses(
     content: List[Dict[str, Any]],
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
@@ -394,15 +434,25 @@ def canonical_messages_to_openai(
         if role == "user":
             if isinstance(content, list):
                 tool_results, other = split_tool_results(content)
-                # tool_result blocks → separate "tool" role messages
+                # tool_result blocks → separate "tool" role messages. OpenAI's
+                # "tool" role content is text-only, so images returned by a tool
+                # are lifted out and re-attached as a follow-up "user" message
+                # (the only OpenAI role that accepts image parts) right after all
+                # the tool messages.
+                tool_image_parts: List[Dict[str, Any]] = []
                 for tr in tool_results:
+                    tr_text, tr_images = _tool_result_text_and_images(tr)
                     result.append(
                         {
                             "role": "tool",
                             "tool_call_id": tr.get("tool_use_id", ""),
-                            "content": str(tr.get("content", "")),
+                            "content": tr_text or "(the tool returned an image; see the next message)",
                         }
                     )
+                    if tr_images:
+                        tool_image_parts.extend(_user_content_to_openai_parts(tr_images))
+                if tool_image_parts:
+                    result.append({"role": "user", "content": tool_image_parts})
                 # remaining blocks → user message
                 if other:
                     if _content_has_media(other):
@@ -499,15 +549,22 @@ def canonical_messages_to_google(
                         }
                     )
                 elif btype == "tool_result":
+                    tr_text, tr_images = _tool_result_text_and_images(block)
                     parts.append(
                         {
                             "functionResponse": {
                                 "name": block.get("name", ""),
                                 "id": block.get("tool_use_id", ""),
-                                "response": {"result": str(block.get("content", ""))},
+                                "response": {"result": tr_text},
                             }
                         }
                     )
+                    # Gemini allows inlineData parts alongside functionResponse in
+                    # the same user turn — re-attach any images the tool returned.
+                    for _img in tr_images:
+                        _p = _image_block_to_google_part(_img)
+                        if _p is not None:
+                            parts.append(_p)
 
         if parts:
             contents.append({"role": g_role, "parts": parts})
