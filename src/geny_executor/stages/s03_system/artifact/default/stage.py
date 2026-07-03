@@ -164,14 +164,24 @@ class SystemStage(Stage[Any, Any]):
         # Register tools in state if registry provided. Snapshotted on the first
         # turn, then rebuilt only when the live registry's version moves — so a
         # tool/skill enabled/disabled/created mid-session (self-modifying
-        # environment), or an MCP re-seed, takes effect on the next turn. The
-        # version guard keeps the steady-state cost at one int compare per turn.
+        # environment), an MCP re-seed, or a ToolSearch activation takes effect
+        # on the next iteration. The version guard keeps the steady-state cost
+        # at one int compare per turn.
+        #
+        # Only *exposed* tools ship to the model: core tools plus deferred
+        # tools a ToolSearch hit activated. Deferred tools stay registered
+        # (Stage 10 can still dispatch them) but their schemas stay out of
+        # the request payload until discovered — that's the token contract.
         if self._tool_registry is not None:
             reg_version = getattr(self._tool_registry, "version", None)
             if not state.tools or (
                 reg_version is not None and reg_version != state.tools_version
             ):
-                state.tools = self._tool_registry.to_api_format()
+                try:
+                    state.tools = self._tool_registry.to_api_format(exposed_only=True)
+                except TypeError:
+                    # Host passed a registry-alike without exposure support.
+                    state.tools = self._tool_registry.to_api_format()
                 if reg_version is not None:
                     state.tools_version = reg_version
 

@@ -38,7 +38,7 @@ from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
-from typing import Iterable, List, Optional
+from typing import Callable, Iterable, List, Optional
 
 from geny_executor.tools.base import Tool
 
@@ -151,6 +151,8 @@ class BuiltInToolProvider(ToolProvider):
 async def register_providers(
     providers: List[ToolProvider],
     registry: "ToolRegistry",  # type: ignore[name-defined]  # noqa: F821
+    *,
+    core_resolver: Optional[Callable[[str], bool]] = None,
 ) -> List[ToolProvider]:
     """Start each provider and register its tools into ``registry``.
 
@@ -164,6 +166,12 @@ async def register_providers(
           the same name, the first provider's tool wins and the second
           is logged at WARNING but not rejected. This keeps a partial
           build usable instead of failing the whole pipeline.
+
+    ``core_resolver`` maps a tool name to its core flag (upfront schema
+    exposure vs ToolSearch-deferred). ``None`` keeps the pre-2.42
+    behaviour: everything registers as core. The manifest build path
+    passes a resolver that defaults provider tools to deferred and
+    applies ``manifest.tools.core_overrides``.
 
     Returns the list of providers that were successfully started, in
     the order they were registered — callers can pass this to
@@ -196,7 +204,8 @@ async def register_providers(
                         tool.name,
                     )
                     continue
-                registry.register(tool)
+                core = True if core_resolver is None else bool(core_resolver(tool.name))
+                registry.register(tool, core=core)
     except BaseException:
         await shutdown_providers(started)
         raise

@@ -80,6 +80,16 @@ class ToolsSnapshot:
     manifest only records *which provider-backed names are active* for
     this environment. The pipeline resolves each name against the
     ``adhoc_providers`` passed to :meth:`Pipeline.from_manifest`.
+
+    ``core_overrides`` (2.42.0) flips individual tools between *core*
+    (schema shipped to the LLM on every request) and *deferred*
+    (registered + dispatchable, but only discoverable at runtime via
+    the ``ToolSearch`` built-in). Defaults when a name is absent:
+    framework built-ins are core, everything else (external / provider
+    / MCP tools) is deferred. Keys are exact tool names; a trailing
+    ``*`` matches by prefix (e.g. ``"mcp__github__*": true`` promotes a
+    whole MCP server whose tool names are only known after discovery).
+    Exact keys win over wildcard keys.
     """
 
     built_in: List[str] = field(default_factory=list)
@@ -87,6 +97,7 @@ class ToolsSnapshot:
     mcp_servers: List[Dict[str, Any]] = field(default_factory=list)
     external: List[str] = field(default_factory=list)
     scope: Dict[str, Any] = field(default_factory=dict)
+    core_overrides: Dict[str, bool] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -95,6 +106,7 @@ class ToolsSnapshot:
             "mcp_servers": list(self.mcp_servers),
             "external": list(self.external),
             "scope": dict(self.scope),
+            "core_overrides": dict(self.core_overrides),
         }
 
     @classmethod
@@ -105,6 +117,9 @@ class ToolsSnapshot:
             mcp_servers=data.get("mcp_servers", []),
             external=data.get("external", []),
             scope=data.get("scope", {}),
+            core_overrides={
+                str(k): bool(v) for k, v in (data.get("core_overrides") or {}).items()
+            },
         )
 
 

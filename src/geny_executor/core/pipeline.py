@@ -444,6 +444,64 @@ class DroppedStage:
     error: str
 
 
+def _resolve_core_flag(
+    name: str,
+    overrides: Mapping[str, bool],
+    default: bool,
+) -> bool:
+    """Resolve a tool's core/deferred exposure from ``manifest.tools.core_overrides``.
+
+    Exact-name keys win; otherwise the longest matching trailing-``*``
+    prefix key applies (``"mcp__github__*"`` — MCP tool names are only
+    known after discovery, so per-server toggles need the wildcard);
+    otherwise *default* (built-ins: core, everything else: deferred).
+    """
+    if name in overrides:
+        return bool(overrides[name])
+    best_len = -1
+    best_val = default
+    for key, val in overrides.items():
+        if key.endswith("*") and name.startswith(key[:-1]) and len(key) > best_len:
+            best_len = len(key)
+            best_val = bool(val)
+    return best_val
+
+
+def _core_overrides_from_manifest(manifest: "EnvironmentManifest") -> Dict[str, bool]:
+    """Read ``manifest.tools.core_overrides`` defensively (old manifests lack it)."""
+    raw = getattr(manifest.tools, "core_overrides", None) or {}
+    return {str(k): bool(v) for k, v in raw.items()} if isinstance(raw, Mapping) else {}
+
+
+def _ensure_tool_search_reachable(registry: "ToolRegistry") -> None:
+    """Guarantee deferred tools stay discoverable.
+
+    A registry that holds deferred (non-core) tools without an exposed
+    ``ToolSearch`` would strand them — the LLM could never learn they
+    exist. Auto-register the built-in ``ToolSearch`` as core in that
+    case, and force it back to core if a manifest override demoted it
+    while deferred tools remain.
+    """
+    if not registry.list_deferred():
+        return
+    existing = registry.get("ToolSearch")
+    if existing is None:
+        from geny_executor.tools.built_in.tool_search_tool import ToolSearchTool
+
+        registry.register(ToolSearchTool(), core=True)
+        logger.info(
+            "ToolSearch auto-registered (core): %d deferred tool(s) need a discovery path",
+            len(registry.list_deferred()),
+        )
+    elif not registry.is_core("ToolSearch"):
+        registry.set_core("ToolSearch", True)
+        logger.warning(
+            "ToolSearch forced back to core — %d deferred tool(s) would be "
+            "unreachable with it deferred/demoted",
+            len(registry.list_deferred()),
+        )
+
+
 def _register_built_in_tools(
     manifest: "EnvironmentManifest",
     registry: "ToolRegistry",
@@ -484,6 +542,8 @@ def _register_built_in_tools(
     if names == ["*"]:
         names = list(BUILT_IN_TOOL_CLASSES.keys())
 
+    core_overrides = _core_overrides_from_manifest(manifest)
+
     for name in names:
         cls = BUILT_IN_TOOL_CLASSES.get(name)
         if cls is None:
@@ -499,7 +559,9 @@ def _register_built_in_tools(
             if report is not None:
                 report.shadowed.append(name)
             continue
-        registry.register(cls())
+        # Framework built-ins are core (upfront schema) by default;
+        # manifest.tools.core_overrides can defer individual names.
+        registry.register(cls(), core=_resolve_core_flag(name, core_overrides, True))
         if report is not None:
             report.resolved.append(name)
 
@@ -540,6 +602,8 @@ def _register_external_tools(
     raw_entries = list(getattr(manifest.tools, "external", []) or [])
     if not raw_entries:
         return
+
+    core_overrides = _core_overrides_from_manifest(manifest)
 
     # Normalize entries → (name, required). Malformed entries warn and
     # count as unresolved-but-unnamed; they cannot be required because
@@ -627,7 +691,13 @@ def _register_external_tools(
                 # intentionally hardened by the host).
                 report.shadowed.append(name)
             report.resolved.append(name)
-        registry.register(tool)
+        # Host-supplied (external) tools are deferred by default — the
+        # LLM discovers them via ToolSearch. core_overrides opts a name
+        # into upfront exposure; an external entry shadowing a framework
+        # built-in keeps the built-in's core default so the replacement
+        # is invisible to the model.
+        default_core = registry.is_core(name) if registry.get(name) is not None else False
+        registry.register(tool, core=_resolve_core_flag(name, core_overrides, default_core))
 
 
 def _gate_unconfigured_tools(
@@ -1248,6 +1318,9 @@ class Pipeline:
         # (no-op when satisfied_config is None). Runs after both registration
         # passes so it sees the full built-in + external surface.
         _gate_unconfigured_tools(registry, satisfied_config, resolution_report)
+        # Deferred tools need a live discovery path; from_manifest_async
+        # re-checks after providers + MCP land more registrations.
+        _ensure_tool_search_reachable(registry)
         pipeline.tool_resolution_report = resolution_report
         pipeline._tool_registry = registry
         # Retain the adhoc providers so the self-modifying-environment controller
@@ -1430,9 +1503,16 @@ class Pipeline:
         # MCP adapters arrive. Name collisions at this layer are logged
         # by ``register_providers``; MCP registrations would still fail
         # cleanly via the registry's own dedupe if they conflicted.
+        # Provider-shipped tools are deferred by default (ToolSearch
+        # discovery); manifest.tools.core_overrides opts names in.
+        core_overrides = _core_overrides_from_manifest(manifest)
         started_providers: List["ToolProvider"] = []
         if tool_providers:
-            started_providers = await register_providers(list(tool_providers), registry)
+            started_providers = await register_providers(
+                list(tool_providers),
+                registry,
+                core_resolver=lambda name: _resolve_core_flag(name, core_overrides, False),
+            )
 
         manager = MCPManager()
 
@@ -1481,8 +1561,15 @@ class Pipeline:
                 try:
                     await manager.connect_all(configs)
                     adapters = await manager.discover_all()
+                    # MCP tools are deferred by default (ToolSearch
+                    # discovery); core_overrides opts names in — the
+                    # trailing-* form covers whole servers whose tool
+                    # names are only known after discovery.
                     for adapter in adapters:
-                        registry.register(adapter)
+                        registry.register(
+                            adapter,
+                            core=_resolve_core_flag(adapter.name, core_overrides, False),
+                        )
                 except BaseException:
                     # Unwind providers if MCP bring-up fails mid-flight so no
                     # half-started resources leak out.
@@ -1491,6 +1578,10 @@ class Pipeline:
                     await shutdown_providers(started_providers)
                     await manager.disconnect_all()
                     raise
+
+        # Providers + MCP may have added deferred tools after the sync
+        # from_manifest pass — re-check the discovery path.
+        _ensure_tool_search_reachable(registry)
 
         pipeline._mcp_manager = manager
         pipeline._tool_registry = registry

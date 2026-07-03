@@ -155,7 +155,8 @@ class TestFromManifestExternalProviders:
     def test_provider_tool_not_in_external_is_ignored(self):
         """Manifest is authoritative — a provider may *offer* more than
         the manifest activates, but the pipeline must only register
-        names the manifest names."""
+        names the manifest names. (2.42.0: external tools register
+        deferred, so ToolSearch auto-registers as the discovery path.)"""
         manifest = _manifest_with(external=["news_search"])
         provider = _DictProvider(
             {
@@ -164,7 +165,9 @@ class TestFromManifestExternalProviders:
             }
         )
         pipeline = Pipeline.from_manifest(manifest, adhoc_providers=[provider])
-        assert pipeline.tool_registry.list_names() == ["news_search"]
+        assert pipeline.tool_registry.list_names() == ["news_search", "ToolSearch"]
+        assert not pipeline.tool_registry.is_exposed("news_search")
+        assert pipeline.tool_registry.is_core("ToolSearch")
 
     def test_missing_provider_for_external_name_is_skipped(self, caplog):
         manifest = _manifest_with(external=["not_supplied"])
@@ -224,7 +227,10 @@ class TestFromManifestExternalProviders:
         manifest = _manifest_with(external=["alpha"])
         provider = _DictProvider({"alpha": _NamedTool("alpha")})
         Pipeline.from_manifest(manifest, adhoc_providers=[provider], tool_registry=registry)
-        assert set(registry.list_names()) == {"builtin", "alpha"}
+        assert set(registry.list_names()) == {"builtin", "alpha", "ToolSearch"}
+        # Caller-registered tools keep their core (exposed) default.
+        assert registry.is_exposed("builtin")
+        assert not registry.is_exposed("alpha")
 
     def test_system_stage_sees_populated_registry_after_from_manifest(self):
         """Regression: a manifest with s03_system + external tools must
@@ -285,7 +291,7 @@ class TestFromManifestAsyncExternalAndMcp:
         manifest = _manifest_with(external=["alpha"])
         provider = _DictProvider({"alpha": _NamedTool("alpha")})
         pipeline = await Pipeline.from_manifest_async(manifest, adhoc_providers=[provider])
-        assert pipeline.tool_registry.list_names() == ["alpha"]
+        assert pipeline.tool_registry.list_names() == ["alpha", "ToolSearch"]
         assert pipeline.mcp_manager.list_servers() == []
 
     @pytest.mark.asyncio
@@ -309,7 +315,12 @@ class TestFromManifestAsyncExternalAndMcp:
         assert set(pipeline.tool_registry.list_names()) == {
             "alpha",
             "mcp__srv__ping",
+            "ToolSearch",
         }
+        # External + MCP tools are deferred; ToolSearch is their discovery path.
+        assert not pipeline.tool_registry.is_exposed("alpha")
+        assert not pipeline.tool_registry.is_exposed("mcp__srv__ping")
+        assert pipeline.tool_registry.is_exposed("ToolSearch")
 
     @pytest.mark.asyncio
     async def test_mcp_failure_does_not_hide_external_wiring_flow(self, monkeypatch):

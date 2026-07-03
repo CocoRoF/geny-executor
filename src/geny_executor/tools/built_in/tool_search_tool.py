@@ -1,23 +1,35 @@
-"""ToolSearch — discovery helper for the tools available this turn.
+"""ToolSearch — deferred-tool discovery + activation.
 
 Cycle 20260424 executor uplift — Phase 3 Week 6.
+2.42.0 — upgraded from a list-introspection helper to the discovery
+half of the core/deferred tool contract.
 
-When a pipeline has dozens of tools wired up (executor built-ins + MCP
-servers + skill bundles + host-specific custom tools) the LLM often
-needs help finding the right one. ``ToolSearch`` is a lightweight
-introspection tool — pass it a query, get back a ranked list of
-matching tool names + their one-line descriptions.
+The pipeline no longer ships every tool schema to the LLM upfront.
+*Core* tools (framework built-ins by default, plus anything the
+manifest's ``tools.core_overrides`` promotes) are always in the
+request payload; everything else — host/external tools, provider
+bundles, MCP adapters — is registered but *deferred*: dispatchable,
+yet invisible to the model until discovered here.
 
-Source of truth:
+``ToolSearch`` is that discovery path. Pass it a keyword query and it:
 
-1. If ``ToolContext.state_view`` is set (the usual Stage 10 path), we
-   read ``state_view.tools`` — the live list of API-format tool
-   descriptors the LLM already sees. This includes MCP tools, custom
-   host tools, everything.
-2. Otherwise (e.g. a test harness running a bare executor without a
-   Stage), we fall back to the built-in catalogue
-   (``BUILT_IN_TOOL_CLASSES``) so the tool still produces useful
-   output in isolation.
+1. Searches the FULL catalogue via ``ToolContext.tool_registry``
+   (Stage 10 binds the live :class:`ToolRegistry`), deferred tools
+   included.
+2. Ranks matches (name > description > schema, see :func:`_rank`).
+3. **Activates** every deferred match — ``registry.activate(name)``
+   bumps the registry version, so Stage 3 rebuilds ``state.tools`` on
+   the next loop iteration and the activated schemas reach the model
+   on its very next step within the same turn.
+
+Fallback sources when no registry handle is bound (bare harnesses,
+older hosts):
+
+1. ``ToolContext.state_view.tools`` — the live API-format descriptors
+   the LLM already sees (pre-2.42 behaviour; search only, nothing to
+   activate).
+2. The built-in catalogue (``BUILT_IN_TOOL_CLASSES``) so the tool
+   still produces useful output in isolation.
 
 Ranking is simple: a hit on the tool ``name`` beats a hit on the
 ``description``; exact name match beats substring; case-insensitive
@@ -34,16 +46,16 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from geny_executor.tools.base import Tool, ToolCapabilities, ToolContext, ToolResult
 
-_DEFAULT_LIMIT = 20
+_DEFAULT_LIMIT = 10
 _HARD_LIMIT = 100
 
 
 def _fallback_descriptors() -> List[Dict[str, Any]]:
     """Build descriptors from the built-in catalogue.
 
-    Only used when ``state_view`` is absent. Mirrors the shape of the
-    Anthropic API tool descriptor so rank logic can treat both sources
-    the same.
+    Only used when neither ``tool_registry`` nor ``state_view`` is
+    available. Mirrors the shape of the Anthropic API tool descriptor
+    so rank logic can treat every source the same.
     """
     # Local import to avoid the package-init circular dependency.
     from geny_executor.tools.built_in import BUILT_IN_TOOL_CLASSES
@@ -120,17 +132,19 @@ def _rank(descriptor: Dict[str, Any], query: str) -> int:
 
 
 class ToolSearchTool(Tool):
-    """Find tools matching a keyword query.
+    """Discover tools from the full catalogue — and activate deferred ones.
 
-    Usage: the LLM calls ``ToolSearch({"query": "grep files"})`` and
+    Usage: the LLM calls ``ToolSearch({"query": "spreadsheet"})`` and
     gets back something like::
 
-        Matching 2 tools for 'grep files':
-        1. Grep — Search file contents with ripgrep regex syntax.
-        2. Glob — Match file paths with shell globbing.
+        Matching 2 tool(s) for 'spreadsheet':
+        1. xlsx_edit — Edit XLSX workbooks in place. [activated]
+        2. Read — Read a file from the filesystem. [available]
+        Activated tool schemas become available on your next step.
 
-    The host decides which tools to include by deciding what to put on
-    ``state.tools`` each turn — this tool just surfaces that list.
+    Matches already exposed to the model are tagged ``[available]``;
+    deferred matches are tagged ``[activated]`` — their full schemas
+    enter the tool list on the next loop iteration.
     """
 
     @property
@@ -140,9 +154,11 @@ class ToolSearchTool(Tool):
     @property
     def description(self) -> str:
         return (
-            "Find tools available this turn by keyword. Returns ranked "
-            "matches with name + description. Useful when unsure which "
-            "tool to call for a task."
+            "Search the full tool catalog by keyword — it contains more "
+            "tools than your current tool list. Matching tools that are "
+            "not yet in your tool list are activated automatically and "
+            "become callable on your next step. Use this whenever no "
+            "visible tool fits the task."
         )
 
     @property
@@ -155,15 +171,18 @@ class ToolSearchTool(Tool):
                     "description": (
                         "Keyword query. Multi-word queries require every "
                         "token to match somewhere (name / description / "
-                        "input schema)."
+                        "input schema). An exact tool name is the most "
+                        "precise query."
                     ),
                     "minLength": 1,
                 },
                 "limit": {
                     "type": "integer",
                     "description": (
-                        f"Maximum number of matches to return. Default "
-                        f"{_DEFAULT_LIMIT}, hard cap {_HARD_LIMIT}."
+                        f"Maximum number of matches to return (and thus to "
+                        f"activate). Default {_DEFAULT_LIMIT}, hard cap "
+                        f"{_HARD_LIMIT}. Keep it small to avoid bloating "
+                        f"your tool list."
                     ),
                     "exclusiveMinimum": 0,
                 },
@@ -186,7 +205,8 @@ class ToolSearchTool(Tool):
         limit = int(input.get("limit", _DEFAULT_LIMIT))
         limit = max(1, min(_HARD_LIMIT, limit))
 
-        descriptors = self._collect_descriptors(context)
+        registry = getattr(context, "tool_registry", None)
+        descriptors = self._collect_descriptors(context, registry)
         ranked: List[Tuple[int, Dict[str, Any]]] = []
         for desc in descriptors:
             score = _rank(desc, query)
@@ -206,13 +226,31 @@ class ToolSearchTool(Tool):
                 },
             )
 
+        # Promote deferred matches: activate() bumps the registry
+        # version, Stage 3 rebuilds state.tools next iteration, and the
+        # schemas reach the model on its next step within this turn.
+        activated: List[str] = []
+        if registry is not None:
+            for _, desc in top:
+                name = str(desc.get("name", ""))
+                if desc.get("_deferred") and self._activate(registry, name):
+                    activated.append(name)
+
         lines = [f"Matching {len(top)} tool(s) for {query!r}:"]
         for i, (score, desc) in enumerate(top, 1):
             name = desc.get("name", "?")
             d = str(desc.get("description", "")).strip()
             # Keep descriptions on one line for easy scanning.
             one_liner = d.splitlines()[0] if d else "(no description)"
-            lines.append(f"{i}. {name} — {one_liner}")
+            tag = ""
+            if registry is not None:
+                tag = " [activated]" if name in activated else " [available]"
+            lines.append(f"{i}. {name} — {one_liner}{tag}")
+        if activated:
+            lines.append(
+                "Activated tool schemas become available on your next step — "
+                "call them then."
+            )
 
         return ToolResult(
             content="\n".join(lines),
@@ -223,18 +261,51 @@ class ToolSearchTool(Tool):
                     {"name": d.get("name"), "score": s, "description": d.get("description")}
                     for s, d in top
                 ],
+                "activated": activated,
                 "searched": len(descriptors),
             },
         )
 
-    def _collect_descriptors(self, context: ToolContext) -> List[Dict[str, Any]]:
-        """Prefer live pipeline tools (via ``state_view``), fall back to built-ins.
+    @staticmethod
+    def _activate(registry: Any, name: str) -> bool:
+        """Best-effort ``registry.activate(name)`` — never breaks the search."""
+        activate = getattr(registry, "activate", None)
+        if not callable(activate):
+            return False
+        try:
+            return bool(activate(name))
+        except Exception:
+            return False
 
-        The ``state_view`` path is what Stage 10 configures at runtime —
-        it reflects MCP servers, custom tools, skills, everything. The
-        fallback is just a graceful default for test harnesses that run
-        executors without a Stage wrapper.
+    def _collect_descriptors(
+        self, context: ToolContext, registry: Optional[Any]
+    ) -> List[Dict[str, Any]]:
+        """Prefer the live registry (full catalogue), then ``state_view``, then built-ins.
+
+        The registry path is what Stage 10 configures at runtime — it
+        covers MCP tools, custom host tools, skills, everything,
+        *including deferred tools whose schemas the model has not seen*.
+        Each descriptor is annotated with a private ``_deferred`` flag
+        so ``execute`` knows which matches need activation. The
+        ``state_view`` path is the pre-2.42 behaviour (exposed tools
+        only); the built-in catalogue is a graceful default for test
+        harnesses running executors without a Stage wrapper.
         """
+        if registry is not None:
+            try:
+                out: List[Dict[str, Any]] = []
+                for tool in registry.list_all():
+                    desc = tool.to_api_format()
+                    if isinstance(desc, dict):
+                        is_exposed = getattr(registry, "is_exposed", None)
+                        desc["_deferred"] = (
+                            not bool(is_exposed(tool.name)) if callable(is_exposed) else False
+                        )
+                        out.append(desc)
+                if out:
+                    return out
+            except Exception:
+                pass  # fall through to the view/built-in sources
         view: Optional[Any] = getattr(context, "state_view", None)
         if view is not None:
             tools = getattr(view, "tools", None)

@@ -208,6 +208,9 @@ class ToolStage(Stage[Any, Any]):
             # can see the live tool descriptors + shared state. Tools
             # MUST NOT mutate — use state_mutations / state_apply instead.
             state_view=state,
+            # The live registry — ToolSearch searches the FULL catalogue
+            # through it (deferred tools included) and activates matches.
+            tool_registry=self._registry,
             # Phase 5: propagate the host-attached HookRunner so the
             # router can fire PRE_TOOL_USE / POST_TOOL_USE / POST_TOOL_
             # FAILURE around dispatch. ``None`` is the default no-op.

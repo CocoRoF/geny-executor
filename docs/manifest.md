@@ -69,7 +69,8 @@ result = await pipeline.run("Find the latest Python release version")
   "tools": {
     "built_in": ["Read", "Glob", "Grep", "TodoWrite"],
     "external": ["web_search", "memory_write", "send_dm"],
-    "mcp_servers": []
+    "mcp_servers": [],
+    "core_overrides": {"web_search": true, "Grep": false}
   },
   "max_iterations": 50,
   "cost_budget_usd": 5.0
@@ -96,6 +97,7 @@ One entry per stage. Order matches the canonical 1–21. Fields:
 | `built_in` | Names from `geny_executor.tools.built_in.BUILT_IN_TOOL_CLASSES`. `["*"]` registers every shipped tool. |
 | `external` | Names resolved against `adhoc_providers` passed to `Pipeline.from_manifest_async`. The first provider that knows the name wins. |
 | `mcp_servers` | `MCPServerConfig` entries for host-attached MCP servers (transport + url/command + env). |
+| `core_overrides` | `{name: bool}` — flips a tool between **core** (schema sent to the LLM on every request) and **deferred** (registered but only discoverable/activatable via `ToolSearch`). Defaults: `built_in` → core, `external` / provider / MCP tools → deferred. A trailing `*` matches by prefix (`"mcp__github__*": true` promotes a whole server); exact keys beat wildcards. When any deferred tool exists, `ToolSearch` is auto-registered as core so the discovery path is never stranded. |
 
 ## Strict load (recommended)
 

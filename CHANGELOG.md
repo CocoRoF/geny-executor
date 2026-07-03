@@ -4,6 +4,56 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.42.0] — 2026-07-03
+
+### Added (core vs deferred tools — ToolSearch-driven discovery)
+
+Token/context contract change: the pipeline no longer ships every registered
+tool schema to the LLM upfront. Tools are now **core** (schema in every
+request) or **deferred** (registered + dispatchable, but discovered at runtime
+via `ToolSearch`).
+
+- **`ToolRegistry` exposure model** (`tools/registry.py`) — `register(tool,
+  core=True)` records a per-tool core flag; `set_core` / `is_core` /
+  `activate` / `deactivate` / `is_exposed` / `list_exposed` / `list_deferred`
+  manage it. `to_api_format(exposed_only=True)` exports only core +
+  runtime-activated tools. `activate()`/`set_core()` bump the registry
+  `version`, so Stage 3 rebuilds `state.tools` on the next loop iteration —
+  a mid-turn discovery reaches the model on its very next step.
+- **`manifest.tools.core_overrides`** (`core/environment.py`,
+  `ToolsSnapshot`) — host-facing interface to flip individual tools either
+  way. Exact names or trailing-`*` prefixes (`"mcp__github__*": true`);
+  exact keys beat wildcards, longest wildcard wins. Round-trips through
+  `to_dict`/`from_dict`; absent in legacy manifests → `{}`.
+- **Build policy** (`core/pipeline.py`) — `_register_built_in_tools`
+  registers framework built-ins as **core by default**;
+  `_register_external_tools` (AdhocToolProvider), `register_providers`
+  (ToolProvider bundles, new `core_resolver` kwarg) and MCP adapters register
+  **deferred by default**. `core_overrides` applies at every site. An
+  external entry shadowing a built-in inherits the built-in's core default so
+  hardened replacements stay visible.
+- **`_ensure_tool_search_reachable`** — whenever deferred tools exist,
+  `ToolSearch` is auto-registered as core (or forced back to core if a
+  manifest demoted it), guaranteeing the discovery path is never stranded.
+  Runs at the end of `from_manifest` and again after providers + MCP land in
+  `from_manifest_async`.
+- **`ToolSearch` is now the discovery half of the contract**
+  (`tools/built_in/tool_search_tool.py`) — searches the FULL catalogue via
+  the new `ToolContext.tool_registry` handle (Stage 10 binds the live
+  registry), deferred tools included, and **activates** every deferred match.
+  Matches are tagged `[available]` / `[activated]`; metadata gains an
+  `activated` list. Default result limit lowered 20 → 10 (activation now has
+  a payload cost). Falls back to `state_view.tools`, then the built-in
+  catalogue, when no registry is bound (pre-2.42 behaviour).
+- **Stage 3** (`s03_system`) — serializes `to_api_format(exposed_only=True)`;
+  deferred schemas stay out of the request payload until discovered.
+  `TypeError` fallback keeps registry-alike hosts working.
+
+Back-compat: hand-built registries (`register()` default `core=True`),
+`to_api_format()` full export, and `register_providers` without a
+`core_resolver` all behave exactly as before — the deferred policy only
+engages on the manifest build path.
+
 ## [2.41.0] — 2026-07-02
 
 ### Added (workspace ↔ sandbox awareness + transfer)

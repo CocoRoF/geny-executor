@@ -612,7 +612,9 @@ class TestFromManifestAsync:
         pipeline = await Pipeline.from_manifest_async(manifest)
 
         assert pipeline.mcp_manager.list_servers() == ["alpha"]
-        assert pipeline.tool_registry.list_names() == ["mcp__alpha__ping"]
+        # MCP tools register deferred → ToolSearch auto-registers (2.42.0).
+        assert pipeline.tool_registry.list_names() == ["mcp__alpha__ping", "ToolSearch"]
+        assert not pipeline.tool_registry.is_exposed("mcp__alpha__ping")
 
     @pytest.mark.asyncio
     async def test_server_failure_cleans_up(self, monkeypatch):
@@ -664,6 +666,7 @@ class TestFromManifestAsync:
         manifest = _blank_manifest_with_servers([{"name": "alpha", "command": "noop"}])
         pipeline = await Pipeline.from_manifest_async(manifest, tool_registry=registry)
         # Both the built-in tool and the discovered MCP adapter land in
-        # the same registry the caller passed in.
-        assert set(registry.list_names()) == {"builtin", "mcp__alpha__ping"}
+        # the same registry the caller passed in (plus the auto-registered
+        # ToolSearch — the deferred MCP adapter needs a discovery path).
+        assert set(registry.list_names()) == {"builtin", "mcp__alpha__ping", "ToolSearch"}
         assert pipeline.tool_registry is registry

@@ -268,8 +268,9 @@ class TestPipelineIntegration:
 
         assert pipeline.tool_registry is not None
         names = {t.name for t in pipeline.tool_registry.list_all()}
-        # BuiltInToolProvider(features=['filesystem']) → 6 tools
-        assert {"Read", "Write", "Edit", "Glob", "Grep", "NotebookEdit"} == names
+        # BuiltInToolProvider(features=['filesystem']) → 6 tools, registered
+        # deferred (provider channel) → ToolSearch auto-registers (2.42.0).
+        assert {"Read", "Write", "Edit", "Glob", "Grep", "NotebookEdit", "ToolSearch"} == names
         # Pipeline exposes started providers for introspection
         assert len(pipeline.tool_providers) == 1
         assert pipeline.tool_providers[0].name == "builtin"

@@ -157,6 +157,12 @@ class ToolContext:
     # means the host did not enable self-modification. Typed ``Any`` to avoid a
     # core import cycle.
     environment: Optional[Any] = None
+    # The live ToolRegistry backing this session (set by Stage 10). ToolSearch
+    # reads the FULL catalogue from it — including deferred tools whose schemas
+    # are not in ``state.tools`` — and promotes matches via ``activate()``.
+    # ``None`` (default) preserves the state_view/built-in fallback path.
+    # Typed ``Any`` to avoid importing the registry from this base module.
+    tool_registry: Optional[Any] = None
     extras: Dict[str, Any] = field(default_factory=dict)
 
 

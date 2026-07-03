@@ -267,4 +267,6 @@ class TestPipelineIntegration:
         )
 
         tool_names = {t.name for t in pipeline.tool_registry.list_all()}
-        assert {"refactor", "deploy"} == tool_names
+        # Provider tools register deferred → ToolSearch auto-registers (2.42.0).
+        assert {"refactor", "deploy", "ToolSearch"} == tool_names
+        assert not pipeline.tool_registry.is_exposed("refactor")
