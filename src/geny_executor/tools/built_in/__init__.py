@@ -52,6 +52,12 @@ from geny_executor.tools.built_in.operator_tools import (
     SendUserFileTool,
 )
 from geny_executor.tools.built_in.read_tool import ReadTool
+from geny_executor.tools.built_in.workspace_tools import (
+    SandboxFetchTool,
+    SandboxInfoTool,
+    SandboxPutTool,
+    WorkspaceInfoTool,
+)
 from geny_executor.tools.built_in.cron_tools import (
     CronCreateTool,
     CronDeleteTool,
@@ -123,6 +129,10 @@ BUILT_IN_TOOL_CLASSES: Dict[str, Type[Tool]] = {
     "Config": ConfigTool,
     "Monitor": MonitorTool,
     "SendUserFile": SendUserFileTool,
+    "WorkspaceInfo": WorkspaceInfoTool,
+    "SandboxInfo": SandboxInfoTool,
+    "SandboxPut": SandboxPutTool,
+    "SandboxFetch": SandboxFetchTool,
     "SendMessage": SendMessageTool,
     "CronCreate": CronCreateTool,
     "CronDelete": CronDeleteTool,
@@ -173,6 +183,9 @@ BUILT_IN_TOOL_FEATURES: Dict[str, List[str]] = {
     "worktree": ["EnterWorktree", "ExitWorktree"],
     "dev": ["LSP", "REPL", "Brief"],
     "operator": ["Config", "Monitor", "SendUserFile"],
+    # The session's two file spaces: inspect the host-side files workspace,
+    # check the sandbox, and move files between them.
+    "workspace": ["WorkspaceInfo", "SandboxInfo", "SandboxPut", "SandboxFetch"],
     "messaging": ["SendMessage"],
     "cron": ["CronCreate", "CronDelete", "CronList"],
     "environment": ["env"],
@@ -280,6 +293,10 @@ __all__ = [
     "ExitPlanModeTool",
     "EnvTool",
     "SandboxExecTool",
+    "WorkspaceInfoTool",
+    "SandboxInfoTool",
+    "SandboxPutTool",
+    "SandboxFetchTool",
     "BUILT_IN_TOOL_CLASSES",
     "BUILT_IN_TOOL_FEATURES",
     "get_builtin_tools",

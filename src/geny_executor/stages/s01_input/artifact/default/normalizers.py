@@ -210,25 +210,36 @@ class MultimodalNormalizer(InputNormalizer):
             block["_meta"] = meta
         return block
 
+    # Anthropic PDF limit is ~32MB request size; stay safely under it.
+    _PDF_MAX_BYTES = 24 * 1024 * 1024
+
     def _make_file_block(self, file: Dict[str, Any]) -> Dict[str, Any]:
         """Convert any accepted shape into a canonical file block.
 
-        TODO (P1+): PDF 등을 Anthropic ``document`` 블록으로 직접 매핑.
-        텍스트 추출 / OCR / 청크 분할 등 본격적인 파일 파이프라인 구현.
-        지금은 metadata 만 보존하고 ``to_message_content()`` 에서 메타데이터
-        텍스트로 노출된다.
+        PDFs referenced by a local ``file://`` URI (or absolute path) are
+        loaded and base64-attached here so ``to_blocks()`` can emit a native
+        Anthropic ``document`` block — the model reads the actual PDF instead
+        of a ``[attached file: …]`` placeholder. Other formats keep the
+        metadata-only shape (hosts hand those to the agent's file tools).
         """
+        mime = (
+            file.get("mime_type")
+            or file.get("media_type")
+            or file.get("mimeType")
+            or "application/octet-stream"
+        )
+        data = file.get("data") or file.get("base64")
+        url = file.get("url")
+        if mime == "application/pdf" and not data and url:
+            resolved = _resolve_local_image_source(url)  # generic local-file reader
+            if resolved is not None and len(resolved[0]) <= self._PDF_MAX_BYTES:
+                data = base64.b64encode(resolved[0]).decode("ascii")
         return {
             "type": "file",
             "name": file.get("name") or file.get("filename"),
-            "mime_type": (
-                file.get("mime_type")
-                or file.get("media_type")
-                or file.get("mimeType")
-                or "application/octet-stream"
-            ),
-            "url": file.get("url"),
-            "data": file.get("data") or file.get("base64"),
+            "mime_type": mime,
+            "url": url,
+            "data": data,
             "size": file.get("size"),
             "sha256": file.get("sha256"),
             "attachment_id": file.get("attachment_id"),

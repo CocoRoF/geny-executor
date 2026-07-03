@@ -78,11 +78,25 @@ class NormalizedInput:
         for img in self.images:
             blocks.append(img)
         for f in self.files:
-            # TODO: PDF 등을 Anthropic ``document`` block 으로 매핑하고
-            # 본문 추출 (PyPDF, OCR 등) 후 text 블록으로 인라인하는 경로
-            # 추가. 현재는 메타데이터를 텍스트로 노출만 한다.
             name = f.get("name") or f.get("filename") or "unnamed"
             mime = f.get("mime_type") or f.get("media_type") or "application/octet-stream"
+            data = f.get("data")
+            if mime == "application/pdf" and data:
+                # Native Anthropic ``document`` block — the model reads the PDF
+                # itself (the normalizer base64-loads local PDFs).
+                blocks.append(
+                    {
+                        "type": "document",
+                        "source": {
+                            "type": "base64",
+                            "media_type": "application/pdf",
+                            "data": data,
+                        },
+                    }
+                )
+                continue
+            # Other formats: metadata placeholder — hosts route the real bytes
+            # to the agent's file tools (e.g. a staged workspace copy).
             blocks.append(
                 {
                     "type": "text",

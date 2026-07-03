@@ -4,6 +4,30 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.41.0] — 2026-07-02
+
+### Added (workspace ↔ sandbox awareness + transfer)
+
+- **`tools/built_in/workspace_tools.py`** — the session's two file spaces become
+  first-class, discoverable on demand (short manifest in the host prompt, details
+  via tools):
+  - `WorkspaceInfo` — list the host-side files workspace (`ToolContext.
+    storage_path`): top-level summary (per-dir file count + bytes) or a capped
+    subtree listing. Path-guarded to the storage root.
+  - `SandboxInfo` — is an isolated sandbox (`ToolContext.sandbox`) attached?
+    Reports workdir reachability + a top-level `ls`.
+  - `SandboxPut` / `SandboxFetch` — copy files between the files workspace and
+    the sandbox container over the existing `_sandbox` primitives (binary-safe
+    docker exec, 50MB cap, host paths guarded). Closes the gap where artifacts
+    built inside a sandbox could not reach `SendUserFile`/host tools and vice
+    versa.
+  - Registered in `BUILT_IN_TOOL_CLASSES` + a new `workspace` feature group.
+- **s01 PDF `document` blocks** — `MultimodalNormalizer` now base64-loads local
+  (`file://`/absolute-path) PDFs (≤24MB) and `NormalizedInput.to_message_content()`
+  emits a native Anthropic `document` block, so the model reads the actual PDF
+  instead of an `[attached file: …]` placeholder. Other formats keep the
+  metadata placeholder (hosts stage those for the agent's file tools).
+
 ## [2.40.0] — 2026-07-02
 
 ### Added (tool-result images render across all backends)
