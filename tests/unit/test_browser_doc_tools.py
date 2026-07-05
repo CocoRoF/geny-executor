@@ -275,6 +275,30 @@ class TestDocTools:
         assert "ANTHROPIC_API_KEY" in edit.content
 
     @pytest.mark.asyncio
+    async def test_render_png_pages(self, docx_path, tmp_path):
+        from geny_executor.tools.built_in.doc_tools import DocRenderTool
+
+        ctx = ToolContext(working_dir=str(tmp_path))
+        result = await DocRenderTool().execute(
+            {"path": "doc.docx", "to": "png", "out_dir": "prev"}, ctx
+        )
+        assert not result.is_error, result.content
+        payload = json.loads(result.content)
+        assert payload["page_count"] >= 1
+        assert payload["paths"][0].endswith("page-1.png")
+        assert (tmp_path / "prev" / "page-1.png").exists()
+
+    @pytest.mark.asyncio
+    async def test_render_pdf(self, docx_path, tmp_path):
+        from geny_executor.tools.built_in.doc_tools import DocRenderTool
+
+        ctx = ToolContext(working_dir=str(tmp_path))
+        result = await DocRenderTool().execute({"path": "doc.docx", "to": "pdf"}, ctx)
+        assert not result.is_error, result.content
+        payload = json.loads(result.content)
+        assert payload["to"] == "pdf" and payload["paths"][0].endswith(".pdf")
+
+    @pytest.mark.asyncio
     async def test_unsupported_extension_rejected(self, tmp_path):
         (tmp_path / "notes.txt").write_text("hi", encoding="utf-8")
         ctx = ToolContext(working_dir=str(tmp_path))

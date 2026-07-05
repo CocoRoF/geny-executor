@@ -487,10 +487,89 @@ class DocEditTool(_DocToolBase):
         )
 
 
+class DocRenderTool(_DocToolBase):
+    """Page images / PDF via the edit2docs native pipeline (no LibreOffice)."""
+
+    @property
+    def name(self) -> str:
+        return "DocRender"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Render a .docx/.xlsx/.pptx file to page images or a PDF using "
+            "the native engine (per-page SVG → PNG → PDF; no LibreOffice). "
+            "to='png' writes page-1.png…N, to='pdf' writes <stem>.pdf, "
+            "to='svg' writes the vector pages. Deterministic — no LLM."
+        )
+
+    @property
+    def input_schema(self) -> Dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Document file path."},
+                "to": {
+                    "type": "string",
+                    "enum": ["png", "pdf", "svg"],
+                    "description": "Output kind (default png).",
+                },
+                "out_dir": {
+                    "type": "string",
+                    "description": "Output directory (default '<doc dir>/render').",
+                },
+                "dpi": {
+                    "type": "number",
+                    "description": "Raster resolution (default 144).",
+                    "exclusiveMinimum": 0,
+                },
+            },
+            "required": ["path"],
+        }
+
+    def capabilities(self, input: Dict[str, Any]) -> ToolCapabilities:
+        return ToolCapabilities(concurrency_safe=False, max_result_chars=20_000)
+
+    async def _run(self, input: Dict[str, Any], context: ToolContext) -> ToolResult:
+        engine = _load_edit2docs()
+        if not hasattr(engine, "render_doc"):
+            return ToolResult(
+                content=(
+                    "This edit2docs version has no render_doc — upgrade to "
+                    "edit2docs>=0.6.0 (pip install 'geny-executor[docs]')."
+                ),
+                is_error=True,
+            )
+        path = _resolve_doc_path(input.get("path") or "", context)
+        out = input.get("out_dir")
+        kwargs: Dict[str, Any] = {
+            "to": str(input.get("to") or "png"),
+            "dpi": float(input.get("dpi") or 144.0),
+        }
+        if out:
+            kwargs["out_dir"] = str(
+                resolve_and_validate(
+                    str(out), context.working_dir or os.getcwd(), context.allowed_paths
+                )
+            )
+        result = await asyncio.to_thread(engine.render_doc, str(path), **kwargs)
+        payload = {
+            "paths": [str(p) for p in getattr(result, "paths", [])],
+            "page_count": getattr(result, "page_count", 0),
+            "format": getattr(result, "format", ""),
+            "to": getattr(result, "to", kwargs["to"]),
+        }
+        return ToolResult(
+            content=json.dumps(payload, ensure_ascii=False, indent=1),
+            metadata=payload,
+        )
+
+
 DOC_TOOL_CLASSES: Dict[str, type] = {
     "DocAnalyze": DocAnalyzeTool,
     "DocApplyEdits": DocApplyEditsTool,
     "DocPreview": DocPreviewTool,
     "DocGenerate": DocGenerateTool,
     "DocEdit": DocEditTool,
+    "DocRender": DocRenderTool,
 }

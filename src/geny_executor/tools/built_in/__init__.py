@@ -118,6 +118,7 @@ from geny_executor.tools.built_in.doc_tools import (
     DocEditTool,
     DocGenerateTool,
     DocPreviewTool,
+    DocRenderTool,
 )
 # NOT in BUILT_IN_TOOL_CLASSES: SandboxExecTool is instantiated per Sandbox Tool
 # Pack (with a spec + a live SandboxHandle), not activated by a manifest name.
@@ -290,6 +291,7 @@ __all__ = [
     "DocEditTool",
     "DocGenerateTool",
     "DocPreviewTool",
+    "DocRenderTool",
     "BrowserActTool",
     "BrowserBackTool",
     "BrowserCloseTool",

@@ -4,6 +4,19 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.44.0] — 2026-07-05
+
+### Added (DocRender — LibreOffice-free page images / PDF)
+
+- **`DocRender` built-in** (`tools/built_in/doc_tools.py`, `documents`
+  feature group): renders .docx/.xlsx/.pptx to page PNGs
+  (`page-1.png…N`, pdftoppm-compatible naming), a PDF, or vector SVG
+  pages via edit2docs 0.6's native pipeline (per-page SVG → resvg →
+  PyMuPDF). Deterministic, no LLM, no LibreOffice/poppler. Standard
+  working_dir/allowed_paths guard; graceful version hint when the
+  installed edit2docs predates `render_doc`.
+- `[docs]` extra floor raised to `edit2docs>=0.6.0`.
+
 ## [2.43.0] — 2026-07-03
 
 ### Added (Browser* + Doc* built-ins — an-web / edit2docs engines)
