@@ -1,0 +1,283 @@
+"""Browser* (an-web) + Doc* (edit2docs) built-in tool families (2.43.0).
+
+The engines are optional extras — every test that needs one skips
+cleanly when it is not importable, so the suite stays green on minimal
+installs. Deterministic paths run against the real engines with local
+fixtures (no network, no LLM key).
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import sys
+
+import pytest
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "src"))
+
+from geny_executor.tools.base import ToolContext
+from geny_executor.tools.built_in import BUILT_IN_TOOL_CLASSES, BUILT_IN_TOOL_FEATURES
+from geny_executor.tools.built_in.browser_tools import (
+    BROWSER_TOOL_CLASSES,
+    BrowserActTool,
+    BrowserCloseTool,
+    BrowserNavigateTool,
+    BrowserSnapshotTool,
+    _parse_target,
+    _runtime,
+)
+from geny_executor.tools.built_in.doc_tools import (
+    DOC_TOOL_CLASSES,
+    DocAnalyzeTool,
+    DocApplyEditsTool,
+    DocEditTool,
+    DocGenerateTool,
+    DocPreviewTool,
+)
+
+an_web = pytest.importorskip("an_web", reason="an-web extra not installed")
+edit2docs = pytest.importorskip("edit2docs", reason="edit2docs extra not installed")
+
+
+# ── Registration ───────────────────────────────────────────
+
+
+class TestRegistration:
+    def test_families_registered(self):
+        for name in list(BROWSER_TOOL_CLASSES) + list(DOC_TOOL_CLASSES):
+            assert name in BUILT_IN_TOOL_CLASSES
+
+    def test_feature_groups(self):
+        assert BUILT_IN_TOOL_FEATURES["browser"] == list(BROWSER_TOOL_CLASSES.keys())
+        assert BUILT_IN_TOOL_FEATURES["documents"] == list(DOC_TOOL_CLASSES.keys())
+
+    def test_schemas_are_valid_shapes(self):
+        for name, cls in {**BROWSER_TOOL_CLASSES, **DOC_TOOL_CLASSES}.items():
+            tool = cls()
+            fmt = tool.to_api_format()
+            assert fmt["name"] == name
+            assert fmt["description"]
+            assert fmt["input_schema"]["type"] == "object"
+
+
+# ── Browser target parsing ─────────────────────────────────
+
+
+class TestTargetParsing:
+    def test_ref_handle(self):
+        assert _parse_target("n42") == {"by": "node_id", "node_id": "n42"}
+
+    def test_text_prefix(self):
+        assert _parse_target("text=Sign in") == {"by": "text", "text": "Sign in"}
+
+    def test_css_passthrough(self):
+        assert _parse_target("#login .btn") == "#login .btn"
+
+    def test_dict_passthrough(self):
+        loc = {"by": "role", "role": "button", "text": "Go"}
+        assert _parse_target(loc) is loc
+
+
+# ── Browser tools against a local HTML page (no real network) ──
+
+
+@pytest.fixture
+def html_url(tmp_path):
+    """Serve a small page over HTTP from localhost (an-web fetches for
+    real; a loopback server keeps the test hermetic)."""
+    import http.server
+    import threading
+
+    page = (
+        "<html><head><title>Fixture Page</title></head><body>"
+        "<h1>Hello World</h1>"
+        "<p id='intro'>Intro text with <a href='/next.html' id='go'>a link</a>.</p>"
+        "<button id='btn'>Press me</button>"
+        "</body></html>"
+    )
+    next_page = (
+        "<html><head><title>Next Page</title></head><body>"
+        "<h1>Second page</h1><p>You arrived.</p></body></html>"
+    )
+    (tmp_path / "index.html").write_text(page, encoding="utf-8")
+    (tmp_path / "next.html").write_text(next_page, encoding="utf-8")
+
+    handler = lambda *a, **kw: http.server.SimpleHTTPRequestHandler(  # noqa: E731
+        *a, directory=str(tmp_path), **kw
+    )
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_address[1]}/index.html"
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+
+class TestBrowserFlow:
+    @pytest.mark.asyncio
+    async def test_navigate_snapshot_click_close(self, html_url):
+        sid = "browser-flow-test"
+        ctx = ToolContext(session_id=sid)
+        try:
+            nav = await BrowserNavigateTool().execute({"url": html_url}, ctx)
+            assert not nav.is_error, nav.content
+            assert "Fixture Page" in nav.content
+            assert "Hello World" in nav.content
+            assert "[ref=" in nav.content  # interactive elements got handles
+
+            snap = await BrowserSnapshotTool().execute({}, ctx)
+            assert not snap.is_error
+            assert "Fixture Page" in snap.content
+
+            # Click the link — navigates to next.html and inlines the new page.
+            act = await BrowserActTool().execute(
+                {"action": "click", "target": "#go"}, ctx
+            )
+            assert not act.is_error, act.content
+            assert "Second page" in act.content or "Next Page" in act.content
+
+            closed = await BrowserCloseTool().execute({}, ctx)
+            assert not closed.is_error
+            assert closed.metadata["closed"] is True
+        finally:
+            await _runtime.close_session(sid)
+
+    @pytest.mark.asyncio
+    async def test_act_without_page_errors(self):
+        ctx = ToolContext(session_id="browser-no-page")
+        result = await BrowserActTool().execute(
+            {"action": "click", "target": "#x"}, ctx
+        )
+        assert result.is_error
+        assert "BrowserNavigate" in result.content
+
+    @pytest.mark.asyncio
+    async def test_navigate_rejects_bad_scheme(self):
+        ctx = ToolContext(session_id="browser-bad-scheme")
+        result = await BrowserNavigateTool().execute({"url": "file:///etc/passwd"}, ctx)
+        assert result.is_error
+
+    @pytest.mark.asyncio
+    async def test_sessions_are_isolated(self, html_url):
+        ctx_a = ToolContext(session_id="browser-iso-a")
+        ctx_b = ToolContext(session_id="browser-iso-b")
+        try:
+            await BrowserNavigateTool().execute({"url": html_url}, ctx_a)
+            # Session B never navigated — it must not see A's tab.
+            snap_b = await BrowserSnapshotTool().execute({}, ctx_b)
+            assert snap_b.is_error
+        finally:
+            await _runtime.close_session("browser-iso-a")
+            await _runtime.close_session("browser-iso-b")
+
+
+# ── Doc tools against real generated fixtures (no LLM) ─────
+
+
+@pytest.fixture
+def docx_path(tmp_path):
+    from edit2docs.documents.docx_engine import docx_from_markdown
+
+    data = docx_from_markdown("# Title\n\nFirst paragraph.\n\nSecond paragraph.")
+    p = tmp_path / "doc.docx"
+    p.write_bytes(data)
+    return p
+
+
+@pytest.fixture
+def xlsx_path(tmp_path):
+    from edit2docs.documents.xlsx_engine import xlsx_from_spec
+
+    data = xlsx_from_spec(
+        {"sheets": [{"name": "Data", "headers": ["a", "b"], "rows": [[1, 2], [3, 4]]}]}
+    )
+    p = tmp_path / "book.xlsx"
+    p.write_bytes(data)
+    return p
+
+
+class TestDocTools:
+    @pytest.mark.asyncio
+    async def test_analyze_docx(self, docx_path, tmp_path):
+        ctx = ToolContext(working_dir=str(tmp_path))
+        result = await DocAnalyzeTool().execute({"path": "doc.docx"}, ctx)
+        assert not result.is_error, result.content
+        info = json.loads(result.content)
+        assert info["format"] == "docx"
+        assert any("para" in item for item in info["outline"])
+
+    @pytest.mark.asyncio
+    async def test_apply_edits_xlsx_roundtrip(self, xlsx_path, tmp_path):
+        ctx = ToolContext(working_dir=str(tmp_path))
+        result = await DocApplyEditsTool().execute(
+            {
+                "path": "book.xlsx",
+                "edits": [{"action": "set_cell", "sheet": "Data", "cell": "B2", "value": 99}],
+            },
+            ctx,
+        )
+        assert not result.is_error, result.content
+        summary = json.loads(result.content)
+        assert summary["applied"] == 1
+        assert summary["failed"] == 0
+
+        # The edit is visible to a fresh analyze (in-place default output).
+        check = await DocAnalyzeTool().execute({"path": summary["path"]}, ctx)
+        assert "99" in check.content
+
+    @pytest.mark.asyncio
+    async def test_apply_edits_soft_fail_reports_status(self, xlsx_path, tmp_path):
+        ctx = ToolContext(working_dir=str(tmp_path))
+        result = await DocApplyEditsTool().execute(
+            {
+                "path": "book.xlsx",
+                "edits": [{"action": "set_cell", "sheet": "Nope", "cell": "A1", "value": 1}],
+            },
+            ctx,
+        )
+        assert not result.is_error  # soft-fail: statuses, not exceptions
+        summary = json.loads(result.content)
+        assert summary["applied"] == 0
+        assert summary["failed"] == 1
+
+    @pytest.mark.asyncio
+    async def test_preview_docx_markdown(self, docx_path, tmp_path):
+        ctx = ToolContext(working_dir=str(tmp_path))
+        result = await DocPreviewTool().execute({"path": "doc.docx"}, ctx)
+        assert not result.is_error, result.content
+        assert "First paragraph" in result.content
+
+    @pytest.mark.asyncio
+    async def test_path_guard_blocks_escape(self, tmp_path):
+        inner = tmp_path / "inner"
+        inner.mkdir()
+        ctx = ToolContext(working_dir=str(inner), allowed_paths=[str(inner)])
+        result = await DocAnalyzeTool().execute({"path": "../../etc/passwd"}, ctx)
+        assert result.is_error
+        assert "Access denied" in result.content or "No such file" in result.content
+
+    @pytest.mark.asyncio
+    async def test_llm_verbs_require_key(self, docx_path, tmp_path, monkeypatch):
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        ctx = ToolContext(working_dir=str(tmp_path))
+        gen = await DocGenerateTool().execute(
+            {"intent": "x", "output": "new.docx"}, ctx
+        )
+        assert gen.is_error
+        assert "ANTHROPIC_API_KEY" in gen.content
+        edit = await DocEditTool().execute(
+            {"path": "doc.docx", "instruction": "x"}, ctx
+        )
+        assert edit.is_error
+        assert "ANTHROPIC_API_KEY" in edit.content
+
+    @pytest.mark.asyncio
+    async def test_unsupported_extension_rejected(self, tmp_path):
+        (tmp_path / "notes.txt").write_text("hi", encoding="utf-8")
+        ctx = ToolContext(working_dir=str(tmp_path))
+        result = await DocAnalyzeTool().execute({"path": "notes.txt"}, ctx)
+        assert result.is_error
+        assert "Unsupported document format" in result.content

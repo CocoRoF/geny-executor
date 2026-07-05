@@ -95,6 +95,30 @@ from geny_executor.tools.built_in.env_tools import EnvTool
 # from ``ctx.extras['google']``; gated via required_config_keys → hidden until the
 # host marks ``feature:google_connected`` satisfied.
 from geny_executor.tools.built_in.google_tools import GOOGLE_TOOL_CLASSES
+# Browser — AI-native web exploration on the an-web engine (semantic snapshots,
+# per-session tabs, embedded V8; no Chromium). an-web itself imports lazily —
+# 'pip install geny-executor[browser]' (Python >= 3.12).
+from geny_executor.tools.built_in.browser_tools import (
+    BROWSER_TOOL_CLASSES,
+    BrowserActTool,
+    BrowserBackTool,
+    BrowserCloseTool,
+    BrowserEvalTool,
+    BrowserExtractTool,
+    BrowserNavigateTool,
+    BrowserSnapshotTool,
+)
+# Doc — office documents (docx/xlsx/pptx) on the edit2docs engine: addressable
+# outlines, deterministic edits, generation. Lazy import — 'pip install
+# geny-executor[docs]'.
+from geny_executor.tools.built_in.doc_tools import (
+    DOC_TOOL_CLASSES,
+    DocAnalyzeTool,
+    DocApplyEditsTool,
+    DocEditTool,
+    DocGenerateTool,
+    DocPreviewTool,
+)
 # NOT in BUILT_IN_TOOL_CLASSES: SandboxExecTool is instantiated per Sandbox Tool
 # Pack (with a spec + a live SandboxHandle), not activated by a manifest name.
 from geny_executor.tools.built_in.sandbox_exec_tool import SandboxExecTool
@@ -154,6 +178,11 @@ BUILT_IN_TOOL_CLASSES: Dict[str, Type[Tool]] = {
     # Google Workspace (gated on feature:google_connected — hidden until the host
     # injects OAuth creds + marks Google connected).
     **GOOGLE_TOOL_CLASSES,
+    # Browser (an-web) — semantic web exploration; degrades to an install-hint
+    # error when the optional an-web dependency is absent.
+    **BROWSER_TOOL_CLASSES,
+    # Doc (edit2docs) — office document engine; same lazy-import contract.
+    **DOC_TOOL_CLASSES,
 }
 
 
@@ -166,6 +195,12 @@ BUILT_IN_TOOL_FEATURES: Dict[str, List[str]] = {
     "filesystem": ["Read", "Write", "Edit", "Glob", "Grep", "NotebookEdit"],
     "shell": ["Bash"],
     "web": ["WebFetch", "WebSearch"],
+    # Interactive web exploration (an-web engine) — JS-rendered pages,
+    # per-session tabs, semantic snapshots. Distinct from "web" (one-shot
+    # fetch/search) so hosts can enable them independently.
+    "browser": list(BROWSER_TOOL_CLASSES.keys()),
+    # Office documents (edit2docs engine) — outline/edit/preview/generate.
+    "documents": list(DOC_TOOL_CLASSES.keys()),
     "workflow": ["TodoWrite"],
     "meta": ["ToolSearch", "EnterPlanMode", "ExitPlanMode"],
     "agent": ["Agent"],
@@ -248,6 +283,20 @@ def get_builtin_tools(
 
 __all__ = [
     "AgentTool",
+    "BROWSER_TOOL_CLASSES",
+    "DOC_TOOL_CLASSES",
+    "DocAnalyzeTool",
+    "DocApplyEditsTool",
+    "DocEditTool",
+    "DocGenerateTool",
+    "DocPreviewTool",
+    "BrowserActTool",
+    "BrowserBackTool",
+    "BrowserCloseTool",
+    "BrowserEvalTool",
+    "BrowserExtractTool",
+    "BrowserNavigateTool",
+    "BrowserSnapshotTool",
     "SubAgentSpawnTool",
     "SubAgentAssignTool",
     "SubAgentListTool",

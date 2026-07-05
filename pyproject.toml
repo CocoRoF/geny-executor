@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "geny-executor"
-version = "2.42.0"
+version = "2.43.0"
 description = "Harness-engineered agent pipeline library with 21-stage dual-abstraction architecture, built on the Anthropic API"
 readme = "README.md"
 license = "Apache-2.0"
@@ -77,6 +77,15 @@ dependencies = [
 # and lint. End-users never need these; they stay as an extras group
 # so the runtime install footprint isn't bloated by pytest/ruff.
 [project.optional-dependencies]
+# Browser* built-ins — an-web semantic web engine (embedded V8; needs
+# Python >= 3.12 and glibc, so it stays out of the core install).
+browser = [
+    "an-web>=0.9.1; python_version >= '3.12'",
+]
+# Doc* built-ins — edit2docs document engine (docx/xlsx/pptx).
+docs = [
+    "edit2docs>=0.4.0",
+]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.24",

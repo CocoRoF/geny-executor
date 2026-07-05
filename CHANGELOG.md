@@ -4,6 +4,38 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.43.0] — 2026-07-03
+
+### Added (Browser* + Doc* built-ins — an-web / edit2docs engines)
+
+Two first-party engines replace host-side tool stacks (Geny's Playwright
+`browser_*` family and python-docx/openpyxl/python-pptx editors):
+
+- **Browser family** (`tools/built_in/browser_tools.py`, optional extra
+  `geny-executor[browser]` → `an-web>=0.9.1`, Python >= 3.12, glibc):
+  `BrowserNavigate` / `BrowserSnapshot` / `BrowserAct` (click/type/select/
+  clear/submit/scroll/wait_for) / `BrowserExtract` / `BrowserEval` /
+  `BrowserBack` / `BrowserClose`. One an-web tab per pipeline session
+  (keyed by `ToolContext.session_id`, engines per event loop, 15-min idle
+  reap) — cookies/history persist across calls without a process-global
+  singleton. Pages surface as semantic snapshots (roles + names +
+  `[ref=nN]` handles, 400-node budget) instead of raw HTML; element
+  targets accept refs (`n42`), `text=...`, CSS selectors, or an-web
+  locator dicts. No Chromium/playwright install — embedded V8 executes
+  page JS. an-web imports lazily; missing engine → install-hint error.
+  New feature group `browser`.
+- **WebFetch `render_js` parameter** — one-shot JS-rendered fetch via an
+  ephemeral an-web session (SPA pages); default remains the fast httpx
+  path.
+- **Doc family** (`tools/built_in/doc_tools.py`, optional extra
+  `geny-executor[docs]` → `edit2docs>=0.4.0`): `DocAnalyze` (addressable
+  outline) / `DocApplyEdits` (deterministic `set_doc_text` edits with
+  per-edit `applied|stale|not_found|invalid` statuses) / `DocPreview` /
+  `DocGenerate` / `DocEdit` (LLM verbs read the Anthropic key from
+  `ctx.extras['docs']['api_key']` or `ANTHROPIC_API_KEY`; model override
+  via `extras['docs']['model']`). Paths go through the standard
+  working_dir/allowed_paths guard. New feature group `documents`.
+
 ## [2.42.0] — 2026-07-03
 
 ### Added (core vs deferred tools — ToolSearch-driven discovery)

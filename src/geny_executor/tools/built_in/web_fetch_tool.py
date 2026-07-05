@@ -222,7 +222,9 @@ class WebFetchTool(Tool):
             "Fetch an HTTP(S) URL and return its plain-text body. "
             "HTML is stripped to text; other content types are returned "
             "as-is. Follows up to 5 redirects. Use this for reading "
-            "documentation pages, README files, or small API responses."
+            "documentation pages, README files, or small API responses. "
+            "For JavaScript-rendered pages (SPAs) set render_js=true, or "
+            "use BrowserNavigate for interactive sessions."
         )
 
     @property
@@ -268,6 +270,16 @@ class WebFetchTool(Tool):
                         "executor's default User-Agent."
                     ),
                 },
+                "render_js": {
+                    "type": "boolean",
+                    "description": (
+                        "Execute the page's JavaScript before extracting text "
+                        "(an-web engine — needed for SPA/React pages whose "
+                        "content is client-rendered). Slower than a plain "
+                        "fetch; default false. Custom headers are ignored in "
+                        "this mode."
+                    ),
+                },
             },
             "required": ["url"],
         }
@@ -291,6 +303,9 @@ class WebFetchTool(Tool):
         max_chars = int(input.get("max_chars", _DEFAULT_MAX_CHARS))
         max_bytes = int(input.get("max_bytes", _DEFAULT_MAX_BYTES))
         user_headers = input.get("headers") or {}
+
+        if input.get("render_js"):
+            return await self._fetch_rendered(url, timeout=timeout, max_chars=max_chars)
 
         request_headers: Dict[str, str] = {
             "User-Agent": _DEFAULT_USER_AGENT,
@@ -371,6 +386,51 @@ class WebFetchTool(Tool):
                 "content_type": content_type,
                 "text_chars": len(text),
                 "truncated_bytes": truncated_bytes,
+                "truncated_chars": truncated_chars,
+            },
+        )
+
+    async def _fetch_rendered(
+        self, url: str, *, timeout: float, max_chars: int
+    ) -> ToolResult:
+        """render_js=true path — one-shot JS-rendered fetch via an-web.
+
+        Uses an ephemeral engine session (WebFetch stays stateless; the
+        persistent per-session tab belongs to the Browser* tools). The
+        an-web dependency is optional — a missing engine surfaces as a
+        ToolResult error carrying the install hint.
+        """
+        from geny_executor.tools.built_in.browser_tools import fetch_rendered_text
+
+        try:
+            final_url, title, text = await fetch_rendered_text(url, timeout=timeout)
+        except RuntimeError as exc:
+            return ToolResult(content=str(exc), is_error=True)
+        except Exception as exc:  # noqa: BLE001 — engine faults become tool errors
+            return ToolResult(
+                content=f"render_js fetch failed for {url}: {type(exc).__name__}: {exc}",
+                is_error=True,
+            )
+
+        truncated_chars = False
+        if len(text) > max_chars:
+            text = text[:max_chars]
+            truncated_chars = True
+
+        header_lines = [f"Fetched: {final_url} (JS-rendered)"]
+        if title:
+            header_lines.append(f"Title: {title}")
+        if final_url != url:
+            header_lines.append(f"Redirected from: {url}")
+        if truncated_chars:
+            header_lines.append(f"[text truncated at {max_chars} chars]")
+
+        return ToolResult(
+            content="\n".join(header_lines) + "\n\n" + text,
+            metadata={
+                "final_url": final_url,
+                "render_js": True,
+                "text_chars": len(text),
                 "truncated_chars": truncated_chars,
             },
         )
