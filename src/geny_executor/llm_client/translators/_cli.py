@@ -262,6 +262,30 @@ def claude_code_argv(
 # ---------------------------------------------------------------------------
 
 
+def messages_have_images(messages: List[Dict[str, Any]]) -> bool:
+    """True when any message carries an Anthropic-style image block.
+
+    Used by the client to decide the wire mode: the ``--print`` positional
+    prompt is text-only, so requests with images must travel as stream-json
+    stdin (the CLI ingests base64 image blocks there)."""
+    for m in messages:
+        content = m.get("content")
+        if isinstance(content, list) and any(
+            isinstance(b, dict) and b.get("type") == "image" for b in content
+        ):
+            return True
+    return False
+
+
+def _image_blocks_of(content: Any) -> List[Dict[str, Any]]:
+    """Anthropic-style image blocks contained in one message's content."""
+    if not isinstance(content, list):
+        return []
+    return [
+        b for b in content if isinstance(b, dict) and b.get("type") == "image"
+    ]
+
+
 def _render_block_for_history(block: Any) -> str:
     """Render one Anthropic-style content block as readable text.
 
@@ -439,9 +463,27 @@ def build_stream_json_stdin(messages: List[Dict[str, Any]]) -> bytes:
         )
 
     flat = (preamble + current_input).strip()
+
+    # The CURRENT turn's images must reach the model as real content blocks —
+    # the CLI's stream-json input ingests base64 image blocks natively, and
+    # flattening them to "[image attachment]" silently blinded every
+    # multi-turn CLI session to chat images and screen-observation frames.
+    # Older turns keep the text placeholder (replaying stale frames would
+    # bloat every request for no recall value).
+    current_images = (
+        _image_blocks_of(messages[last_user_idx].get("content"))
+        if last_user_idx >= 0
+        else []
+    )
+    content: Any
+    if current_images:
+        content = [*current_images, {"type": "text", "text": flat}]
+    else:
+        content = flat
+
     envelope = {
         "type": "user",
-        "message": {"role": "user", "content": flat},
+        "message": {"role": "user", "content": content},
     }
     return (json.dumps(envelope, ensure_ascii=False) + "\n").encode("utf-8")
 

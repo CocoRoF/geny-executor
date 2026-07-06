@@ -32,6 +32,7 @@ tool dispatch — see ``stages/s10_tool``.
 
 from __future__ import annotations
 
+from dataclasses import replace
 import logging
 import os
 from contextlib import aclosing
@@ -56,6 +57,7 @@ from geny_executor.llm_client.translators._cli import (
     StreamJsonAccumulator,
     assemble_response_from_stream_json,
     build_stream_json_stdin,
+    messages_have_images,
     claude_code_argv,
     parse_json_output_to_response,
 )
@@ -437,6 +439,16 @@ class ClaudeCodeCLIClient(BaseClient):
             runner = self._make_runner()
         except CLIBinaryNotFound as e:
             raise APIError(str(e), category=ErrorCategory.CLI_NOT_FOUND) from e
+
+        # Vision on the non-streaming surface: the ``--print`` positional
+        # prompt is text-only, so a request that carries image blocks must
+        # travel over the stream-json wire (which ingests base64 images
+        # natively). ``create_message`` still returns one assembled
+        # APIResponse — only the wire mode changes. Without this, every
+        # non-stream vision call (e.g. screen-observation captioning) lost
+        # its image and the model answered "I don't see an image".
+        if not request.stream and messages_have_images(request.messages):
+            request = replace(request, stream=True)
 
         cli_version = await self._ensure_cli_version()
         argv = self._build_argv(request)

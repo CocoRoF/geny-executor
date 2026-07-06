@@ -4,6 +4,30 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.45.0] — 2026-07-06
+
+### Fixed (Claude Code CLI vision wire — images actually reach the model)
+
+- **Non-streaming `create_message` with image blocks now rides the
+  stream-json wire.** The `--print` positional prompt is text-only, so
+  every non-stream vision call (screen-observation captioning,
+  whiteboard describe) silently lost its image and the model answered
+  "I don't see an image…". Requests whose messages carry Anthropic-style
+  image blocks are transparently switched to
+  `--input-format stream-json` (which ingests base64 images natively —
+  verified against claude CLI 2.1.185) and still return a single
+  assembled `APIResponse`.
+- **Multi-turn stream-json stdin keeps the CURRENT turn's images as real
+  content blocks.** `build_stream_json_stdin`'s history flatten rendered
+  the last user message through the same text-only path as prior turns,
+  reducing image blocks to the literal `[image attachment]` — which
+  blinded every multi-turn CLI session (chat image attachments,
+  screen-observation frames). The final envelope is now
+  `[…image blocks…, {"type":"text", …flattened history…}]`; older
+  turns keep the text placeholder.
+- New helper `messages_have_images()` exported from
+  `llm_client.translators._cli`.
+
 ## [2.44.0] — 2026-07-05
 
 ### Added (DocRender — LibreOffice-free page images / PDF)
