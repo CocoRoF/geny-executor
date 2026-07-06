@@ -26,13 +26,117 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Awaitable, Callable, List, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
 #: Host-injected summarizer: ``async (instruction) -> digest_markdown``. The host wires
 #: its LLM (model + transport) here; this module supplies the full instruction.
 Summarize = Callable[[str], Awaitable[str]]
+
+#: Host-injected STRUCTURED summarizer: ``async (instruction, json_schema) ->
+#: parsed dict | None``. When supplied, digests are produced as schema-bound
+#: JSON and rendered to markdown by code — a conversational assistant reply
+#: is a schema violation and simply leaves the previous digest in place.
+CompleteStructured = Callable[[str, Dict[str, Any]], Awaitable[Optional[Dict[str, Any]]]]
+
+
+def _string_array() -> Dict[str, Any]:
+    return {"type": "array", "items": {"type": "string"}}
+
+
+#: Schema for the L1 rolling digest (structured mode).
+SEGMENT_DIGEST_SCHEMA: Dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": [
+        "summary",
+        "facts_decisions",
+        "entities",
+        "preferences_commitments",
+        "open_threads",
+        "relationship_mood",
+    ],
+    "properties": {
+        "summary": {
+            "type": "string",
+            "description": "2-5 sentences: what this session is about + where it stands",
+        },
+        "facts_decisions": _string_array(),
+        "entities": _string_array(),
+        "preferences_commitments": _string_array(),
+        "open_threads": _string_array(),
+        "relationship_mood": _string_array(),
+    },
+}
+
+#: Schema for the L3 evergreen (structured mode). Narrative tiers only —
+#: atomic facts belong to the Fact Ledger (``geny_executor.memory.facts``).
+EVERGREEN_SCHEMA: Dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": [
+        "identity",
+        "user",
+        "durable_facts",
+        "preferences_commitments",
+        "long_running_threads",
+    ],
+    "properties": {
+        "identity": _string_array(),
+        "user": _string_array(),
+        "durable_facts": _string_array(),
+        "preferences_commitments": _string_array(),
+        "long_running_threads": _string_array(),
+    },
+}
+
+
+def _bullets(items: Any) -> List[str]:
+    out: List[str] = []
+    for item in items if isinstance(items, list) else []:
+        text = str(item).strip()
+        if text:
+            out.append(f"- {text}")
+    return out
+
+
+def render_segment_digest(data: Dict[str, Any]) -> str:
+    """Deterministic markdown for a schema-bound rolling digest."""
+    sections = [
+        ("Summary", None),
+        ("Facts & Decisions", "facts_decisions"),
+        ("Entities", "entities"),
+        ("User Preferences & Commitments", "preferences_commitments"),
+        ("Open Threads", "open_threads"),
+        ("Relationship & Mood", "relationship_mood"),
+    ]
+    lines: List[str] = []
+    summary = str(data.get("summary", "")).strip()
+    if summary:
+        lines += ["## Summary", summary, ""]
+    for title, key in sections[1:]:
+        rows = _bullets(data.get(key))
+        if rows:
+            lines += [f"## {title}", *rows, ""]
+    return "\n".join(lines).strip()
+
+
+def render_evergreen(data: Dict[str, Any]) -> str:
+    """Deterministic markdown for a schema-bound evergreen note."""
+    sections = [
+        ("Identity", "identity"),
+        ("User", "user"),
+        ("Durable Facts", "durable_facts"),
+        ("Preferences & Commitments", "preferences_commitments"),
+        ("Long-running Threads", "long_running_threads"),
+    ]
+    lines: List[str] = []
+    for title, key in sections:
+        rows = _bullets(data.get(key))
+        if rows:
+            lines += [f"## {title}", *rows, ""]
+    return "\n".join(lines).strip()
 
 
 #: The non-negotiable preservation clause shared by every rollup instruction. These are
@@ -98,6 +202,31 @@ def build_segment_instruction(
     )
 
 
+def build_segment_instruction_structured(
+    *, prior_digest: str, raw_turns: str, max_chars: int
+) -> str:
+    """Structured-mode rolling-digest instruction — same preservation
+    contract, but the output is schema-bound JSON (rendered by code)."""
+    prior_block = (
+        f"PRIOR DIGEST (carry everything still relevant forward):\n{prior_digest}\n\n"
+        if prior_digest.strip()
+        else "PRIOR DIGEST: (none yet)\n\n"
+    )
+    return (
+        "You maintain a session's rolling MEMORY DIGEST — the compressed view "
+        "served to the agent before any raw history. Fold the new raw turns "
+        "into the prior digest.\n\n"
+        f"{PRESERVE_CLAUSE}\n"
+        "RULES: be faithful — never invent; prefer the user's own wording for "
+        "preferences/commitments; keep it information-dense; merge duplicates; "
+        "drop only chit-chat with no lasting value. Keep the total content "
+        f"under ~{max_chars} characters. Output ONLY JSON matching the "
+        "provided schema (empty arrays where a section is truly empty).\n\n"
+        f"{prior_block}"
+        f"NEW RAW TURNS (most recent last):\n{raw_turns}\n"
+    )
+
+
 #: The evergreen note — a single rewritable pinned ``critical`` note that is
 #: ALWAYS injected (retriever L1.5 ``load_pinned``) and never compacted away.
 EVERGREEN_FILENAME = "__evergreen__.md"
@@ -133,6 +262,31 @@ def build_evergreen_instruction(
     )
 
 
+def build_evergreen_instruction_structured(
+    *, current: str, recent_digest: str, max_chars: int
+) -> str:
+    """Structured-mode evergreen merge. Narrative-tier only: atomic facts
+    (names, preferences as records) are owned by the Fact Ledger; the
+    evergreen carries the durable NARRATIVE that gives them context."""
+    return (
+        "You maintain the EVERGREEN MEMORY — the durable, always-loaded core "
+        "an agent carries across ALL sessions: stable identity, who the user "
+        "is, long-running facts, preferences, commitments, and threads that "
+        "persist beyond any single session. Merge the latest rolling digest "
+        "into the current evergreen.\n\n"
+        f"{PRESERVE_CLAUSE}\n"
+        "RULES: keep ONLY durable knowledge — drop ephemeral / one-off "
+        "chatter; merge duplicates; NEVER lose a durable fact, name, "
+        "preference, or commitment; prefer the user's own wording. Keep the "
+        f"total content under ~{max_chars} characters. Output ONLY JSON "
+        "matching the provided schema (empty arrays where a section is "
+        "truly empty).\n\n"
+        f"CURRENT EVERGREEN (+ pinned critical facts):\n"
+        f"{current.strip() or '(none yet)'}\n\n"
+        f"LATEST ROLLING DIGEST:\n{recent_digest.strip() or '(none)'}\n"
+    )
+
+
 @dataclass
 class RollupReport:
     """Outcome of a rollup pass (diagnostics; never raises to the caller)."""
@@ -161,6 +315,7 @@ class MemoryRollup:
         provider: object,
         *,
         summarize: Summarize,
+        complete_structured: Optional[CompleteStructured] = None,
         max_turns: int = 300,
         digest_max_chars: int = 6000,
         evergreen_max_chars: int = 8000,
@@ -171,6 +326,10 @@ class MemoryRollup:
             raise ValueError("MemoryRollup requires a summarize callable")
         self._provider = provider
         self._summarize = summarize
+        # Structured mode: when the host supplies a schema-bound completion,
+        # digests are produced as validated JSON and rendered by code — a
+        # freeform/conversational reply cannot overwrite good state.
+        self._complete_structured = complete_structured
         self._max_turns = max(1, int(max_turns))
         self._digest_max_chars = max(500, int(digest_max_chars))
         self._evergreen_max_chars = max(1000, int(evergreen_max_chars))
@@ -200,16 +359,38 @@ class MemoryRollup:
         except Exception:  # noqa: BLE001
             prior = ""
 
-        instruction = build_segment_instruction(
-            prior_digest=prior, raw_turns=raw_turns, max_chars=self._digest_max_chars
-        )
-        try:
-            digest = (await self._summarize(instruction) or "").strip()
-        except Exception:  # noqa: BLE001 — summarizer is host code; never fatal
-            logger.warning("rollup: summarize callable failed", exc_info=True)
-            return None
-        if not digest:
-            return None
+        if self._complete_structured is not None:
+            instruction = build_segment_instruction_structured(
+                prior_digest=prior,
+                raw_turns=raw_turns,
+                max_chars=self._digest_max_chars,
+            )
+            try:
+                data = await self._complete_structured(
+                    instruction, SEGMENT_DIGEST_SCHEMA
+                )
+            except Exception:  # noqa: BLE001 — host LLM; never fatal
+                logger.warning("rollup: structured segment failed", exc_info=True)
+                data = None
+            if not isinstance(data, dict):
+                # Contract violation → keep the existing digest untouched.
+                return None
+            digest = render_segment_digest(data).strip()
+            if not digest:
+                return None
+        else:
+            instruction = build_segment_instruction(
+                prior_digest=prior,
+                raw_turns=raw_turns,
+                max_chars=self._digest_max_chars,
+            )
+            try:
+                digest = (await self._summarize(instruction) or "").strip()
+            except Exception:  # noqa: BLE001 — summarizer is host code; never fatal
+                logger.warning("rollup: summarize callable failed", exc_info=True)
+                return None
+            if not digest:
+                return None
 
         try:
             await stm.write_summary(digest)
@@ -240,17 +421,34 @@ class MemoryRollup:
         if not (current or "").strip() and not (recent or "").strip():
             return None
 
-        instruction = build_evergreen_instruction(
-            current=current or "", recent_digest=recent or "",
-            max_chars=self._evergreen_max_chars,
-        )
-        try:
-            merged = (await self._summarize(instruction) or "").strip()
-        except Exception:  # noqa: BLE001 — host LLM; never fatal
-            logger.warning("rollup: evergreen summarize failed", exc_info=True)
-            return None
-        if not merged:
-            return None
+        if self._complete_structured is not None:
+            instruction = build_evergreen_instruction_structured(
+                current=current or "", recent_digest=recent or "",
+                max_chars=self._evergreen_max_chars,
+            )
+            try:
+                data = await self._complete_structured(instruction, EVERGREEN_SCHEMA)
+            except Exception:  # noqa: BLE001 — host LLM; never fatal
+                logger.warning("rollup: structured evergreen failed", exc_info=True)
+                data = None
+            if not isinstance(data, dict):
+                # Contract violation → keep the existing evergreen untouched.
+                return None
+            merged = render_evergreen(data).strip()
+            if not merged:
+                return None
+        else:
+            instruction = build_evergreen_instruction(
+                current=current or "", recent_digest=recent or "",
+                max_chars=self._evergreen_max_chars,
+            )
+            try:
+                merged = (await self._summarize(instruction) or "").strip()
+            except Exception:  # noqa: BLE001 — host LLM; never fatal
+                logger.warning("rollup: evergreen summarize failed", exc_info=True)
+                return None
+            if not merged:
+                return None
 
         try:
             from geny_executor.memory.provider import Importance, NoteDraft

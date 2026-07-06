@@ -100,6 +100,19 @@ class APIResponse:
         return [b for b in self.content if b.type == "tool_use"]
 
     @property
+    def structured(self) -> Optional[Any]:
+        """Provider-enforced structured output, when the request carried a
+        ``response_format`` and the backend enforced it natively.
+
+        Claude Code CLI surfaces it as the result envelope's
+        ``structured_output`` (both wire modes preserve the envelope in
+        ``raw``). Providers without native enforcement return the JSON as
+        text — callers should fall back to parsing ``.text``."""
+        if isinstance(self.raw, dict):
+            return self.raw.get("structured_output")
+        return None
+
+    @property
     def thinking_blocks(self) -> List[ContentBlock]:
         return [b for b in self.content if b.type == "thinking"]
 

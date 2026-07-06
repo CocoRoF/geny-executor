@@ -28,6 +28,36 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   option — e.g. a host using "block local tools" as a safety default —
   was the exact trigger.
 
+## [2.46.0] — 2026-07-06
+
+### Added (Structured memory: Fact Ledger + schema-bound rollups)
+
+- **`memory.facts` — the Fact Ledger.** Durable conversational facts
+  (identity/how-to-address, preferences, relationships, commitments,
+  long-running context) become first-class records maintained by a
+  schema-bound extraction pass: the LLM judges, `FACT_EXTRACTION_SCHEMA`
+  constrains, `FactLedger` applies the diff (upsert/supersede — a fact can
+  be retired but never silently lost; corrections update in place with
+  provenance). The ledger persists as one pinned `critical` note
+  (`__facts__.md`, machine state in frontmatter + deterministic rendering)
+  so it rides the existing always-inject (`load_pinned`), search, and host
+  UI surfaces. Host-driven trigger via `FactExtraction.run()` with an
+  idempotent turn cursor; passes with no new user turns are free.
+- **Rollup v2 (structured mode).** `MemoryRollup(complete_structured=...)`
+  produces the rolling digest and evergreen as schema-bound JSON
+  (`SEGMENT_DIGEST_SCHEMA` / `EVERGREEN_SCHEMA`) rendered to markdown by
+  code — a conversational assistant reply is a contract violation and
+  leaves the previous digest/evergreen untouched. Legacy freeform path
+  unchanged when the callback is absent.
+- **`response_format` on the public client surface.**
+  `BaseClient.create_message(..., response_format=...)` threads the
+  canonical structured-output request; Claude Code CLI enforces natively
+  (`--json-schema`) and `APIResponse.structured` exposes the envelope's
+  `structured_output` on both wire modes.
+- `MEMORY_ENGINE_SYSTEM_PROMPT` — the recommended system framing for every
+  host memory-engine LLM call (the memory path is an engine, not an
+  assistant; the root cause of hosts persisting chat replies as memory).
+
 ## [2.45.0] — 2026-07-06
 
 ### Fixed (Claude Code CLI vision wire — images actually reach the model)

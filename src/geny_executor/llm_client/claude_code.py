@@ -303,6 +303,7 @@ class ClaudeCodeCLIClient(BaseClient):
         tools: Optional[List[Dict[str, Any]]],
         tool_choice: Optional[Dict[str, Any]],
         stream: bool,
+        response_format: Optional[Dict[str, Any]] = None,
     ) -> APIRequest:
         """Canonical request assembly + client-level session continuity.
 
@@ -322,6 +323,7 @@ class ClaudeCodeCLIClient(BaseClient):
             tools=tools,
             tool_choice=tool_choice,
             stream=stream,
+            response_format=response_format,
         )
         if self._session_hint and request.session_hint is None:
             request.session_hint = dict(self._session_hint)

@@ -85,15 +85,51 @@ from geny_executor.memory.factory import MemoryProviderFactory
 # (typically a CompositeMemoryProvider) and pass a MemoryHooks bag
 # carrying retrieval policy + post-write callbacks.
 from geny_executor.memory.retriever import MemoryAwareRetriever
+from geny_executor.memory.facts import (
+    FACT_EXTRACTION_SCHEMA,
+    FACTS_CATEGORY,
+    FACTS_FILENAME,
+    MEMORY_ENGINE_SYSTEM_PROMPT,
+    Fact,
+    FactExtraction,
+    FactExtractionReport,
+    FactLedger,
+    LedgerState,
+    build_fact_extraction_instruction,
+    render_ledger_markdown,
+)
 from geny_executor.memory.rollup import (
+    EVERGREEN_SCHEMA,
+    SEGMENT_DIGEST_SCHEMA,
     MemoryRollup,
     RollupReport,
+    build_evergreen_instruction_structured,
+    build_segment_instruction_structured,
+    render_evergreen,
+    render_segment_digest,
     build_segment_instruction,
 )
 from geny_executor.memory.strategy import ProviderDrivenStrategy
 from geny_executor.memory.presets import GenyPresets
 
 __all__ = [
+    "Fact",
+    "FactExtraction",
+    "FactExtractionReport",
+    "FactLedger",
+    "LedgerState",
+    "FACT_EXTRACTION_SCHEMA",
+    "FACTS_FILENAME",
+    "FACTS_CATEGORY",
+    "MEMORY_ENGINE_SYSTEM_PROMPT",
+    "build_fact_extraction_instruction",
+    "render_ledger_markdown",
+    "SEGMENT_DIGEST_SCHEMA",
+    "EVERGREEN_SCHEMA",
+    "build_segment_instruction_structured",
+    "build_evergreen_instruction_structured",
+    "render_segment_digest",
+    "render_evergreen",
     # semantic compaction / rollup
     "MemoryRollup",
     "RollupReport",

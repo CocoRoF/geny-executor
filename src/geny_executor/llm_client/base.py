@@ -161,8 +161,16 @@ class BaseClient(ABC):
         tools: Optional[List[Dict[str, Any]]] = None,
         tool_choice: Optional[Dict[str, Any]] = None,
         purpose: str = "",
+        response_format: Optional[Dict[str, Any]] = None,
     ) -> APIResponse:
-        """Send a non-streaming request built from a :class:`ModelConfig`."""
+        """Send a non-streaming request built from a :class:`ModelConfig`.
+
+        ``response_format`` is the canonical structured-output request
+        (``{"type": "json_schema", "json_schema": {...}}`` or
+        ``{"type": "json_object"}``). Clients that enforce it natively do
+        (Claude Code CLI → ``--json-schema``); others carry it as an
+        advisory field — callers should still validate/parse the reply.
+        """
         request = self._build_request(
             model_config=model_config,
             messages=messages,
@@ -170,6 +178,7 @@ class BaseClient(ABC):
             tools=tools,
             tool_choice=tool_choice,
             stream=False,
+            response_format=response_format,
         )
         return await self._send(request, purpose=purpose)
 
@@ -214,6 +223,7 @@ class BaseClient(ABC):
         tools: Optional[List[Dict[str, Any]]],
         tool_choice: Optional[Dict[str, Any]],
         stream: bool,
+        response_format: Optional[Dict[str, Any]] = None,
     ) -> APIRequest:
         """Assemble a canonical :class:`APIRequest`.
 
@@ -235,6 +245,10 @@ class BaseClient(ABC):
             ),
             stream=stream,
         )
+        if response_format:
+            request.response_format = dict(response_format)
+            if not self.capabilities.supports_structured_output:
+                self._emit_unsupported("response_format")
 
         if model_config.thinking_enabled:
             if self.capabilities.supports_thinking:
