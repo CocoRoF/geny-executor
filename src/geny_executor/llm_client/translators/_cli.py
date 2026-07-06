@@ -245,14 +245,23 @@ def claude_code_argv(
     #     through stdin or as a prompt argument when using --print" — which
     #     broke every non-streaming ``create_message`` (e.g. offline memory
     #     summarisation) while streaming sessions worked.
-    if not request.stream:
-        prompt_text = flatten_messages_to_prompt(request.messages)
-        if prompt_text:
-            argv.append(prompt_text)
+    prompt_text = flatten_messages_to_prompt(request.messages) if not request.stream else ""
 
-    # Caller-supplied escape hatch.
+    # Caller-supplied escape hatch — emitted BEFORE the ``--`` separator so
+    # any flags it carries (e.g. ``--tools ""``) are parsed as options, not
+    # swept into the positional prompt below.
     if extra_args:
         argv += list(extra_args)
+
+    # The prompt is the trailing positional, but ``--allowedTools`` /
+    # ``--disallowedTools`` are *variadic* (``nargs="+"``) — without a
+    # separator the CLI greedily swallows the prompt tokens as extra tool
+    # names ("permission deny rule '<word>' matches no known tool"). The
+    # POSIX ``--`` end-of-options marker forces everything after it to be
+    # positional, so the prompt survives verbatim regardless of which
+    # variadic flags precede it.
+    if prompt_text:
+        argv += ["--", prompt_text]
 
     return argv
 

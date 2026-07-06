@@ -273,8 +273,50 @@ def test_argv_resume_session_id() -> None:
 
 
 def test_argv_extra_args_appended_verbatim() -> None:
+    # No prompt (empty messages) → extra_args remain the trailing tokens.
     argv = claude_code_argv(_req(), extra_args=["--verbose", "--debug", "api"])
     assert argv[-3:] == ["--verbose", "--debug", "api"]
+
+
+def test_argv_non_stream_prompt_is_dash_separated() -> None:
+    """The prompt travels as a ``--``-guarded trailing positional."""
+    argv = claude_code_argv(_req(messages=[{"role": "user", "content": "hello there"}]))
+    assert argv[-2:] == ["--", "hello there"]
+
+
+def test_argv_variadic_tool_flag_does_not_swallow_prompt() -> None:
+    """Regression: ``--disallowedTools`` (variadic) must not eat the prompt.
+
+    Without the ``--`` separator the CLI parsed the prompt words as extra
+    tool names ("permission deny rule '<word>' matches no known tool").
+    """
+    argv = claude_code_argv(
+        _req(messages=[{"role": "user", "content": "add 2 and 2"}]),
+        disallow_tools=["Bash", "Read", "Write"],
+    )
+    assert argv[-2:] == ["--", "add 2 and 2"]
+    # the deny list is still present, and nothing after ``--`` is a flag
+    assert "--disallowedTools" in argv
+    dash = argv.index("--")
+    assert all(not tok.startswith("--") for tok in argv[dash + 1 :])
+
+
+def test_argv_extra_args_precede_prompt_separator() -> None:
+    """extra_args (flags) must land before ``--`` so they parse as options."""
+    argv = claude_code_argv(
+        _req(messages=[{"role": "user", "content": "hi"}]),
+        extra_args=["--tools", ""],
+    )
+    dash = argv.index("--")
+    assert argv.index("--tools") < dash
+    assert argv[-1] == "hi"
+
+
+def test_argv_stream_has_no_positional_prompt() -> None:
+    """Streaming delivers the prompt via stdin — no ``--``/positional in argv."""
+    argv = claude_code_argv(_req(stream=True, messages=[{"role": "user", "content": "hi"}]))
+    assert "--" not in argv
+    assert "hi" not in argv
 
 
 def test_argv_dropped_fields_not_emitted() -> None:
