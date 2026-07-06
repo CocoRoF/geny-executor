@@ -28,6 +28,19 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   option — e.g. a host using "block local tools" as a safety default —
   was the exact trigger.
 
+## [2.46.1] — 2026-07-06
+
+### Fixed (Fact Ledger round-trip)
+
+- The ledger's frontmatter rows were stringified by the file provider's
+  frontmatter writer (python-repr'd dicts), so the next ``load()`` saw
+  strings, skipped them, and — with the extraction cursor already advanced
+  — the next ``save()`` would have dropped every recorded fact. Facts now
+  persist as ONE JSON scalar (``facts_json``), which survives any
+  frontmatter writer; the loader also recovers legacy 2.46.0 rows
+  (json/python-repr strings). Round-trip is covered by tests against the
+  REAL ``FileMemoryProvider`` — the fake notes fixture had masked this.
+
 ## [2.46.0] — 2026-07-06
 
 ### Added (Structured memory: Fact Ledger + schema-bound rollups)

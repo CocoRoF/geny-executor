@@ -8,6 +8,7 @@ deterministically into the pinned note the retriever always injects.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
@@ -232,7 +233,8 @@ async def test_extraction_applies_diff_and_advances_cursor():
     assert "하렴 사장님이라고 부르라고" in captured["instruction"]
 
     note = provider._notes.store[FACTS_FILENAME]
-    assert note.frontmatter["facts"][0]["id"] == "user.address_as"
+    stored = json.loads(note.frontmatter["facts_json"])
+    assert stored[0]["id"] == "user.address_as"
     assert note.frontmatter["extraction_cursor"] >= base.isoformat()
     assert "'하렴 사장님'이라고 부른다" in note.body
 
@@ -375,3 +377,73 @@ def test_api_response_structured_reads_cli_envelope():
     assert resp.structured == {"name": "BOSS"}
     assert APIResponse(raw=None).structured is None
     assert APIResponse(raw={"result": "x"}).structured is None
+
+
+# ── round-trip through the REAL file provider (fakes masked a field bug:
+#    the frontmatter writer stringifies nested dict rows) ─────────────
+
+
+@pytest.mark.asyncio
+async def test_ledger_roundtrip_through_real_file_provider(tmp_path):
+    from geny_executor.memory.providers.file.provider import FileMemoryProvider
+
+    provider = FileMemoryProvider(tmp_path)
+    ledger = FactLedger(provider)
+    state = LedgerState()
+    FactLedger.apply_diff(
+        state,
+        upserts=[{
+            "id": "user.preferred_address",
+            "kind": "preference",
+            "statement": "사용자는 '하렴 사장님'으로 호칭받기를 원함",
+            "importance": "high",
+            "evidence": "아니 하렴 사장님이라고 하라니까",
+        }],
+        supersedes=[],
+        now_iso="2026-07-06T08:45:00+00:00",
+    )
+    state.cursor = "2026-07-06T08:44:00+00:00"
+    assert await ledger.save(state)
+
+    # A fresh load MUST see the same facts + cursor — this is the contract
+    # that keeps a fact from silently vanishing between extraction passes.
+    reloaded = await FactLedger(provider).load()
+    assert reloaded.cursor == "2026-07-06T08:44:00+00:00"
+    assert len(reloaded.facts) == 1
+    fact = reloaded.facts[0]
+    assert fact.id == "user.preferred_address"
+    assert "하렴 사장님" in fact.statement
+    assert fact.status == "active" and fact.created
+
+    # Save→load→save again stays stable (no growth, no mutation).
+    assert await FactLedger(provider).save(reloaded)
+    again = await FactLedger(provider).load()
+    assert [f.to_dict() for f in again.facts] == [f.to_dict() for f in reloaded.facts]
+
+
+@pytest.mark.asyncio
+async def test_load_tolerates_legacy_python_repr_rows(tmp_path):
+    """2.46.0 wrote facts as python-repr strings via the frontmatter
+    writer — the loader must recover them instead of dropping the ledger."""
+    from geny_executor.memory.provider import Importance, NoteDraft
+    from geny_executor.memory.providers.file.provider import FileMemoryProvider
+
+    provider = FileMemoryProvider(tmp_path)
+    legacy_row = (
+        "{'id': 'user.preferred_address', 'kind': 'preference', "
+        "'statement': \"사용자는 '하렴 사장님'으로 호칭받기를 원함\", "
+        "'importance': 'high', 'evidence': 'x', 'status': 'active', "
+        "'created': 't0', 'updated': 't0'}"
+    )
+    await provider.notes().write(
+        NoteDraft(
+            title="Fact Ledger", body="-", importance=Importance.CRITICAL,
+            category="critical", filename="__facts__.md",
+            tags=["facts", "ledger"],
+            frontmatter={"facts": [legacy_row], "extraction_cursor": "c0"},
+        )
+    )
+    state = await FactLedger(provider).load()
+    assert state.cursor == "c0"
+    assert len(state.facts) == 1
+    assert state.facts[0].id == "user.preferred_address"

@@ -31,6 +31,8 @@ callable. This module never does network I/O of its own.
 
 from __future__ import annotations
 
+import ast
+import json
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -287,10 +289,27 @@ class FactLedger:
         if note is None:
             return LedgerState()
         fm = getattr(note, "frontmatter", None) or {}
-        rows = fm.get("facts") or []
         facts: List[Fact] = []
+        # Canonical storage: one JSON scalar. Nested structures cannot be
+        # trusted to round-trip through arbitrary frontmatter writers —
+        # the file provider stringifies dict rows, which silently emptied
+        # the ledger on the next load (2.46.0 field bug).
+        raw_json = fm.get("facts_json")
+        if isinstance(raw_json, str) and raw_json.strip():
+            try:
+                rows = json.loads(raw_json)
+            except ValueError:
+                rows = []
+        else:
+            rows = fm.get("facts") or []
         if isinstance(rows, list):
             for row in rows:
+                if isinstance(row, str):
+                    # Legacy 2.46.0 notes: python-repr'd dicts.
+                    try:
+                        row = ast.literal_eval(row)
+                    except (ValueError, SyntaxError):
+                        continue
                 if isinstance(row, dict):
                     fact = Fact.from_dict(row)
                     if fact is not None:
@@ -370,7 +389,11 @@ class FactLedger:
                     filename=FACTS_FILENAME,
                     tags=["facts", "ledger"],
                     frontmatter={
-                        "facts": [f.to_dict() for f in state.facts],
+                        # One JSON scalar — survives any frontmatter writer.
+                        "facts_json": json.dumps(
+                            [f.to_dict() for f in state.facts],
+                            ensure_ascii=False,
+                        ),
                         "extraction_cursor": state.cursor,
                     },
                 )
