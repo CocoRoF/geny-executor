@@ -4,29 +4,19 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [2.45.1] — 2026-07-06
+## [2.47.1] — 2026-07-07
 
-### Fixed (CLI argv — variadic tool flags swallowed the prompt)
+### Fixed (qdrant — remove() tripped the dimension guard)
 
-- **Non-streaming prompt is now `--`-guarded.** `--allowedTools` /
-  `--disallowedTools` are variadic: when one of them was the last option
-  before the trailing positional prompt, the CLI consumed the prompt
-  tokens as extra tool rules (`Permission deny rule "<word>" matches no
-  known tool`, exit 1). The prompt now travels after a POSIX `--`
-  end-of-options separator, so it survives regardless of which variadic
-  flags precede it. Reproduced and fix verified against claude CLI
-  2.1.185 (host-level and through `create_message` E2E).
-- **`extra_args` are emitted before the `--` separator** (previously
-  after the prompt), so flags supplied through the escape hatch always
-  parse as options — and a variadic flag inside `extra_args` can no
-  longer swallow the prompt either. Note the ordering change if your
-  `extra_args` relied on trailing position.
-- Why this never bit Geny: persona sessions stream (prompt via stdin —
-  no positional to swallow), the default config emits no tool flags on
-  the non-streaming path, and any intervening flag stops the variadic
-  consumption. A non-streaming call with `disallow_tools` as the last
-  option — e.g. a host using "block local tools" as a safety default —
-  was the exact trigger.
+- **`QdrantVectorStore.remove()` no longer runs `_ensure_collection`.**
+  Removal never embeds, but the shared collection-bootstrap path
+  validated vector dimensions — so deleting a document's points out of a
+  collection built for a DIFFERENT embedding model (exactly the cleanup
+  an embedding-model switch needs) raised the index-path mismatch error
+  and silently orphaned the points. `remove()` now deletes by filter
+  directly; a missing collection is "nothing to remove" (returns
+  `False`) instead of being created as a side effect. Found live on
+  Geny prod during the knowledge-repository re-embedding E2E.
 
 ## [2.47.0] — 2026-07-07
 
@@ -90,6 +80,30 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 - `MEMORY_ENGINE_SYSTEM_PROMPT` — the recommended system framing for every
   host memory-engine LLM call (the memory path is an engine, not an
   assistant; the root cause of hosts persisting chat replies as memory).
+
+## [2.45.1] — 2026-07-06
+
+### Fixed (CLI argv — variadic tool flags swallowed the prompt)
+
+- **Non-streaming prompt is now `--`-guarded.** `--allowedTools` /
+  `--disallowedTools` are variadic: when one of them was the last option
+  before the trailing positional prompt, the CLI consumed the prompt
+  tokens as extra tool rules (`Permission deny rule "<word>" matches no
+  known tool`, exit 1). The prompt now travels after a POSIX `--`
+  end-of-options separator, so it survives regardless of which variadic
+  flags precede it. Reproduced and fix verified against claude CLI
+  2.1.185 (host-level and through `create_message` E2E).
+- **`extra_args` are emitted before the `--` separator** (previously
+  after the prompt), so flags supplied through the escape hatch always
+  parse as options — and a variadic flag inside `extra_args` can no
+  longer swallow the prompt either. Note the ordering change if your
+  `extra_args` relied on trailing position.
+- Why this never bit Geny: persona sessions stream (prompt via stdin —
+  no positional to swallow), the default config emits no tool flags on
+  the non-streaming path, and any intervening flag stops the variadic
+  consumption. A non-streaming call with `disallow_tools` as the last
+  option — e.g. a host using "block local tools" as a safety default —
+  was the exact trigger.
 
 ## [2.45.0] — 2026-07-06
 
