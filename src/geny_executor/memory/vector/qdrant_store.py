@@ -206,6 +206,11 @@ class QdrantVectorStore:
                 "category": ref.category or "",
                 "chunk_index": i,
                 "chunk_count": len(rows),
+                # Full chunk text — lossless document reassembly via
+                # ``fetch_document``. ``preview`` stays a bounded copy for
+                # search-hit display (and back-compat with pre-2.48 points
+                # that carry only ``preview``).
+                "text": chunk.text,
                 "preview": chunk.text[: self._preview_chars],
                 "content_sha1": hashlib.sha1(
                     chunk.text.encode("utf-8")
@@ -276,6 +281,76 @@ class QdrantVectorStore:
                 )
             )
         return chunks
+
+    async def fetch_document(
+        self, ref: NoteRef, *, max_chunks: int = 5000,
+    ) -> List[MemoryChunk]:
+        """Return ALL of *ref*'s chunks, ordered by ``chunk_index``.
+
+        Reads by filter (no embedding — like ``remove``, it skips the
+        dimension guard so a document embedded under another model is
+        still fetchable). Each returned :class:`MemoryChunk` carries the
+        FULL chunk text in ``content`` (falling back to the bounded
+        ``preview`` for points indexed before 2.48). This is the
+        reassembly primitive a host turns into a document-read tool: join
+        the ordered ``content`` values to recover the document text.
+        Empty list when the collection or document is absent.
+        """
+        try:
+            qdrant = self._get_qdrant()
+            if not await qdrant.collection_exists(self._collection):
+                return []
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "qdrant: fetch_document existence check failed for %s",
+                ref.filename, exc_info=True,
+            )
+            return []
+
+        points: List[Any] = []
+        offset: Any = None
+        try:
+            while len(points) < max_chunks:
+                batch, offset = await qdrant.scroll(
+                    collection_name=self._collection,
+                    scroll_filter=self._ref_filter(ref.filename),
+                    limit=min(256, max_chunks - len(points)),
+                    offset=offset,
+                    with_payload=True,
+                    with_vectors=False,
+                )
+                points.extend(batch or [])
+                if not offset or not batch:
+                    break
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "qdrant: fetch_document scroll failed for %s",
+                ref.filename, exc_info=True,
+            )
+            return []
+
+        rows = []
+        for point in points:
+            payload = dict(getattr(point, "payload", None) or {})
+            rows.append((int(payload.get("chunk_index", 0)), payload))
+        rows.sort(key=lambda r: r[0])
+
+        out: List[MemoryChunk] = []
+        for idx, payload in rows:
+            content = payload.get("text")
+            if content is None:  # pre-2.48 point — only preview stored
+                content = payload.get("preview", "")
+            filename = str(payload.get("filename", ref.filename))
+            out.append(
+                MemoryChunk(
+                    key=f"vector:{filename}#{idx}",
+                    content=str(content),
+                    source="vector",
+                    relevance_score=1.0,
+                    metadata=payload,
+                )
+            )
+        return out
 
     async def remove(self, ref: NoteRef) -> bool:
         """Delete *ref*'s points by filter. Removal never embeds, so it

@@ -116,6 +116,18 @@ class _FakeAsyncQdrant:
 
         return _R()
 
+    async def scroll(self, collection_name, scroll_filter, limit, offset=None,
+                     with_payload=True, with_vectors=False):
+        target = scroll_filter.must[0].match.value
+        matching = [
+            p for p in self.points.values()
+            if p.payload.get("filename") == target
+        ]
+        start = int(offset or 0)
+        page = matching[start:start + limit]
+        next_off = start + limit if start + limit < len(matching) else None
+        return page, next_off
+
     async def count(self, collection_name):
         n = len(self.points)
 
@@ -218,6 +230,52 @@ async def test_remove_deletes_by_ref(qdrant_store):
     await store.index_document(ref, [DocumentChunk(text="a"), DocumentChunk(text="b")])
     assert await store.remove(ref)
     assert len(_FakeAsyncQdrant.instances[0].points) == 0
+
+
+@pytest.mark.asyncio
+async def test_fetch_document_reassembles_in_order(qdrant_store):
+    """fetch_document returns every chunk ordered by chunk_index with the
+    FULL text (not the bounded preview) — the reassembly primitive."""
+    store, DocumentChunk = qdrant_store
+    ref = NoteRef(filename="doc.md", scope=Scope.USER)
+    long_a = "A" * 2000  # exceeds preview_chars (1200) → proves full text
+    await store.index_document(
+        ref,
+        [DocumentChunk(text=long_a), DocumentChunk(text="second"),
+         DocumentChunk(text="third")],
+    )
+    # A different document's chunks must not leak in.
+    await store.index_document(
+        NoteRef(filename="other.md", scope=Scope.USER),
+        [DocumentChunk(text="unrelated")],
+    )
+    chunks = await store.fetch_document(ref)
+    assert [c.metadata["chunk_index"] for c in chunks] == [0, 1, 2]
+    assert chunks[0].content == long_a  # full text, not truncated
+    assert [c.content for c in chunks[1:]] == ["second", "third"]
+    reassembled = "\n".join(c.content for c in chunks)
+    assert "second" in reassembled and "unrelated" not in reassembled
+
+
+@pytest.mark.asyncio
+async def test_fetch_document_missing_collection_is_empty(qdrant_store):
+    store, _ = qdrant_store
+    chunks = await store.fetch_document(NoteRef(filename="ghost.md", scope=Scope.USER))
+    assert chunks == []
+
+
+@pytest.mark.asyncio
+async def test_fetch_document_falls_back_to_preview(qdrant_store):
+    """Points indexed before 2.48 carry only ``preview`` — fetch must
+    still return their text via the fallback."""
+    store, DocumentChunk = qdrant_store
+    ref = NoteRef(filename="legacy.md", scope=Scope.USER)
+    await store.index_document(ref, [DocumentChunk(text="legacy body")])
+    # Simulate a pre-2.48 point: drop the ``text`` field, keep ``preview``.
+    for p in _FakeAsyncQdrant.instances[0].points.values():
+        p.payload.pop("text", None)
+    chunks = await store.fetch_document(ref)
+    assert chunks and chunks[0].content == "legacy body"
 
 
 @pytest.mark.asyncio

@@ -1048,6 +1048,13 @@ class VectorHandle(Protocol):
     ) -> List[MemoryChunk]: ...
     async def reindex(self, *, plan: Optional[ReindexPlan] = None) -> ReindexPlan: ...
     async def remove(self, ref: NoteRef) -> bool: ...
+    # Optional (2.48+): return ALL of a document's chunks ordered by
+    # chunk_index — the reassembly primitive for document-read tools.
+    # Stores predating this ship without it, so callers should
+    # ``hasattr``-guard or catch ``AttributeError``.
+    async def fetch_document(
+        self, ref: NoteRef, *, max_chunks: int = 5000
+    ) -> List[MemoryChunk]: ...
 
 
 @runtime_checkable

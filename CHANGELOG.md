@@ -4,6 +4,24 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.48.0] — 2026-07-07
+
+### Added (document reassembly primitive)
+
+- **`QdrantVectorStore.fetch_document(ref, *, max_chunks=5000)`** — returns
+  ALL of a document's chunks ordered by `chunk_index`, each `MemoryChunk`
+  carrying the FULL chunk text in `content`. Reads by filter (scroll, no
+  embedding — skips the dimension guard like `remove`, so a document
+  embedded under another model stays fetchable); empty list for a missing
+  collection/document. This is the reassembly primitive a host turns into a
+  document-read tool: join the ordered `content` values to recover the
+  document text. Added to the `VectorHandle` protocol as an optional method
+  (pre-2.48 stores ship without it — `hasattr`-guard).
+- **`index_document` now stores the full chunk `text` in the qdrant
+  payload** (alongside the bounded `preview` kept for search-hit display).
+  Reassembly is lossless; pre-2.48 points that carry only `preview` fall
+  back to it transparently in `fetch_document`.
+
 ## [2.47.1] — 2026-07-07
 
 ### Fixed (qdrant — remove() tripped the dimension guard)
