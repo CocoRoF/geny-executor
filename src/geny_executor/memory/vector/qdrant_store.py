@@ -278,9 +278,16 @@ class QdrantVectorStore:
         return chunks
 
     async def remove(self, ref: NoteRef) -> bool:
+        """Delete *ref*'s points by filter. Removal never embeds, so it
+        deliberately skips the dimension guard (`_ensure_collection`) —
+        cleaning vectors out of a collection built for a DIFFERENT model
+        (e.g. after an embedding-model switch) must work; and a missing
+        collection is simply "nothing to remove", not a reason to create
+        one."""
         try:
-            await self._ensure_collection()
             qdrant = self._get_qdrant()
+            if not await qdrant.collection_exists(self._collection):
+                return False
             await qdrant.delete(
                 collection_name=self._collection,
                 points_selector=self._ref_filter(ref.filename),

@@ -220,6 +220,31 @@ async def test_remove_deletes_by_ref(qdrant_store):
     assert len(_FakeAsyncQdrant.instances[0].points) == 0
 
 
+@pytest.mark.asyncio
+async def test_remove_skips_dimension_guard(qdrant_store):
+    """Removal never embeds — deleting from a collection built for a
+    DIFFERENT model (embedding-model switch cleanup) must work instead
+    of tripping the index-path dimension mismatch."""
+    store, DocumentChunk = qdrant_store
+    ref = NoteRef(filename="old-model.md", scope=Scope.USER)
+    await store.index_document(ref, [DocumentChunk(text="a")])
+    backend = _FakeAsyncQdrant.instances[0]
+    backend.collection_dim = 1536  # collection belongs to another model
+    store._collection_ready = False
+    assert await store.remove(ref) is True
+    assert len(backend.points) == 0
+
+
+@pytest.mark.asyncio
+async def test_remove_missing_collection_is_noop(qdrant_store):
+    """A collection that was never created is 'nothing to remove' — it
+    must NOT be created as a side effect."""
+    store, _ = qdrant_store
+    ref = NoteRef(filename="never.md", scope=Scope.USER)
+    assert await store.remove(ref) is False
+    assert _FakeAsyncQdrant.instances[0].collection_dim is None
+
+
 # ── file provider accepts injected store ─────────────────────────────
 
 
