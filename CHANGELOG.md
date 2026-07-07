@@ -28,6 +28,26 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   option — e.g. a host using "block local tools" as a safety default —
   was the exact trigger.
 
+## [2.47.0] — 2026-07-07
+
+### Added (Knowledge-vault vector backend)
+
+- **`memory.vector.QdrantVectorStore`** — a real ANN `VectorHandle` for
+  vaults that become knowledge repositories: `index_document(ref, chunks)`
+  writes one point per `DocumentChunk` with a payload (page/heading/source
+  metadata, content hash), deterministic point ids make upserts idempotent,
+  document re-index replaces stale chunk points, and dimension-mismatched
+  collections are refused at bootstrap. Search returns the same
+  `MemoryChunk` shape as the built-in stores. Optional extra:
+  `geny-executor[qdrant]`.
+- **`FileMemoryProvider(vector_store=...)`** — inject any external
+  `VectorHandle`; the notes auto-index seam (`attach_vector_indexer`) then
+  routes every note write through it.
+- **Retriever curated layer is hybrid** — L6 now consumes
+  `curated.vector()` (semantic) in addition to `notes().search()`
+  (keyword), merged by relevance; previously the curated vector plane was
+  never read.
+
 ## [2.46.1] — 2026-07-06
 
 ### Fixed (Fact Ledger round-trip)

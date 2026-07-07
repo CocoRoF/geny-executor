@@ -560,13 +560,41 @@ class MemoryAwareRetriever(MemoryRetriever):
             curated = self._provider.curated()
             if curated is None:
                 return total
-            curated_notes = curated.notes()
-            hits = await curated_notes.search(query, limit=hooks.max_results)
+            hits = []
+            # Semantic plane first — a curated/knowledge store with a real
+            # vector backend (e.g. qdrant document chunks) answers meaning
+            # queries the keyword scan can't. Best-effort per plane.
+            try:
+                curated_vector = curated.vector()
+            except Exception:  # noqa: BLE001
+                curated_vector = None
+            if curated_vector is not None:
+                try:
+                    hits.extend(
+                        await curated_vector.search(
+                            query, top_k=hooks.max_results,
+                        )
+                    )
+                except Exception:  # noqa: BLE001
+                    logger.debug(
+                        "memory_aware: curated vector failed", exc_info=True,
+                    )
+            try:
+                hits.extend(
+                    await curated.notes().search(
+                        query, limit=hooks.max_results,
+                    )
+                )
+            except Exception:  # noqa: BLE001
+                logger.debug(
+                    "memory_aware: curated keyword failed", exc_info=True,
+                )
         except Exception:  # noqa: BLE001
             logger.debug("memory_aware: curated search failed", exc_info=True)
             return total
         if not hits:
             return total
+        hits.sort(key=lambda h: h.relevance_score, reverse=True)
         already = {c.key for c in chunks}
         for h in hits:
             text = h.content or ""

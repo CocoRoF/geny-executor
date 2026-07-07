@@ -76,6 +76,7 @@ class FileMemoryProvider(MemoryProvider):
         timezone_name: Optional[str] = None,
         embedding: Optional[EmbeddingDescriptor] = None,
         embedding_client: Optional[EmbeddingClient] = None,
+        vector_store: Optional[object] = None,
         hooks: Optional[MemoryHooks] = None,
         category_descriptions: Optional[Dict[str, str]] = None,
     ) -> None:
@@ -104,6 +105,7 @@ class FileMemoryProvider(MemoryProvider):
         # write/update/delete rewrites the affected category shard
         # plus the root summary (EXEC-5 / D6).
         self._notes.attach_index_refresh(self._index.refresh_for_category)
+        self._injected_vector_store = vector_store
         self._vector = self._build_vector_store()
         # Auto-vector wiring — every successful note write/update
         # forwards the body to the vector store. The indexer is plugged
@@ -129,7 +131,12 @@ class FileMemoryProvider(MemoryProvider):
         if hooks.vault_descriptions:
             self._index.set_category_descriptions(hooks.vault_descriptions)
 
-    def _build_vector_store(self) -> Optional[_FileVectorStore]:
+    def _build_vector_store(self):
+        # Host-injected backend (e.g. QdrantVectorStore for knowledge
+        # vaults) wins — the file-cosine store is the small-vault default.
+        injected = getattr(self, "_injected_vector_store", None)
+        if injected is not None:
+            return injected
         if self._embedding_client is None:
             return None
         return _FileVectorStore(

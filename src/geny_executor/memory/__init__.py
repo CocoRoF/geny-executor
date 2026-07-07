@@ -85,6 +85,7 @@ from geny_executor.memory.factory import MemoryProviderFactory
 # (typically a CompositeMemoryProvider) and pass a MemoryHooks bag
 # carrying retrieval policy + post-write callbacks.
 from geny_executor.memory.retriever import MemoryAwareRetriever
+from geny_executor.memory.vector import DocumentChunk, QdrantVectorStore
 from geny_executor.memory.facts import (
     FACT_EXTRACTION_SCHEMA,
     FACTS_CATEGORY,
@@ -113,6 +114,8 @@ from geny_executor.memory.strategy import ProviderDrivenStrategy
 from geny_executor.memory.presets import GenyPresets
 
 __all__ = [
+    "DocumentChunk",
+    "QdrantVectorStore",
     "Fact",
     "FactExtraction",
     "FactExtractionReport",
