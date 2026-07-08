@@ -4,6 +4,25 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.48.2] — 2026-07-08
+
+### Fixed (memory lock deadlock — froze the whole event loop)
+
+- **`LoopAgnosticLock` no longer blocks the event loop on acquire.** The
+  file vector/notes/LTM stores hold this lock across `await` points
+  (`vector_store.index`/`search`/`index_batch` await the embedding HTTP
+  call *while holding it*). `__aenter__` used a synchronous
+  `threading.Lock.acquire()` on the event-loop thread, so a second
+  coroutine on the same loop acquiring while the first held-across-await
+  froze the loop thread — the holder could never resume to release,
+  deadlocking the entire process. Observed in production as a fully hung
+  backend (health checks time out, no further logs), triggered by
+  concurrent memory ops (e.g. a chat turn's vector search overlapping the
+  VTuber thinking-trigger's memory compaction). `__aenter__`/`acquire`
+  now try a non-blocking acquire first and, only on contention, wait in a
+  worker thread so the loop stays live and the holder can finish.
+  Regression test reproduces the exact hold-across-await shape.
+
 ## [2.48.1] — 2026-07-08
 
 ### Fixed (embedding crash-safety — over-long input no longer 400s)

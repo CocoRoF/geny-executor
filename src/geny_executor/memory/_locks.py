@@ -28,6 +28,7 @@ provider stores.
 
 from __future__ import annotations
 
+import asyncio
 import threading
 from types import TracebackType
 from typing import Optional, Type
@@ -45,6 +46,16 @@ class LoopAgnosticLock:
     holds the lock and re-acquires from the same task will deadlock,
     so callers must never nest ``async with self._lock:`` for the
     same lock instance.
+
+    **Acquire must never block the event loop.** Store critical sections
+    hold this lock across ``await`` points (e.g. ``vector_store.index``
+    awaits the embedding HTTP call while holding it). If a second
+    coroutine on the SAME loop then acquired synchronously, it would
+    freeze the loop thread — the holder could never resume to release,
+    deadlocking the whole process. So the async acquire below yields to
+    the loop instead of blocking it: a fast non-blocking try first, and
+    only on contention does it offload the blocking wait to a worker
+    thread (keeping the loop free so the current holder can finish).
     """
 
     __slots__ = ("_lock",)
@@ -52,12 +63,17 @@ class LoopAgnosticLock:
     def __init__(self) -> None:
         self._lock = threading.Lock()
 
+    async def _acquire_without_blocking_loop(self) -> None:
+        # Uncontended fast path — no thread hop.
+        if self._lock.acquire(blocking=False):
+            return
+        # Contended: wait in a worker thread so the event loop keeps running
+        # (and the current holder — possibly a coroutine on THIS loop that
+        # yielded mid-critical-section — can make progress and release).
+        await asyncio.to_thread(self._lock.acquire)
+
     async def __aenter__(self) -> "LoopAgnosticLock":
-        # Synchronous acquire. Memory writes inside are short-lived
-        # disk ops; blocking the event loop here matches the cost of
-        # the I/O itself. If a future caller needs non-blocking
-        # acquire, swap to ``await asyncio.to_thread(self._lock.acquire)``.
-        self._lock.acquire()
+        await self._acquire_without_blocking_loop()
         return self
 
     async def __aexit__(
@@ -69,7 +85,7 @@ class LoopAgnosticLock:
         self._lock.release()
 
     async def acquire(self) -> bool:
-        self._lock.acquire()
+        await self._acquire_without_blocking_loop()
         return True
 
     def release(self) -> None:

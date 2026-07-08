@@ -201,3 +201,52 @@ def test_concurrent_writes_serialize_correctly() -> None:
         assert len(lines) == N, (
             f"all {N} concurrent writes must be persisted, got {len(lines)}"
         )
+
+
+# ── Regression: acquire must not block the event loop (deadlock fix) ──
+#
+# vector_store.index/search hold this lock across `await` (the embedding
+# HTTP call). Before the fix, __aenter__ did a synchronous threading
+# acquire on the event-loop thread — so a second coroutine acquiring
+# while the first held-across-await froze the loop forever (the holder
+# could never resume to release). This reproduces that exact shape.
+
+import pytest
+from geny_executor.memory._locks import LoopAgnosticLock
+
+
+@pytest.mark.asyncio
+async def test_acquire_does_not_block_loop_when_holder_awaits():
+    lock = LoopAgnosticLock()
+    order: list[str] = []
+
+    async def holder():
+        async with lock:
+            order.append("holder-in")
+            # Yield to the loop WHILE holding the lock (like the embedding
+            # await inside vector_store.index).
+            await asyncio.sleep(0.1)
+            order.append("holder-out")
+
+    async def contender():
+        # Start slightly after the holder has taken the lock.
+        await asyncio.sleep(0.02)
+        order.append("contender-wait")
+        async with lock:
+            order.append("contender-in")
+
+    # If __aenter__ blocked the loop, holder's sleep could never resume and
+    # this would hang forever — the timeout turns a regression into a failure.
+    await asyncio.wait_for(asyncio.gather(holder(), contender()), timeout=3.0)
+
+    # Holder must fully finish (acquire → await → release) before the
+    # contender gets in — proving mutual exclusion held AND the loop stayed live.
+    assert order == ["holder-in", "contender-wait", "holder-out", "contender-in"]
+
+
+@pytest.mark.asyncio
+async def test_uncontended_acquire_is_fast_path_no_thread():
+    lock = LoopAgnosticLock()
+    async with lock:
+        assert lock.locked()
+    assert not lock.locked()
