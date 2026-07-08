@@ -146,3 +146,54 @@ async def test_voyage_transport_stub_can_raise_classified_error() -> None:
     with pytest.raises(EmbeddingError) as excinfo:
         await client.embed(["hello"])
     assert excinfo.value.category == "auth"
+
+
+# ── input token-budget guard (crash-safety net) ──────────────────────
+
+import asyncio  # noqa: E402
+
+from geny_executor.memory.embedding import openai as _openai_mod  # noqa: E402
+
+
+def test_bound_input_passes_short_text():
+    from geny_executor.memory.embedding.openai import _bound_input, _MAX_EMBED_BYTES
+
+    t = "짧은 한글 노트 " * 10
+    assert len(t.encode("utf-8")) <= _MAX_EMBED_BYTES
+    assert _bound_input(t) == t  # untouched
+
+
+def test_bound_input_truncates_over_budget_on_utf8_boundary():
+    from geny_executor.memory.embedding.openai import (
+        _bound_input, _MAX_EMBED_BYTES, _TRUNCATE_TO_BYTES,
+    )
+
+    # A CJK note far over the byte budget (each char is 3 UTF-8 bytes).
+    huge = "가" * 10000  # 30000 bytes
+    assert len(huge.encode("utf-8")) > _MAX_EMBED_BYTES
+    out = _bound_input(huge)
+    encoded = out.encode("utf-8")
+    assert len(encoded) <= _TRUNCATE_TO_BYTES  # bounded → tokens ≤ bytes ≤ budget
+    assert "�" not in out  # clean UTF-8 boundary, no mojibake
+
+
+def test_embed_never_sends_over_budget_input():
+    """The whole-note memory path embeds un-chunked text; the client must
+    bound it so OpenAI never 400s ('maximum input length is 8192 tokens')."""
+    seen = {}
+
+    class _FakeEmbeddings:
+        async def create(self, *, input, model):
+            seen["input"] = input
+
+            class _R:
+                data = [type("E", (), {"embedding": [0.0, 0.1]})() for _ in input]
+
+            return _R()
+
+    class _FakeClient:
+        embeddings = _FakeEmbeddings()
+
+    client = OpenAIEmbeddingClient(model="text-embedding-3-large", api_key="k", client=_FakeClient())
+    asyncio.run(client.embed(["나" * 20000]))
+    assert len(seen["input"][0].encode("utf-8")) <= 8192

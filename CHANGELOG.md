@@ -4,6 +4,24 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.48.1] — 2026-07-08
+
+### Fixed (embedding crash-safety — over-long input no longer 400s)
+
+- **The OpenAI embedding client now bounds every input to the model's
+  token budget.** A single over-long text — a whole un-chunked
+  conversation memory embedded via `_FileVectorStore.index(ref, text)`,
+  an oversized note — made `embeddings.create` return
+  `400 "maximum input length is 8192 tokens"`, which propagated as a hard
+  `EmbeddingError` and, on a live host, wedged the embedding path. Since a
+  BPE token is never fewer than one UTF-8 byte, bounding a request's bytes
+  bounds its tokens: `embed()` passes anything ≤8192 bytes untouched and
+  truncates only the rare over-budget input on a clean UTF-8 boundary
+  (one-time warning), so embedding is crash-safe for every caller and
+  language. Proper coverage of long text still requires chunking BEFORE
+  embedding (the knowledge-repository path does); this is the last-resort
+  guard, not a substitute.
+
 ## [2.48.0] — 2026-07-07
 
 ### Added (document reassembly primitive)
