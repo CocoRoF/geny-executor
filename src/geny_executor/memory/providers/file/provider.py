@@ -185,8 +185,21 @@ class FileMemoryProvider(MemoryProvider):
         self._initialized = True
 
     async def close(self) -> None:
-        # All writes are flushed at op time; nothing to do.
-        return None
+        # Writes are flushed at op time, so the stores need no teardown —
+        # but the embedding client owns an httpx connection pool (sockets)
+        # that must be released, or every session/restore leaks one client.
+        # The vector store shares THIS exact client instance (built with
+        # ``client=self._embedding_client``), so this is the single release
+        # point. Best-effort: a broken/cross-loop client must not turn
+        # session teardown into an error.
+        client = self._embedding_client
+        self._embedding_client = None
+        if client is None:
+            return
+        try:
+            await client.close()
+        except Exception:  # noqa: BLE001
+            logger.debug("embedding client close failed during provider close", exc_info=True)
 
     # ── layer handles ───────────────────────────────────────────────
 

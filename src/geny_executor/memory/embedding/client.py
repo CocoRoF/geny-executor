@@ -34,9 +34,10 @@ re-attempted the call and logged a full traceback, forever.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
-from typing import List, Protocol, Sequence, runtime_checkable
+from typing import List, Optional, Protocol, Sequence, runtime_checkable
 
 from geny_executor.memory.provider import CostEvent, EmbeddingDescriptor
 
@@ -146,6 +147,93 @@ def _resolve_env_api_key(provider: str, *env_vars: str) -> str:
                 )
             return value
     return ""
+
+
+class _LoopBoundClientMixin:
+    """Loop-safe caching for httpx-backed embedding SDK clients.
+
+    An httpx-based SDK client (``AsyncOpenAI``, ``genai.Client``) binds its
+    transport/connection-pool to the event loop that first drives it and
+    cannot be reused from another loop — a later call on a different loop
+    raises ``RuntimeError: Event loop is closed`` / "Future attached to a
+    different loop". Hosts that drive memory writes through a sync→async
+    bridge (Geny's ``run_coro_sync``) spin a fresh, short-lived event loop
+    **per call**, so a single cached client would (a) fail cross-loop on
+    every bridged embed and (b), never being closed, leak its socket pool
+    once per session.
+
+    Strategy:
+      * Cache ONE client on the loop that first uses it — almost always the
+        stable server loop, where the vast majority of embeds happen
+        (search, the memory stage). That loop's calls reuse it, so
+        connection pooling is preserved.
+      * If the cached client's loop is found dead, drop the reference (its
+        transport is finalized by GC) and rebind to the current loop. An
+        all-bridge caller (only ever ephemeral loops) therefore rebinds
+        each call instead of accumulating clients.
+      * Any OTHER still-live loop gets a short-lived client that the caller
+        closes within the same call (``ephemeral=True``) — never drive one
+        client's transport from two loops.
+
+    Subclasses set ``self._client`` / ``self._client_loop`` /
+    ``self._injected_client`` in ``__init__`` and implement
+    ``_build_client()``. A test-injected client (``_injected_client``) is
+    used verbatim and never rebuilt or auto-closed — the caller owns it.
+    """
+
+    _client: Optional[object] = None
+    _client_loop: Optional[asyncio.AbstractEventLoop] = None
+    _injected_client: bool = False
+
+    def _build_client(self) -> object:
+        raise NotImplementedError
+
+    def _acquire_client(self):
+        """Return ``(client, ephemeral)`` bound to the CURRENT running loop.
+
+        ``ephemeral`` clients MUST be closed by the caller (see
+        ``_aclose_client``) before the coroutine returns.
+        """
+        if self._injected_client:
+            return self._client, False
+        loop = asyncio.get_running_loop()
+        cached = self._client
+        if cached is not None:
+            if self._client_loop is loop and not loop.is_closed():
+                return cached, False  # hot path: pooled client on its loop
+            if self._client_loop is None or self._client_loop.is_closed():
+                # Cached loop is dead — drop so GC finalizes its transport,
+                # then rebind to this loop below.
+                self._client = None
+                self._client_loop = None
+                cached = None
+        if cached is None:
+            self._client = self._build_client()
+            self._client_loop = loop
+            return self._client, False
+        # Cache valid but bound to a different, still-live loop → ephemeral.
+        return self._build_client(), True
+
+    async def _aclose_client(self, client: object) -> None:
+        closer = getattr(client, "close", None)
+        if closer is None:
+            return
+        try:
+            result = closer()
+            if asyncio.iscoroutine(result):
+                await result
+        except Exception:  # noqa: BLE001 — close is best-effort
+            logger.debug("embedding client close failed", exc_info=True)
+
+    async def _close_cached_client(self) -> None:
+        """Release the cached client (``close()`` surface). No-op for an
+        injected client — its lifetime belongs to the caller."""
+        client = self._client
+        self._client = None
+        self._client_loop = None
+        if client is None or self._injected_client:
+            return
+        await self._aclose_client(client)
 
 
 __all__ = [

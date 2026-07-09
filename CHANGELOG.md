@@ -4,6 +4,31 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.48.3] — 2026-07-09
+
+### Fixed (embedding client — cross-loop failure + per-session socket leak)
+
+- **Embedding clients (`openai`, `google`) are now loop-safe.** `AsyncOpenAI`
+  / `genai.Client` bind their httpx transport to the event loop that first
+  drives them and cannot be reused from another loop. Hosts that drive
+  memory writes through a sync→async bridge (Geny's `run_coro_sync`) spin a
+  fresh, short-lived event loop *per call*, so the previously-cached client
+  raised `RuntimeError: Event loop is closed` on every bridged embed — the
+  error was swallowed as `category="unknown"` (never tripping the breaker),
+  so archiver/compaction vectors silently stopped being written. The new
+  `_LoopBoundClientMixin` caches one client on the stable loop (pooled/
+  reused), hands any other live loop a short-lived client it closes within
+  the call, and drops a dead-loop cache so an all-bridge caller never
+  accumulates clients. Never drives one client's transport cross-loop.
+- **`FileMemoryProvider.close()` now releases the embedding client.** It was
+  a no-op; the embedding client's `close()` (which shuts the httpx
+  connection pool) was never called anywhere, leaking one client's sockets
+  per session and per session-restore. `close()` now closes the shared
+  embedding-client instance (best-effort). Regression tests
+  (`tests/unit/test_embedding_loop_safety.py`) pin same-loop reuse, the
+  ephemeral-close path, no cross-loop use, no unbounded accumulation, and
+  release-on-close.
+
 ## [2.48.2] — 2026-07-08
 
 ### Fixed (memory lock deadlock — froze the whole event loop)

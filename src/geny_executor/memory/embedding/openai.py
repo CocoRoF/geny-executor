@@ -13,13 +13,13 @@ keep request bodies reasonable and allow resume on partial failures.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from typing import List, Optional, Sequence
 
 from geny_executor.memory.embedding.client import (
     EmbeddingClient,
     EmbeddingError,
+    _LoopBoundClientMixin,
     _resolve_env_api_key,
 )
 from geny_executor.memory.provider import EmbeddingDescriptor
@@ -71,7 +71,7 @@ _OPENAI_DIMS = {
 }
 
 
-class OpenAIEmbeddingClient(EmbeddingClient):
+class OpenAIEmbeddingClient(_LoopBoundClientMixin, EmbeddingClient):
     """OpenAI embeddings via the official SDK."""
 
     def __init__(
@@ -89,7 +89,12 @@ class OpenAIEmbeddingClient(EmbeddingClient):
         # it logs a one-time migration warning (audit §2.6).
         self._api_key = api_key or _resolve_env_api_key("openai", "OPENAI_API_KEY")
         self._dimension = dimension or _OPENAI_DIMS.get(model, 0)
+        # Loop-safe client cache (see _LoopBoundClientMixin). A caller-
+        # supplied client is used verbatim (tests); otherwise lazily built
+        # per-loop by _build_client below.
         self._client = client
+        self._client_loop = None
+        self._injected_client = client is not None
         self._descriptor = EmbeddingDescriptor(
             provider="openai",
             model=model,
@@ -105,51 +110,47 @@ class OpenAIEmbeddingClient(EmbeddingClient):
     async def embed(self, texts: Sequence[str]) -> List[List[float]]:
         if not texts:
             return []
-        client = self._ensure_client()
-        out: List[List[float]] = []
-        # Bound each input to the model's token budget so one over-long
-        # text can never 400 the whole batch (crash-safety net).
-        texts = [_bound_input(t) for t in texts]
-        for i in range(0, len(texts), MAX_BATCH_SIZE):
-            batch = list(texts[i : i + MAX_BATCH_SIZE])
-            try:
-                # `openai>=1.x` exposes `await client.embeddings.create(...)`
-                resp = await client.embeddings.create(input=batch, model=self._model)
-            except Exception as exc:  # narrow is SDK-dependent
-                raise EmbeddingError(
-                    f"openai embed failed: {exc}",
-                    category=_classify_openai_error(exc),
-                ) from exc
-            # SDK response: `data: List[Embedding(embedding: List[float])]`
-            out.extend(item.embedding for item in resp.data)
-        # Update descriptor dimension if we learned it at runtime
-        if self._dimension == 0 and out:
-            self._dimension = len(out[0])
-            self._descriptor = EmbeddingDescriptor(
-                provider="openai",
-                model=self._model,
-                dimension=self._dimension,
-                metric="cosine",
-                api_key_present=bool(self._api_key),
-            )
-        return out
+        # Loop-safe: a pooled client on the stable loop, or a short-lived
+        # client on an ephemeral (sync-bridge) loop that we close below.
+        client, ephemeral = self._acquire_client()
+        try:
+            out: List[List[float]] = []
+            # Bound each input to the model's token budget so one over-long
+            # text can never 400 the whole batch (crash-safety net).
+            texts = [_bound_input(t) for t in texts]
+            for i in range(0, len(texts), MAX_BATCH_SIZE):
+                batch = list(texts[i : i + MAX_BATCH_SIZE])
+                try:
+                    # `openai>=1.x` exposes `await client.embeddings.create(...)`
+                    resp = await client.embeddings.create(input=batch, model=self._model)
+                except Exception as exc:  # narrow is SDK-dependent
+                    raise EmbeddingError(
+                        f"openai embed failed: {exc}",
+                        category=_classify_openai_error(exc),
+                    ) from exc
+                # SDK response: `data: List[Embedding(embedding: List[float])]`
+                out.extend(item.embedding for item in resp.data)
+            # Update descriptor dimension if we learned it at runtime
+            if self._dimension == 0 and out:
+                self._dimension = len(out[0])
+                self._descriptor = EmbeddingDescriptor(
+                    provider="openai",
+                    model=self._model,
+                    dimension=self._dimension,
+                    metric="cosine",
+                    api_key_present=bool(self._api_key),
+                )
+            return out
+        finally:
+            if ephemeral:
+                await self._aclose_client(client)
 
     async def close(self) -> None:
-        client = self._client
-        if client is None:
-            return
-        closer = getattr(client, "close", None)
-        if closer is None:
-            return
-        result = closer()
-        if asyncio.iscoroutine(result):
-            await result
+        await self._close_cached_client()
 
     # ── internal ────────────────────────────────────────────────────
 
-    def _ensure_client(self):
-        if self._client is not None:
-            return self._client
+    def _build_client(self) -> object:
         try:
             from openai import AsyncOpenAI  # type: ignore
         except ImportError as exc:
@@ -157,8 +158,7 @@ class OpenAIEmbeddingClient(EmbeddingClient):
                 "OpenAIEmbeddingClient requires the `openai` package. "
                 "Install via `pip install geny-executor[openai]`."
             ) from exc
-        self._client = AsyncOpenAI(api_key=self._api_key or None)
-        return self._client
+        return AsyncOpenAI(api_key=self._api_key or None)
 
 
 def _classify_openai_error(exc: Exception) -> str:
