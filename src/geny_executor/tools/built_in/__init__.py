@@ -123,6 +123,16 @@ from geny_executor.tools.built_in.doc_tools import (
 # NOT in BUILT_IN_TOOL_CLASSES: SandboxExecTool is instantiated per Sandbox Tool
 # Pack (with a spec + a live SandboxHandle), not activated by a manifest name.
 from geny_executor.tools.built_in.sandbox_exec_tool import SandboxExecTool
+# SSH — run commands / move files on the session's pre-configured servers.
+# Gated on feature:ssh_enabled; degrades to an install-hint error when the
+# optional ``asyncssh`` dependency is absent.
+from geny_executor.tools.built_in.ssh_tools import (
+    SSH_TOOL_CLASSES,
+    SshDownloadTool,
+    SshListServersTool,
+    SshRunTool,
+    SshUploadTool,
+)
 
 
 BUILT_IN_TOOL_CLASSES: Dict[str, Type[Tool]] = {
@@ -184,6 +194,9 @@ BUILT_IN_TOOL_CLASSES: Dict[str, Type[Tool]] = {
     **BROWSER_TOOL_CLASSES,
     # Doc (edit2docs) — office document engine; same lazy-import contract.
     **DOC_TOOL_CLASSES,
+    # SSH — command/SFTP on the session's configured servers (gated on
+    # feature:ssh_enabled); lazy-imports asyncssh with an install-hint fallback.
+    **SSH_TOOL_CLASSES,
 }
 
 
@@ -226,6 +239,8 @@ BUILT_IN_TOOL_FEATURES: Dict[str, List[str]] = {
     "cron": ["CronCreate", "CronDelete", "CronList"],
     "environment": ["env"],
     "google": list(GOOGLE_TOOL_CLASSES.keys()),
+    # Remote server ops over SSH/SFTP — run commands, transfer files, sudo.
+    "ssh": list(SSH_TOOL_CLASSES.keys()),
 }
 
 
@@ -286,6 +301,11 @@ __all__ = [
     "AgentTool",
     "BROWSER_TOOL_CLASSES",
     "DOC_TOOL_CLASSES",
+    "SSH_TOOL_CLASSES",
+    "SshListServersTool",
+    "SshRunTool",
+    "SshUploadTool",
+    "SshDownloadTool",
     "DocAnalyzeTool",
     "DocApplyEditsTool",
     "DocEditTool",

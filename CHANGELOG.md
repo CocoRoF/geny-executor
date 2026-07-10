@@ -4,6 +4,32 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.49.0] — 2026-07-10
+
+### Added (SSH tool family — run commands / move files on configured servers)
+
+- **New built-in `ssh` feature** (`SshListServers`, `SshRun`, `SshUpload`,
+  `SshDownload`). Agents operate a session's pre-configured servers by NAME —
+  the credential (password and/or private key) is resolved inside the tool and
+  fed to the transport / to `sudo -S` on stdin, so the model never sees or
+  handles a secret. `SshRun` supports `cwd`, `timeout`, and `sudo`;
+  `SshUpload`/`SshDownload` are SFTP, path-guarded to the session storage.
+- **Per-session, file-backed store** (`SSHServerStore`): the host injects the
+  server list via `ToolContext.extras["ssh"]["servers"]`; the store persists it
+  to `<storage_path>/ssh/servers.json` (chmod 600) as the session's durable
+  record, and reads that file when no host injection is present (standalone
+  use). `list_public()` exposes only non-secret metadata (name/host/port/user/
+  auth-kind); `resolve()` returns the full record for internal connection use.
+- Gated on `feature:ssh_enabled` (mirrors `feature:google_connected`), so the
+  family stays hidden until the host provisions SSH for the session.
+- `asyncssh` is an **optional extra** (`geny-executor[ssh]`), lazy-imported with
+  an install-hint `ToolResult` fallback — the core install stays lean.
+- Password + private-key (PEM, optional passphrase) auth; relaxed host-key
+  checking by default, opt back in per-server with `strict_host_key: true`.
+- Tests: `tests/unit/test_ssh_tools.py` (16 — secret isolation, file record,
+  connect-kwargs for pw/key, sudo stdin wrapping, tool output/error shaping,
+  feature gate, SFTP path-guard).
+
 ## [2.48.3] — 2026-07-09
 
 ### Fixed (embedding client — cross-loop failure + per-session socket leak)

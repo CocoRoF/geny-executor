@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "geny-executor"
-version = "2.48.3"
+version = "2.49.0"
 description = "Harness-engineered agent pipeline library with 21-stage dual-abstraction architecture, built on the Anthropic API"
 readme = "README.md"
 license = "Apache-2.0"
@@ -87,12 +87,18 @@ browser = [
 docs = [
     "edit2docs>=0.6.0",
 ]
+# Ssh* built-ins — remote command/SFTP over SSH. Pure-async (asyncssh),
+# lazy-imported so the core install stays lean.
+ssh = [
+    "asyncssh>=2.14",
+]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.24",
     "pytest-cov>=5.0",
     "ruff>=0.4.0",
     "mypy>=1.10",
+    "asyncssh>=2.14",
 ]
 
 [project.urls]
