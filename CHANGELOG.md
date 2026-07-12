@@ -4,7 +4,24 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [2.50.0] — 2026-07-12
+## [2.50.1] — 2026-07-12
+
+### Fixed (hot-spare prewarm — Python 3.11/3.12 teardown wedge)
+
+- The spare's spawn is now awaited INLINE right before the terminal
+  ``message_complete`` (every token has already streamed; the ~15ms
+  fork is invisible) instead of running in a background task. On
+  Python 3.11/3.12, cancelling a task inside ``create_subprocess_exec``
+  blocks on child exit in the transport's cleanup path — event-loop
+  teardown (pytest-asyncio ``_cancel_all_tasks``, and by the same
+  mechanism any host shutting its loop down mid-boot) hung forever.
+  3.13+ was unaffected. Only the pure-sleep expiry timer remains a
+  background task; it cancels cleanly on every version.
+- ``v2.50.0`` was tagged but never reached PyPI (its publish run hit
+  exactly this hang in CI); 2.50.1 is the first published build of the
+  TTFT program below.
+
+## [2.50.0] — 2026-07-12 *(not published — superseded by 2.50.1)*
 
 ### TTFT program — time-to-first-token cut across every backend
 

@@ -304,45 +304,49 @@ class ClaudeCodeCLIClient(BaseClient):
             with contextlib.suppress(ProcessLookupError):
                 proc.kill()
 
-    def _schedule_spare(self, argv: List[str]) -> None:
-        """Boot the NEXT turn's process in the background (fire-and-forget).
+    async def _schedule_spare(self, argv: List[str]) -> None:
+        """Boot the NEXT turn's process right after this turn's tokens.
 
         Semantics are identical to today's one-shot mode — the spare
         still receives the FULL flattened history on stdin at use time,
         so history rewrites (compaction, deletes) can never diverge from
         what the model sees. Only the boot cost (Node interpreter, auth
         resolution, MCP server startup) is paid ahead of the turn.
+
+        The spawn is awaited INLINE (before the terminal
+        ``message_complete`` — every token has already streamed, so the
+        ~15ms fork is invisible) rather than in a background task: on
+        Python 3.11/3.12, cancelling a task inside
+        ``create_subprocess_exec`` blocks on child exit in the
+        transport's cleanup path, which wedged event-loop teardown
+        (pytest-asyncio ``_cancel_all_tasks`` hung CI for exactly this).
+        Only the pure-sleep expiry timer runs as a task — it cancels
+        cleanly everywhere.
         """
         if not self._prewarm_spawn or self._spare is not None:
             return
         argv_snapshot = list(argv)
+        try:
+            runner = self._make_runner()
+            proc, _t0 = await runner._spawn(argv_snapshot)
+        except Exception:  # noqa: BLE001 — prewarm is best-effort
+            logger.debug("cli prewarm: spawn failed", exc_info=True)
+            return
+        if proc.returncode is not None:
+            return  # died at birth — nothing to keep
+        entry: Dict[str, Any] = {"proc": proc, "argv": argv_snapshot, "runner": runner}
 
-        async def _boot() -> None:
+        async def _expire() -> None:
             try:
-                runner = self._make_runner()
-                proc, _t0 = await runner._spawn(argv_snapshot)
-            except Exception:  # noqa: BLE001 — prewarm is best-effort
-                logger.debug("cli prewarm: spawn failed", exc_info=True)
+                await asyncio.sleep(self._SPARE_TTL_S)
+            except asyncio.CancelledError:
                 return
-            if self._spare is not None or proc.returncode is not None:
+            if self._spare is entry:
+                self._spare = None
                 await runner._kill_tree(proc)
-                return
-            entry: Dict[str, Any] = {"proc": proc, "argv": argv_snapshot, "runner": runner}
 
-            async def _expire() -> None:
-                try:
-                    await asyncio.sleep(self._SPARE_TTL_S)
-                except asyncio.CancelledError:
-                    return
-                if self._spare is entry:
-                    self._spare = None
-                    await runner._kill_tree(proc)
-
-            entry["expire"] = asyncio.create_task(_expire())
-            self._spare = entry
-
-        task = asyncio.create_task(_boot())
-        task.add_done_callback(lambda t: t.cancelled() or t.exception())
+        entry["expire"] = asyncio.create_task(_expire())
+        self._spare = entry
 
     # ─────────────────────────────────────────────────────── helpers ─
 
@@ -722,8 +726,10 @@ class ClaudeCodeCLIClient(BaseClient):
             )
             # Replenish the hot spare for the NEXT turn (success path
             # only — a failed call may mean broken config not worth
-            # prebooting again).
-            self._schedule_spare(argv)
+            # prebooting again). Awaited inline: all tokens are already
+            # out, and a background spawn task wedges 3.11/3.12 loop
+            # teardown (see _schedule_spare).
+            await self._schedule_spare(argv)
             yield {
                 "type": "message_complete",
                 "response": self._attach_cli_version(accum.finalize()),
