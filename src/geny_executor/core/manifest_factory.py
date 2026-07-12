@@ -435,11 +435,17 @@ def _vtuber_stage_entries(*, provider: str) -> List[StageManifestEntry]:
     """The conversational persona stage chain (mirrors ``GenyPresets.vtuber``).
 
     Diff vs worker_adaptive: Stage 8 (think) ships ``active=False`` (the
-    persona's turns are conversational, not deep-planning), cache is
-    ``system_cache`` (not ``aggressive_cache``), evaluator is
+    persona's turns are conversational, not deep-planning), evaluator is
     ``signal_based`` (not the evaluation chain), router is
     ``passthrough`` (the session's bound model is honoured verbatim),
     tool executor is ``sequential``, and loop ``max_turns`` is 10.
+
+    Cache is ``aggressive_cache`` since 2.50.2 (TTFT program follow-up):
+    persona sessions accumulate the LONGEST conversations, so the
+    history breakpoint matters most exactly here — ``system_cache`` left
+    the whole transcript re-prefilling every turn on SDK providers.
+    (CLI-provider vtuber envs are unaffected either way — the cache gate
+    bypasses claude_code, which does its own caching.)
 
     Stage 8 is declared inactive rather than omitted so environment
     editors render the order-8 slot like every other inactive stage —
@@ -473,7 +479,7 @@ def _vtuber_stage_entries(*, provider: str) -> List[StageManifestEntry]:
         StageManifestEntry(
             order=5,
             name="cache",
-            strategies={"strategy": "system_cache"},
+            strategies={"strategy": "aggressive_cache"},
         ),
         StageManifestEntry(
             order=6,

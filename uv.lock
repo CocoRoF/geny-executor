@@ -1180,7 +1180,7 @@ wheels = [
 
 [[package]]
 name = "geny-executor"
-version = "2.50.1"
+version = "2.50.2"
 source = { editable = "." }
 dependencies = [
     { name = "anthropic" },

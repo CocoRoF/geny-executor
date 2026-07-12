@@ -4,6 +4,21 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.50.2] — 2026-07-12
+
+### Changed (vtuber manifest chain — cache strategy)
+
+- `_vtuber_stage_entries` now declares ``aggressive_cache`` (was
+  ``system_cache``). TTFT-program follow-up: persona sessions accumulate
+  the LONGEST conversations, so the moving history breakpoint matters
+  most exactly there — the old default left the whole transcript
+  re-prefilling every turn on Anthropic SDK providers. Existing
+  environments keep their stored manifests (edit the env or recreate it
+  to adopt); hosts that reseed templates from the factory at boot (Geny
+  does) pick this up on their next deploy. CLI-provider vtuber envs are
+  unaffected either way — the cache gate bypasses claude_code, which
+  does its own caching.
+
 ## [2.50.1] — 2026-07-12
 
 ### Fixed (hot-spare prewarm — Python 3.11/3.12 teardown wedge)

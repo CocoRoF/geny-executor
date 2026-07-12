@@ -1,7 +1,7 @@
 {
   "_source": "Geny/backend/service/executor/default_manifest.py",
   "_generated": "2026-06-10",
-  "_rationale": "Vendored snapshot of the stage layouts Geny's host-side manifest builder produced at the time geny-executor 2.2.0 absorbed it into core/manifest_factory.build_manifest(). The factory must stay layout-compatible with what the reference consumer shipped: same orders, names, active flags, artifacts, strategies, strategy_configs, configs, and chain orders. Regenerate ONLY when deliberately changing the canonical preset layouts, and say so in the changelog.",
+  "_rationale": "Vendored snapshot of the stage layouts Geny's host-side manifest builder produced at the time geny-executor 2.2.0 absorbed it into core/manifest_factory.build_manifest(). The factory must stay layout-compatible with what the reference consumer shipped: same orders, names, active flags, artifacts, strategies, strategy_configs, configs, and chain orders. Regenerate ONLY when deliberately changing the canonical preset layouts, and say so in the changelog. | 2.50.2 deliberate layout change: vtuber cache system_cache→aggressive_cache (TTFT follow-up — persona sessions have the longest histories; history breakpoint matters most there).",
   "provider": "anthropic",
   "presets": {
     "worker_adaptive": [
@@ -412,7 +412,7 @@
         "active": true,
         "artifact": "default",
         "strategies": {
-          "strategy": "system_cache"
+          "strategy": "aggressive_cache"
         },
         "strategy_configs": {},
         "config": {},
