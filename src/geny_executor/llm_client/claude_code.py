@@ -33,6 +33,8 @@ tool dispatch — see ``stages/s10_tool``.
 from __future__ import annotations
 
 from dataclasses import replace
+import asyncio
+import contextlib
 import logging
 import os
 from contextlib import aclosing
@@ -168,6 +170,7 @@ class ClaudeCodeCLIClient(BaseClient):
         strict_wire: bool = False,
         runner_factory: Optional[Callable[..., CLIProcessRunner]] = None,
         session_hint: Optional[Dict[str, Any]] = None,
+        prewarm_spawn: Optional[bool] = None,
     ) -> None:
         """Construct a Claude Code CLI client.
 
@@ -246,6 +249,100 @@ class ClaudeCodeCLIClient(BaseClient):
         #: ``None`` = handshake not attempted yet; ``"unknown"`` = attempted
         #: and failed (never retried — one probe per client instance).
         self._cli_version_value: Optional[str] = None
+        # Hot-spare prewarm (TTFT program 2.50.0, finding C1): after a
+        # streamed turn, the NEXT process is booted in the background so
+        # the following turn skips Node boot + auth + MCP startup. Env
+        # override GENY_CLI_PREWARM=0|1 wins over the constructor value;
+        # default on. See _schedule_spare / _take_spare.
+        if prewarm_spawn is None:
+            prewarm_spawn = os.environ.get("GENY_CLI_PREWARM", "1").strip() not in (
+                "0",
+                "false",
+                "off",
+            )
+        self._prewarm_spawn = bool(prewarm_spawn)
+        self._spare: Optional[Dict[str, Any]] = None
+
+    # ───────────────────────────────────────── hot-spare prewarm (C1) ─
+
+    #: How long an unused spare may idle before it is reaped. Bounds the
+    #: resident cost to sessions active within the window; Geny's idle
+    #: monitor evicts whole sessions long after this anyway.
+    _SPARE_TTL_S = 90.0
+
+    def _take_spare(self, argv: List[str]) -> Optional[Any]:
+        """Claim the hot spare for *argv*, or None when it doesn't match.
+
+        The spare is only valid for an IDENTICAL argv (model, MCP config,
+        session resume flags, permissions — everything). Any drift means
+        the prewarmed process was booted with stale config: discard it
+        and spawn fresh. Also discards a spare that died while idle.
+        """
+        spare = self._spare
+        if spare is None:
+            return None
+        self._spare = None
+        expire_task = spare.get("expire")
+        if expire_task is not None:
+            expire_task.cancel()
+        proc = spare["proc"]
+        if spare["argv"] != list(argv) or proc.returncode is not None:
+            self._discard_spare_proc(spare)
+            return None
+        return proc
+
+    def _discard_spare_proc(self, spare: Dict[str, Any]) -> None:
+        """Kill a spare's process tree in the background (best-effort)."""
+        proc = spare["proc"]
+        runner = spare["runner"]
+        if proc.returncode is not None:
+            return
+        try:
+            task = asyncio.get_running_loop().create_task(runner._kill_tree(proc))
+            task.add_done_callback(lambda t: t.cancelled() or t.exception())
+        except RuntimeError:
+            with contextlib.suppress(ProcessLookupError):
+                proc.kill()
+
+    def _schedule_spare(self, argv: List[str]) -> None:
+        """Boot the NEXT turn's process in the background (fire-and-forget).
+
+        Semantics are identical to today's one-shot mode — the spare
+        still receives the FULL flattened history on stdin at use time,
+        so history rewrites (compaction, deletes) can never diverge from
+        what the model sees. Only the boot cost (Node interpreter, auth
+        resolution, MCP server startup) is paid ahead of the turn.
+        """
+        if not self._prewarm_spawn or self._spare is not None:
+            return
+        argv_snapshot = list(argv)
+
+        async def _boot() -> None:
+            try:
+                runner = self._make_runner()
+                proc, _t0 = await runner._spawn(argv_snapshot)
+            except Exception:  # noqa: BLE001 — prewarm is best-effort
+                logger.debug("cli prewarm: spawn failed", exc_info=True)
+                return
+            if self._spare is not None or proc.returncode is not None:
+                await runner._kill_tree(proc)
+                return
+            entry: Dict[str, Any] = {"proc": proc, "argv": argv_snapshot, "runner": runner}
+
+            async def _expire() -> None:
+                try:
+                    await asyncio.sleep(self._SPARE_TTL_S)
+                except asyncio.CancelledError:
+                    return
+                if self._spare is entry:
+                    self._spare = None
+                    await runner._kill_tree(proc)
+
+            entry["expire"] = asyncio.create_task(_expire())
+            self._spare = entry
+
+        task = asyncio.create_task(_boot())
+        task.add_done_callback(lambda t: t.cancelled() or t.exception())
 
     # ─────────────────────────────────────────────────────── helpers ─
 
@@ -552,6 +649,12 @@ class ClaudeCodeCLIClient(BaseClient):
         argv = self._build_argv(request)
         stdin = build_stream_json_stdin(messages)
 
+        # Hot-spare prewarm (C1): claim the process booted after the last
+        # turn when its argv matches — Node boot + auth + MCP startup are
+        # already done and the prompt travels over stdin exactly as on a
+        # fresh spawn.
+        spare_proc = self._take_spare(argv)
+
         from geny_executor.llm_client._cli_runtime import parse_stream_json_line
 
         # Shared accumulator handles both stream-json shapes:
@@ -571,7 +674,9 @@ class ClaudeCodeCLIClient(BaseClient):
             # ``finally`` — would only run whenever the GC's asyncgen
             # hook got around to it, leaving a live ``claude`` child in
             # the meantime (audit 2026-06-09 §3.7).
-            async with aclosing(runner.stream(argv, stdin_iter=aiter_bytes(stdin))) as lines:
+            async with aclosing(
+                runner.stream(argv, stdin_iter=aiter_bytes(stdin), prespawned=spare_proc)
+            ) as lines:
                 async for raw in lines:
                     line_obj = parse_stream_json_line(raw)
                     if line_obj is None:
@@ -615,6 +720,10 @@ class ClaudeCodeCLIClient(BaseClient):
                 malformed_count=accum.malformed_line_count,
                 first_unknown_type=accum.first_unknown_type,
             )
+            # Replenish the hot spare for the NEXT turn (success path
+            # only — a failed call may mean broken config not worth
+            # prebooting again).
+            self._schedule_spare(argv)
             yield {
                 "type": "message_complete",
                 "response": self._attach_cli_version(accum.finalize()),

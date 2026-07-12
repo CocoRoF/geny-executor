@@ -239,6 +239,7 @@ class CLIProcessRunner:
         argv: Sequence[str],
         *,
         stdin_iter: Optional[AsyncIterator[bytes]] = None,
+        prespawned: Optional[asyncio.subprocess.Process] = None,
     ) -> AsyncGenerator[bytes, None]:
         """Spawn and yield stdout *lines* as they arrive.
 
@@ -258,8 +259,17 @@ class CLIProcessRunner:
         box. Normal completion and the CLITimeout path reach the
         ``finally`` with ``proc.returncode`` already set, making the
         kill a no-op (no double-kill).
+
+        ``prespawned`` (TTFT program 2.50.0, finding C1): a hot-spare
+        process the client booted AHEAD of this turn — same argv, Node
+        boot + auth + MCP startup already paid. The stream drives it
+        exactly like a fresh spawn; the timeout clock restarts here so
+        spare idle time never counts against the turn.
         """
-        proc, t0 = await self._spawn(argv)
+        if prespawned is not None and prespawned.returncode is None:
+            proc, t0 = prespawned, time.monotonic()
+        else:
+            proc, t0 = await self._spawn(argv)
 
         # If caller has stdin_iter, drive it in a side task.
         stdin_task: Optional[asyncio.Task[None]] = None

@@ -500,8 +500,18 @@ def _echo_argv(argv: List[str]) -> int:
     return 0
 
 
+def _wait_stdin_stream(argv: List[str]) -> int:
+    """Mirror the REAL CLI's stream-json input mode: block until a prompt
+    line arrives on stdin, then emit ``ok_stream_event``. Lets hot-spare
+    prewarm tests (TTFT 2.50.0, C1) boot a spare that stays alive idle —
+    exactly like the real binary waiting for its user message."""
+    sys.stdin.readline()
+    return _ok_stream_event(argv)
+
+
 SCENARIOS = {
     "ok_text": _ok_text,
+    "wait_stdin_stream": _wait_stdin_stream,
     "ok_tool_use": _ok_tool_use,
     "ok_thinking": _ok_thinking,
     "ok_message_form": _ok_message_form,
