@@ -4,6 +4,13 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.51.1] — 2026-07-12
+
+### Security
+
+- **Bash env scrub** (S3): the non-sandbox Bash path no longer inherits the backend's full `os.environ` (which leaked API keys / auth secrets / DB URLs to any command). Benign allowlist + injected `env_vars`; `GENY_BASH_INHERIT_ENV=1` to opt back in.
+- **SSRF guard wired** (S5): `WebFetch` / `BrowserNavigate` run the (previously dead) `security.validate_url` — blocking cloud-metadata/loopback/private targets, re-validated on each WebFetch redirect hop. `GENY_ALLOW_PRIVATE_URLS=1` escape hatch.
+
 ## [2.51.0] — 2026-07-12
 
 ### Fixed — platform audit, correctness & robustness cluster
