@@ -6,6 +6,7 @@ Ported from the former :class:`GoogleProvider` in
 
 from __future__ import annotations
 
+import logging
 from typing import Any, AsyncIterator, Dict, List, Optional
 
 from geny_executor.core.errors import APIError, ErrorCategory
@@ -20,6 +21,8 @@ from geny_executor.llm_client.translators import (
     normalize_stop_reason,
 )
 from geny_executor.llm_client.types import APIRequest, APIResponse, ContentBlock
+
+logger = logging.getLogger(__name__)
 
 
 class GoogleClient(BaseClient):
@@ -80,6 +83,24 @@ class GoogleClient(BaseClient):
                 ) from e
             self._client = genai.Client(api_key=self._api_key)
         return self._client
+
+    async def warmup(self, *, timeout_s: float = 8.0) -> bool:
+        """Build the genai client and walk one cheap list-models call so
+        the first real request reuses an established connection."""
+        import asyncio
+
+        async def _touch() -> None:
+            client = self._get_client()
+            pager = await client.aio.models.list(config={"page_size": 1})
+            async for _ in pager:
+                break
+
+        try:
+            await asyncio.wait_for(_touch(), timeout=timeout_s)
+            return True
+        except Exception:  # noqa: BLE001 — warmup is best-effort by contract
+            logger.debug("google: warmup failed", exc_info=True)
+            return False
 
     async def _send(self, request: APIRequest, *, purpose: str = "") -> APIResponse:
         client = self._get_client()

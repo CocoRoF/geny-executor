@@ -564,3 +564,21 @@ class BaseClient(ABC):
         """Apply provider-specific runtime configuration."""
         for k, v in kwargs.items():
             setattr(self, f"_{k}", v)
+
+    async def warmup(self, *, timeout_s: float = 8.0) -> bool:
+        """Best-effort pre-warm so turn 1 doesn't pay the cold start.
+
+        TTFT program (2.50.0, findings C2/C3): the first call of a
+        session pays whatever the backend defers — SDK client build,
+        DNS + TCP + TLS to the vendor, the CLI's ``--version`` probe.
+        Subclasses override to move that cost here (typically a cheap
+        ``GET /models``); hosts call :meth:`Pipeline.warmup` right after
+        session build, before the user's first message.
+
+        Contract: never raises, returns False on failure, and leaves the
+        client in the same logical state as before — warmup is purely an
+        accelerator; a failed warmup means turn 1 behaves exactly as it
+        does today.
+        """
+        del timeout_s
+        return True

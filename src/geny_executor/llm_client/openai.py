@@ -125,6 +125,23 @@ class OpenAIClient(BaseClient):
             self._client = AsyncOpenAI(**kwargs)
         return self._client
 
+    async def warmup(self, *, timeout_s: float = 8.0) -> bool:
+        """Establish the httpx pool before the first real call.
+
+        ``GET /v1/models`` is served by OpenAI and by every compatible
+        server this package targets (vLLM, Ollama, LM Studio), so the
+        subclasses inherit this unchanged.
+        """
+        import asyncio
+
+        try:
+            client = self._get_client()
+            await asyncio.wait_for(client.models.list(), timeout=timeout_s)
+            return True
+        except Exception:  # noqa: BLE001 — warmup is best-effort by contract
+            logger.debug("%s: warmup failed", self.provider, exc_info=True)
+            return False
+
     def _heal_request_kwargs(
         self, kwargs: Dict[str, Any], exc: BaseException
     ) -> Optional[Dict[str, Any]]:

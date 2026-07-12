@@ -41,11 +41,15 @@ class _FakeMessageStream:
     async def __aexit__(self, *exc_info):
         return False
 
-    @property
-    def text_stream(self):
+    def __aiter__(self):
+        # 2.50.0 (TTFT D1): the client iterates the FULL event stream
+        # (raw content_block_delta events), not ``text_stream``.
         async def _gen():
-            yield "streamed "
-            yield "text"
+            for text in ("streamed ", "text"):
+                yield SimpleNamespace(
+                    type="content_block_delta",
+                    delta=SimpleNamespace(type="text_delta", text=text),
+                )
 
         return _gen()
 

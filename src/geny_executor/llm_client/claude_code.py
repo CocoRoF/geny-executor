@@ -368,6 +368,23 @@ class ClaudeCodeCLIClient(BaseClient):
         )
         return version
 
+    async def warmup(self, *, timeout_s: float = 8.0) -> bool:
+        """Run the ``--version`` handshake ahead of the first real call.
+
+        TTFT program (2.50.0, finding C2): the probe used to be awaited
+        serially in front of the session's FIRST real spawn — two Node
+        cold starts back to back on the first token's critical path.
+        Warming it here caches the version on the instance, so turn 1
+        goes straight to the real spawn.
+        """
+        import asyncio
+
+        try:
+            await asyncio.wait_for(self._ensure_cli_version(), timeout=timeout_s)
+            return self._cli_version_value not in (None, "unknown")
+        except Exception:  # noqa: BLE001 — warmup is best-effort by contract
+            return False
+
     def _with_version(self, message: str) -> str:
         """Append the handshaken CLI version to an error message."""
         if self._cli_version_value:

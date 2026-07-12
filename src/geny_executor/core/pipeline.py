@@ -893,6 +893,16 @@ class Pipeline:
         # re-resolves on mismatch. Closes the "rotation never lands on
         # a reused state" hole (_init_state used to fill only-if-None).
         self._client_generation: int = 0
+        # Pre-warmed client memo (TTFT program, 2.50.0): warmup() builds
+        # and warms a client BEFORE the first turn; _resolve_llm_client
+        # returns it so turn 1 reuses the warm connection pool instead of
+        # building a cold client. Cleared on every generation bump —
+        # credential rotation / runtime refresh must win over the memo.
+        self._warm_llm_client: Any = None
+        # Tail of the ordered lifecycle-hook chain (TTFT program, D3):
+        # pre-generation hook kinds fire without blocking the pipeline
+        # but still in order; flushed at the PIPELINE_END boundary.
+        self._lifecycle_tail: Optional[asyncio.Task] = None
         # Number of run()/run_stream() executions currently in flight
         # (counter, not bool — overlapping runs on one loop must not
         # unlock each other early). Exposed via .run_in_progress; the
@@ -1591,6 +1601,16 @@ class Pipeline:
         # Tool stage's ToolContext so the built-in env_* tools can reach it.
         # A later attach_runtime(system_builder=/env_persistence=) updates it.
         pipeline._init_environment_controller()
+
+        # TTFT program (2.50.0): fire the backend warmup in the
+        # BACKGROUND so session build returns immediately while the
+        # connection pool / CLI version handshake establishes. Purely an
+        # accelerator — failure leaves turn 1 exactly as cold as today.
+        try:
+            warmup_task = asyncio.create_task(pipeline.warmup())
+            warmup_task.add_done_callback(lambda t: t.cancelled() or t.exception())
+        except RuntimeError:
+            pass  # no running loop (sync test harness) — skip silently
         return pipeline
 
     # ── Stage management ──
@@ -1910,6 +1930,7 @@ class Pipeline:
             # sandboxed. Bump the generation so the client rebuilds accordingly.
             if bool(containerize_cli) != self._containerize_cli:
                 self._client_generation += 1
+                self._warm_llm_client = None
             self._containerize_cli = bool(containerize_cli)
 
         if env_settings_schemas is not None:
@@ -1968,6 +1989,7 @@ class Pipeline:
             # pipeline-resolved client and capture this one at the next
             # _init_state (credential-rotation symmetry, audit §3.3).
             self._client_generation += 1
+            self._warm_llm_client = None
 
         if sandbox is not None:
             # A sandbox handle (container_name + async ensure()). When the
@@ -1979,6 +2001,7 @@ class Pipeline:
             # their client through the sandbox on the next turn.
             self._attached_sandbox = sandbox
             self._client_generation += 1
+            self._warm_llm_client = None
             # Also stamp it onto the Tool stage's context so the built-in
             # fs/shell tools run inside the container on the SDK-provider path
             # (the CLI path runs its own tools in-container already).
@@ -2323,6 +2346,45 @@ class Pipeline:
             )
         self._attached_llm_client = None
         self._client_generation += 1
+        self._warm_llm_client = None
+
+    async def warmup(self, *, timeout_s: float = 8.0) -> Dict[str, Any]:
+        """Pre-warm the LLM backend before the first message (TTFT program).
+
+        Converts the session's turn-1 cold start into build-time work:
+        resolves/builds the client eagerly, runs its best-effort
+        :meth:`BaseClient.warmup` (SDK providers establish the DNS + TCP
+        + TLS connection pool via a cheap ``GET /models``; the CLI
+        provider runs its ``--version`` handshake), and memoizes the
+        warmed instance so the first ``_init_state`` reuses it instead
+        of building a cold client.
+
+        Never raises and never blocks a turn: hosts call it right after
+        session build (``from_manifest_async`` fires it in the
+        background automatically). The memo is dropped on any client
+        generation bump — credential rotation / ``refresh_runtime``
+        always win over a stale warm client.
+
+        Returns a small report: ``{"provider": str | None, "warmed": bool}``.
+        """
+        report: Dict[str, Any] = {"provider": None, "warmed": False}
+        try:
+            client = self._resolve_llm_client()
+        except Exception:  # noqa: BLE001 — warmup must never break session build
+            logger.debug("pipeline.warmup: client resolution failed", exc_info=True)
+            return report
+        if client is None:
+            return report
+        report["provider"] = str(getattr(client, "provider", "") or type(client).__name__)
+        warm = getattr(client, "warmup", None)
+        if callable(warm):
+            try:
+                report["warmed"] = bool(await warm(timeout_s=timeout_s))
+            except Exception:  # noqa: BLE001 — best-effort by contract
+                logger.debug("pipeline.warmup: backend warmup failed", exc_info=True)
+        if self._attached_llm_client is None:
+            self._warm_llm_client = client
+        return report
 
     async def run(
         self,
@@ -2376,7 +2438,7 @@ class Pipeline:
                 run_id=state._run_id,
             )
             if self._hook_runner is not None:
-                await self._fire_lifecycle_hook(
+                self._fire_lifecycle_hook_nowait(
                     HookEvent.PIPELINE_START, state, details={"streaming": False}
                 )
 
@@ -2404,6 +2466,7 @@ class Pipeline:
             self._runs_in_flight -= 1
             self._end_turn(state)
             if self._hook_runner is not None:
+                await self._flush_lifecycle_hooks()
                 await self._fire_lifecycle_hook(
                     HookEvent.PIPELINE_END,
                     state,
@@ -2492,7 +2555,7 @@ class Pipeline:
             success = False
             try:
                 if self._hook_runner is not None:
-                    await self._fire_lifecycle_hook(
+                    self._fire_lifecycle_hook_nowait(
                         HookEvent.PIPELINE_START, state, details={"streaming": True}
                     )
                 await self._run_phases(input, state)
@@ -2526,6 +2589,7 @@ class Pipeline:
                 self._runs_in_flight -= 1
                 self._end_turn(state)
                 if self._hook_runner is not None:
+                    await self._flush_lifecycle_hooks()
                     await self._fire_lifecycle_hook(
                         HookEvent.PIPELINE_END,
                         state,
@@ -2845,7 +2909,7 @@ class Pipeline:
             # hook (2.2.0; previously documented-but-never-fired) with
             # the verdict the controller just produced.
             if self._hook_runner is not None:
-                await self._fire_lifecycle_hook(
+                self._fire_lifecycle_hook_nowait(
                     HookEvent.LOOP_ITERATION_END,
                     state,
                     details={
@@ -3109,21 +3173,77 @@ class Pipeline:
                 exc_info=True,
             )
 
+    def _fire_lifecycle_hook_nowait(
+        self,
+        event: HookEvent,
+        state: PipelineState,
+        *,
+        stage: Optional[Stage] = None,
+        details: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Fire a lifecycle hook WITHOUT awaiting it (TTFT program, D3).
+
+        PIPELINE_START / STAGE_ENTER / STAGE_EXIT used to be awaited
+        inline — ~5 awaited hook fires (each possibly spawning a
+        subprocess hook) sat in front of the first API call. The
+        contract already says lifecycle hooks "cannot block the
+        pipeline", so the pre-generation kinds are now decoupled from
+        stage execution.
+
+        Delivery ORDER is still guaranteed: each fire chains on the
+        previous one (``_lifecycle_tail``), so hosts building timelines
+        see the same sequence as before — just without the pipeline
+        waiting for each handler. PIPELINE_END stays awaited at the
+        turn boundary, after :meth:`_flush_lifecycle_hooks`, so a host
+        that relies on "all hooks done when run() returns" keeps that
+        guarantee.
+        """
+        if self._hook_runner is None:
+            return
+        prev = self._lifecycle_tail
+
+        async def _chained() -> None:
+            if prev is not None:
+                try:
+                    await asyncio.shield(prev)
+                except Exception:  # noqa: BLE001 — order link only; fire regardless
+                    pass
+            await self._fire_lifecycle_hook(event, state, stage=stage, details=details)
+
+        task = asyncio.create_task(_chained())
+        # _fire_lifecycle_hook swallows everything already; the callback
+        # just keeps "exception never retrieved" noise out of the loop.
+        task.add_done_callback(lambda t: t.cancelled() or t.exception())
+        self._lifecycle_tail = task
+
+    async def _flush_lifecycle_hooks(self) -> None:
+        """Await all lifecycle fires scheduled so far (turn boundary)."""
+        tail = self._lifecycle_tail
+        if tail is not None:
+            try:
+                await asyncio.shield(tail)
+            except Exception:  # noqa: BLE001 — observability only
+                pass
+
     def _resolve_llm_client(self) -> Any:
         """Choose the LLM client to attach to fresh state.
 
         Preference order:
         1. An ``llm_client`` explicitly passed to :meth:`attach_runtime`.
-        2. The Stage 6 ``config["provider"]`` resolved via
+        2. The client :meth:`warmup` pre-built for the current generation
+           (TTFT program — turn 1 rides the warm connection pool).
+        3. The Stage 6 ``config["provider"]`` resolved via
            :class:`ClientRegistry` + the host-supplied
            :class:`CredentialBundle`.
-        3. ``None`` — pipelines built without a credential bundle (manual
+        4. ``None`` — pipelines built without a credential bundle (manual
            ``register_stage`` flow, or no api stage) simply report a
            ``None`` client. Stages that need a client surface that at
            execute time (Stage 6 raises an APIError).
         """
         if self._attached_llm_client is not None:
             return self._attached_llm_client
+        if self._warm_llm_client is not None:
+            return self._warm_llm_client
         api_stage = next((s for s in self._stages.values() if s.name == "api"), None)
         if api_stage is None:
             return None
@@ -3238,7 +3358,7 @@ class Pipeline:
         if self._hook_runner is not None:
             # Mirror the bus event to the hook surface (2.2.0 — these
             # HookEvent kinds were reserved-but-never-fired before).
-            await self._fire_lifecycle_hook(
+            self._fire_lifecycle_hook_nowait(
                 HookEvent.STAGE_ENTER, state, stage=stage, details={"iteration": state.iteration}
             )
 
@@ -3254,7 +3374,7 @@ class Pipeline:
                 run_id=state._run_id,
             )
             if self._hook_runner is not None:
-                await self._fire_lifecycle_hook(
+                self._fire_lifecycle_hook_nowait(
                     HookEvent.STAGE_EXIT,
                     state,
                     stage=stage,

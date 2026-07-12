@@ -218,10 +218,13 @@ async def test_stream_heals_deprecation_and_emits_drift_event() -> None:
         async def __aexit__(self, *exc_info):
             return False
 
-        @property
-        def text_stream(self):
+        def __aiter__(self):
+            # 2.50.0 (TTFT D1): full-event iteration contract.
             async def _gen():
-                yield "healed"
+                yield SimpleNamespace(
+                    type="content_block_delta",
+                    delta=SimpleNamespace(type="text_delta", text="healed"),
+                )
 
             return _gen()
 

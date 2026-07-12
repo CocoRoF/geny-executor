@@ -331,6 +331,23 @@ class AnthropicClient(BaseClient):
             self._client = anthropic.AsyncAnthropic(**kwargs)
         return self._client
 
+    async def warmup(self, *, timeout_s: float = 8.0) -> bool:
+        """Establish the httpx pool before the first real call.
+
+        A cheap ``GET /v1/models`` walks the full DNS + TCP + TLS
+        handshake once, off the user's critical path; the SDK keeps the
+        connection alive for the session's real requests.
+        """
+        import asyncio
+
+        try:
+            client = self._get_client()
+            await asyncio.wait_for(client.models.list(limit=1), timeout=timeout_s)
+            return True
+        except Exception:  # noqa: BLE001 — warmup is best-effort by contract
+            logger.debug("anthropic: warmup failed", exc_info=True)
+            return False
+
     def _heal_request_kwargs(
         self, kwargs: Dict[str, Any], exc: BaseException
     ) -> Optional[Dict[str, Any]]:
@@ -384,10 +401,39 @@ class AnthropicClient(BaseClient):
         client = self._get_client()
         kwargs = self._build_kwargs(request)
 
+        # TTFT program (2.50.0, finding D1): iterate the FULL event
+        # stream, not ``stream.text_stream``. The text-only iterator
+        # silently dropped thinking deltas, so on a thinking-enabled
+        # request the pipeline saw NOTHING until the model finished
+        # reasoning and emitted its first text token — the entire
+        # thinking budget was dead air. Raw ``content_block_delta``
+        # events surface thinking (and tool input JSON) the moment they
+        # arrive, matching what the google and CLI backends already do.
+        def _canonical_chunk(event: Any) -> Optional[Dict[str, Any]]:
+            etype = getattr(event, "type", "")
+            if etype == "content_block_delta":
+                delta = getattr(event, "delta", None)
+                dtype = getattr(delta, "type", "")
+                if dtype == "text_delta":
+                    text = getattr(delta, "text", "")
+                    return {"type": "text_delta", "text": text} if text else None
+                if dtype == "thinking_delta":
+                    thinking = getattr(delta, "thinking", "")
+                    return {"type": "thinking_delta", "text": thinking} if thinking else None
+                if dtype == "input_json_delta":
+                    partial = getattr(delta, "partial_json", "")
+                    return {"type": "input_json_delta", "delta": partial} if partial else None
+                return None
+            if etype == "content_block_stop":
+                return {"type": "content_block_stop"}
+            return None
+
         try:
             async with client.messages.stream(**kwargs) as stream:
-                async for text in stream.text_stream:
-                    yield {"type": "text_delta", "text": text}
+                async for event in stream:
+                    chunk = _canonical_chunk(event)
+                    if chunk is not None:
+                        yield chunk
 
                 final = await stream.get_final_message()
                 yield {
@@ -406,8 +452,10 @@ class AnthropicClient(BaseClient):
             if retry_kwargs is not None:
                 try:
                     async with client.messages.stream(**retry_kwargs) as stream:
-                        async for text in stream.text_stream:
-                            yield {"type": "text_delta", "text": text}
+                        async for event in stream:
+                            chunk = _canonical_chunk(event)
+                            if chunk is not None:
+                                yield chunk
                         final = await stream.get_final_message()
                         self._report_drift_healed(
                             kwargs,
