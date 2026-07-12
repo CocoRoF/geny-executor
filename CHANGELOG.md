@@ -4,6 +4,14 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.51.2] — 2026-07-12
+
+### Hardening
+
+- **Concurrent-run guard** (R5): a second run on a `PipelineState` already mid-turn raises instead of corrupting both. Overlapping runs on separate states unaffected.
+- **MCP allowlist** (S8, opt-in): `GENY_MCP_ALLOWED_COMMANDS` / `GENY_MCP_ALLOWED_URL_HOSTS` restrict which stdio commands / HTTP hosts may connect. Unset = allow all.
+- **PageRank offload** (M9): graph expansion past 2000 edges runs off the event loop.
+
 ## [2.51.1] — 2026-07-12
 
 ### Security
