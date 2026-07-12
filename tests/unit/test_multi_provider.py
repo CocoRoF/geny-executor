@@ -391,17 +391,55 @@ class TestUnifiedPricing:
             cache_read_input_tokens=300_000,
         )
         cost = calc.calculate(usage, "claude-sonnet-4-6")
-        # regular_input = 500k - 300k (cache_read) = 200k → $0.6
-        # output = 100k → $1.5
-        # cache_write = 200k → $0.75
-        # cache_read = 300k → $0.09
+        # 2.51.0 (audit D1): Anthropic input_tokens is ALREADY uncached —
+        # the three buckets are disjoint, no subtraction.
+        #   input       = 500k → $1.5
+        #   output      = 100k → $1.5
+        #   cache_write = 200k → $0.75
+        #   cache_read  = 300k → $0.09
         expected = (
-            (200_000 / 1e6 * 3.0)
+            (500_000 / 1e6 * 3.0)
             + (100_000 / 1e6 * 15.0)
             + (200_000 / 1e6 * 3.75)
             + (300_000 / 1e6 * 0.3)
         )
         assert cost == pytest.approx(expected)
+
+    def test_cache_heavy_turn_never_negative(self):
+        """The confirmed prod bug: a small fresh input + a large cache
+        read must not go negative (pre-2.51 subtracted cache_read from an
+        already-uncached input_tokens)."""
+        from geny_executor.stages.s07_token.artifact.default.pricing import (
+            AnthropicPricingCalculator,
+            UnifiedPricingCalculator,
+        )
+        from geny_executor.core.state import TokenUsage
+
+        # Steady-state aggressive-cache turn: 200 new tokens, 8k cache hit.
+        usage = TokenUsage(
+            input_tokens=200,
+            output_tokens=50,
+            cache_read_input_tokens=8_000,
+        )
+        for calc in (UnifiedPricingCalculator(), AnthropicPricingCalculator()):
+            cost = calc.calculate(usage, "claude-sonnet-4-6")
+            assert cost > 0, f"{calc.name} went non-positive: {cost}"
+            # input 200*$3 + output 50*$15 + cache_read 8000*$0.3, all /1e6
+            expected = (200 * 3.0 + 50 * 15.0 + 8_000 * 0.3) / 1e6
+            assert cost == pytest.approx(expected)
+
+    def test_unlisted_variant_binds_to_longest_prefix(self):
+        """audit C4: an unlisted dated variant must bind to its own
+        family (opus-4-1), not to whichever key sorts first (opus-4-6)."""
+        from geny_executor.stages.s07_token.artifact.default.pricing import (
+            UnifiedPricingCalculator,
+        )
+        from geny_executor.core.state import TokenUsage
+
+        calc = UnifiedPricingCalculator()
+        usage = TokenUsage(input_tokens=1_000_000, output_tokens=0)
+        cost = calc.calculate(usage, "claude-opus-4-1-99991231")
+        assert cost == pytest.approx(15.0)  # opus-4-1 input rate, NOT opus-4-6's 5.0
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

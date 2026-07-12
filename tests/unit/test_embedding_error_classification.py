@@ -73,7 +73,7 @@ def _sdk_exc(name: str) -> Exception:
         ("APIConnectionError", "transient"),
         ("APITimeoutError", "transient"),
         ("InternalServerError", "transient"),
-        ("BadRequestError", "unknown"),
+        ("BadRequestError", "invalid"),
     ],
 )
 def test_classify_openai_error(exc_name: str, expected: str) -> None:
@@ -127,12 +127,34 @@ async def test_openai_client_unclassified_failure_is_unknown() -> None:
         (408, "transient"),
         (500, "transient"),
         (503, "transient"),
-        (400, "unknown"),
-        (404, "unknown"),
+        # 2.51.0 (audit D2): permanent 4xx → 'invalid' (was 'unknown'),
+        # so the caller stops hot-retrying a request that can't succeed.
+        (400, "invalid"),
+        (404, "invalid"),
+        (422, "invalid"),
     ],
 )
 def test_voyage_status_classification(status: int, expected: str) -> None:
     assert _category_for_status(status) == expected
+
+
+def test_embed_batches_split_by_byte_budget() -> None:
+    """A batch whose inputs SUM past the request budget is split so it
+    can't 400 (audit D2, the confirmed prod incident)."""
+    from geny_executor.memory.embedding.client import iter_embed_batches
+
+    # 100 inputs of ~4000 bytes each = ~400k bytes → must split under 280k.
+    texts = ["x" * 4000 for _ in range(100)]
+    batches = iter_embed_batches(texts, max_count=2048)
+    assert len(batches) >= 2
+    for b in batches:
+        assert sum(len(t.encode("utf-8")) for t in b) <= 280_000
+    assert sum(len(b) for b in batches) == 100  # nothing dropped
+
+    # Count budget still applies when items are tiny.
+    tiny = ["a"] * 5000
+    by_count = iter_embed_batches(tiny, max_count=2048)
+    assert max(len(b) for b in by_count) <= 2048
 
 
 async def test_voyage_transport_stub_can_raise_classified_error() -> None:

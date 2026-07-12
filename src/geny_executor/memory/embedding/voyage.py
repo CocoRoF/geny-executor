@@ -21,9 +21,15 @@ from typing import Any, List, Optional, Sequence
 from geny_executor.memory.embedding.client import (
     EmbeddingClient,
     EmbeddingError,
+    _bound_input,
     _resolve_env_api_key,
+    iter_embed_batches,
 )
 from geny_executor.memory.provider import EmbeddingDescriptor
+
+# Voyage caps requests at 128 inputs / 120k-1M tokens depending on model;
+# cap conservatively and let the shared byte budget split large docs.
+_VOYAGE_MAX_BATCH = 128
 
 
 VOYAGE_DEFAULT_URL = "https://api.voyageai.com/v1/embeddings"
@@ -76,23 +82,25 @@ class VoyageEmbeddingClient(EmbeddingClient):
     async def embed(self, texts: Sequence[str]) -> List[List[float]]:
         if not texts:
             return []
-        payload = {"input": list(texts), "model": self._model}
         headers = {
             "Authorization": f"Bearer {self._api_key}",
             "Content-Type": "application/json",
         }
-        body = await self._post(self._base_url, headers, payload)
-        data = body.get("data") if isinstance(body, dict) else None
-        if not isinstance(data, list):
-            raise EmbeddingError(f"voyage embed: malformed response: {body!r}")
+        bounded = [_bound_input(t) for t in texts]
         vectors: List[List[float]] = []
-        for item in data:
-            if not isinstance(item, dict) or "embedding" not in item:
-                raise EmbeddingError(f"voyage embed: bad row: {item!r}")
-            vec = item["embedding"]
-            if not isinstance(vec, list):
-                raise EmbeddingError(f"voyage embed: vec not list: {item!r}")
-            vectors.append([float(x) for x in vec])
+        for batch in iter_embed_batches(bounded, max_count=_VOYAGE_MAX_BATCH):
+            payload = {"input": list(batch), "model": self._model}
+            body = await self._post(self._base_url, headers, payload)
+            data = body.get("data") if isinstance(body, dict) else None
+            if not isinstance(data, list):
+                raise EmbeddingError(f"voyage embed: malformed response: {body!r}")
+            for item in data:
+                if not isinstance(item, dict) or "embedding" not in item:
+                    raise EmbeddingError(f"voyage embed: bad row: {item!r}")
+                vec = item["embedding"]
+                if not isinstance(vec, list):
+                    raise EmbeddingError(f"voyage embed: vec not list: {item!r}")
+                vectors.append([float(x) for x in vec])
         if self._dimension == 0 and vectors:
             self._dimension = len(vectors[0])
             self._descriptor = EmbeddingDescriptor(
@@ -154,6 +162,10 @@ def _category_for_status(status: int) -> str:
         return "quota"
     if status == 408 or status >= 500:
         return "transient"
+    # A 400/404/422 will never succeed on retry (bad payload, over-limit,
+    # unknown model) — 'invalid' so the caller stops hot-retrying (audit D2).
+    if 400 <= status < 500:
+        return "invalid"
     return "unknown"
 
 

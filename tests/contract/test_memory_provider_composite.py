@@ -48,3 +48,29 @@ class TestCompositeProviderContract(MemoryProviderContract):
         fresh = _build_composite(restored_root)
         await fresh.initialize()
         return fresh
+
+
+class TestCompositeRecordCompaction:
+    """audit D5: composite must persist compaction snapshots (was file-only)."""
+
+    @pytest.mark.asyncio
+    async def test_record_compaction_writes_note(self, tmp_path: Path):
+        p = _build_composite(tmp_path / "rc")
+        await p.initialize()
+        fname = await p.record_compaction(
+            "Summarized 30 earlier turns about the deploy.",
+            replaced_count=30,
+            strategy="llm_summary",
+            saved_tokens=4000,
+            trigger="proactive",
+        )
+        assert fname  # a note filename, not None
+        # It lands in the "compactions" category and is retrievable.
+        hits = await p.notes().search("deploy", limit=5)
+        assert any("deploy" in (h.content or "") for h in hits)
+
+    @pytest.mark.asyncio
+    async def test_record_compaction_empty_is_noop(self, tmp_path: Path):
+        p = _build_composite(tmp_path / "rc2")
+        await p.initialize()
+        assert await p.record_compaction("", replaced_count=0) is None

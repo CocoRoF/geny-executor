@@ -45,7 +45,79 @@ logger = logging.getLogger(__name__)
 
 
 #: Valid values for ``EmbeddingError.category``.
-EMBEDDING_ERROR_CATEGORIES = frozenset({"auth", "quota", "transient", "unknown"})
+#: ``invalid`` (2.51.0, audit D2): a permanent 4xx the request will NEVER
+#: satisfy by retrying — a malformed payload, an over-token-limit request,
+#: an unknown model. Distinct from ``quota`` (retry later may work) and
+#: ``transient`` (retry next time). Callers must NOT hot-retry an
+#: ``invalid`` error; it does not trip the auth breaker either.
+EMBEDDING_ERROR_CATEGORIES = frozenset({"auth", "quota", "transient", "invalid", "unknown"})
+
+# ── shared input bounding + request batching (all embedding backends) ──
+#
+# Two independent limits every embeddings endpoint enforces:
+#   (1) per-INPUT token cap (OpenAI 8192) — one over-long text 400s.
+#   (2) per-REQUEST total-token cap (OpenAI 300k) — a batch whose inputs
+#       SUM past the ceiling 400s, silently taking a whole document's
+#       vectors down (audit D2, the confirmed prod incident).
+# The BPE tokenizer never emits MORE tokens than the input's UTF-8 byte
+# count (every token is >= 1 byte), so bounding bytes bounds tokens for
+# both limits, in every language, without a tokenizer dependency.
+
+_MAX_EMBED_BYTES = 8192  # per-input ceiling
+_TRUNCATE_TO_BYTES = 8000  # margin applied when a per-input cut is unavoidable
+#: Per-request byte budget. Kept well under OpenAI's 300k-token ceiling
+#: (bytes >= tokens, so <=280k bytes ⇒ <280k tokens) so a large document's
+#: chunks split across requests instead of 400ing. Conservative for ASCII
+#: (over-splits) but never wrong — correctness beats request count here.
+_MAX_REQUEST_BYTES = 280_000
+
+_truncation_warned = False
+
+
+def _bound_input(text: str) -> str:
+    """Truncate one input to the per-input byte/token ceiling (last resort).
+
+    Callers that want full coverage of long text should chunk BEFORE
+    embedding (the knowledge repository does, via Contextifier); this is
+    the crash-safety net, not a substitute.
+    """
+    global _truncation_warned
+    encoded = text.encode("utf-8")
+    if len(encoded) <= _MAX_EMBED_BYTES:
+        return text
+    if not _truncation_warned:
+        logger.warning(
+            "embedding input exceeds the 8192-token budget (%d bytes); "
+            "truncating to %d bytes for the vector. Chunk long text before "
+            "embedding to avoid losing coverage.",
+            len(encoded), _TRUNCATE_TO_BYTES,
+        )
+        _truncation_warned = True
+    return encoded[:_TRUNCATE_TO_BYTES].decode("utf-8", errors="ignore")
+
+
+def iter_embed_batches(
+    texts: Sequence[str],
+    *,
+    max_count: int,
+    max_bytes: int = _MAX_REQUEST_BYTES,
+) -> "List[List[str]]":
+    """Split per-input-bounded texts into requests under BOTH a count and a
+    cumulative-byte budget. A single (already <=8192-byte) input never
+    exceeds ``max_bytes`` alone, so no batch is ever empty."""
+    batches: List[List[str]] = []
+    batch: List[str] = []
+    batch_bytes = 0
+    for t in texts:
+        n = len(t.encode("utf-8"))
+        if batch and (len(batch) >= max_count or batch_bytes + n > max_bytes):
+            batches.append(batch)
+            batch, batch_bytes = [], 0
+        batch.append(t)
+        batch_bytes += n
+    if batch:
+        batches.append(batch)
+    return batches
 
 
 class QueryEmbedLRU:

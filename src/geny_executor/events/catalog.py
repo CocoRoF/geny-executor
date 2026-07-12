@@ -90,6 +90,9 @@ class EventTypes(str, Enum):
 
     # ── Stage 1: Input ──
     INPUT_NORMALIZED = "input.normalized"
+    # 2.51.0 (audit D4): synthetic tool_results injected to repair a
+    # history left dangling by an interrupted tool turn.
+    INPUT_TOOL_CALLS_REPAIRED = "input.tool_calls_repaired"
 
     # ── Stage 2: Context ──
     CONTEXT_BUILT = "context.built"
@@ -332,6 +335,9 @@ PAYLOADS: Dict[EventTypes, Dict[str, str]] = {
     },
     EventTypes.INPUT_NORMALIZED: {
         "text_length": "int — normalized text length",
+    },
+    EventTypes.INPUT_TOOL_CALLS_REPAIRED: {
+        "count": "int — synthetic tool_results injected for an interrupted tool turn",
     },
     EventTypes.CONTEXT_BUILT: {
         "message_count": "int",

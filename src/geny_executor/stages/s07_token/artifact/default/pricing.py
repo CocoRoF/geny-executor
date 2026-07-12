@@ -9,6 +9,77 @@ from geny_executor.core.state import TokenUsage
 from geny_executor.stages.s07_token.interface import CostCalculator
 
 
+def _lookup_prices(
+    pricing: Dict[str, Dict[str, float]], model: str
+) -> Optional[Dict[str, float]]:
+    """Resolve a model id to its price row: exact match → longest key prefix.
+
+    2.51.0 (audit C4): the old ``model.startswith(key.rsplit("-",1)[0])``
+    truncated every key by one segment and returned the FIRST dict entry
+    that matched by insertion order — so an unlisted ``claude-opus-4-1-<new>``
+    could bind to ``opus-4-6`` rates (a 3x error). Now we match the full
+    key as a prefix and prefer the LONGEST matching known key, which is
+    unambiguous: ``claude-opus-4-1-<new>`` binds to ``claude-opus-4-1``,
+    never to ``claude-opus-4-6``.
+    """
+    if model in pricing:
+        return pricing[model]
+    best_key: Optional[str] = None
+    for key in pricing:
+        if model.startswith(key) and (best_key is None or len(key) > len(best_key)):
+            best_key = key
+    return pricing[best_key] if best_key is not None else None
+
+
+def _price_usage(usage: TokenUsage, prices: Dict[str, float]) -> float:
+    """Cost of ``usage`` under a price row, provider-semantics aware.
+
+    The load-bearing distinction (audit D1 — the negative-cost bug): the
+    two provider families report ``input_tokens`` differently.
+
+    - **Anthropic** rows carry a ``cache_write`` rate; their
+      ``input_tokens`` is the UNCACHED input only (cache reads/creations
+      are separate additive fields). So the three token buckets are
+      disjoint and are priced independently — subtracting ``cache_read``
+      from ``input_tokens`` (as the pre-2.51 code did) double-counted the
+      discount and drove cache-heavy turns negative once aggressive
+      caching made ``cache_read`` routinely exceed ``input_tokens``.
+    - **OpenAI / Google** rows have no ``cache_write``; their
+      ``input_tokens`` (``prompt_tokens`` / ``prompt_token_count``)
+      already INCLUDES the cached portion. Here ``cache_read`` IS a
+      subset to be discounted — but only when the row supplies a
+      ``cache_read`` rate; otherwise the full ``input_tokens`` is priced
+      at the input rate (a slight overcount, never negative).
+
+    Always clamped to ``>= 0`` as a belt-and-suspenders guard.
+    """
+    input_rate = prices["input"]
+    cost = usage.output_tokens / 1_000_000 * prices["output"]
+
+    if "cache_write" in prices:  # Anthropic semantics: input_tokens is uncached
+        cost += usage.input_tokens / 1_000_000 * input_rate
+        cost += (
+            usage.cache_creation_input_tokens
+            / 1_000_000
+            * prices.get("cache_write", input_rate * 1.25)
+        )
+        cost += (
+            usage.cache_read_input_tokens
+            / 1_000_000
+            * prices.get("cache_read", input_rate * 0.1)
+        )
+    else:  # OpenAI / Google semantics: input_tokens already includes cache reads
+        cache_read_rate = prices.get("cache_read")
+        if cache_read_rate is not None and usage.cache_read_input_tokens:
+            billable = max(0, usage.input_tokens - usage.cache_read_input_tokens)
+            cost += billable / 1_000_000 * input_rate
+            cost += usage.cache_read_input_tokens / 1_000_000 * cache_read_rate
+        else:
+            cost += usage.input_tokens / 1_000_000 * input_rate
+
+    return max(0.0, cost)
+
+
 # Anthropic pricing per million tokens (as of 2026-04)
 # Source: https://docs.anthropic.com/en/docs/about-claude/pricing
 # Cache write = 1.25x input, Cache read = 0.1x input (5-minute TTL)
@@ -128,36 +199,11 @@ class AnthropicPricingCalculator(CostCalculator):
         prices = self._get_prices(model)
         if not prices:
             return 0.0
-
-        cost = 0.0
-        # Regular input tokens (excluding cached)
-        regular_input = usage.input_tokens - usage.cache_read_input_tokens
-        cost += (regular_input / 1_000_000) * prices["input"]
-
-        # Output tokens
-        cost += (usage.output_tokens / 1_000_000) * prices["output"]
-
-        # Cache write
-        cost += (usage.cache_creation_input_tokens / 1_000_000) * prices.get(
-            "cache_write", prices["input"] * 1.25
-        )
-
-        # Cache read
-        cost += (usage.cache_read_input_tokens / 1_000_000) * prices.get(
-            "cache_read", prices["input"] * 0.1
-        )
-
-        return cost
+        return _price_usage(usage, prices)
 
     def _get_prices(self, model: str) -> Optional[Dict[str, float]]:
-        """Look up pricing, trying exact match then prefix match."""
-        if model in self._pricing:
-            return self._pricing[model]
-        # Prefix match
-        for key in self._pricing:
-            if model.startswith(key.rsplit("-", 1)[0]):
-                return self._pricing[key]
-        return None
+        """Look up pricing, trying exact match then longest-prefix match."""
+        return _lookup_prices(self._pricing, model)
 
 
 class CustomPricingCalculator(CostCalculator):
@@ -244,28 +290,8 @@ class UnifiedPricingCalculator(CostCalculator):
         prices = self._get_prices(model)
         if not prices:
             return 0.0
-
-        cost = 0.0
-        has_cache_pricing = "cache_write" in prices
-
-        if has_cache_pricing:
-            # Anthropic-style: separate cache write/read pricing
-            regular_input = usage.input_tokens - usage.cache_read_input_tokens
-            cost += (regular_input / 1_000_000) * prices["input"]
-            cost += (usage.cache_creation_input_tokens / 1_000_000) * prices["cache_write"]
-            cost += (usage.cache_read_input_tokens / 1_000_000) * prices["cache_read"]
-        else:
-            # Simple input pricing (OpenAI, Google)
-            cost += (usage.input_tokens / 1_000_000) * prices["input"]
-
-        cost += (usage.output_tokens / 1_000_000) * prices["output"]
-        return cost
+        return _price_usage(usage, prices)
 
     def _get_prices(self, model: str) -> Optional[Dict[str, float]]:
-        """Look up pricing: exact match → prefix match."""
-        if model in self._pricing:
-            return self._pricing[model]
-        for key in self._pricing:
-            if model.startswith(key.rsplit("-", 1)[0]):
-                return self._pricing[key]
-        return None
+        """Look up pricing: exact match → longest-prefix match."""
+        return _lookup_prices(self._pricing, model)

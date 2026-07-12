@@ -28,6 +28,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import os
 import struct
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -207,9 +208,12 @@ class _FileVectorStore:
             )
         async with self._lock:
             await self._ensure_loaded()
-            source = list(self._rows)  # snapshot rows before we wipe
-            self._vectors = []
-            self._rows = []
+            source = list(self._rows)  # snapshot rows before we rebuild
+            # Embed-then-swap (audit D6): build the new index into LOCALS
+            # first, so a mid-rebuild embedding failure leaves the live
+            # (and on-disk) index intact instead of emptying it.
+            new_vectors: List[List[float]] = []
+            new_rows: List[Dict[str, Any]] = []
             total = 0
             if source and self._notes_text_lookup is not None:
                 texts: List[str] = []
@@ -222,12 +226,14 @@ class _FileVectorStore:
                     refs.append(ref)
                     texts.append(text)
                 if texts:
-                    vectors = await self._embed_guarded(texts)
+                    vectors = await self._embed_guarded(texts)  # raises before swap
                     for ref, text, vec in zip(refs, texts, vectors):
                         self._validate_dim(vec)
-                        self._vectors.append(vec)
-                        self._rows.append(_row_for(ref, text))
+                        new_vectors.append(list(vec))
+                        new_rows.append(_row_for(ref, text))
                         total += 1
+            self._vectors = new_vectors
+            self._rows = new_rows
             self._flush()
             reason = plan.reason if plan is not None else "manual reindex"
             metadata = dict(plan.metadata) if plan is not None else {}
@@ -347,9 +353,27 @@ class _FileVectorStore:
                         for i in range(count):
                             self._vectors.append(flat[i * dim : (i + 1) * dim])
                             self._rows.append(dict(rows[i]))
+                    else:
+                        # bin/meta out of sync (a crash between the two
+                        # writes, pre-2.51 non-atomic flush). Don't drop the
+                        # index silently — WARN so it's visible; the notes
+                        # are authoritative and a reindex rebuilds vectors
+                        # from them (audit D6).
+                        logger.warning(
+                            "vector index bin/meta size mismatch (%d bytes vs "
+                            "%d expected for %d rows × %d dims) — vectors not "
+                            "loaded; reindex from notes to rebuild.",
+                            len(raw), expected, count, dim,
+                        )
         self._loaded = True
 
     def _flush(self) -> None:
+        # Atomic tmp+replace for BOTH files (audit D6): the pre-2.51 direct
+        # writes could tear mid-write on a crash, and a half-written bin
+        # against a full meta made ``_ensure_loaded`` silently drop the
+        # whole index. os.replace is atomic per file, so neither file is
+        # ever observed half-written; the bin is swapped in BEFORE the meta
+        # so a crash between the two leaves the OLD (consistent) meta.
         dim = self.descriptor.dimension
         bin_path = self._layout.vector_index.with_suffix(".bin")
         meta_path = self._layout.vector_metadata
@@ -358,7 +382,9 @@ class _FileVectorStore:
         for vec in self._vectors:
             flat.extend(vec)
         if flat:
-            bin_path.write_bytes(struct.pack(f"<{len(flat)}f", *flat))
+            tmp_bin = bin_path.with_suffix(bin_path.suffix + ".tmp")
+            tmp_bin.write_bytes(struct.pack(f"<{len(flat)}f", *flat))
+            os.replace(tmp_bin, bin_path)
         elif bin_path.exists():
             bin_path.unlink()
         payload = {
@@ -367,7 +393,11 @@ class _FileVectorStore:
             "metric": self.descriptor.metric,
             "rows": list(self._rows),
         }
-        meta_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp_meta = meta_path.with_suffix(meta_path.suffix + ".tmp")
+        tmp_meta.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        os.replace(tmp_meta, meta_path)
 
     def _remove_by_filename(self, filename: str) -> int:
         kept_vectors: List[List[float]] = []

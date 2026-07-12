@@ -246,6 +246,69 @@ class CompositeMemoryProvider(MemoryProvider):
 
         return _attach_files(receipt, files)
 
+    async def record_compaction(
+        self,
+        summary: str,
+        *,
+        replaced_count: int = 0,
+        strategy: str = "",
+        saved_tokens: Optional[int] = None,
+        session_id: str = "",
+        trigger: str = "",
+    ) -> Optional[str]:
+        """Persist a compaction snapshot to the NOTES-layer "compactions"
+        category (audit D5).
+
+        Pre-2.51 only ``FileMemoryProvider`` implemented this, so the
+        deployed composite/SQL topology silently dropped every compaction
+        summary (``core.compaction.run_compaction`` gates on
+        ``hasattr(provider, "record_compaction")``). Routes to the same
+        notes handle ``record_execution`` uses. Best-effort — returns the
+        note filename or ``None`` when there is nothing to record / no
+        NOTES layer.
+        """
+        body = (summary or "").strip()
+        if not body and replaced_count <= 0:
+            return None
+        if not self._routing.has_layer(Layer.NOTES):
+            return None
+
+        frontmatter: Dict[str, Any] = {
+            "replaced_count": int(replaced_count),
+            "strategy": strategy or "",
+            "trigger": trigger or "",
+            "session_id": session_id or self._session_id,
+        }
+        if saved_tokens is not None:
+            frontmatter["saved_tokens"] = int(saved_tokens)
+
+        title = f"Compaction · {replaced_count} messages" if replaced_count else "Compaction"
+        try:
+            meta = await self.notes().write(
+                NoteDraft(
+                    title=title,
+                    body=body or f"[{replaced_count} messages compacted.]",
+                    importance=Importance.MEDIUM,
+                    tags=["compaction", "system-artifact"],
+                    category="compactions",
+                    scope=self._scope,
+                    frontmatter=frontmatter,
+                )
+            )
+        except TypeError:
+            # A notes handle whose write() predates the frontmatter kwarg.
+            meta = await self.notes().write(
+                NoteDraft(
+                    title=title,
+                    body=body or f"[{replaced_count} messages compacted.]",
+                    importance=Importance.MEDIUM,
+                    tags=["compaction", "system-artifact"],
+                    category="compactions",
+                    scope=self._scope,
+                )
+            )
+        return meta.ref.filename
+
     async def reflect(self, ctx: ReflectionContext) -> Sequence[Insight]:
         # Composite is a router, not a reflector; the orchestrating
         # stage is expected to plug an LLM in via MemoryHooks.

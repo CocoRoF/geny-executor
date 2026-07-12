@@ -20,7 +20,11 @@ from geny_executor.memory.embedding.client import (
     EmbeddingClient,
     EmbeddingError,
     _LoopBoundClientMixin,
+    _bound_input,
+    _MAX_EMBED_BYTES,  # noqa: F401 — re-exported for back-compat
     _resolve_env_api_key,
+    _TRUNCATE_TO_BYTES,  # noqa: F401 — re-exported for back-compat
+    iter_embed_batches,
 )
 from geny_executor.memory.provider import EmbeddingDescriptor
 
@@ -28,37 +32,6 @@ from geny_executor.memory.provider import EmbeddingDescriptor
 logger = logging.getLogger(__name__)
 
 MAX_BATCH_SIZE = 2048
-
-# OpenAI's text-embedding-* models reject inputs over 8192 tokens with a
-# 400 that propagates as a hard EmbeddingError — a single over-long note
-# (a whole conversation memory, an un-chunked document) could take the
-# whole embedding path down. The BPE tokenizer never emits MORE tokens
-# than the input's UTF-8 byte count (every token is ≥1 byte), so bounding
-# a request's bytes bounds its tokens: ≤8192 bytes ⇒ ≤8192 tokens. We pass
-# anything within that budget untouched and defensively truncate only the
-# rare over-budget input (on a UTF-8 boundary), so embedding is crash-safe
-# for every caller regardless of language. Callers that want full coverage
-# of long text should chunk BEFORE embedding (the knowledge repository
-# does, via Contextifier); this is the last-resort guard, not a substitute.
-_MAX_EMBED_BYTES = 8192
-_TRUNCATE_TO_BYTES = 8000  # margin applied when a cut is unavoidable
-_truncation_warned = False
-
-
-def _bound_input(text: str) -> str:
-    global _truncation_warned
-    encoded = text.encode("utf-8")
-    if len(encoded) <= _MAX_EMBED_BYTES:
-        return text
-    if not _truncation_warned:
-        logger.warning(
-            "embedding input exceeds the 8192-token budget (%d bytes); "
-            "truncating to %d bytes for the vector. Chunk long text before "
-            "embedding to avoid losing coverage.",
-            len(encoded), _TRUNCATE_TO_BYTES,
-        )
-        _truncation_warned = True
-    return encoded[:_TRUNCATE_TO_BYTES].decode("utf-8", errors="ignore")
 
 
 # Reference dimensions for OpenAI's current embedding families.
@@ -115,11 +88,11 @@ class OpenAIEmbeddingClient(_LoopBoundClientMixin, EmbeddingClient):
         client, ephemeral = self._acquire_client()
         try:
             out: List[List[float]] = []
-            # Bound each input to the model's token budget so one over-long
-            # text can never 400 the whole batch (crash-safety net).
-            texts = [_bound_input(t) for t in texts]
-            for i in range(0, len(texts), MAX_BATCH_SIZE):
-                batch = list(texts[i : i + MAX_BATCH_SIZE])
+            # Bound each input (per-input cap), then split into requests
+            # under BOTH the count and the cumulative-token budget so a
+            # large document's chunks can't 400 the request (audit D2).
+            bounded = [_bound_input(t) for t in texts]
+            for batch in iter_embed_batches(bounded, max_count=MAX_BATCH_SIZE):
                 try:
                     # `openai>=1.x` exposes `await client.embeddings.create(...)`
                     resp = await client.embeddings.create(input=batch, model=self._model)
@@ -187,6 +160,12 @@ def _classify_openai_error(exc: Exception) -> str:
         return "transient"
     if isinstance(exc, openai.InternalServerError):
         return "transient"
+    # A 400 (over-token-limit request, malformed input, unknown model) is
+    # permanent — retrying the identical request 400s forever. 'invalid'
+    # so callers stop hot-retrying (audit D2). BadRequestError also covers
+    # UnprocessableEntityError (422) in the SDK hierarchy.
+    if isinstance(exc, openai.BadRequestError):
+        return "invalid"
     return "unknown"
 
 

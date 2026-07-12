@@ -126,8 +126,13 @@ class _SQLVectorStore:
         rows = await self._conn.fetchall(
             "SELECT filename, scope, category, backend FROM vector_rows"
         )
-        await self._conn.execute("DELETE FROM vector_rows")
+        # Embed-then-swap (audit D6): the old code DELETE'd every row
+        # (autocommit) BEFORE embedding, so a single transient embed
+        # failure — a 429, a timeout, the 300k overflow — wiped the whole
+        # index permanently. Now we embed first (a failure here leaves the
+        # index untouched) and delete+upsert atomically in one transaction.
         total = 0
+        upserts: List[Tuple[str, Sequence[Any]]] = []
         if rows and self._notes_text_lookup is not None:
             texts: List[str] = []
             refs: List[NoteRef] = []
@@ -138,11 +143,14 @@ class _SQLVectorStore:
                 refs.append(_ref_from_row(row))
                 texts.append(text)
             if texts:
-                vectors = await self._client.embed(texts)
+                vectors = await self._client.embed(texts)  # raises BEFORE any delete
                 for ref, text, vec in zip(refs, texts, vectors):
                     self._validate_dim(vec)
-                    await self._upsert_row(ref, text, vec)
+                    upserts.append(self._upsert_statement(ref, text, vec))
                     total += 1
+        await self._conn.transaction(
+            [("DELETE FROM vector_rows", ()), *upserts]
+        )
         reason = plan.reason if plan is not None else "manual reindex"
         metadata = dict(plan.metadata) if plan is not None else {}
         metadata["descriptor"] = {
@@ -182,14 +190,7 @@ class _SQLVectorStore:
         )
         return row is not None
 
-    async def _upsert_row(self, ref: NoteRef, text: str, vec: Sequence[float]) -> None:
-        scope = ref.scope.value if isinstance(ref.scope, Scope) else str(ref.scope)
-        blob = _pack_vector(vec)
-        ts = datetime.now(timezone.utc).isoformat()
-        preview = (text or "")[:400]
-        # SQLite UPSERT keeps the surface dialect-portable.
-        await self._conn.execute(
-            """
+    _UPSERT_SQL = """
             INSERT INTO vector_rows (
                 filename, scope, category, backend, preview,
                 dimension, vector_blob, created_at
@@ -201,18 +202,30 @@ class _SQLVectorStore:
                 preview = excluded.preview,
                 dimension = excluded.dimension,
                 vector_blob = excluded.vector_blob
-            """,
+            """
+
+    def _upsert_statement(
+        self, ref: NoteRef, text: str, vec: Sequence[float]
+    ) -> "Tuple[str, Sequence[Any]]":
+        scope = ref.scope.value if isinstance(ref.scope, Scope) else str(ref.scope)
+        return (
+            self._UPSERT_SQL,
             (
                 ref.filename,
                 scope,
                 ref.category,
                 ref.backend,
-                preview,
+                (text or "")[:400],
                 len(vec),
-                blob,
-                ts,
+                _pack_vector(vec),
+                datetime.now(timezone.utc).isoformat(),
             ),
         )
+
+    async def _upsert_row(self, ref: NoteRef, text: str, vec: Sequence[float]) -> None:
+        # SQLite UPSERT keeps the surface dialect-portable.
+        sql, params = self._upsert_statement(ref, text, vec)
+        await self._conn.execute(sql, params)
 
     def _validate_dim(self, vec: Sequence[float]) -> None:
         expected = self.descriptor.dimension

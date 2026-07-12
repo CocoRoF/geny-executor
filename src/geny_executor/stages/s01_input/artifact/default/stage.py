@@ -8,6 +8,7 @@ from geny_executor.core.slot import StrategySlot
 from geny_executor.core.stage import Stage
 from geny_executor.core.state import PipelineState
 from geny_executor.core.errors import StageError
+from geny_executor.core.message_repair import repair_dangling_tool_calls
 from geny_executor.stages.s01_input.types import NormalizedInput
 from geny_executor.stages.s01_input.interface import InputValidator, InputNormalizer
 from geny_executor.stages.s01_input.artifact.default.validators import (
@@ -90,6 +91,15 @@ class InputStage(Stage[Any, NormalizedInput]):
                 stage_name=self.name,
                 stage_order=self.order,
             )
+
+        # Repair a history left dangling by an interrupted tool turn
+        # BEFORE appending this turn's user message — otherwise the new
+        # user message follows an unanswered assistant tool_use and every
+        # request 400s (audit D4). Synthetic error results are inserted at
+        # the required position; a clean history is untouched.
+        repaired = repair_dangling_tool_calls(state.messages)
+        if repaired:
+            state.add_event("input.tool_calls_repaired", {"count": repaired})
 
         # Normalize
         normalized = self._normalizer.normalize(input)

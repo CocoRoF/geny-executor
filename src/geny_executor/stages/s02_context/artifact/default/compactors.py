@@ -5,9 +5,16 @@ from __future__ import annotations
 from typing import Any, Callable, Dict, Optional
 
 from geny_executor.core.config import ModelConfig
+from geny_executor.core.message_repair import strip_leading_orphan_tool_results
 from geny_executor.core.schema import ConfigField, ConfigSchema
 from geny_executor.core.state import PipelineState
 from geny_executor.stages.s02_context.interface import HistoryCompactor
+
+
+def _safe_recent(messages: list, keep: int) -> list:
+    """Last ``keep`` messages, with the window snapped so it never opens
+    on a tool_result whose tool_use was dropped (audit D4 / C3)."""
+    return strip_leading_orphan_tool_results(messages[-keep:]) if keep > 0 else []
 
 
 class TruncateCompactor(HistoryCompactor):
@@ -50,7 +57,7 @@ class TruncateCompactor(HistoryCompactor):
 
     async def compact(self, state: PipelineState) -> None:
         if len(state.messages) > self._keep_last:
-            state.messages = state.messages[-self._keep_last :]
+            state.messages = _safe_recent(state.messages, self._keep_last)
 
 
 class SummaryCompactor(HistoryCompactor):
@@ -116,7 +123,7 @@ class SummaryCompactor(HistoryCompactor):
             return
 
         old_count = len(state.messages) - self._keep_recent
-        recent = state.messages[-self._keep_recent :]
+        recent = _safe_recent(state.messages, self._keep_recent)
 
         summary = self._summary_text or (
             f"[Summary of {old_count} previous messages. "
@@ -213,7 +220,7 @@ class LLMSummaryCompactor(SummaryCompactor):
 
         old_count = len(state.messages) - self._keep_recent
         old_msgs = state.messages[: -self._keep_recent]
-        recent = state.messages[-self._keep_recent :]
+        recent = _safe_recent(state.messages, self._keep_recent)
 
         transcript_lines = []
         for m in old_msgs:
@@ -325,4 +332,4 @@ class SlidingWindowCompactor(HistoryCompactor):
             "role": "user",
             "content": f"[{overflow} earlier messages summarized and compacted.]",
         }
-        state.messages = [summary] + state.messages[-self._window_size :]
+        state.messages = [summary] + _safe_recent(state.messages, self._window_size)

@@ -6,7 +6,7 @@ import asyncio
 import logging
 from typing import Any, Dict, List, Optional
 
-from geny_executor.core.compaction import run_compaction
+from geny_executor.core.compaction import reconcile_recorded_index, run_compaction
 from geny_executor.core.schema import ConfigField, ConfigSchema
 from geny_executor.core.slot import StrategySlot
 from geny_executor.core.stage import Stage
@@ -422,7 +422,11 @@ class ContextStage(Stage[Any, Any]):
 
         before = len(msgs)
         replaced = before - (len(shadow.messages) + (before - n))
+        before_list = list(msgs)
         state.messages = list(shadow.messages) + msgs[n:]
+        # Keep Stage-18's STM watermark valid across the background swap
+        # (audit D3) — same contract as run_compaction's synchronous path.
+        reconcile_recorded_index(before_list, list(state.messages), state.metadata)
         for event_type, data in shadow.events:
             state.add_event(event_type, data)
         compactor_name = str(
