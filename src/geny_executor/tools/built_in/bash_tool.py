@@ -8,6 +8,35 @@ from typing import Any, Dict
 
 from geny_executor.tools.base import Tool, ToolContext, ToolResult
 
+# Host env vars the model's shell is allowed to inherit (audit S3). The
+# non-sandbox path used ``os.environ.copy()``, handing every backend
+# secret (ANTHROPIC_API_KEY, GENY_AUTH_SECRET, DB URLs, …) to any command
+# the model runs. We inherit only a benign base; the host injects anything
+# the workload legitimately needs via ``ToolContext.env_vars``. Set
+# ``GENY_BASH_INHERIT_ENV=1`` to restore the old full-inherit behavior for
+# a fully-trusted single-tenant deployment.
+_SAFE_ENV_KEYS = frozenset(
+    {
+        "PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "LANGUAGE",
+        "TERM", "TZ", "TMPDIR", "PWD", "HOSTNAME", "DISPLAY", "COLUMNS", "LINES",
+    }
+)
+
+
+def _scrubbed_env(extra: Dict[str, str] | None) -> Dict[str, str]:
+    if os.environ.get("GENY_BASH_INHERIT_ENV", "").strip() in ("1", "true", "yes"):
+        env = os.environ.copy()
+    else:
+        env = {
+            k: v
+            for k, v in os.environ.items()
+            if k in _SAFE_ENV_KEYS or k.startswith("LC_")
+        }
+        env.setdefault("PATH", "/usr/local/bin:/usr/bin:/bin")
+    if extra:
+        env.update(extra)
+    return env
+
 _DEFAULT_TIMEOUT_MS = 120_000  # 2 minutes
 _MAX_TIMEOUT_MS = 600_000  # 10 minutes
 _MAX_OUTPUT = 100_000  # characters
@@ -96,10 +125,10 @@ class BashTool(Tool):
 
         cwd = context.working_dir or None
 
-        # Build environment: inherit current env + inject context env_vars
-        env = os.environ.copy()
-        if context.env_vars:
-            env.update(context.env_vars)
+        # Build a SCRUBBED environment (audit S3): a benign base +
+        # host-injected env_vars, never the backend's full secret-bearing
+        # os.environ.
+        env = _scrubbed_env(context.env_vars)
 
         try:
             proc = await asyncio.create_subprocess_shell(

@@ -83,11 +83,15 @@ class TestTargetParsing:
 
 
 @pytest.fixture
-def html_url(tmp_path):
+def html_url(tmp_path, monkeypatch):
     """Serve a small page over HTTP from localhost (an-web fetches for
     real; a loopback server keeps the test hermetic)."""
     import http.server
     import threading
+
+    # The 2.51.1 SSRF guard blocks loopback by default; this hermetic
+    # fixture legitimately targets 127.0.0.1, so opt into the escape hatch.
+    monkeypatch.setenv("GENY_ALLOW_PRIVATE_URLS", "1")
 
     page = (
         "<html><head><title>Fixture Page</title></head><body>"

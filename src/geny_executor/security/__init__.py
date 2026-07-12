@@ -7,6 +7,7 @@ Server-Side Request Forgery attacks.
 from __future__ import annotations
 
 import ipaddress
+import os
 import socket
 import urllib.parse
 from typing import List, Optional
@@ -48,12 +49,23 @@ def validate_url(url: str, *, extra_blocked: Optional[List[str]] = None) -> str:
         The URL to validate.
     extra_blocked:
         Additional CIDR blocks to deny (e.g. ``["100.64.0.0/10"]``).
+
+    Escape hatch: ``GENY_ALLOW_PRIVATE_URLS=1`` disables the private-range
+    block (scheme + hostname are still validated) — for a fully-trusted
+    single-tenant deployment that intentionally reaches internal services,
+    and for tests that hit a localhost fixture. Off by default: the secure
+    posture blocks private/metadata targets.
     """
     parsed = urllib.parse.urlparse(url)
 
     # 1. Scheme check
     if parsed.scheme not in _ALLOWED_SCHEMES:
         raise SSRFError(f"Blocked scheme: {parsed.scheme!r} (allowed: {_ALLOWED_SCHEMES})")
+
+    if os.environ.get("GENY_ALLOW_PRIVATE_URLS", "").strip() in ("1", "true", "yes"):
+        if not parsed.hostname:
+            raise SSRFError("URL has no hostname")
+        return url
 
     # 2. Hostname present?
     hostname = parsed.hostname

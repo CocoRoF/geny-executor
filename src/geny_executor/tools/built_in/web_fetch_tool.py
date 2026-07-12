@@ -41,6 +41,7 @@ from urllib.parse import urlparse
 
 import httpx
 
+from geny_executor.security import SSRFError as _SSRFError
 from geny_executor.tools.base import Tool, ToolCapabilities, ToolContext, ToolResult
 
 logger = logging.getLogger(__name__)
@@ -200,7 +201,24 @@ def _validate_url(raw: str) -> str:
         raise ValueError(f"unsupported URL scheme: {parsed.scheme!r}")
     if not parsed.netloc:
         raise ValueError(f"URL missing host: {raw!r}")
+    # SSRF guard (audit S5): resolve the host and reject private /
+    # loopback / link-local / cloud-metadata targets so the model can't
+    # coax WebFetch into hitting 169.254.169.254 or an internal service.
+    from geny_executor.security import SSRFError, validate_url as _ssrf_validate
+
+    try:
+        _ssrf_validate(url)
+    except SSRFError as exc:
+        raise ValueError(str(exc)) from exc
     return url
+
+
+async def _ssrf_request_hook(request: Any) -> None:
+    """httpx request hook: re-validate EVERY hop (audit S5) so an
+    allowlisted URL that 302s to an internal address is still blocked."""
+    from geny_executor.security import validate_url as _ssrf_validate
+
+    _ssrf_validate(str(request.url))
 
 
 class WebFetchTool(Tool):
@@ -321,8 +339,12 @@ class WebFetchTool(Tool):
                 follow_redirects=True,
                 max_redirects=5,
                 timeout=timeout,
+                event_hooks={"request": [_ssrf_request_hook]},
             ) as client:
                 response = await client.get(url, headers=request_headers)
+        except _SSRFError as exc:
+            # A redirect hop resolved to a blocked address.
+            return ToolResult(content=f"blocked (SSRF guard): {exc}", is_error=True)
         except httpx.TimeoutException:
             return ToolResult(
                 content=f"timeout after {timeout}s fetching {url}",

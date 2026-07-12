@@ -378,6 +378,14 @@ class BrowserNavigateTool(_BrowserToolBase):
                 content=f"Unsupported URL scheme: {url!r} (http/https only)",
                 is_error=True,
             )
+        # SSRF guard (audit S5): block navigation to private / loopback /
+        # link-local / cloud-metadata addresses.
+        from geny_executor.security import SSRFError, validate_url as _ssrf_validate
+
+        try:
+            _ssrf_validate(url)
+        except SSRFError as exc:
+            return ToolResult(content=f"blocked (SSRF guard): {exc}", is_error=True)
         session = await self._session(context)
         kwargs: Dict[str, Any] = {}
         if input.get("timeout") is not None:
