@@ -18,6 +18,7 @@ behind which scopes.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Dict, List, Optional, Sequence, Set
 
@@ -254,9 +255,15 @@ class CompositeMemoryProvider(MemoryProvider):
         chunks: List[MemoryChunk] = []
         breakdown: Dict[Layer, int] = {}
 
-        if Layer.STM in query.layers and self._routing.has_layer(Layer.STM):
+        # TTFT program (2.50.0, finding B1): the four layer fetches are
+        # independent I/O (STM file reads, LTM read+search, notes search,
+        # embedding HTTP + vector store) that used to run serially in
+        # front of the first API call. Fetch concurrently; results are
+        # still applied in the fixed STM → LTM → NOTES → VECTOR order so
+        # the char-budget clip below behaves exactly as before.
+        async def _fetch_stm() -> List[MemoryChunk]:
             recent = await self._require(Layer.STM).stm().recent(n=query.max_per_layer)
-            stm_chunks = [
+            return [
                 MemoryChunk(
                     key=f"stm-{i}",
                     content=_turn_to_text(t),
@@ -265,13 +272,11 @@ class CompositeMemoryProvider(MemoryProvider):
                 )
                 for i, t in enumerate(recent)
             ]
-            chunks.extend(stm_chunks)
-            breakdown[Layer.STM] = len(stm_chunks)
 
-        if Layer.LTM in query.layers and self._routing.has_layer(Layer.LTM):
+        async def _fetch_ltm() -> List[MemoryChunk]:
             ltm = self._require(Layer.LTM).ltm()
-            main_text = await ltm.read_main()
             ltm_chunks: List[MemoryChunk] = []
+            main_text = await ltm.read_main()
             if main_text:
                 ltm_chunks.append(
                     MemoryChunk(
@@ -283,11 +288,10 @@ class CompositeMemoryProvider(MemoryProvider):
                 )
             if query.text:
                 ltm_chunks.extend(await ltm.search(query.text, limit=query.max_per_layer))
-            chunks.extend(ltm_chunks)
-            breakdown[Layer.LTM] = len(ltm_chunks)
+            return ltm_chunks
 
-        if Layer.NOTES in query.layers and self._routing.has_layer(Layer.NOTES) and query.text:
-            note_chunks = (
+        async def _fetch_notes() -> List[MemoryChunk]:
+            return list(
                 await self._require(Layer.NOTES)
                 .notes()
                 .search(
@@ -296,15 +300,30 @@ class CompositeMemoryProvider(MemoryProvider):
                     importance_floor=query.importance_floor,
                 )
             )
-            chunks.extend(note_chunks)
-            breakdown[Layer.NOTES] = len(note_chunks)
 
-        if Layer.VECTOR in query.layers and query.text:
+        async def _fetch_vector() -> Optional[List[MemoryChunk]]:
             vector = self.vector()
-            if vector is not None:
-                vec_chunks = await vector.search(query.text, top_k=query.max_per_layer)
-                chunks.extend(vec_chunks)
-                breakdown[Layer.VECTOR] = len(vec_chunks)
+            if vector is None:
+                return None  # no store attached — layer absent from breakdown
+            return list(await vector.search(query.text, top_k=query.max_per_layer))
+
+        plan: List[tuple] = []
+        if Layer.STM in query.layers and self._routing.has_layer(Layer.STM):
+            plan.append((Layer.STM, _fetch_stm()))
+        if Layer.LTM in query.layers and self._routing.has_layer(Layer.LTM):
+            plan.append((Layer.LTM, _fetch_ltm()))
+        if Layer.NOTES in query.layers and self._routing.has_layer(Layer.NOTES) and query.text:
+            plan.append((Layer.NOTES, _fetch_notes()))
+        if Layer.VECTOR in query.layers and query.text:
+            plan.append((Layer.VECTOR, _fetch_vector()))
+
+        if plan:
+            fetched = await asyncio.gather(*(coro for _, coro in plan))
+            for (layer, _), layer_chunks in zip(plan, fetched):
+                if layer_chunks is None:
+                    continue  # layer opted out (e.g. no vector store attached)
+                chunks.extend(layer_chunks)
+                breakdown[layer] = len(layer_chunks)
 
         # ── Graph-aware additive expansion (opt-in via hooks.graph_aware) ──
         # Append graph-connected notes (Personalized PageRank over the

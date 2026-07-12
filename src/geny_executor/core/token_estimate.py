@@ -69,6 +69,40 @@ def estimate_message_tokens(messages: List[Any]) -> int:
     )
 
 
+#: ``state.shared`` slot for the per-turn estimate memo (TTFT program).
+_ESTIMATE_MEMO_KEY = "_prompt_tokens_memo"
+
+
+def _estimate_fingerprint(state: Any) -> tuple:
+    """Cheap identity of the inputs the estimate depends on.
+
+    The estimate is a full scan of system + every message + every tool
+    schema — O(context). Stage 2's proactive check and Stage 4's budget
+    guard both scan the SAME unchanged state within one iteration, so a
+    fingerprint memo halves the per-iteration cost (2026-07-12 TTFT
+    audit, finding B4). Mutations that matter all move the fingerprint:
+    appends change the count, compaction replaces the head message
+    (new object id), Stage 3 rebuilding system changes its length, and
+    a tool-registry rebuild changes the tools count. In-place content
+    edits with identical length CAN slip through — acceptable for an
+    estimator that is documented as ±rough.
+    """
+    messages = getattr(state, "messages", []) or []
+    system = getattr(state, "system", "") or ""
+    tools = getattr(state, "tools", None) or []
+    if isinstance(system, str):
+        sys_len = len(system)
+    else:
+        sys_len = sum(len(str(b)) for b in system)
+    return (
+        len(messages),
+        id(messages[0]) if messages else 0,
+        id(messages[-1]) if messages else 0,
+        sys_len,
+        len(tools),
+    )
+
+
 def estimate_prompt_tokens(state: Any) -> int:
     """Rough INPUT-token estimate for the next API call.
 
@@ -78,10 +112,24 @@ def estimate_prompt_tokens(state: Any) -> int:
     compaction trigger and the Stage 4 token-budget guard so that
     compacting ``state.messages`` measurably lowers the same number the
     guard checks.
+
+    Memoized per state via a fingerprint in ``state.shared`` (see
+    ``_estimate_fingerprint``) so repeat callers within one iteration
+    don't re-scan an unchanged context.
     """
+    shared = getattr(state, "shared", None)
+    fingerprint = _estimate_fingerprint(state)
+    if isinstance(shared, dict):
+        memo = shared.get(_ESTIMATE_MEMO_KEY)
+        if isinstance(memo, tuple) and len(memo) == 2 and memo[0] == fingerprint:
+            return memo[1]
+
     total = _estimate_content(getattr(state, "system", "") or "")
     total += estimate_message_tokens(getattr(state, "messages", []) or [])
     tools = getattr(state, "tools", None)
     if tools:
         total += sum(_estimate_text(str(tool)) for tool in tools)
+
+    if isinstance(shared, dict):
+        shared[_ESTIMATE_MEMO_KEY] = (fingerprint, total)
     return total

@@ -26,8 +26,9 @@ hooks bag because it is per-turn and not policy.
 
 from __future__ import annotations
 
+import asyncio
 import logging
-from typing import Awaitable, Callable, Dict, List, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from geny_executor.core.state import PipelineState
 from geny_executor.memory.provider import MemoryHooks, MemoryProvider
@@ -35,6 +36,10 @@ from geny_executor.stages.s02_context.interface import MemoryRetriever
 from geny_executor.stages.s02_context.types import MemoryChunk
 
 logger = logging.getLogger(__name__)
+
+# Sentinel distinguishing "layer not prefetched — fetch inline" from
+# "prefetched and the fetch returned/failed to None".
+_UNFETCHED: Any = object()
 
 
 def _layer_cap(hooks: MemoryHooks, layer: str) -> int:
@@ -106,26 +111,40 @@ class MemoryAwareRetriever(MemoryRetriever):
             breakdown[layer] = sum(1 for c in chunks if (c.metadata or {}).get("layer") == layer)
             del before  # parameter present for symmetry only
 
+        # TTFT program (2.50.0): fetch every layer's provider data
+        # CONCURRENTLY, then apply in the same order/budget as before —
+        # identical output, wall-clock capped by the slowest single
+        # fetch instead of the sum of up to nine serial round-trips.
+        pf = await self._prefetch_layers(search_query, hooks)
+
         # ── L0: recent STM tail ─────────────────────────────────────
         if hooks.recent_turns > 0:
             before = total
-            total = await self._load_recent_turns(chunks, total, budget, hooks)
+            total = await self._load_recent_turns(
+                chunks, total, budget, hooks, prefetched=pf.get("recent", _UNFETCHED)
+            )
             _record("recent_turns", before)
 
         # ── L1: session summary (D1: stage 19 writes at session close) ──
         before = total
-        total = await self._load_session_summary(chunks, total, budget, hooks)
+        total = await self._load_session_summary(
+            chunks, total, budget, hooks, prefetched=pf.get("summary", _UNFETCHED)
+        )
         _record("session_summary", before)
 
         # ── L1.5: pinned facts (always-inject, host-policy category) ──
         before = total
-        total = await self._load_pinned_facts(chunks, total, budget, hooks)
+        total = await self._load_pinned_facts(
+            chunks, total, budget, hooks, prefetched=pf.get("pinned", _UNFETCHED)
+        )
         _record("pinned", before)
 
         # ── L1.7: vault map (lightweight directory hint) ────────────
         if hooks.slim_mode or hooks.always_render_vault_map:
             before = total
-            total = await self._load_vault_map(chunks, total, budget, hooks)
+            total = await self._load_vault_map(
+                chunks, total, budget, hooks, prefetched=pf.get("vault_map", _UNFETCHED)
+            )
             _record("vault_map", before)
 
         if hooks.slim_mode:
@@ -134,18 +153,35 @@ class MemoryAwareRetriever(MemoryRetriever):
 
         # ── L2: LTM main body ───────────────────────────────────────
         before = total
-        total = await self._load_ltm_main(chunks, total, budget, hooks)
+        total = await self._load_ltm_main(
+            chunks, total, budget, hooks, prefetched=pf.get("ltm_main", _UNFETCHED)
+        )
         _record("ltm_main", before)
 
         # ── L3: vector semantic search ──────────────────────────────
         if hooks.enable_vector_search:
             before = total
-            total = await self._load_vector(chunks, search_query, total, budget, hooks)
+            total = await self._load_vector(
+                chunks,
+                search_query,
+                total,
+                budget,
+                hooks,
+                prefetched=pf.get("vector", _UNFETCHED),
+            )
             _record("vector", before)
 
         # ── L4: keyword search (notes + LTM) ────────────────────────
         before = total
-        total = await self._load_keyword(chunks, search_query, total, budget, hooks)
+        total = await self._load_keyword(
+            chunks,
+            search_query,
+            total,
+            budget,
+            hooks,
+            prefetched_notes=pf.get("kw_notes", _UNFETCHED),
+            prefetched_ltm=pf.get("kw_ltm", _UNFETCHED),
+        )
         _record("keyword", before)
 
         # ── L5: backlink expansion (graph-driven) ───────────────────
@@ -155,7 +191,14 @@ class MemoryAwareRetriever(MemoryRetriever):
 
         # ── L6: curated knowledge (cross-scope) ─────────────────────
         before = total
-        total = await self._load_curated(chunks, search_query, total, budget, hooks)
+        total = await self._load_curated(
+            chunks,
+            search_query,
+            total,
+            budget,
+            hooks,
+            prefetched=pf.get("curated", _UNFETCHED),
+        )
         _record("curated", before)
 
         self._emit_breakdown(state, query, breakdown, total, len(chunks), slim=False)
@@ -169,6 +212,108 @@ class MemoryAwareRetriever(MemoryRetriever):
         )
         return chunks
 
+    # ── concurrent fetch phase (TTFT program, 2.50.0) ────────────────
+
+    async def _prefetch_layers(self, query: str, hooks: MemoryHooks) -> Dict[str, Any]:
+        """Fetch raw provider data for every eligible layer concurrently.
+
+        The 2026-07-12 TTFT audit (finding B1) measured stage-2 retrieval
+        serially awaiting up to nine provider round-trips — embedding
+        HTTP, vector store, and file I/O — directly in front of the first
+        API call. The fetches are mutually independent; only the
+        budget-ordered APPLICATION is order-sensitive, and that part is
+        unchanged. Layers the budget would later skip may be fetched
+        speculatively and discarded — bounded waste, and the wall-clock
+        is capped by the slowest single fetch either way.
+
+        Each fetch is failure-isolated to ``None``, matching the original
+        per-layer ``except → skip`` behavior exactly.
+        """
+        names: List[str] = []
+        tasks: List[Awaitable[Any]] = []
+
+        def _add(name: str, factory: Callable[[], Awaitable[Any]]) -> None:
+            async def _safe() -> Any:
+                try:
+                    return await factory()
+                except Exception:  # noqa: BLE001 — a broken layer never breaks retrieval
+                    logger.debug("memory_aware: prefetch %s failed", name, exc_info=True)
+                    return None
+
+            names.append(name)
+            tasks.append(_safe())
+
+        if hooks.recent_turns > 0:
+            _add("recent", lambda: self._provider.stm().recent(n=hooks.recent_turns))
+
+        async def _fetch_summary() -> Any:
+            reader = getattr(self._provider.stm(), "read_summary", None)
+            if reader is None:
+                return None
+            return await reader()
+
+        _add("summary", _fetch_summary)
+
+        pinned_cap = _layer_cap(hooks, "pinned")
+        if pinned_cap > 0:
+            _add(
+                "pinned",
+                lambda: self._provider.notes().load_pinned(
+                    category=hooks.pin_category, max_chars=pinned_cap
+                ),
+            )
+
+        if hooks.slim_mode or hooks.always_render_vault_map:
+            _add(
+                "vault_map",
+                lambda: self._provider.index().render_vault_map(
+                    category_descriptions=hooks.vault_descriptions or None,
+                ),
+            )
+
+        if not hooks.slim_mode:
+            _add("ltm_main", lambda: self._provider.ltm().read_main())
+
+            if hooks.enable_vector_search:
+
+                async def _fetch_vector() -> Any:
+                    vec = self._provider.vector()
+                    if vec is None:
+                        return None
+                    return await vec.search(query, top_k=hooks.max_results)
+
+                _add("vector", _fetch_vector)
+
+            _add("kw_notes", lambda: self._provider.notes().search(query, limit=hooks.max_results))
+            _add("kw_ltm", lambda: self._provider.ltm().search(query, limit=hooks.max_results))
+
+            async def _fetch_curated() -> Any:
+                curated = self._provider.curated()
+                if curated is None:
+                    return None
+                hits: List[Any] = []
+                try:
+                    curated_vector = curated.vector()
+                except Exception:  # noqa: BLE001
+                    curated_vector = None
+                if curated_vector is not None:
+                    try:
+                        hits.extend(await curated_vector.search(query, top_k=hooks.max_results))
+                    except Exception:  # noqa: BLE001
+                        logger.debug("memory_aware: curated vector failed", exc_info=True)
+                try:
+                    hits.extend(await curated.notes().search(query, limit=hooks.max_results))
+                except Exception:  # noqa: BLE001
+                    logger.debug("memory_aware: curated keyword failed", exc_info=True)
+                return hits
+
+            _add("curated", _fetch_curated)
+
+        if not tasks:
+            return {}
+        results = await asyncio.gather(*tasks)
+        return dict(zip(names, results))
+
     # ── L0 ──────────────────────────────────────────────────────────
 
     async def _load_recent_turns(
@@ -177,13 +322,18 @@ class MemoryAwareRetriever(MemoryRetriever):
         total: int,
         budget: int,
         hooks: MemoryHooks,
+        *,
+        prefetched: Any = _UNFETCHED,
     ) -> int:
-        try:
-            stm = self._provider.stm()
-            turns = await stm.recent(n=hooks.recent_turns)
-        except Exception:  # noqa: BLE001
-            logger.debug("memory_aware: stm.recent failed", exc_info=True)
-            return total
+        if prefetched is not _UNFETCHED:
+            turns = prefetched
+        else:
+            try:
+                stm = self._provider.stm()
+                turns = await stm.recent(n=hooks.recent_turns)
+            except Exception:  # noqa: BLE001
+                logger.debug("memory_aware: stm.recent failed", exc_info=True)
+                return total
         if not turns:
             return total
 
@@ -230,6 +380,8 @@ class MemoryAwareRetriever(MemoryRetriever):
         total: int,
         budget: int,
         hooks: MemoryHooks,
+        *,
+        prefetched: Any = _UNFETCHED,
     ) -> int:
         """Read the host-managed `transcripts/summary.md`.
 
@@ -237,15 +389,18 @@ class MemoryAwareRetriever(MemoryRetriever):
         session-close run the file may not exist — the call is then a
         silent no-op via the protocol's optional ``read_summary``.
         """
-        try:
-            stm = self._provider.stm()
-            reader = getattr(stm, "read_summary", None)
-            if reader is None:
+        if prefetched is not _UNFETCHED:
+            summary = prefetched
+        else:
+            try:
+                stm = self._provider.stm()
+                reader = getattr(stm, "read_summary", None)
+                if reader is None:
+                    return total
+                summary = await reader()
+            except Exception:  # noqa: BLE001
+                logger.debug("memory_aware: stm.read_summary failed", exc_info=True)
                 return total
-            summary = await reader()
-        except Exception:  # noqa: BLE001
-            logger.debug("memory_aware: stm.read_summary failed", exc_info=True)
-            return total
         if not summary:
             return total
         cap = _layer_cap(hooks, "session_summary") or budget
@@ -271,16 +426,21 @@ class MemoryAwareRetriever(MemoryRetriever):
         total: int,
         budget: int,
         hooks: MemoryHooks,
+        *,
+        prefetched: Any = _UNFETCHED,
     ) -> int:
         cap = _layer_cap(hooks, "pinned")
         if cap <= 0:
             return total
-        try:
-            notes = self._provider.notes()
-            content = await notes.load_pinned(category=hooks.pin_category, max_chars=cap)
-        except Exception:  # noqa: BLE001
-            logger.debug("memory_aware: notes.load_pinned failed", exc_info=True)
-            return total
+        if prefetched is not _UNFETCHED:
+            content = prefetched
+        else:
+            try:
+                notes = self._provider.notes()
+                content = await notes.load_pinned(category=hooks.pin_category, max_chars=cap)
+            except Exception:  # noqa: BLE001
+                logger.debug("memory_aware: notes.load_pinned failed", exc_info=True)
+                return total
         if not content or not str(content).strip():
             return total
         body = str(content)
@@ -309,15 +469,20 @@ class MemoryAwareRetriever(MemoryRetriever):
         total: int,
         budget: int,
         hooks: MemoryHooks,
+        *,
+        prefetched: Any = _UNFETCHED,
     ) -> int:
-        try:
-            idx = self._provider.index()
-            rendered = await idx.render_vault_map(
-                category_descriptions=hooks.vault_descriptions or None,
-            )
-        except Exception:  # noqa: BLE001
-            logger.debug("memory_aware: index.render_vault_map failed", exc_info=True)
-            return total
+        if prefetched is not _UNFETCHED:
+            rendered = prefetched
+        else:
+            try:
+                idx = self._provider.index()
+                rendered = await idx.render_vault_map(
+                    category_descriptions=hooks.vault_descriptions or None,
+                )
+            except Exception:  # noqa: BLE001
+                logger.debug("memory_aware: index.render_vault_map failed", exc_info=True)
+                return total
         if not rendered:
             return total
         cap = hooks.vault_map_max_chars or _layer_cap(hooks, "vault_map") or budget
@@ -343,13 +508,18 @@ class MemoryAwareRetriever(MemoryRetriever):
         total: int,
         budget: int,
         hooks: MemoryHooks,
+        *,
+        prefetched: Any = _UNFETCHED,
     ) -> int:
-        try:
-            ltm = self._provider.ltm()
-            body = await ltm.read_main()
-        except Exception:  # noqa: BLE001
-            logger.debug("memory_aware: ltm.read_main failed", exc_info=True)
-            return total
+        if prefetched is not _UNFETCHED:
+            body = prefetched
+        else:
+            try:
+                ltm = self._provider.ltm()
+                body = await ltm.read_main()
+            except Exception:  # noqa: BLE001
+                logger.debug("memory_aware: ltm.read_main failed", exc_info=True)
+                return total
         if not body or not str(body).strip():
             return total
         cap = _layer_cap(hooks, "ltm_main") or budget
@@ -376,17 +546,22 @@ class MemoryAwareRetriever(MemoryRetriever):
         total: int,
         budget: int,
         hooks: MemoryHooks,
+        *,
+        prefetched: Any = _UNFETCHED,
     ) -> int:
         if budget - total <= 200:
             return total
-        try:
-            vec = self._provider.vector()
-            if vec is None:
+        if prefetched is not _UNFETCHED:
+            hits = prefetched
+        else:
+            try:
+                vec = self._provider.vector()
+                if vec is None:
+                    return total
+                hits = await vec.search(query, top_k=hooks.max_results)
+            except Exception:  # noqa: BLE001
+                logger.debug("memory_aware: vector.search failed", exc_info=True)
                 return total
-            hits = await vec.search(query, top_k=hooks.max_results)
-        except Exception:  # noqa: BLE001
-            logger.debug("memory_aware: vector.search failed", exc_info=True)
-            return total
         if not hits:
             return total
         already = {c.key for c in chunks}
@@ -418,6 +593,9 @@ class MemoryAwareRetriever(MemoryRetriever):
         total: int,
         budget: int,
         hooks: MemoryHooks,
+        *,
+        prefetched_notes: Any = _UNFETCHED,
+        prefetched_ltm: Any = _UNFETCHED,
     ) -> int:
         if budget - total <= 200:
             return total
@@ -426,17 +604,23 @@ class MemoryAwareRetriever(MemoryRetriever):
         # ``List[MemoryChunk]`` per the protocol. Boost fields live on
         # the chunk's ``metadata``.
         results: List[MemoryChunk] = []
-        try:
-            notes = self._provider.notes()
-            results.extend(list(await notes.search(query, limit=hooks.max_results)))
-        except Exception:  # noqa: BLE001
-            logger.debug("memory_aware: notes.search failed", exc_info=True)
-        try:
-            ltm = self._provider.ltm()
-            ltm_hits = await ltm.search(query, limit=hooks.max_results)
-            results.extend(list(ltm_hits or []))
-        except Exception:  # noqa: BLE001
-            logger.debug("memory_aware: ltm.search failed", exc_info=True)
+        if prefetched_notes is not _UNFETCHED:
+            results.extend(list(prefetched_notes or []))
+        else:
+            try:
+                notes = self._provider.notes()
+                results.extend(list(await notes.search(query, limit=hooks.max_results)))
+            except Exception:  # noqa: BLE001
+                logger.debug("memory_aware: notes.search failed", exc_info=True)
+        if prefetched_ltm is not _UNFETCHED:
+            results.extend(list(prefetched_ltm or []))
+        else:
+            try:
+                ltm = self._provider.ltm()
+                ltm_hits = await ltm.search(query, limit=hooks.max_results)
+                results.extend(list(ltm_hits or []))
+            except Exception:  # noqa: BLE001
+                logger.debug("memory_aware: ltm.search failed", exc_info=True)
 
         if not results:
             return total
@@ -553,45 +737,50 @@ class MemoryAwareRetriever(MemoryRetriever):
         total: int,
         budget: int,
         hooks: MemoryHooks,
+        *,
+        prefetched: Any = _UNFETCHED,
     ) -> int:
         if budget - total <= 200:
             return total
-        try:
-            curated = self._provider.curated()
-            if curated is None:
-                return total
-            hits = []
-            # Semantic plane first — a curated/knowledge store with a real
-            # vector backend (e.g. qdrant document chunks) answers meaning
-            # queries the keyword scan can't. Best-effort per plane.
+        if prefetched is not _UNFETCHED:
+            hits = prefetched
+        else:
             try:
-                curated_vector = curated.vector()
-            except Exception:  # noqa: BLE001
-                curated_vector = None
-            if curated_vector is not None:
+                curated = self._provider.curated()
+                if curated is None:
+                    return total
+                hits = []
+                # Semantic plane first — a curated/knowledge store with a real
+                # vector backend (e.g. qdrant document chunks) answers meaning
+                # queries the keyword scan can't. Best-effort per plane.
+                try:
+                    curated_vector = curated.vector()
+                except Exception:  # noqa: BLE001
+                    curated_vector = None
+                if curated_vector is not None:
+                    try:
+                        hits.extend(
+                            await curated_vector.search(
+                                query, top_k=hooks.max_results,
+                            )
+                        )
+                    except Exception:  # noqa: BLE001
+                        logger.debug(
+                            "memory_aware: curated vector failed", exc_info=True,
+                        )
                 try:
                     hits.extend(
-                        await curated_vector.search(
-                            query, top_k=hooks.max_results,
+                        await curated.notes().search(
+                            query, limit=hooks.max_results,
                         )
                     )
                 except Exception:  # noqa: BLE001
                     logger.debug(
-                        "memory_aware: curated vector failed", exc_info=True,
+                        "memory_aware: curated keyword failed", exc_info=True,
                     )
-            try:
-                hits.extend(
-                    await curated.notes().search(
-                        query, limit=hooks.max_results,
-                    )
-                )
             except Exception:  # noqa: BLE001
-                logger.debug(
-                    "memory_aware: curated keyword failed", exc_info=True,
-                )
-        except Exception:  # noqa: BLE001
-            logger.debug("memory_aware: curated search failed", exc_info=True)
-            return total
+                logger.debug("memory_aware: curated search failed", exc_info=True)
+                return total
         if not hits:
             return total
         hits.sort(key=lambda h: h.relevance_score, reverse=True)

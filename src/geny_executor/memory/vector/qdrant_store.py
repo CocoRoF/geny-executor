@@ -30,7 +30,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from geny_executor.memory.embedding.client import EmbeddingClient
+from geny_executor.memory.embedding.client import EmbeddingClient, QueryEmbedLRU
 from geny_executor.memory.provider import (
     EmbeddingDescriptor,
     Layer,
@@ -102,6 +102,7 @@ class QdrantVectorStore:
         self._preview_chars = max(200, int(preview_chars))
         self._qdrant: Optional[Any] = None
         self._collection_ready = False
+        self._query_embed_cache = QueryEmbedLRU()
 
     # ── VectorHandle: descriptor ─────────────────────────────────────
 
@@ -252,11 +253,15 @@ class QdrantVectorStore:
             return []
         try:
             await self._ensure_collection()
-            vectors = await self._client.embed([query])
+            query_vec = self._query_embed_cache.get(query)
+            if query_vec is None:
+                vectors = await self._client.embed([query])
+                query_vec = list(vectors[0])
+                self._query_embed_cache.put(query, query_vec)
             qdrant = self._get_qdrant()
             hits = await qdrant.query_points(
                 collection_name=self._collection,
-                query=list(vectors[0]),
+                query=query_vec,
                 limit=max(1, int(top_k)),
                 score_threshold=float(threshold) if threshold > 0 else None,
                 with_payload=True,

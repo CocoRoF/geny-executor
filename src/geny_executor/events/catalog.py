@@ -96,6 +96,10 @@ class EventTypes(str, Enum):
     CONTEXT_COMPACTED = "context.compacted"
     CONTEXT_COMPACTION_FAILED = "context.compaction_failed"
     CONTEXT_COMPACTION_RECORD_FAILED = "context.compaction_record_failed"
+    # TTFT program (2.50.0): retrieval bounded / LLM compaction moved
+    # off the first-token critical path.
+    CONTEXT_RETRIEVAL_TIMEOUT = "context.retrieval_timeout"
+    CONTEXT_COMPACTION_SCHEDULED = "context.compaction_scheduled"
     MEMORY_COMPACTION_SUMMARIZED = "memory.compaction.summarized"
     MEMORY_COMPACTION_LLM_FAILED = "memory.compaction.llm_failed"
 
@@ -337,10 +341,17 @@ PAYLOADS: Dict[EventTypes, Dict[str, str]] = {
     },
     EventTypes.CONTEXT_COMPACTED: {
         "strategy": "str — compactor name/class",
-        "trigger": "str? — 'proactive' (Stage 2) | 'guard' (Stage 4)",
+        "trigger": "str? — 'proactive' (Stage 2) | 'guard' (Stage 4) | 'background' (applied next turn)",
         "messages_before": "int?",
         "messages_after": "int?",
         "saved_tokens_estimate": "int?",
+    },
+    EventTypes.CONTEXT_RETRIEVAL_TIMEOUT: {
+        "timeout_s": "float — the retrieval_timeout_s bound that fired; the turn proceeds without memory",
+    },
+    EventTypes.CONTEXT_COMPACTION_SCHEDULED: {
+        "compactor": "str — compactor name/class",
+        "snapshot_messages": "int — history length the background summary covers",
     },
     EventTypes.CONTEXT_COMPACTION_FAILED: {
         "compactor": "str",

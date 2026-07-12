@@ -136,6 +136,29 @@ async def _probe_s03_template_vars() -> None:
     assert "Liveness" in str(state.system)
 
 
+async def _probe_s02_retrieval_timeout_s() -> None:
+    """retrieval_timeout_s bounds memory retrieval — a hung retriever
+    degrades to a memory-less turn instead of stalling the first token."""
+    import asyncio
+
+    from geny_executor.stages.s02_context import ContextStage
+
+    class _HangingRetriever:
+        name = "hanging"
+        description = "never returns"
+
+        async def retrieve(self, query, state):
+            await asyncio.sleep(30)
+            return []
+
+    stage = ContextStage(retriever=_HangingRetriever())
+    stage.update_config({"retrieval_timeout_s": 0.05})
+    state = PipelineState()
+    state.messages.append({"role": "user", "content": "hello"})
+    await asyncio.wait_for(stage.execute("in", state), timeout=5)
+    assert any(e["type"] == "context.retrieval_timeout" for e in state.events)
+
+
 async def _probe_s03_volatile_placement() -> None:
     """volatile_placement decides whether volatile blocks (clock/memory)
     leave the system prompt (turn_context) or stay in it (system)."""
@@ -434,6 +457,7 @@ async def _probe_s18_persistence_path() -> None:
 
 LIVENESS: Dict[Tuple[int, str], Entry] = {
     (2, "stateless"): Probe(_probe_s02_stateless),
+    (2, "retrieval_timeout_s"): Probe(_probe_s02_retrieval_timeout_s),
     (3, "prompt"): Probe(_probe_s03_prompt),
     (3, "template_vars"): Probe(_probe_s03_template_vars),
     (3, "volatile_placement"): Probe(_probe_s03_volatile_placement),

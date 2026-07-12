@@ -48,6 +48,45 @@ logger = logging.getLogger(__name__)
 EMBEDDING_ERROR_CATEGORIES = frozenset({"auth", "quota", "transient", "unknown"})
 
 
+class QueryEmbedLRU:
+    """Tiny LRU for single-QUERY embeddings (TTFT program, 2.50.0).
+
+    Stage-2 retrieval embeds the latest user message before every main
+    LLM call, and the same query text recurs — the retriever and the
+    composite provider both search on it within one turn, and identical
+    queries repeat across turns. Embeddings are deterministic for a
+    given model, so a small text→vector map removes repeat HTTP
+    round-trips from the TTFT-critical path.
+
+    Scope: attach one instance per vector-store (the store owns exactly
+    one embedding client, so the model is implicit in the key). Only
+    the single-text SEARCH path should use it — document/batch indexing
+    embeds novel text and would just churn the cache.
+
+    Not coroutine-locked on purpose: two concurrent misses on the same
+    text both embed and both store the identical vector — wasteful once,
+    never wrong.
+    """
+
+    def __init__(self, maxsize: int = 64):
+        from collections import OrderedDict
+
+        self._max = max(1, int(maxsize))
+        self._data: "OrderedDict[str, List[float]]" = OrderedDict()
+
+    def get(self, text: str) -> Optional[List[float]]:
+        vec = self._data.get(text)
+        if vec is not None:
+            self._data.move_to_end(text)
+        return vec
+
+    def put(self, text: str, vector: Sequence[float]) -> None:
+        self._data[text] = list(vector)
+        self._data.move_to_end(text)
+        while len(self._data) > self._max:
+            self._data.popitem(last=False)
+
+
 @runtime_checkable
 class EmbeddingClient(Protocol):
     """Asynchronous embedding backend.

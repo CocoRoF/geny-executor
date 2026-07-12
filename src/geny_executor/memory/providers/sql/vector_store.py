@@ -18,7 +18,7 @@ import struct
 from datetime import datetime, timezone
 from typing import Any, List, Optional, Sequence, Tuple
 
-from geny_executor.memory.embedding.client import EmbeddingClient
+from geny_executor.memory.embedding.client import EmbeddingClient, QueryEmbedLRU
 from geny_executor.memory.provider import (
     EmbeddingDescriptor,
     Layer,
@@ -45,6 +45,7 @@ class _SQLVectorStore:
         self._client = client
         self._notes_text_lookup = notes_text_lookup
         self._backend_name = backend_name
+        self._query_embed_cache = QueryEmbedLRU()
 
     # ── VectorHandle contract ───────────────────────────────────────
 
@@ -90,7 +91,10 @@ class _SQLVectorStore:
         )
         if not rows:
             return []
-        query_vec = (await self._client.embed([text]))[0]
+        query_vec = self._query_embed_cache.get(text)
+        if query_vec is None:
+            query_vec = (await self._client.embed([text]))[0]
+            self._query_embed_cache.put(text, query_vec)
         self._validate_dim(query_vec)
         scored: List[Tuple[float, Any, Sequence[float]]] = []
         for row in rows:
