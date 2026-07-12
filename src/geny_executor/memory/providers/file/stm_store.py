@@ -18,6 +18,7 @@ fsync-on-write and the ephemeral provider doesn't offer it either.
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime, tzinfo
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -27,7 +28,12 @@ from geny_executor.memory.provider import MemoryHooks, RecordReceipt, Turn
 from geny_executor.memory.providers.file.timezone import now_in
 
 
+logger = logging.getLogger(__name__)
+
 MAX_STM_LINES = 2000
+#: Enforce the line cap every N appends (not every append — the cap
+#: re-reads the whole jsonl). Bounds the file to MAX_STM_LINES + this.
+_CAP_CHECK_EVERY = 200
 
 
 class _JSONLSTMStore:
@@ -52,6 +58,11 @@ class _JSONLSTMStore:
         self._tz = tz
         self._lock = LoopAgnosticLock()
         self._hooks = hooks or MemoryHooks()
+        # Appends since the last line-cap enforcement (audit M2): the cap
+        # runs periodically rather than every append (which would re-read
+        # the whole jsonl each time), bounding the file to
+        # MAX_STM_LINES + _CAP_CHECK_EVERY without per-append O(n) cost.
+        self._appends_since_cap = 0
 
     # ── NotesHandle contract ────────────────────────────────────────
 
@@ -72,6 +83,15 @@ class _JSONLSTMStore:
             turn,
             RecordReceipt(),
         )
+        # Periodically bound the file so recent()/search() (which read the
+        # whole jsonl) can't grow unboundedly over a long session (M2).
+        self._appends_since_cap += 1
+        if self._appends_since_cap >= _CAP_CHECK_EVERY:
+            self._appends_since_cap = 0
+            try:
+                await self.enforce_line_cap()
+            except Exception:  # noqa: BLE001 — capping is best-effort
+                logger.debug("stm: enforce_line_cap failed", exc_info=True)
 
     async def append_event(
         self,

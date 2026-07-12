@@ -42,6 +42,28 @@ logger = logging.getLogger(__name__)
 _UNFETCHED: Any = object()
 
 
+def _dedup_key(chunk: MemoryChunk) -> str:
+    """Cross-layer identity of a chunk for dedup (audit M3).
+
+    The same note can arrive as a bare ``filename`` from the keyword
+    plane and as ``vector:<filename>#<chunk>`` from qdrant — different
+    ``key`` strings, so the pre-2.51 ``{c.key}`` dedup let the same note
+    into the prompt twice. Normalize on the filename: prefer the metadata
+    ``filename``, else strip the ``vector:`` prefix and ``#<chunk>``
+    suffix.
+    """
+    meta = chunk.metadata or {}
+    fn = meta.get("filename")
+    if fn:
+        return str(fn)
+    k = chunk.key or ""
+    if k.startswith("vector:"):
+        k = k[len("vector:") :]
+    if "#" in k:
+        k = k.rsplit("#", 1)[0]
+    return k
+
+
 def _layer_cap(hooks: MemoryHooks, layer: str) -> int:
     """Resolve the per-layer character cap from the hooks bag."""
     ratio = hooks.layer_budget_ratio.get(layer, 0.0)
@@ -564,10 +586,10 @@ class MemoryAwareRetriever(MemoryRetriever):
                 return total
         if not hits:
             return total
-        already = {c.key for c in chunks}
+        already = {_dedup_key(c) for c in chunks}
         for h in hits:
             text = h.content or ""
-            if not text or h.key in already:
+            if not text or _dedup_key(h) in already:
                 continue
             if total + len(text) > budget:
                 break
@@ -581,7 +603,7 @@ class MemoryAwareRetriever(MemoryRetriever):
                 )
             )
             total += len(text)
-            already.add(h.key)
+            already.add(_dedup_key(h))
         return total
 
     # ── L4 ──────────────────────────────────────────────────────────
@@ -647,12 +669,12 @@ class MemoryAwareRetriever(MemoryRetriever):
 
         results.sort(key=lambda c: c.relevance_score, reverse=True)
 
-        already = {c.key for c in chunks}
+        already = {_dedup_key(c) for c in chunks}
         for r in results:
             text = r.content or ""
             if not text:
                 continue
-            if r.key in already:
+            if _dedup_key(r) in already:
                 continue
             if total + len(text) > budget:
                 break
@@ -666,7 +688,7 @@ class MemoryAwareRetriever(MemoryRetriever):
                 )
             )
             total += len(text)
-            already.add(r.key)
+            already.add(_dedup_key(r))
         return total
 
     # ── L5 ──────────────────────────────────────────────────────────
@@ -699,33 +721,53 @@ class MemoryAwareRetriever(MemoryRetriever):
             adj.setdefault(str(src), []).append(str(tgt))
 
         already = {c.key for c in chunks}
-        seeds = [c.key for c in list(chunks)]
-        for seed in seeds:
+        # Collect the unique unread backlink targets (audit M5): the
+        # pre-2.51 code read them one-by-one with a serial ``await`` per
+        # target, re-introducing exactly the round-trip latency the B1
+        # program removed elsewhere — and on the TTFT-critical path, since
+        # backlinks can't be prefetched (their seeds are the selected
+        # chunks). Read them concurrently, bounded, then apply in a
+        # deterministic (seed, target) order.
+        seen_targets: set = set(already)
+        planned: List[tuple] = []  # (seed, target)
+        for seed in [c.key for c in list(chunks)]:
             for tgt in adj.get(seed, []):
-                if tgt in already:
+                if tgt in seen_targets:
                     continue
-                try:
-                    note = await notes.read(tgt)
-                except Exception:  # noqa: BLE001
-                    continue
-                if note is None:
-                    continue
-                body = (getattr(note, "body", "") or "")[:800]
-                if not body:
-                    continue
-                if total + len(body) > budget:
-                    return total
-                chunks.append(
-                    MemoryChunk(
-                        key=tgt,
-                        content=body,
-                        source="backlink",
-                        relevance_score=0.5,
-                        metadata={"layer": "backlink", "linked_from": seed},
-                    )
+                seen_targets.add(tgt)
+                planned.append((seed, tgt))
+        cap = max(0, int(getattr(hooks, "backlink_max", 0) or 0)) or 24
+        planned = planned[:cap]
+        if not planned:
+            return total
+
+        async def _read(tgt: str):
+            try:
+                return await notes.read(tgt)
+            except Exception:  # noqa: BLE001 — one bad note never breaks retrieval
+                return None
+
+        notes_read = await asyncio.gather(*(_read(t) for _, t in planned))
+
+        for (seed, tgt), note in zip(planned, notes_read):
+            if note is None or tgt in already:
+                continue
+            body = (getattr(note, "body", "") or "")[:800]
+            if not body:
+                continue
+            if total + len(body) > budget:
+                return total
+            chunks.append(
+                MemoryChunk(
+                    key=tgt,
+                    content=body,
+                    source="backlink",
+                    relevance_score=0.5,
+                    metadata={"layer": "backlink", "linked_from": seed},
                 )
-                total += len(body)
-                already.add(tgt)
+            )
+            total += len(body)
+            already.add(tgt)
         return total
 
     # ── L6 ──────────────────────────────────────────────────────────
@@ -784,10 +826,10 @@ class MemoryAwareRetriever(MemoryRetriever):
         if not hits:
             return total
         hits.sort(key=lambda h: h.relevance_score, reverse=True)
-        already = {c.key for c in chunks}
+        already = {_dedup_key(c) for c in chunks}
         for h in hits:
             text = h.content or ""
-            if not text or h.key in already:
+            if not text or _dedup_key(h) in already:
                 continue
             if total + len(text) > budget:
                 break
@@ -801,7 +843,7 @@ class MemoryAwareRetriever(MemoryRetriever):
                 )
             )
             total += len(text)
-            already.add(h.key)
+            already.add(_dedup_key(h))
         return total
 
     # ── observability ───────────────────────────────────────────────
