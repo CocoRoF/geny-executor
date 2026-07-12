@@ -281,6 +281,12 @@ class PipelineState:
     # as "reused" so the next run knows to call begin_turn(). Private:
     # hosts should not write it.
     _run_count: int = field(default=0, repr=False)
+    # True while a run() / run_stream() is executing on THIS state (audit
+    # R5). Overlapping runs are supported ONLY on separate states — two
+    # runs on one state corrupt each other's iteration/events/bus_emitter,
+    # so the second entry raises instead. Set in _init_state, cleared in
+    # _end_turn (finally).
+    _turn_in_flight: bool = field(default=False, repr=False)
 
     # ── Client generation (set by Pipeline._init_state) ──
     # Records Pipeline._client_generation at the moment the pipeline

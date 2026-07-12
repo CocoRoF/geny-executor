@@ -181,6 +181,7 @@ class MCPServerConnection:
                 f"MCP server '{self.config.name}' is DISABLED; call "
                 f"enable_server() before reconnecting"
             )
+        self._enforce_allowlist()
         try:
             if self.config.transport == "stdio":
                 await self._connect_stdio()
@@ -206,6 +207,56 @@ class MCPServerConnection:
                 self._state = MCPConnectionState.FAILED
             self._last_error = exc
             raise
+
+    def _enforce_allowlist(self) -> None:
+        """Optional MCP allowlist (audit S8) — opt-in, default allows all.
+
+        MCP stdio servers execute an arbitrary local command and HTTP
+        servers forward configured headers (possibly OAuth bearers) to a
+        configured URL, both at connect time before any tool gate. A
+        compromised/typo'd MCP config is therefore host-RCE / token-exfil
+        surface. Operators lock it down by setting:
+
+        * ``GENY_MCP_ALLOWED_COMMANDS`` — comma-separated allowed stdio
+          command basenames (e.g. ``npx,uvx,python``).
+        * ``GENY_MCP_ALLOWED_URL_HOSTS`` — comma-separated allowed HTTP
+          hostnames.
+
+        Unset (the default) preserves today's behavior so existing
+        admin-configured MCP servers keep working.
+        """
+        if self.config.transport == "stdio":
+            allowed = os.environ.get("GENY_MCP_ALLOWED_COMMANDS", "").strip()
+            if not allowed:
+                return
+            names = {n.strip() for n in allowed.split(",") if n.strip()}
+            cmd = os.path.basename(str(self.config.command or "").split()[0]) if self.config.command else ""
+            if cmd not in names:
+                raise MCPConnectionError(
+                    self.config.name,
+                    "blocked",
+                    message=(
+                        f"MCP server '{self.config.name}' command {cmd!r} is not in "
+                        f"GENY_MCP_ALLOWED_COMMANDS ({sorted(names)})"
+                    ),
+                )
+        elif self.config.transport in _HTTP_TRANSPORTS:
+            allowed = os.environ.get("GENY_MCP_ALLOWED_URL_HOSTS", "").strip()
+            if not allowed:
+                return
+            hosts = {h.strip().lower() for h in allowed.split(",") if h.strip()}
+            import urllib.parse
+
+            host = (urllib.parse.urlparse(self.config.url or "").hostname or "").lower()
+            if host not in hosts:
+                raise MCPConnectionError(
+                    self.config.name,
+                    "blocked",
+                    message=(
+                        f"MCP server '{self.config.name}' host {host!r} is not in "
+                        f"GENY_MCP_ALLOWED_URL_HOSTS ({sorted(hosts)})"
+                    ),
+                )
 
     async def _connect_stdio(self) -> None:
         """Connect via stdio transport (local subprocess)."""

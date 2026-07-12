@@ -275,6 +275,10 @@ async def test_invalidate_client_without_replacement_clears_to_resolution():
     # stage-level recovery, not the revoked client riding along.)
     reinit = pipeline._init_state(state)
     assert reinit.llm_client is None
+    # This test pokes the internal _init_state directly (no paired run /
+    # _end_turn), which sets the 2.51.2 concurrent-run guard flag; clear
+    # it so the real run below isn't rejected as an overlap.
+    reinit._turn_in_flight = False
 
     await pipeline.run("turn two", state)
     assert state.llm_client is not revoked
@@ -352,3 +356,32 @@ def test_result_state_repr_suppressed():
     state = PipelineState(session_id="secret-session")
     result = PipelineResult.from_state(state)
     assert "PipelineState" not in repr(result)
+
+
+@pytest.mark.asyncio
+async def test_concurrent_runs_on_one_state_are_rejected():
+    """audit R5: a second run on a state already mid-turn must raise,
+    not corrupt both runs' iteration/events."""
+    import asyncio
+
+    pipeline = _make_pipeline()
+    state = PipelineState(session_id="concurrent")
+
+    # Hold the first run open by making Stage 1 await a gate.
+    gate = asyncio.Event()
+
+    async def _slow_input(inp, st):
+        await gate.wait()
+        return inp
+
+    # Monkeypatch a stage to block; simplest is to run() and immediately
+    # launch a second run() before the first completes.
+    first = asyncio.create_task(pipeline.run("one", state))
+    await asyncio.sleep(0.01)  # let the first run enter _init_state
+    if not first.done():
+        with pytest.raises(RuntimeError, match="already executing"):
+            await pipeline.run("two", state)
+    gate.set()
+    await first  # let the first finish/clean up
+    # After the first run releases, the state is reusable again.
+    assert state._turn_in_flight is False

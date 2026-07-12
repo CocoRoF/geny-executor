@@ -3014,6 +3014,22 @@ class Pipeline:
             )
         state = state or PipelineState()
 
+        # Concurrent-run guard (audit R5): overlapping runs are supported
+        # only on SEPARATE states. A second run() / run_stream() on a state
+        # already mid-turn would have its _init_state re-run begin_turn +
+        # re-mint the run_id + swap the bus emitter under the first run's
+        # feet. Refuse it instead of corrupting both.
+        if state._turn_in_flight:
+            raise RuntimeError(
+                "This PipelineState is already executing a run. Overlapping "
+                "runs must each use their own state (run() exposes it as "
+                "result.state); do not drive one state from two runs at once."
+            )
+        # NOTE: the flag is SET at the end of _init_state (after all the
+        # fallible setup), so a failure here never wedges the state; the
+        # check above is atomic w.r.t. concurrent runs because _init_state
+        # is fully synchronous.
+
         # Turn boundary: a state that already served a run — or arrives
         # pre-seeded with conversation history (checkpoint / host
         # rehydration) — must not leak the previous turn's loop verdict,
@@ -3113,6 +3129,9 @@ class Pipeline:
                 guard_stage._memory_provider = provider
 
         self._has_started = True
+        # Claim the concurrent-run guard now that all fallible setup is
+        # done (audit R5) — a mid-setup failure above never leaves it set.
+        state._turn_in_flight = True
         return state
 
     def _end_turn(self, state: PipelineState) -> None:
@@ -3125,6 +3144,10 @@ class Pipeline:
         ``begin_turn``.
         """
         state.session_cost_usd += state.total_cost_usd
+        # Release the concurrent-run guard (audit R5) — always, on both the
+        # success and failure paths (_end_turn runs in run()/run_stream()'s
+        # finally), so a failed turn doesn't wedge the state forever.
+        state._turn_in_flight = False
 
     def _resolved_provider_name(self, state: PipelineState) -> str:
         """Best available name for the provider Stage 6 will actually use.

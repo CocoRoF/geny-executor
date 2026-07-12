@@ -445,9 +445,18 @@ class CompositeMemoryProvider(MemoryProvider):
         }
         if not seeds:
             return []
-        ranked = personalized_pagerank(
-            edges, seeds, alpha=float(getattr(hooks, "graph_alpha", 0.5))
-        )
+        # PageRank is pure-CPU and O(max_iter·|E|); on a large knowledge
+        # graph it would block the event loop mid-retrieval (on the TTFT
+        # path). Offload to a thread past a small edge count so a big
+        # graph never freezes the loop (audit M9). Small graphs stay
+        # inline to avoid the thread hop.
+        alpha = float(getattr(hooks, "graph_alpha", 0.5))
+        if len(edges) > 2000:
+            ranked = await asyncio.to_thread(
+                personalized_pagerank, edges, seeds, alpha=alpha
+            )
+        else:
+            ranked = personalized_pagerank(edges, seeds, alpha=alpha)
         top_k = max(0, int(getattr(hooks, "graph_top_k", 5)))
         fresh = [
             (n, sc)

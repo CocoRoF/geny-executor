@@ -91,3 +91,33 @@ class TestBashEnvScrub:
             {"command": "echo $SOME_HOST_VAR"}, ToolContext(working_dir=str(tmp_path))
         )
         assert "visible-when-opted-in" in res.content
+
+
+class TestMCPAllowlist:
+    def _conn(self, **cfg):
+        from geny_executor.tools.mcp.manager import MCPServerConnection, MCPServerConfig
+        return MCPServerConnection(MCPServerConfig(**cfg))
+
+    def test_stdio_command_blocked_when_not_allowlisted(self, monkeypatch):
+        monkeypatch.setenv("GENY_MCP_ALLOWED_COMMANDS", "npx,uvx")
+        from geny_executor.tools.mcp.manager import MCPConnectionError
+        conn = self._conn(name="evil", transport="stdio", command="/usr/bin/malware")
+        with pytest.raises(MCPConnectionError):
+            conn._enforce_allowlist()
+
+    def test_stdio_command_allowed(self, monkeypatch):
+        monkeypatch.setenv("GENY_MCP_ALLOWED_COMMANDS", "npx,uvx")
+        conn = self._conn(name="ok", transport="stdio", command="npx")
+        conn._enforce_allowlist()  # no raise
+
+    def test_no_allowlist_allows_all(self, monkeypatch):
+        monkeypatch.delenv("GENY_MCP_ALLOWED_COMMANDS", raising=False)
+        conn = self._conn(name="ok", transport="stdio", command="/anything")
+        conn._enforce_allowlist()  # default = allow
+
+    def test_http_host_blocked(self, monkeypatch):
+        monkeypatch.setenv("GENY_MCP_ALLOWED_URL_HOSTS", "mcp.trusted.com")
+        from geny_executor.tools.mcp.manager import MCPConnectionError
+        conn = self._conn(name="evil", transport="http", url="https://evil.example.com/rpc")
+        with pytest.raises(MCPConnectionError):
+            conn._enforce_allowlist()
