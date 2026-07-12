@@ -4,6 +4,95 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.50.0] — 2026-07-12
+
+### TTFT program — time-to-first-token cut across every backend
+
+One release, four groups, all from the 2026-07-12 TTFT audit. The goal:
+nothing avoidable sits between "request admitted" and "first token
+visible".
+
+#### Added (observability)
+
+- **`api.ttft` event**: ms from `api.request` to the first content chunk
+  (streaming) or the completed response (non-stream), with provider /
+  model / iteration / `first_visible`. `api.response` now also carries
+  `cache_read_input_tokens` / `cache_creation_input_tokens` so cache
+  hit-rate is visible next to the totals.
+
+#### Fixed (prompt caching — group A)
+
+- **Alias models no longer disable caching** (A1). The cache gate was
+  `state.model.startswith("claude-")`, but hosts store CLI-style aliases
+  (`"opus"`/`"sonnet"`) and the canonical id resolves inside the client
+  — *after* Stage 5. Alias-configured sessions silently got ZERO prompt
+  caching: full prefill of tools+system+history every turn. The gate is
+  now provider-based (`state.llm_client.provider == "anthropic"`), with
+  an alias-aware model fallback for clientless states.
+- **Volatile blocks leave the cached prefix** (A2). `PromptBlock.volatile`
+  + `PromptBuilder.build_parts` let Stage 3 split the stable prompt
+  prefix from the per-turn tail (clock, retrieved memory). Default
+  `volatile_placement="turn_context"` attaches the tail to a request-only
+  copy of the newest user message (never persisted, always after every
+  cache breakpoint); `"system"` keeps the legacy layout but records the
+  split so Stage 5 can put the breakpoint before the volatile tail.
+  `MemoryContextBlock` split into `PinnedFactsBlock` (stable, cacheable)
+  + `RetrievedMemoryBlock` (volatile); presets recomposed stable-first.
+- **Tools get their own cache breakpoint** (A3): `AggressiveCacheStrategy`
+  marks the last tools entry, so the ~10K-token built-in schema caches
+  independently of system edits.
+- **Marker hygiene** (A4): stale `cache_control` markers are stripped
+  before each re-apply — the moving history breakpoint used to
+  accumulate one marker per turn toward the API's 4-block limit.
+  `worker_easy` / `vtuber` / `chat` presets upgraded `system`→`aggressive`.
+
+#### Changed (pre-call critical path — group B)
+
+- **Retrieval parallelized end-to-end** (B1): `MemoryAwareRetriever`
+  prefetches all layer fetches concurrently and applies them in budget
+  order (identical output); `CompositeMemoryProvider.retrieve` gathers
+  its four layers; Stage 2 runs retriever ∥ provider, bounded by a new
+  `retrieval_timeout_s` config (default 10s — a hung vector store
+  degrades to a memory-less turn, `context.retrieval_timeout` event).
+  `QueryEmbedLRU` memoizes single-query embeddings per vector store.
+- **Iteration gate** (B2): retrieval is skipped on tool-loop iterations
+  ≥ 1 — results were only ever injected at iteration 0.
+- **Background compaction** (B3): in the 80–90% window zone an
+  LLM-summary compactor now runs on a message snapshot in the
+  background (`context.compaction_scheduled`) and is applied at the
+  next turn's Stage 2 with prefix-identity validation; past 90% the
+  synchronous safety net remains (Stage 4 guard still at 95%).
+- **Token-estimate memo** (B4): `estimate_prompt_tokens` is memoized per
+  state fingerprint — no more double full-context scans per iteration.
+
+#### Added (backend warmth — group C)
+
+- **`Pipeline.warmup()` / `BaseClient.warmup()`**: eager client build +
+  best-effort backend pre-warm (SDK providers establish the DNS+TCP+TLS
+  pool via a cheap `GET /models`; the CLI runs its `--version` handshake
+  ahead of the first real spawn). `from_manifest_async` fires it in the
+  background automatically; the warmed client is memoized for turn 1 and
+  dropped on any client-generation bump.
+- **Hot-spare CLI prewarm** (C1): after a streamed turn, the claude_code
+  client boots the NEXT turn's process in the background (same argv);
+  the next call claims it and feeds stdin as usual — Node boot + auth +
+  MCP startup prepaid, semantics identical to one-shot mode (full
+  history still travels per turn, so compaction can never diverge).
+  Spare reaped after 90s idle; `prewarm_spawn=False` / `GENY_CLI_PREWARM=0`
+  to disable.
+
+#### Fixed (streaming perception — group D)
+
+- **Anthropic thinking deltas stream live** (D1): the client iterates the
+  full SDK event stream instead of `text_stream`, so thinking (and tool
+  input JSON) surface the moment they arrive. Previously a
+  thinking-enabled request yielded nothing until the model finished
+  reasoning — the entire thinking budget was dead air.
+- **Lifecycle hooks off the critical path** (D3): PIPELINE_START /
+  STAGE_ENTER / STAGE_EXIT / LOOP_ITERATION_END fire without blocking
+  the pipeline, chained in delivery order and flushed before the awaited
+  PIPELINE_END.
+
 ## [2.49.0] — 2026-07-10
 
 ### Added (SSH tool family — run commands / move files on configured servers)
