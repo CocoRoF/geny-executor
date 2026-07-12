@@ -711,6 +711,7 @@ class APIStage(Stage[Any, APIResponse]):
                 if not self._retry.should_retry(e.category, attempt):
                     raise
                 delay = self._retry.get_delay(attempt)
+                self._signal_stream_restart(state)
                 state.add_event(
                     "api.retry",
                     {
@@ -727,6 +728,7 @@ class APIStage(Stage[Any, APIResponse]):
                 if not self._retry.should_retry(category, attempt):
                     raise APIError(str(e), category=category, cause=e) from e
                 delay = self._retry.get_delay(attempt)
+                self._signal_stream_restart(state)
                 state.add_event(
                     "api.retry",
                     {
@@ -743,6 +745,20 @@ class APIStage(Stage[Any, APIResponse]):
             category=ErrorCategory.UNKNOWN,
             code=ExecutorErrorCode.EXEC_API_RETRY_EXHAUSTED,
         )
+
+    @staticmethod
+    def _signal_stream_restart(state: PipelineState) -> None:
+        """Tell consumers to DISCARD text rendered so far before a
+        streaming retry replays it from scratch (audit R1).
+
+        ``_call_streaming`` re-emits every ``text.delta`` on each attempt,
+        so without this a mid-stream failure paints a partial answer then
+        the full answer again. Only fires when content was actually
+        committed this call; resets the TTFT latch so the next attempt's
+        first chunk re-stamps ``api.ttft``."""
+        if state.shared.get("_api_ttft_emitted"):
+            state.shared.pop("_api_ttft_emitted", None)
+            state.add_event("api.stream_restart", {})
 
     async def _call_streaming(
         self,
@@ -863,9 +879,13 @@ class APIStage(Stage[Any, APIResponse]):
                 )
 
         if response is None:
+            # A stream that ended without the terminal frame is a classic
+            # transient truncation — NETWORK is recoverable, so the retry
+            # wrapper gives it another attempt (audit R1: was UNKNOWN, so
+            # the single most retry-worthy stream failure never retried).
             raise APIError(
                 "Stream ended without message_complete",
-                category=ErrorCategory.UNKNOWN,
+                category=ErrorCategory.NETWORK,
                 code=ExecutorErrorCode.EXEC_API_STREAM_INCOMPLETE,
             )
         return response

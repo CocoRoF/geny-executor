@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional
 
 from geny_executor.core.schema import ConfigField, ConfigSchema
 from geny_executor.core.state import PipelineState
+from geny_executor.core.token_estimate import estimate_prompt_tokens
 from geny_executor.stages.s16_loop.interface import LoopController, LoopDecision
 
 logger = logging.getLogger(__name__)
@@ -188,7 +189,12 @@ class BudgetAwareLoopController(LoopController):
         ):
             return LoopDecision.COMPLETE
 
-        used = state.token_usage.total_tokens
+        # audit R2: measure the ACTUAL next-request size (system +
+        # messages + tools), NOT the session-cumulative token_usage —
+        # which on a reused state crosses the window within a few turns
+        # and then permanently forces COMPLETE, ending turns before the
+        # model even sees its tool results.
+        used = estimate_prompt_tokens(state)
         if used >= state.context_window_budget * self._token_ratio:
             return LoopDecision.COMPLETE
 
@@ -306,9 +312,13 @@ class CostBudget(BudgetDimension):
 class TokenBudget(BudgetDimension):
     """Soft cap on the context window.
 
-    Reads the cumulative ``token_usage.total_tokens`` and compares
-    against ``state.context_window_budget`` (the model's window) by
-    default, OR an explicit ``max_tokens`` override.
+    Compares the ACTUAL next-request size (``estimate_prompt_tokens`` —
+    system + messages + tools) against ``state.context_window_budget``
+    (the model's window) by default, OR an explicit ``max_tokens``
+    override. (audit R2: reading the session-cumulative
+    ``token_usage.total_tokens`` measured the wrong thing — a long
+    session's cumulative usage permanently exceeds any per-request
+    window, freezing the loop.)
     """
 
     def __init__(
@@ -331,7 +341,7 @@ class TokenBudget(BudgetDimension):
         return f"≤ context_window_budget (stop at {self._ratio:.0%})"
 
     def is_exceeded(self, state: PipelineState) -> bool:
-        used = state.token_usage.total_tokens
+        used = estimate_prompt_tokens(state)
         cap = self._max_tokens if self._max_tokens is not None else state.context_window_budget
         if cap <= 0:
             return False
@@ -377,11 +387,14 @@ class WallClockBudget(BudgetDimension):
 
 
 class ToolCallBudget(BudgetDimension):
-    """Hard cap on cumulative tool calls executed.
+    """Hard cap on CUMULATIVE tool calls executed across the turn.
 
-    Counts entries in ``state.tool_results`` (Stage 10 appends each
-    completed call). Useful for guarding against runaway tool
-    invocation in agent-driven sessions.
+    Reads the running counter Stage 10 maintains at
+    ``shared["executor.tool_calls_total"]``. (audit R2: the pre-2.51
+    version counted ``len(state.tool_results)``, which Stage 10 REPLACES
+    every round — so the cap only ever saw one round's calls and a
+    runaway-agent guard of e.g. 20 never tripped. Falls back to the
+    per-round count when the counter is absent, e.g. standalone use.)
     """
 
     def __init__(self, max_calls: int):
@@ -396,7 +409,10 @@ class ToolCallBudget(BudgetDimension):
         return f"≤ {self._max} tool calls"
 
     def is_exceeded(self, state: PipelineState) -> bool:
-        return len(state.tool_results) >= self._max
+        total = state.shared.get("executor.tool_calls_total")
+        if not isinstance(total, int):
+            total = len(state.tool_results)
+        return total >= self._max
 
 
 #: Dimension names spellable in ``strategy_configs["controller"]["dimensions"]``.

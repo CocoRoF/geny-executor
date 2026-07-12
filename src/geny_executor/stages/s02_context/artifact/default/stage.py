@@ -271,6 +271,15 @@ class ContextStage(Stage[Any, Any]):
             )
         query = str(query)
 
+        # Clear last turn's retrieved memory BEFORE this turn's retrieval
+        # (audit C1). ``state.metadata`` is sticky, and the injection below
+        # only WRITES these keys when chunks come back — so a retrieval
+        # that times out or returns nothing would leave the previous
+        # turn's situational memory presented as if it were current.
+        if state.iteration == 0:
+            state.metadata.pop("memory_context", None)
+            state.metadata.pop("memory_pinned", None)
+
         # TTFT program (finding B2): retrieval results are only injected
         # into the prompt at iteration 0 (below) — later tool-loop
         # iterations re-paid the embedding + vector round-trips for

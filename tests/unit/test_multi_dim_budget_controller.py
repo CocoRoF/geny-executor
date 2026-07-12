@@ -43,6 +43,12 @@ def _state(
     s.cost_budget_usd = cost_budget_usd
     s.token_usage = TokenUsage(input_tokens=total_tokens, output_tokens=0)
     s.context_window_budget = context_window_budget
+    # 2.51.0 (audit R2): TokenBudget/loop controllers now measure the
+    # ACTUAL next-request size via estimate_prompt_tokens (~4 chars/token)
+    # rather than cumulative token_usage. Materialize a user message of
+    # the requested size so the estimator reports ``total_tokens``.
+    if total_tokens > 0:
+        s.messages = [{"role": "user", "content": "x" * (total_tokens * 4)}]
     return s
 
 

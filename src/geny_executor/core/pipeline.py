@@ -1059,6 +1059,22 @@ class Pipeline:
         except Exception:  # noqa: BLE001
             logger.warning("aclose: shutdown_tool_providers failed", exc_info=True)
 
+        # 5. LLM client teardown (audit L3): the claude_code CLI client
+        # holds a prewarmed hot-spare subprocess; its aclose() reaps it so
+        # a session ending inside the 90s TTL doesn't linger the child.
+        # Covers the attached/warmed/legacy-resolved instances.
+        seen: set = set()
+        for client in (self._attached_llm_client, self._warm_llm_client):
+            if client is None or id(client) in seen:
+                continue
+            seen.add(id(client))
+            closer = getattr(client, "aclose", None)
+            if callable(closer):
+                try:
+                    await closer()
+                except Exception:  # noqa: BLE001 — teardown must not raise
+                    logger.warning("aclose: llm_client teardown failed", exc_info=True)
+
     def close(self) -> None:
         """Best-effort sync wrapper around :meth:`aclose`.
 

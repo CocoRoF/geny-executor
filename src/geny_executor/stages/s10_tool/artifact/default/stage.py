@@ -295,6 +295,12 @@ class ToolStage(Stage[Any, Any]):
 
         state.add_message("user", results)
         state.tool_results = results
+        # Cumulative tool-call counter (audit R2): state.tool_results is
+        # REPLACED each round, so ToolCallBudget can't count across rounds
+        # from it. Maintain a running total in shared for the guard.
+        state.shared["executor.tool_calls_total"] = int(
+            state.shared.get("executor.tool_calls_total", 0)
+        ) + len(results)
         state.pending_tool_calls = []
         state.loop_decision = "continue"
 

@@ -391,36 +391,50 @@ class InternalAgenticLoop(ToolLoopStrategy):
         inner_cost_usd = 0.0
         turns = 0
 
-        while response.tool_calls:
-            if turns >= self._max_inner_turns:
-                state.add_event(
-                    "api.internal_loop_capped",
-                    {"turns": turns, "reason": "max_inner_turns"},
+        try:
+            while response.tool_calls:
+                if turns >= self._max_inner_turns:
+                    state.add_event(
+                        "api.internal_loop_capped",
+                        {"turns": turns, "reason": "max_inner_turns"},
+                    )
+                    break
+                if self._budget_exceeded(state, inner_cost_usd):
+                    state.add_event(
+                        "api.internal_loop_capped",
+                        {"turns": turns, "reason": "cost_budget"},
+                    )
+                    break
+
+                tool_calls = self._as_tool_calls(response)
+                results = await self._dispatch_round(dispatcher, tool_calls, state)
+
+                exchange.append(
+                    {"role": "assistant", "content": assistant_content_blocks(response)}
                 )
-                break
-            if self._budget_exceeded(state, inner_cost_usd):
-                state.add_event(
-                    "api.internal_loop_capped",
-                    {"turns": turns, "reason": "cost_budget"},
+                exchange.append({"role": "user", "content": results})
+
+                # This response's usage is now "consumed" — it will never be
+                # the returned response, so fold it into the running sum that
+                # the final response carries for Stage 7.
+                consumed_usage = (
+                    response.usage if consumed_usage is None else consumed_usage + response.usage
                 )
-                break
+                inner_cost_usd += response.usage.cost_usd or 0.0
+                turns += 1
 
-            tool_calls = self._as_tool_calls(response)
-            results = await self._dispatch_round(dispatcher, tool_calls, state)
-
-            exchange.append({"role": "assistant", "content": assistant_content_blocks(response)})
-            exchange.append({"role": "user", "content": results})
-
-            # This response's usage is now "consumed" — it will never be
-            # the returned response, so fold it into the running sum that
-            # the final response carries for Stage 7.
-            consumed_usage = (
-                response.usage if consumed_usage is None else consumed_usage + response.usage
-            )
-            inner_cost_usd += response.usage.cost_usd or 0.0
-            turns += 1
-
-            response = await call(list(exchange))
+                response = await call(list(exchange))
+        except BaseException:
+            # A mid-loop API failure must NOT discard the tool rounds that
+            # already ran (audit R4): commit the completed exchange so its
+            # side effects aren't silently replayed next turn, and bill the
+            # consumed inner usage that Stage 7 will never see (we don't
+            # return a response on this path).
+            for message in exchange:
+                state.add_message(message["role"], message["content"])
+            if consumed_usage is not None:
+                state.token_usage += consumed_usage
+            raise
 
         # Record the intermediate exchange in order; the stage appends
         # the FINAL assistant content right after run() returns, so the

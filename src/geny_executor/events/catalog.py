@@ -128,6 +128,10 @@ class EventTypes(str, Enum):
     # TTFT dashboards and verify cache/warmup work with numbers.
     API_TTFT = "api.ttft"
     API_RETRY = "api.retry"
+    # 2.51.0 (audit R1): emitted before a streaming retry that already
+    # delivered content — consumers must DISCARD text rendered so far,
+    # because the retry replays the response from the first token.
+    API_STREAM_RESTART = "api.stream_restart"
     API_ERROR = "api.error"
     API_ROUTER_ERROR = "api.router.error"
     API_MODEL_ROUTED = "api.model_routed"
@@ -432,6 +436,7 @@ PAYLOADS: Dict[EventTypes, Dict[str, str]] = {
         "delay": "float — backoff seconds before next attempt",
         "stream": "bool? — True on the streaming retry path",
     },
+    EventTypes.API_STREAM_RESTART: {},
     EventTypes.API_ERROR: {
         "code": "str — stable ExecutorErrorCode value (e.g. 'exec.cli.auth_failed')",
         "category": "str — ErrorCategory value the retry machinery classified",

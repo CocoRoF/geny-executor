@@ -340,6 +340,14 @@ class ClaudeCodeCLIClient(BaseClient):
             try:
                 await asyncio.sleep(self._SPARE_TTL_S)
             except asyncio.CancelledError:
+                # Loop teardown cancelled the timer — still reap the spare
+                # so it isn't orphaned (audit L3: the old ``return`` here
+                # leaked the process when the loop died while idle).
+                if self._spare is entry:
+                    self._spare = None
+                with contextlib.suppress(ProcessLookupError):
+                    if proc.returncode is None:
+                        proc.kill()
                 return
             if self._spare is entry:
                 self._spare = None
@@ -347,6 +355,28 @@ class ClaudeCodeCLIClient(BaseClient):
 
         entry["expire"] = asyncio.create_task(_expire())
         self._spare = entry
+
+    async def aclose(self) -> None:
+        """Reap any idle hot spare (audit L3).
+
+        ``Pipeline.aclose`` calls this when a session ends so the
+        prewarmed ``claude`` subprocess (+ its MCP children) is killed
+        immediately instead of lingering until the 90s TTL — or, if the
+        loop is being torn down, forever."""
+        spare = self._spare
+        self._spare = None
+        if spare is None:
+            return
+        expire = spare.get("expire")
+        if expire is not None:
+            expire.cancel()
+        proc = spare["proc"]
+        if proc.returncode is None:
+            try:
+                await spare["runner"]._kill_tree(proc)
+            except Exception:  # noqa: BLE001 — best-effort teardown
+                with contextlib.suppress(ProcessLookupError):
+                    proc.kill()
 
     # ─────────────────────────────────────────────────────── helpers ─
 

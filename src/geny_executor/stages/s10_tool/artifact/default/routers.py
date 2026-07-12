@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import datetime as _dt
 import logging
 from typing import Any, Dict, Optional
@@ -299,8 +300,30 @@ class RegistryRouter(ToolRouter):
 
         await _fire_hook("on_enter", tool.name, tool, tool_input, context)
 
+        # Per-tool timeout (audit R3): a hung network tool / MCP adapter
+        # would otherwise wedge the whole turn forever with no recovery.
+        # 0 = no timeout (long-running tools like agent delegation).
         try:
-            result = await tool.execute(tool_input, context)
+            timeout_s = float(getattr(tool.capabilities(tool_input), "timeout_s", 0.0) or 0.0)
+        except Exception:  # noqa: BLE001 — capabilities must never block dispatch
+            timeout_s = 0.0
+
+        try:
+            if timeout_s > 0:
+                result = await asyncio.wait_for(
+                    tool.execute(tool_input, context), timeout=timeout_s
+                )
+            else:
+                result = await tool.execute(tool_input, context)
+        except asyncio.TimeoutError as exc:
+            logger.warning("tool %s timed out after %.1fs", tool.name, timeout_s)
+            await _fire_hook("on_error", tool.name, tool, None, context)
+            return make_error_result(
+                ToolError.tool_crashed(
+                    tool.name,
+                    TimeoutError(f"tool timed out after {timeout_s:.0f}s"),
+                )
+            )
         except ToolFailure as failure:
             logger.info(
                 "tool %s raised ToolFailure (%s): %s",

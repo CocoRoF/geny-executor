@@ -20,6 +20,12 @@ class TokenUsage:
 
     @property
     def total_tokens(self) -> int:
+        # Deliberately input + output only. Cache tokens can't be folded
+        # in provider-agnostically: Anthropic's ``input_tokens`` EXCLUDES
+        # cache reads (so they'd be additive) while OpenAI's INCLUDES them
+        # (so adding cache_read double-counts). Without the provider here
+        # there is no safe sum, so we report the unambiguous base and let
+        # cache accounting live on the explicit cache_* fields.
         return self.input_tokens + self.output_tokens
 
     def __iadd__(self, other: TokenUsage) -> TokenUsage:
@@ -365,6 +371,33 @@ class PipelineState:
         # Event log — per-turn to bound growth (run_stream re-emits
         # everything live; PipelineResult.events carries this turn's).
         self.events = []
+
+        # Bound sticky per-session lists so a very long-lived reused state
+        # can't grow without limit (audit C2). Caps are generous — a
+        # normal session never reaches them; they only clip pathological
+        # accumulation (a months-old always-on VTuber session).
+        _MAX_STICKY = 2000
+        if len(self.thinking_history) > _MAX_STICKY:
+            del self.thinking_history[:-_MAX_STICKY]
+        if len(self.memory_refs) > _MAX_STICKY:
+            del self.memory_refs[:-_MAX_STICKY]
+        hitl = self.shared.get("hitl_history")
+        if isinstance(hitl, list) and len(hitl) > _MAX_STICKY:
+            del hitl[:-_MAX_STICKY]
+
+        # Drop per-turn transient scratch keys from shared so they never
+        # leak across turns (audit C2 / R2): the TTFT anchor + latch, the
+        # prompt-token memo, the volatile turn-context text, and the
+        # per-turn tool-call counter are all recomputed each turn.
+        for _k in (
+            "_api_call_t0",
+            "_api_ttft_emitted",
+            "_prompt_tokens_memo",
+            "turn_context_text",
+            "system_parts",
+            "executor.tool_calls_total",
+        ):
+            self.shared.pop(_k, None)
 
     def add_event(self, event_type: str, data: Optional[Dict[str, Any]] = None) -> None:
         """Append an event to the log and forward it to the pipeline.

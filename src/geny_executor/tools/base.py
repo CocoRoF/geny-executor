@@ -49,6 +49,14 @@ class ToolCapabilities:
             Stage 10 persists the full result to disk and returns the
             path instead. ``0`` disables the limit (infinite — use for
             Read-style tools whose output is already bounded).
+        timeout_s: Wall-clock ceiling for a single ``execute`` call.
+            Stage 10 wraps the call in ``asyncio.wait_for`` and returns a
+            structured ``is_error`` result on expiry instead of wedging
+            the whole turn on a hung network tool / MCP adapter. ``0``
+            (the default) means no per-tool timeout — set it on tools
+            whose backend can hang (http/browser/ssh/mcp). Long-running
+            tools that legitimately take minutes (agent delegation) keep
+            ``0``.
     """
 
     concurrency_safe: bool = False
@@ -58,6 +66,7 @@ class ToolCapabilities:
     network_egress: bool = False
     interrupt: str = "block"
     max_result_chars: int = 100_000
+    timeout_s: float = 0.0
 
 
 @dataclass(frozen=True)
