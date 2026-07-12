@@ -17,6 +17,7 @@ value and the execute path flows through the same unified surface.
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import Any, AsyncIterator, Dict, List, Optional, Union
 
 from geny_executor.core.errors import APIError, ErrorCategory, ExecutorErrorCode
@@ -421,6 +422,14 @@ class APIStage(Stage[Any, APIResponse]):
                     "stream": use_stream,
                 },
             )
+            # TTFT anchor — ``api.ttft`` measures from here (request
+            # admitted, retries included) to the first content chunk the
+            # backend surfaces. Streaming path stamps it in
+            # ``_call_streaming``; the non-stream path below degrades to
+            # full-response latency (there IS no earlier visible token).
+            t_request = time.monotonic()
+            state.shared["_api_call_t0"] = t_request
+            state.shared.pop("_api_ttft_emitted", None)
             try:
                 if use_stream:
                     response = await self._call_streaming_with_retry(
@@ -429,6 +438,17 @@ class APIStage(Stage[Any, APIResponse]):
                 else:
                     response = await self._call_with_retry(
                         client, cfg, state, extra_messages=extra_messages
+                    )
+                    state.add_event(
+                        "api.ttft",
+                        {
+                            "ttft_ms": round((time.monotonic() - t_request) * 1000.0, 1),
+                            "provider": getattr(client, "provider", ""),
+                            "model": cfg.model,
+                            "stream": False,
+                            "iteration": state.iteration,
+                            "first_visible": "complete",
+                        },
                     )
             except APIError as e:
                 # Structured error envelope (2.2.0, audit §3.2 / Tier 1-1):
@@ -462,6 +482,16 @@ class APIStage(Stage[Any, APIResponse]):
                     "tool_calls": len(response.tool_calls),
                     "input_tokens": response.usage.input_tokens,
                     "output_tokens": response.usage.output_tokens,
+                    # Prompt-cache observability (TTFT program, 2.50.0):
+                    # prefill time scales with UNCACHED input tokens, so
+                    # hosts need the hit/miss split next to the totals to
+                    # see whether the cache strategy is actually working.
+                    "cache_read_input_tokens": getattr(
+                        response.usage, "cache_read_input_tokens", 0
+                    ),
+                    "cache_creation_input_tokens": getattr(
+                        response.usage, "cache_creation_input_tokens", 0
+                    ),
                 },
             )
             return response
@@ -508,6 +538,44 @@ class APIStage(Stage[Any, APIResponse]):
 
     # ── Retry wrappers ──
 
+    @staticmethod
+    def _inject_turn_context(
+        messages: List[Dict[str, Any]], context_text: str
+    ) -> List[Dict[str, Any]]:
+        """Attach the volatile turn context to the latest user message.
+
+        TTFT program (2.50.0), the other half of Stage 3's
+        ``volatile_placement="turn_context"``: clock + retrieved memory
+        ride as an extra content block on a COPY of the newest user
+        message — request-only, never written back to ``state.messages``,
+        so history stays clean and the injected text always lands after
+        every prompt-cache breakpoint (system, tools, history prefix all
+        stay byte-stable across turns).
+        """
+        if not context_text:
+            return messages
+        for i in range(len(messages) - 1, -1, -1):
+            msg = messages[i]
+            if msg.get("role") != "user":
+                continue
+            content = msg.get("content")
+            if isinstance(content, str):
+                blocks: List[Dict[str, Any]] = [{"type": "text", "text": content}]
+            elif isinstance(content, list):
+                blocks = list(content)
+            else:
+                return messages
+            blocks.append(
+                {
+                    "type": "text",
+                    "text": f"<session-context>\n{context_text}\n</session-context>",
+                }
+            )
+            patched = list(messages)
+            patched[i] = {**msg, "content": blocks}
+            return patched
+        return messages
+
     def _call_kwargs(
         self,
         cfg: Any,
@@ -519,6 +587,9 @@ class APIStage(Stage[Any, APIResponse]):
         # exchange rides AFTER the state history for this call only —
         # state.messages stays untouched until the loop commits it.
         messages = list(state.messages)
+        turn_context = state.shared.get("turn_context_text")
+        if isinstance(turn_context, str) and turn_context:
+            messages = self._inject_turn_context(messages, turn_context)
         if extra_messages:
             messages.extend(extra_messages)
         kwargs: Dict[str, Any] = {
@@ -733,9 +804,33 @@ class APIStage(Stage[Any, APIResponse]):
             else "api"
         )
 
+        # TTFT stamp — first content chunk of THIS attempt, measured from
+        # the ``call_once`` anchor when available (covers request build +
+        # any prior failed attempts) or from the stream open as fallback.
+        t_anchor = state.shared.get("_api_call_t0") or time.monotonic()
+        _CONTENT_CHUNKS = (
+            "text_delta",
+            "thinking_delta",
+            "tool_use",
+            "input_json_delta",
+        )
+
         stream: AsyncIterator[Dict[str, Any]] = client.create_message_stream(**kwargs)
         async for chunk in stream:
             chunk_type = chunk.get("type")
+            if chunk_type in _CONTENT_CHUNKS and not state.shared.get("_api_ttft_emitted"):
+                state.shared["_api_ttft_emitted"] = True
+                state.add_event(
+                    "api.ttft",
+                    {
+                        "ttft_ms": round((time.monotonic() - t_anchor) * 1000.0, 1),
+                        "provider": getattr(client, "provider", ""),
+                        "model": getattr(cfg, "model", ""),
+                        "stream": True,
+                        "iteration": state.iteration,
+                        "first_visible": chunk_type,
+                    },
+                )
             if chunk_type == "message_complete":
                 response = chunk["response"]
             elif chunk_type == "text_delta" and chunk.get("text"):

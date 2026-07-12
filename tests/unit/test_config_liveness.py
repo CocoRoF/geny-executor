@@ -136,6 +136,39 @@ async def _probe_s03_template_vars() -> None:
     assert "Liveness" in str(state.system)
 
 
+async def _probe_s03_volatile_placement() -> None:
+    """volatile_placement decides whether volatile blocks (clock/memory)
+    leave the system prompt (turn_context) or stay in it (system)."""
+    from geny_executor.stages.s03_system import SystemStage
+    from geny_executor.stages.s03_system.artifact.default.builders import (
+        ComposablePromptBuilder,
+        DateTimeBlock,
+        PersonaBlock,
+    )
+
+    def _stage() -> SystemStage:
+        return SystemStage(
+            builder=ComposablePromptBuilder(
+                blocks=[PersonaBlock("Persona."), DateTimeBlock()]
+            )
+        )
+
+    # Default: volatile tail leaves the system prompt.
+    stage = _stage()
+    state = PipelineState()
+    await stage.execute("in", state)
+    assert "Current date" not in str(state.system)
+    assert "Current date" in state.shared.get("turn_context_text", "")
+
+    # Legacy: volatile tail stays in the system prompt.
+    stage = _stage()
+    stage.update_config({"volatile_placement": "system"})
+    state = PipelineState()
+    await stage.execute("in", state)
+    assert "Current date" in str(state.system)
+    assert "turn_context_text" not in state.shared
+
+
 class _CountingGuard:
     """Minimal Guard double recording whether it ran."""
 
@@ -403,6 +436,7 @@ LIVENESS: Dict[Tuple[int, str], Entry] = {
     (2, "stateless"): Probe(_probe_s02_stateless),
     (3, "prompt"): Probe(_probe_s03_prompt),
     (3, "template_vars"): Probe(_probe_s03_template_vars),
+    (3, "volatile_placement"): Probe(_probe_s03_volatile_placement),
     (4, "max_chain_length"): Probe(_probe_s04_max_chain_length),
     (4, "fail_fast"): Probe(_probe_s04_fail_fast),
     (5, "cache_prefix"): Probe(_probe_s05_cache_prefix),

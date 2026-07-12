@@ -113,6 +113,13 @@ class EventTypes(str, Enum):
     # ── Stage 6: API ──
     API_REQUEST = "api.request"
     API_RESPONSE = "api.response"
+    # TTFT probe (2.50.0 TTFT program): milliseconds from request
+    # admission (``api.request``) to the first content chunk the backend
+    # surfaced (streaming) or to the completed response (non-stream —
+    # there is no earlier visible token). Payload carries provider /
+    # model / iteration / first_visible so hosts can build per-backend
+    # TTFT dashboards and verify cache/warmup work with numbers.
+    API_TTFT = "api.ttft"
     API_RETRY = "api.retry"
     API_ERROR = "api.error"
     API_ROUTER_ERROR = "api.router.error"
@@ -390,6 +397,16 @@ PAYLOADS: Dict[EventTypes, Dict[str, str]] = {
         "tool_calls": "int",
         "input_tokens": "int",
         "output_tokens": "int",
+        "cache_read_input_tokens": "int — prompt-cache hit tokens (0 when the provider reports none)",
+        "cache_creation_input_tokens": "int — tokens written to the prompt cache this call",
+    },
+    EventTypes.API_TTFT: {
+        "ttft_ms": "float — ms from api.request admission to first content chunk (stream) or full response (non-stream)",
+        "provider": "str — BaseClient.provider of the serving backend",
+        "model": "str — model id/alias the call was routed to",
+        "stream": "bool — False means first_visible is the completed response",
+        "iteration": "int — tool-loop iteration this call belongs to",
+        "first_visible": "str — chunk type that broke silence (text_delta/thinking_delta/tool_use/input_json_delta) or 'complete'",
     },
     EventTypes.API_RETRY: {
         "attempt": "int — 1-based attempt that just failed",

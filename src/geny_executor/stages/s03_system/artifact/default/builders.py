@@ -117,6 +117,30 @@ class MutablePromptBuilder(PromptBuilder):
     def build(self, state: PipelineState) -> str:
         return self._render(state)
 
+    def build_parts(self, state: PipelineState) -> Optional[List[Dict[str, Any]]]:
+        """Editable base + sections are one stable part; dynamic blocks
+        carry their own volatility (TTFT program). A runtime edit changes
+        the stable part — that costs one cache rebuild on the next turn,
+        which is exactly right."""
+        parts: List[Dict[str, Any]] = []
+        base = self.current_text()
+        if base:
+            parts.append({"name": "mutable_base", "text": base, "volatile": False})
+        for block in self._blocks:
+            try:
+                rendered = block.render(state)
+            except Exception:  # noqa: BLE001 — mirror _render: broken block never breaks the prompt
+                continue
+            if rendered:
+                parts.append(
+                    {
+                        "name": block.name,
+                        "text": rendered if isinstance(rendered, str) else str(rendered),
+                        "volatile": bool(getattr(block, "volatile", False)),
+                    }
+                )
+        return parts
+
 
 class PersonaBlock(PromptBlock):
     """Character/role persona."""
@@ -150,15 +174,70 @@ class RulesBlock(PromptBlock):
 
 
 class DateTimeBlock(PromptBlock):
-    """Current date/time injection."""
+    """Current date/time injection.
+
+    Volatile (TTFT program, 2.50.0): minute-precision text changes
+    turn-to-turn, so this block must never sit inside the cached prompt
+    prefix — one ticked minute would re-prefill system + all history.
+    Precision itself is kept at minutes (hosts rely on the agent knowing
+    the time); relocation, not truncation, is the cache fix.
+    """
 
     @property
     def name(self) -> str:
         return "datetime"
 
+    @property
+    def volatile(self) -> bool:
+        return True
+
     def render(self, state: PipelineState) -> str:
         now = datetime.now(timezone.utc)
         return f"Current date: {now.strftime('%Y-%m-%d %H:%M UTC')}"
+
+
+class PinnedFactsBlock(PromptBlock):
+    """T1 pinned facts only (``state.metadata["memory_pinned"]``).
+
+    Stable on purpose: the pinned ledger changes only when the host adds
+    or retires a key fact, so it belongs in the cached system prefix —
+    a rare edit costs one cache rebuild, while every turn in between
+    reads the prefix for free. The per-turn T2 retrieval tier lives in
+    :class:`RetrievedMemoryBlock` (volatile) instead.
+    """
+
+    @property
+    def name(self) -> str:
+        return "memory_pinned"
+
+    def render(self, state: PipelineState) -> str:
+        pinned = state.metadata.get("memory_pinned", "")
+        if isinstance(pinned, str) and pinned.strip():
+            return f"# Pinned Facts\n{pinned}"
+        return ""
+
+
+class RetrievedMemoryBlock(PromptBlock):
+    """T2 per-turn retrieved memory (``state.metadata["memory_context"]``).
+
+    Volatile: retrieval is keyed on the latest user message, so this text
+    changes nearly every turn. Keeping it out of the cached prefix is the
+    single biggest cache win for memory-enabled pipelines.
+    """
+
+    @property
+    def name(self) -> str:
+        return "memory_retrieved"
+
+    @property
+    def volatile(self) -> bool:
+        return True
+
+    def render(self, state: PipelineState) -> str:
+        memory_ctx = state.metadata.get("memory_context", "")
+        if isinstance(memory_ctx, str) and memory_ctx.strip():
+            return f"# Relevant Knowledge\n{memory_ctx}"
+        return ""
 
 
 class MemoryContextBlock(PromptBlock):
@@ -175,11 +254,20 @@ class MemoryContextBlock(PromptBlock):
 
     Either, both, or neither may be present. When neither is set the
     block renders nothing so the system prompt stays clean.
+
+    Back-compat combined form. Volatile as a whole (the T2 half changes
+    every turn). New compositions should prefer the split
+    :class:`PinnedFactsBlock` + :class:`RetrievedMemoryBlock` so the
+    stable pinned tier can stay in the cached prefix.
     """
 
     @property
     def name(self) -> str:
         return "memory_context"
+
+    @property
+    def volatile(self) -> bool:
+        return True
 
     def render(self, state: PipelineState) -> str:
         parts: list[str] = []
@@ -282,3 +370,24 @@ class ComposablePromptBuilder(PromptBuilder):
             return content_blocks
 
         return self._separator.join(text for _, text in rendered)
+
+    def build_parts(self, state: PipelineState) -> Optional[List[Dict[str, Any]]]:
+        """Render blocks with their stability flags (TTFT program).
+
+        Content-blocks mode keeps its explicit per-block ``cache_control``
+        contract, so parts are only offered in string mode.
+        """
+        if self._use_content_blocks:
+            return None
+        parts: List[Dict[str, Any]] = []
+        for block in self._blocks:
+            text = block.render(state)
+            if text:
+                parts.append(
+                    {
+                        "name": block.name,
+                        "text": text,
+                        "volatile": bool(getattr(block, "volatile", False)),
+                    }
+                )
+        return parts

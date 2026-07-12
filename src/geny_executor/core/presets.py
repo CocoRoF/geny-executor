@@ -233,7 +233,7 @@ class PipelinePresets:
             .with_context()
             .with_system(prompt=system_prompt)
             .with_guard()
-            .with_cache(strategy="system")
+            .with_cache(strategy="aggressive")
             .with_loop(max_turns=20)
             .with_memory()
         )

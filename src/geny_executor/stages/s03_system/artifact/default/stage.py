@@ -32,6 +32,7 @@ class SystemStage(Stage[Any, Any]):
         prompt: str = "",
         template_vars: Optional[Dict[str, Any]] = None,
         tool_registry: Optional[ToolRegistry] = None,
+        volatile_placement: str = "turn_context",
     ):
         if builder is None:
             builder = StaticPromptBuilder(prompt) if prompt else StaticPromptBuilder()
@@ -56,6 +57,9 @@ class SystemStage(Stage[Any, Any]):
         self._tool_registry = tool_registry
         self._prompt = prompt
         self._template_vars: Dict[str, Any] = dict(template_vars or {})
+        self._volatile_placement = (
+            volatile_placement if volatile_placement in ("turn_context", "system") else "turn_context"
+        )
 
     @property
     def _builder(self) -> PromptBuilder:
@@ -100,6 +104,24 @@ class SystemStage(Stage[Any, Any]):
                     ),
                     default={},
                 ),
+                ConfigField(
+                    name="volatile_placement",
+                    type="select",
+                    label="Volatile block placement",
+                    description=(
+                        "Where per-turn prompt blocks (clock, retrieved "
+                        "memory) go. 'turn_context' (default) keeps them "
+                        "out of the system prompt and injects them next to "
+                        "the latest user message so the system+history "
+                        "prompt-cache prefix stays byte-stable; 'system' "
+                        "keeps the pre-2.50 in-system layout."
+                    ),
+                    default="turn_context",
+                    options=[
+                        {"value": "turn_context", "label": "Turn context (cache-friendly)"},
+                        {"value": "system", "label": "System prompt (legacy)"},
+                    ],
+                ),
             ],
         )
 
@@ -107,6 +129,7 @@ class SystemStage(Stage[Any, Any]):
         return {
             "prompt": self._prompt,
             "template_vars": dict(self._template_vars),
+            "volatile_placement": self._volatile_placement,
         }
 
     def update_config(self, config: Dict[str, Any]) -> None:
@@ -119,6 +142,10 @@ class SystemStage(Stage[Any, Any]):
         if "template_vars" in config:
             tv = config["template_vars"] or {}
             self._template_vars = dict(tv)
+        if "volatile_placement" in config:
+            vp = str(config["volatile_placement"])
+            if vp in ("turn_context", "system"):
+                self._volatile_placement = vp
 
     def _apply_template_vars(
         self, system: Union[str, List[Dict[str, Any]]]
@@ -154,12 +181,84 @@ class SystemStage(Stage[Any, Any]):
             return blocks
         return system
 
+    def _assemble_system(self, state: PipelineState) -> tuple[Any, str]:
+        """Build the system prompt, separating the volatile tail.
+
+        TTFT program (2.50.0): provider prompt caches (Anthropic
+        cache_control, OpenAI/vLLM automatic prefix caching) key on a
+        byte-stable request prefix. Per-turn blocks (clock, retrieved
+        memory) rendered INTO the system prompt used to re-prefill
+        system + all history every turn. When the builder can expose its
+        stable/volatile structure via ``build_parts``, the volatile tail
+        is pulled out here and either
+
+        - ``turn_context`` (default): handed to Stage 6, which attaches
+          it next to the latest user message at request-build time —
+          never persisted to history, always after every cache
+          breakpoint; or
+        - ``system``: kept in the system string (legacy layout), with
+          the split recorded in ``state.shared['system_parts']`` so the
+          Stage 5 cache strategy can place its breakpoint before it.
+
+        Returns ``(system, volatile_text)`` where ``volatile_text`` is
+        only non-empty in ``turn_context`` mode.
+        """
+        parts = None
+        build_parts = getattr(self._builder, "build_parts", None)
+        if callable(build_parts):
+            try:
+                parts = build_parts(state)
+            except Exception:  # noqa: BLE001 — structure is an optimization, never a failure
+                parts = None
+
+        if not parts:
+            system = self._builder.build(state)
+            if self._template_vars:
+                system = self._apply_template_vars(system)
+            state.shared.pop("system_parts", None)
+            return system, ""
+
+        texts: List[str] = []
+        for part in parts:
+            text = str(part.get("text", ""))
+            if self._template_vars:
+                text = self._apply_template_vars(text)  # type: ignore[assignment]
+            texts.append(text)
+
+        # Split at the FIRST volatile part: everything before it is the
+        # cacheable prefix; everything from it on (including any stable
+        # block ordered after a volatile one — prefix caching can't reach
+        # past the first changed byte anyway) is the volatile tail.
+        first_volatile = next(
+            (i for i, part in enumerate(parts) if part.get("volatile")),
+            len(parts),
+        )
+        stable_text = "\n\n".join(t for t in texts[:first_volatile] if t)
+        volatile_text = "\n\n".join(t for t in texts[first_volatile:] if t)
+
+        if not volatile_text:
+            state.shared.pop("system_parts", None)
+            return stable_text, ""
+
+        if self._volatile_placement == "system":
+            joined = "\n\n".join(t for t in (stable_text, volatile_text) if t)
+            state.shared["system_parts"] = {
+                "stable_text": stable_text,
+                "volatile_text": volatile_text,
+            }
+            return joined, ""
+
+        state.shared.pop("system_parts", None)
+        return stable_text, volatile_text
+
     async def execute(self, input: Any, state: PipelineState) -> Any:
-        # Build system prompt
-        system = self._builder.build(state)
-        if self._template_vars:
-            system = self._apply_template_vars(system)
+        # Build system prompt (stable prefix + volatile tail separation)
+        system, volatile_text = self._assemble_system(state)
         state.system = system
+        if volatile_text:
+            state.shared["turn_context_text"] = volatile_text
+        else:
+            state.shared.pop("turn_context_text", None)
 
         # Register tools in state if registry provided. Snapshotted on the first
         # turn, then rebuilt only when the live registry's version moves — so a
@@ -195,6 +294,8 @@ class SystemStage(Stage[Any, Any]):
                     else len(str(system))
                 ),
                 "tools_count": len(state.tools),
+                "volatile_placement": self._volatile_placement,
+                "turn_context_chars": len(volatile_text),
             },
         )
 

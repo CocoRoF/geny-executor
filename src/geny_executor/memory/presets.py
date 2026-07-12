@@ -80,17 +80,25 @@ def _build_system_builder(
     from geny_executor.stages.s03_system.artifact.default.builders import (
         ComposablePromptBuilder,
         DateTimeBlock,
-        MemoryContextBlock,
         PersonaBlock,
+        PinnedFactsBlock,
+        RetrievedMemoryBlock,
     )
 
+    # Stable-first order (TTFT program, 2.50.0): persona + pinned facts
+    # form the cacheable prefix; the volatile tail (clock, per-turn
+    # retrieval) is split off by Stage 3 and rides as turn context so
+    # the prompt-cache prefix stays byte-stable across turns.
     blocks = [PersonaBlock(prompt)]
+
+    if include_memory:
+        blocks.append(PinnedFactsBlock())
 
     if include_datetime:
         blocks.append(DateTimeBlock())
 
     if include_memory:
-        blocks.append(MemoryContextBlock())
+        blocks.append(RetrievedMemoryBlock())
 
     return ComposablePromptBuilder(blocks=blocks)
 
@@ -141,7 +149,7 @@ class GenyPresets:
             .with_context(retriever=retriever)
             .with_system(builder=builder)
             .with_guard()
-            .with_cache(strategy="system")
+            .with_cache(strategy="aggressive")
             .with_tool_review()
             .with_task_registry()
             .with_hitl()
@@ -321,7 +329,7 @@ class GenyPresets:
             .with_context(retriever=retriever)
             .with_system(builder=sys_builder)
             .with_guard()
-            .with_cache(strategy="system")
+            .with_cache(strategy="aggressive")
             .with_tool_review()
             .with_task_registry()
             .with_hitl()
