@@ -4,6 +4,76 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.51.0] — 2026-07-12
+
+### Fixed — platform audit, correctness & robustness cluster
+
+A deep cross-subsystem audit (2026-07-12) surfaced a class of "silent
+failure" bugs — operations that fail or corrupt state while reporting
+success. This release fixes the confirmed ones.
+
+#### Cost / token accounting
+
+- **Negative cost fixed** (D1): cache-read tokens were subtracted from
+  `input_tokens`, but Anthropic's `input_tokens` is ALREADY the uncached
+  slice — so once aggressive caching made cache reads exceed it, every
+  cache-heavy turn priced negative (the `cost=-0.003` prod logs). Pricing
+  now sums three disjoint buckets (input / cache-write / cache-read),
+  provider-semantics aware (Anthropic uncached vs OpenAI/Google total),
+  clamps `>=0`, and binds unlisted model variants to the longest known
+  price prefix (`opus-4-1-<new>` → `opus-4-1`, not `opus-4-6`).
+
+#### Memory / embeddings
+
+- **Embedding request splitting** (D2): requests are split by a
+  cumulative token/byte budget (~280k) as well as item count, so a large
+  document's chunks can't blow OpenAI's 300k-token-per-request cap and
+  400 the whole embed (the confirmed incident that silently dropped
+  documents' vectors). Shared bounding + batching now covers google and
+  voyage too (they had none). New `invalid` error category stops a
+  permanent 4xx from hot-retrying forever; google errors are classified.
+- **Compaction no longer breaks STM recording** (D3): Stage-18's record
+  watermark is remapped by message identity across every compaction, so
+  turns don't silently stop being written to the transcript.
+- **Compaction snapshots persist on all providers** (D5):
+  `record_compaction` implemented on Composite + SQL (was file-only, so
+  the deployed topology dropped every summary).
+- **Vector durability** (D6): SQL + file reindex embed-then-swap (was
+  delete-then-embed, so a transient embed failure wiped the index); file
+  store flushes bin+meta atomically and warns on mismatch instead of
+  silently dropping; SQL reports the real indexed count.
+- **Retrieval quality** (M2/M3/M5): STM line cap enforced (was dead
+  code → unbounded growth); cross-layer dedup normalized on filename (no
+  more duplicate notes from the keyword + vector planes); backlink
+  expansion reads concurrently instead of serially.
+
+#### Tool / turn robustness
+
+- **Interrupted tool turn no longer bricks the session** (D4): a
+  `tool_use` left dangling by a stopped/crashed turn gets synthetic error
+  `tool_result`s at turn start (was: every later request 400s);
+  compactors snap the kept window off orphaned `tool_result`s.
+- **Streaming retry** (R1): a stream that ends without its terminal frame
+  now retries (NETWORK, recoverable); `api.stream_restart` is emitted
+  before a retry replays content so consumers discard the partial render.
+- **Loop budgets measure the real request** (R2): loop controllers use
+  `estimate_prompt_tokens` (actual next-request size), not
+  session-cumulative usage which froze long sessions; `ToolCallBudget`
+  counts a real cumulative counter.
+- **Per-tool timeout** (R3): `ToolCapabilities.timeout_s` + Stage 10
+  `wait_for` so a hung tool can't wedge the turn (0 = unbounded default).
+- **Inner agentic loop** (R4): a mid-loop API failure commits the
+  completed tool exchange and bills its usage instead of discarding both
+  (which replayed side effects next turn).
+- **Bounded growth** (C2): `begin_turn` caps sticky lists and drops
+  per-turn transient shared keys.
+- **CLI hot-spare teardown** (L3): the claude_code client gains
+  `aclose()` (reaps the spare), called from `Pipeline.aclose()`; the
+  expire timer reaps on cancellation instead of orphaning the process.
+- **Stale memory** (C1): retrieved memory is cleared before each turn's
+  retrieval, so an empty/timed-out retrieval doesn't re-present last
+  turn's memory as current.
+
 ## [2.50.2] — 2026-07-12
 
 ### Changed (vtuber manifest chain — cache strategy)
