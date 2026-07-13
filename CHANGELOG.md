@@ -4,6 +4,26 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.53.0] — 2026-07-13
+
+### Added (SQL provider — session-scoped STM)
+
+- **`_SQLSTMStore(session_id=...)`**: a store constructed with a non-empty
+  session id stamps it on every appended row (messages AND events) and
+  filters `recent` / `search` / `truncate` / `all_rows` to that session —
+  one database (or one Postgres schema) can now host many sessions' turns
+  side by side. Hosts that give each session its own database keep the
+  exact legacy behaviour (empty session id = whole-table view).
+- **`stm_summaries` table**: per-session rolling digests keyed by
+  `session_id` (upsert, `updated_at` stamped). The legacy singleton
+  `stm_summary` row remains the unscoped store's slot, so existing
+  deployments are untouched. New `idx_stm_turns_session` index; schema
+  version → 2 (DDL is additive `IF NOT EXISTS` — `initialize()` upgrades
+  in place).
+- `SQLMemoryProvider` forwards its `session_id` into the STM store —
+  no config surface change (`{"provider": "sql", "dsn": ..., "session_id":
+  ...}` now means what multi-session hosts expect).
+
 ## [2.52.0] — 2026-07-13
 
 ### Added (embedding — first-class local models + host extension seam)
