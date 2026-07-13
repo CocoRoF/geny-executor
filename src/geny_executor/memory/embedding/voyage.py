@@ -23,6 +23,7 @@ from geny_executor.memory.embedding.client import (
     EmbeddingError,
     _bound_input,
     _resolve_env_api_key,
+    category_for_http_status,
     iter_embed_batches,
 )
 from geny_executor.memory.provider import EmbeddingDescriptor
@@ -147,26 +148,10 @@ class VoyageEmbeddingClient(EmbeddingClient):
 
 
 def _category_for_status(status: int) -> str:
-    """HTTP status → `EmbeddingError` category for the Voyage REST API.
-
-    401/403 means the bearer token is wrong — no amount of retrying
-    fixes it, so it must count toward the vector layer's trip-once
-    breaker. 429 is quota (retry later may work). 408/5xx are
-    transient server-side conditions. Anything else (404 model name
-    typo, 400 payload issue) stays 'unknown' so it keeps the
-    conservative traceback-logging path.
-    """
-    if status in (401, 403):
-        return "auth"
-    if status == 429:
-        return "quota"
-    if status == 408 or status >= 500:
-        return "transient"
-    # A 400/404/422 will never succeed on retry (bad payload, over-limit,
-    # unknown model) — 'invalid' so the caller stops hot-retrying (audit D2).
-    if 400 <= status < 500:
-        return "invalid"
-    return "unknown"
+    """Delegates to the shared REST-status classifier (client.py) —
+    promoted there in 2.52.0 so openai_compatible shares one
+    implementation. Kept as a module alias for backwards compat."""
+    return category_for_http_status(status)
 
 
 __all__ = ["VoyageEmbeddingClient"]

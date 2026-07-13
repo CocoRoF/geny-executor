@@ -215,6 +215,30 @@ class EmbeddingError(RuntimeError):
         self.category = category if category in EMBEDDING_ERROR_CATEGORIES else "unknown"
 
 
+def category_for_http_status(status: int) -> str:
+    """HTTP status → `EmbeddingError` category for bearer-token REST backends.
+
+    Shared by every REST-shaped embedding client (voyage,
+    openai_compatible): 401/403 means the credential is wrong — no
+    amount of retrying fixes it, so it must count toward the vector
+    layer's trip-once auth breaker. 429 is quota (retry later may
+    work). 408/5xx are transient server-side conditions. Any other
+    4xx (404 model-name typo, 400 payload issue, 422) will never
+    succeed on retry — 'invalid' so the caller stops hot-retrying
+    (audit D2). Everything else stays 'unknown' and keeps the
+    conservative traceback-logging path.
+    """
+    if status in (401, 403):
+        return "auth"
+    if status == 429:
+        return "quota"
+    if status == 408 or status >= 500:
+        return "transient"
+    if 400 <= status < 500:
+        return "invalid"
+    return "unknown"
+
+
 # ── deprecated env-var credential ladder ─────────────────────────────
 #
 # Embedding keys historically resolved from env vars *inside* the
