@@ -4,6 +4,14 @@
 row, `recent(n)` reads the last N by `id`, `truncate(keep_last=N)`
 deletes everything older than the N most recent ids.
 
+2.53.0 — session-scoped stores: a store constructed with a non-empty
+``session_id`` stamps it on every appended row and FILTERS every read/
+trim to that session, so one database (one schema) can host many
+sessions' turns side by side. The per-session summary lives in
+``stm_summaries`` keyed by session id; a store without a session id
+keeps the legacy whole-table view + singleton ``stm_summary`` row, so
+existing single-session-per-database deployments are unchanged.
+
 `Turn.content` may be a string or a structured Anthropic content
 block. We store both — a `content_kind` discriminator records which
 form the column holds so reads can re-hydrate without ambiguity.
@@ -23,9 +31,18 @@ from geny_executor.memory.providers.sql.connection import _SQLConnection
 class _SQLSTMStore:
     """`STMHandle`-conformant store on SQL (SQLite or Postgres)."""
 
-    def __init__(self, conn: _SQLConnection, *, tz: tzinfo) -> None:
+    def __init__(
+        self, conn: _SQLConnection, *, tz: tzinfo, session_id: str = ""
+    ) -> None:
         self._conn = conn
         self._tz = tz
+        self._session_id = str(session_id or "")
+
+    def _scoped(self, base_where: str) -> tuple[str, tuple]:
+        """세션 스코프 WHERE 절 — session_id 미설정이면 레거시(전체) 뷰."""
+        if not self._session_id:
+            return base_where, ()
+        return f"{base_where} AND session_id = ?", (self._session_id,)
 
     # ── STMHandle contract ──────────────────────────────────────────
 
@@ -54,7 +71,7 @@ class _SQLSTMStore:
                 turn.direction,
                 turn.counterpart_id,
                 turn.counterpart_role,
-                turn.session_id,
+                turn.session_id or self._session_id or None,
             ),
         )
 
@@ -79,18 +96,19 @@ class _SQLSTMStore:
         meta = json.dumps(metadata, ensure_ascii=False) if metadata else None
         await self._conn.execute(
             """
-            INSERT INTO stm_turns (type, role, content_kind, content, ts, metadata_json)
-            VALUES ('event', ?, ?, ?, ?, ?)
+            INSERT INTO stm_turns (type, role, content_kind, content, ts, metadata_json, session_id)
+            VALUES ('event', ?, ?, ?, ?, ?, ?)
             """,
-            (str(name), kind, payload, ts_str, meta),
+            (str(name), kind, payload, ts_str, meta, self._session_id or None),
         )
 
     async def recent(self, n: int = 20) -> List[Turn]:
         if n <= 0:
             return []
+        where, scope_params = self._scoped("type = 'message'")
         rows = await self._conn.fetchall(
-            "SELECT * FROM stm_turns WHERE type = 'message' ORDER BY id DESC LIMIT ?",
-            (n,),
+            f"SELECT * FROM stm_turns WHERE {where} ORDER BY id DESC LIMIT ?",
+            (*scope_params, n),
         )
         # Reverse so callers see chronological order
         return [_row_to_turn(r) for r in reversed(rows)]
@@ -103,43 +121,54 @@ class _SQLSTMStore:
         # JSON-encoded structured content this still finds substring
         # matches because the JSON form is searchable. Events are
         # filtered out — protocol scopes search to messages.
+        where, scope_params = self._scoped("type = 'message' AND LOWER(content) LIKE ?")
         rows = await self._conn.fetchall(
-            """
+            f"""
             SELECT * FROM stm_turns
-            WHERE type = 'message' AND LOWER(content) LIKE ?
+            WHERE {where}
             ORDER BY id DESC LIMIT ?
             """,
-            (f"%{needle.lower()}%", limit),
+            (f"%{needle.lower()}%", *scope_params, limit),
         )
         return [_row_to_turn(r) for r in rows]
 
     async def truncate(self, *, keep_last: int) -> int:
         if keep_last < 0:
             raise ValueError("keep_last must be non-negative")
-        # Total rows
-        row = await self._conn.fetchone("SELECT COUNT(*) AS n FROM stm_turns")
+        where, scope_params = self._scoped("1 = 1")
+        row = await self._conn.fetchone(
+            f"SELECT COUNT(*) AS n FROM stm_turns WHERE {where}", scope_params
+        )
         total = int(row["n"]) if row else 0
         if total <= keep_last:
             return 0
         if keep_last == 0:
-            await self._conn.execute("DELETE FROM stm_turns")
+            await self._conn.execute(
+                f"DELETE FROM stm_turns WHERE {where}", scope_params
+            )
             return total
         cutoff = await self._conn.fetchone(
-            "SELECT id FROM stm_turns ORDER BY id DESC LIMIT 1 OFFSET ?",
-            (keep_last - 1,),
+            f"SELECT id FROM stm_turns WHERE {where} ORDER BY id DESC LIMIT 1 OFFSET ?",
+            (*scope_params, keep_last - 1),
         )
         if cutoff is None:
             return 0
         await self._conn.execute(
-            "DELETE FROM stm_turns WHERE id < ?",
-            (cutoff["id"],),
+            f"DELETE FROM stm_turns WHERE id < ? AND {where}",
+            (cutoff["id"], *scope_params),
         )
         return total - keep_last
 
     # ── Session summary ─────────────────────────────────────────────
 
     async def read_summary(self) -> Optional[str]:
-        row = await self._conn.fetchone("SELECT body FROM stm_summary WHERE id = 1")
+        if self._session_id:
+            row = await self._conn.fetchone(
+                "SELECT body FROM stm_summaries WHERE session_id = ?",
+                (self._session_id,),
+            )
+        else:
+            row = await self._conn.fetchone("SELECT body FROM stm_summary WHERE id = 1")
         if row is None:
             return None
         body = row.get("body") if isinstance(row, dict) else row["body"]
@@ -147,6 +176,17 @@ class _SQLSTMStore:
 
     async def write_summary(self, body: str) -> None:
         # UPSERT pattern (works across sqlite >= 3.24 + Postgres).
+        if self._session_id:
+            await self._conn.execute(
+                (
+                    "INSERT INTO stm_summaries (session_id, body, updated_at) "
+                    "VALUES (?, ?, ?) "
+                    "ON CONFLICT (session_id) DO UPDATE SET "
+                    "body = excluded.body, updated_at = excluded.updated_at"
+                ),
+                (self._session_id, body, now_in(self._tz).isoformat()),
+            )
+            return
         await self._conn.execute(
             (
                 "INSERT INTO stm_summary (id, body) VALUES (1, ?) "
@@ -158,7 +198,10 @@ class _SQLSTMStore:
     # ── snapshot helpers ────────────────────────────────────────────
 
     async def all_rows(self) -> List[dict]:
-        rows = await self._conn.fetchall("SELECT * FROM stm_turns ORDER BY id ASC")
+        where, scope_params = self._scoped("1 = 1")
+        rows = await self._conn.fetchall(
+            f"SELECT * FROM stm_turns WHERE {where} ORDER BY id ASC", scope_params
+        )
         return [dict(r) for r in rows]
 
 

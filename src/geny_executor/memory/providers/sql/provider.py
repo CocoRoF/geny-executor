@@ -103,7 +103,7 @@ class SQLMemoryProvider(MemoryProvider):
         self._dialect = dialect or detect_dialect(self._dsn)
         self._backend_name = self._dialect.value
         self._conn: _SQLConnection = open_connection(self._dsn, dialect=self._dialect)
-        self._stm = _SQLSTMStore(self._conn, tz=self._tz)
+        self._stm = _SQLSTMStore(self._conn, tz=self._tz, session_id=session_id)
         self._ltm = _SQLLTMStore(
             self._conn, tz=self._tz, scope=scope, backend_name=self._backend_name
         )

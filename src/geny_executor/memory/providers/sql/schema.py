@@ -24,7 +24,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import Tuple
 
-SCHEMA_VERSION = "1"
+SCHEMA_VERSION = "2"
 
 
 class Dialect(str, Enum):
@@ -78,6 +78,9 @@ def _ddl(dialect: Dialect) -> Tuple[str, ...]:
         )
         """,
         "CREATE INDEX IF NOT EXISTS idx_stm_turns_id ON stm_turns(id)",
+        # 2.53.0 — session-scoped STM: one database can host many sessions'
+        # turns; stores constructed with a session_id filter on it.
+        "CREATE INDEX IF NOT EXISTS idx_stm_turns_session ON stm_turns(session_id)",
         f"""
         CREATE TABLE IF NOT EXISTS ltm_documents (
             id         {auto_pk},
@@ -155,6 +158,13 @@ def _ddl(dialect: Dialect) -> Tuple[str, ...]:
         # UPSERT in `_SQLSTMStore.write_summary` always touches the
         # same row.
         """
+        CREATE TABLE IF NOT EXISTS stm_summaries (
+            session_id  TEXT PRIMARY KEY,
+            body        TEXT NOT NULL,
+            updated_at  TEXT
+        )
+        """,
+        f"""
         CREATE TABLE IF NOT EXISTS stm_summary (
             id   INTEGER PRIMARY KEY,
             body TEXT NOT NULL
