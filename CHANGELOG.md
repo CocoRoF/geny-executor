@@ -4,6 +4,36 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.52.0] — 2026-07-13
+
+### Added (embedding — first-class local models + host extension seam)
+
+- **`openai_compatible` embedding backend**: any self-hosted
+  `/v1/embeddings` endpoint (vLLM, Ollama, LM Studio,
+  text-embeddings-inference, LiteLLM proxies) is now a first-class
+  provider — `{"provider": "openai_compatible", "model": "<served-name>",
+  "options": {"base_url": "http://host:8000/v1"}}`. `base_url` accepts
+  the API root or the full endpoint; the API key is OPTIONAL (local
+  servers frequently run authless — the Authorization header is only
+  sent when a key is set, and there is deliberately no env-ladder
+  fallback); `dimension` self-heals from the first response when not
+  configured (served-model dimensions are deployment-specific). Rows
+  are re-ordered by the wire format's `index` field defensively, and a
+  row-count mismatch raises `invalid` instead of mis-aligning vectors.
+- **Runtime embedding-provider registry**:
+  `register_embedding_provider(name, builder)` /
+  `unregister_embedding_provider` / `registered_embedding_providers`
+  (memory/embedding/registry.py). A host can plug an embedding backend
+  the library knows nothing about (its own embedding microservice, a
+  proprietary gateway) and address it through the ordinary serializable
+  config path — `{"embedding": {"provider": "<registered-name>", …}}`
+  works everywhere `MemoryProviderFactory` configs do, no
+  client-instance injection needed. Built-in names cannot be shadowed;
+  re-registration requires `replace=True` (idempotent boot paths).
+- `category_for_http_status` promoted to `memory/embedding/client.py` —
+  the shared HTTP-status → `EmbeddingError` category classifier for
+  REST-shaped backends (voyage now delegates to it; behavior unchanged).
+
 ## [2.51.2] — 2026-07-12
 
 ### Hardening
