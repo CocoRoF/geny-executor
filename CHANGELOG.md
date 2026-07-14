@@ -4,6 +4,32 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.56.0] — 2026-07-14
+
+### Added (DocXmlRead / DocXmlEdit — direct OOXML XML editing, no LLM)
+
+- **Documents ARE XML.** The structured verbs cover the addressed common
+  cases; every OTHER edit — colors, fills, fonts, shape geometry, chart
+  styling — used to force agents back to raw python-pptx in a REPL. Two new
+  built-ins (documents family, edit2docs ≥ 0.11.0) close that hole:
+  - **`DocXmlRead`** — without `part`: map of every part in the package
+    (slides, charts, styles, themes, sheets…); with `part`
+    (`ppt/charts/chart1.xml`, `word/document.xml`, …): that part's exact
+    XML text.
+  - **`DocXmlEdit`** — patch a part with exact find/replace edits (or
+    replace it whole via `xml`). The result must stay well-formed XML or
+    NOTHING is written; untouched parts stay byte-identical (contextifier
+    raw-layer contract). Per-edit `applied | not_found | invalid` statuses.
+- Verified end-to-end on the real failure case: recoloring a chart series
+  (patch `<c:spPr><a:solidFill><a:srgbClr val="FF0000"/>…` into `c:ser`)
+  which python-pptx then reads back as FF0000.
+- Guidance fixes: `DocEditChart`'s description no longer tells the model to
+  use the REPL for formatting (it points at DocXmlRead/DocXmlEdit); the
+  module docstring documents the full deterministic loop; the
+  `DocEdit`/`DocGenerate` no-key error now lists every keyless path.
+- Bumps the `edit2docs` floor to `>= 0.11.0` (adds
+  `list_doc_parts`/`get_doc_xml`/`set_doc_xml`).
+
 ## [2.55.0] — 2026-07-14
 
 ### Added (DocBuild — deterministic document generation, no LLM)

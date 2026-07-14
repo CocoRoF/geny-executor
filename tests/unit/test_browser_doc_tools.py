@@ -36,6 +36,8 @@ from geny_executor.tools.built_in.doc_tools import (
     DocEditTool,
     DocGenerateTool,
     DocPreviewTool,
+    DocXmlEditTool,
+    DocXmlReadTool,
 )
 
 an_web = pytest.importorskip("an_web", reason="an-web extra not installed")
@@ -310,6 +312,68 @@ class TestDocTools:
         assert not result.is_error, result.content
         assert json.loads(result.content)["page_count"] == 2
         assert (tmp_path / "deck.pptx").exists()
+
+    @pytest.mark.asyncio
+    async def test_xml_read_lists_parts_and_reads_one(self, chart_pptx_path, tmp_path):
+        ctx = ToolContext(working_dir=str(tmp_path))
+        listing = await DocXmlReadTool().execute({"path": "deck.pptx"}, ctx)
+        assert not listing.is_error, listing.content
+        parts = json.loads(listing.content)["parts"]
+        assert any("charts/chart1.xml" in p["part"] for p in parts)
+        read = await DocXmlReadTool().execute(
+            {"path": "deck.pptx", "part": "ppt/charts/chart1.xml"}, ctx
+        )
+        assert not read.is_error and "<c:ser>" in read.content
+
+    @pytest.mark.asyncio
+    async def test_xml_edit_recolors_chart_series(self, chart_pptx_path, tmp_path):
+        """The real-world failure case: recolor bars — now a pure tool call."""
+        pptx = pytest.importorskip("pptx")
+        ctx = ToolContext(working_dir=str(tmp_path))
+        result = await DocXmlEditTool().execute(
+            {
+                "path": "deck.pptx",
+                "part": "ppt/charts/chart1.xml",
+                "edits": [{
+                    "find": "</c:tx>",
+                    "replace": (
+                        "</c:tx><c:spPr><a:solidFill>"
+                        '<a:srgbClr val="FF0000"/>'
+                        "</a:solidFill></c:spPr>"
+                    ),
+                }],
+            },
+            ctx,
+        )
+        assert not result.is_error, result.content
+        assert json.loads(result.content)["applied"] == 1
+        prs = pptx.Presentation(str(chart_pptx_path))
+        chart = next(s for sl in prs.slides for s in sl.shapes if s.has_chart).chart
+        assert str(chart.series[0].format.fill.fore_color.rgb) == "FF0000"
+
+    @pytest.mark.asyncio
+    async def test_xml_edit_rejects_malformed_result(self, chart_pptx_path, tmp_path):
+        ctx = ToolContext(working_dir=str(tmp_path))
+        result = await DocXmlEditTool().execute(
+            {
+                "path": "deck.pptx",
+                "part": "ppt/charts/chart1.xml",
+                "edits": [{"find": "</c:chartSpace>", "replace": "<broken"}],
+            },
+            ctx,
+        )
+        # Refused as engine feedback: nothing applied, doc still valid.
+        assert not result.is_error
+        summary = json.loads(result.content)
+        assert summary["applied"] == 0 and summary["failed"] >= 1
+
+    @pytest.mark.asyncio
+    async def test_xml_edit_requires_exactly_one_mode(self, chart_pptx_path, tmp_path):
+        ctx = ToolContext(working_dir=str(tmp_path))
+        result = await DocXmlEditTool().execute(
+            {"path": "deck.pptx", "part": "ppt/charts/chart1.xml"}, ctx
+        )
+        assert result.is_error
 
     @pytest.mark.asyncio
     async def test_build_rejects_wrong_spec_type(self, tmp_path):

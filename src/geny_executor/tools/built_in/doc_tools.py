@@ -11,21 +11,28 @@ Install: ``pip install 'geny-executor[docs]'``. The engine imports
 lazily; when missing, every tool returns a ToolResult error carrying
 the install hint.
 
-Five tools mirror edit2docs' five verbs:
+The tools mirror edit2docs' verbs:
 
 * ``DocAnalyze``    → ``analyze_doc``  — outline + addresses (no LLM)
-* ``DocApplyEdits`` → ``set_doc_text`` — deterministic edits (no LLM)
+* ``DocApplyEdits`` → ``set_doc_text`` — deterministic text edits (no LLM)
+* ``DocEditChart``  → ``edit_chart``   — chart title/data (no LLM)
+* ``DocBuild``      → ``build_doc``    — build from a spec (no LLM)
+* ``DocXmlRead``    → ``list_doc_parts`` / ``get_doc_xml`` — the package's
+  raw XML (no LLM)
+* ``DocXmlEdit``    → ``set_doc_xml``  — patch a part's XML (no LLM)
 * ``DocPreview``    → ``preview_doc``  — markdown / SVG preview (no LLM)
+* ``DocRender``     → ``render_doc``   — page PNG/PDF/SVG (no LLM)
 * ``DocGenerate``   → ``generate_doc`` — create a document from intent (LLM)
 * ``DocEdit``       → ``edit_doc``     — natural-language editing (LLM)
 
 The deterministic loop the model should prefer: DocAnalyze → pick
-addresses → DocApplyEdits (statuses ``applied | stale | not_found |
-invalid`` per edit — self-correct and retry the failed ones). The LLM
-verbs read their Anthropic API key from ``ctx.extras['docs']
-['api_key']``, the ``ANTHROPIC_API_KEY`` env var (ToolContext env or
-process), in that order; ``ctx.extras['docs']['model']`` overrides the
-engine's default model.
+addresses → DocApplyEdits / DocEditChart; for anything the structured
+verbs don't cover (colors, fills, fonts, geometry — documents ARE zipped
+XML) → DocXmlRead → DocXmlEdit. Office files should never need
+python-pptx/python-docx in a REPL. The LLM verbs read their Anthropic
+API key from ``ctx.extras['docs']['api_key']``, the ``ANTHROPIC_API_KEY``
+env var (ToolContext env or process), in that order;
+``ctx.extras['docs']['model']`` overrides the engine's default model.
 
 File access follows the executor's standard path guard: relative paths
 resolve against ``ToolContext.working_dir`` and everything must stay
@@ -109,9 +116,11 @@ def _llm_kwargs(context: ToolContext) -> Dict[str, Any]:
         raise RuntimeError(
             "No Anthropic API key for the document engine — set "
             "ctx.extras['docs']['api_key'] (host tool settings) or the "
-            "ANTHROPIC_API_KEY environment variable. For deterministic "
-            "edits without an LLM, use DocAnalyze then DocApplyEdits (text/"
-            "structure) or DocEditChart (chart title/data)."
+            "ANTHROPIC_API_KEY environment variable. Every edit is possible "
+            "WITHOUT an LLM key: DocAnalyze then DocApplyEdits (text/"
+            "structure), DocEditChart (chart title/data), DocXmlRead + "
+            "DocXmlEdit (any other edit — colors, fonts, formatting), or "
+            "DocBuild (new document from your spec)."
         )
     kwargs: Dict[str, Any] = {"api_key": key}
     model = _docs_settings(context).get("model")
@@ -277,9 +286,9 @@ class DocEditChartTool(_DocToolBase):
             "workbook, so Office's double-click-to-edit shows the same "
             "numbers. Untouched package parts stay byte-identical. Each edit "
             "reports status applied | not_found | invalid with a reason. "
-            "NOTE: this edits chart TITLE and DATA only — it does NOT change "
-            "colors, fills, fonts or other formatting. For visual/format "
-            "changes (e.g. recolor bars) use the REPL with python-pptx."
+            "NOTE: this edits chart TITLE and DATA only. For colors, fills, "
+            "fonts and any other formatting use DocXmlRead + DocXmlEdit "
+            "(direct chart-XML patch) — NOT python-pptx."
         )
 
     @property
@@ -326,6 +335,160 @@ class DocEditChartTool(_DocToolBase):
         failed = [r for r in results if r.get("status") != "applied"]
         summary = {
             "path": str(getattr(result, "path", output)),
+            "applied": getattr(result, "applied", 0),
+            "failed": len(failed),
+            "results": results,
+        }
+        return ToolResult(
+            content=json.dumps(summary, ensure_ascii=False, indent=1, default=str),
+            metadata={"applied": summary["applied"], "failed": len(failed)},
+        )
+
+
+class DocXmlReadTool(_DocToolBase):
+    """Read the package's raw XML — parts map or one part's text."""
+
+    @property
+    def name(self) -> str:
+        return "DocXmlRead"
+
+    @property
+    def description(self) -> str:
+        return (
+            "DOCX/XLSX/PPTX are zips of XML — read that XML directly. "
+            "Deterministic, no LLM, no API key. Without `part`: list every "
+            "part in the package (slides, charts, styles, themes, "
+            "sheets...). With `part` (e.g. ppt/slides/slide1.xml, "
+            "ppt/charts/chart1.xml, word/document.xml, "
+            "xl/worksheets/sheet1.xml): return that part's exact XML text. "
+            "Copy exact substrings from it and patch them with DocXmlEdit — "
+            "together they express EVERY edit OOXML can (colors, fills, "
+            "fonts, shape geometry, chart styling...). Prefer this over "
+            "python-pptx/python-docx in a REPL for office files."
+        )
+
+    @property
+    def input_schema(self) -> Dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Document file path."},
+                "part": {
+                    "type": "string",
+                    "description": "Part name to read. Omit to list all parts.",
+                },
+            },
+            "required": ["path"],
+        }
+
+    def capabilities(self, input: Dict[str, Any]) -> ToolCapabilities:
+        # Slide/chart XML parts run large; give reads generous headroom.
+        return ToolCapabilities(concurrency_safe=True, max_result_chars=200_000)
+
+    async def _run(self, input: Dict[str, Any], context: ToolContext) -> ToolResult:
+        engine = _load_edit2docs()
+        path = _resolve_doc_path(input.get("path") or "", context)
+        part = input.get("part")
+        if not part:
+            parts = await asyncio.to_thread(engine.list_doc_parts, str(path))
+            return ToolResult(
+                content=json.dumps({"parts": parts}, ensure_ascii=False, indent=1),
+                metadata={"path": str(path), "count": len(parts)},
+            )
+        xml = await asyncio.to_thread(engine.get_doc_xml, str(path), str(part))
+        return ToolResult(
+            content=xml,
+            metadata={"path": str(path), "part": str(part), "chars": len(xml)},
+        )
+
+
+class DocXmlEditTool(_DocToolBase):
+    """Patch one XML part — the universal deterministic escape hatch."""
+
+    @property
+    def name(self) -> str:
+        return "DocXmlEdit"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Patch one XML part of a .docx/.xlsx/.pptx with exact "
+            "find/replace edits (or replace the whole part via `xml`). "
+            "Deterministic, no LLM, no API key — the universal escape hatch "
+            "for every edit the structured verbs don't cover: recolor chart "
+            "bars/shapes (e.g. patch <a:srgbClr val=...> inside c:spPr), "
+            "fonts, fills, geometry, anything OOXML expresses. Workflow: "
+            "DocXmlRead the part, copy EXACT substrings into "
+            '`edits: [{"find", "replace", "count" (0=all)}]`. Each edit '
+            "reports applied | not_found | invalid. The result must stay "
+            "well-formed XML or NOTHING is written; untouched parts stay "
+            "byte-identical. Prefer this over python-pptx in a REPL."
+        )
+
+    @property
+    def input_schema(self) -> Dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Document file path."},
+                "part": {
+                    "type": "string",
+                    "description": "Part to patch, e.g. ppt/charts/chart1.xml.",
+                },
+                "edits": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "find": {"type": "string"},
+                            "replace": {"type": "string"},
+                            "count": {"type": "integer"},
+                        },
+                        "required": ["find", "replace"],
+                    },
+                    "description": "Exact-substring edits (use OR `xml`).",
+                },
+                "xml": {
+                    "type": "string",
+                    "description": "Full replacement XML for the part (use OR `edits`).",
+                },
+                "output": {
+                    "type": "string",
+                    "description": "Output path. Default: edit in place (same path).",
+                },
+            },
+            "required": ["path", "part"],
+        }
+
+    def capabilities(self, input: Dict[str, Any]) -> ToolCapabilities:
+        return ToolCapabilities(concurrency_safe=False, max_result_chars=30_000)
+
+    async def _run(self, input: Dict[str, Any], context: ToolContext) -> ToolResult:
+        engine = _load_edit2docs()
+        path = _resolve_doc_path(input.get("path") or "", context)
+        part = str(input.get("part") or "")
+        edits = input.get("edits")
+        xml = input.get("xml")
+        if (edits is None) == (xml is None):
+            return ToolResult(
+                content="pass exactly one of `edits` or `xml`", is_error=True
+            )
+        if edits is not None and (
+            not isinstance(edits, list) or not all(isinstance(e, dict) for e in edits)
+        ):
+            return ToolResult(content="edits must be a list of objects", is_error=True)
+        out = input.get("output")
+        output = (
+            _resolve_doc_path(str(out), context, must_exist=False) if out else path
+        )
+        result = await asyncio.to_thread(
+            engine.set_doc_xml, str(path), part, edits, xml=xml, output=str(output)
+        )
+        results = list(getattr(result, "results", []) or [])
+        failed = [r for r in results if r.get("status") != "applied"]
+        summary = {
+            "path": str(getattr(result, "path", output)),
+            "part": part,
             "applied": getattr(result, "applied", 0),
             "failed": len(failed),
             "results": results,
@@ -728,6 +891,8 @@ DOC_TOOL_CLASSES: Dict[str, type] = {
     "DocApplyEdits": DocApplyEditsTool,
     "DocEditChart": DocEditChartTool,
     "DocBuild": DocBuildTool,
+    "DocXmlRead": DocXmlReadTool,
+    "DocXmlEdit": DocXmlEditTool,
     "DocPreview": DocPreviewTool,
     "DocGenerate": DocGenerateTool,
     "DocEdit": DocEditTool,
