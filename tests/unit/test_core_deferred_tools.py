@@ -461,3 +461,73 @@ class TestAgentLoopEndToEnd:
         # The discovered tool actually executed (its ToolResult echoes
         # its name into the tool_result block of request 3's messages).
         assert "secret_tool" in str(history[2].messages)
+
+
+class TestDeferredCatalogInSystemPrompt:
+    """Progressive disclosure tier 0: the model must be able to SEE that
+    hidden tools exist (you can't search for what you don't know about)."""
+
+    def _reg(self):
+        return (
+            ToolRegistry()
+            .register(_NamedTool("core_tool"))
+            .register(_NamedTool("hidden_alpha"), core=False)
+            .register(_NamedTool("hidden_beta"), core=False)
+        )
+
+    @pytest.mark.asyncio
+    async def test_catalog_appended_to_system(self):
+        stage = SystemStage(prompt="sys", tool_registry=self._reg())
+        state = PipelineState()
+        await stage.execute(None, state)
+        assert "sys" in state.system
+        assert "Additional tools (hidden" in state.system
+        assert "hidden_alpha" in state.system
+        assert "hidden_beta" in state.system
+        assert "core_tool —" not in state.system.split("Additional tools")[1]
+        assert "ToolSearch" in state.system  # the compact usage rule
+
+    @pytest.mark.asyncio
+    async def test_catalog_is_cache_stable_across_activation(self):
+        """Activating a tool must NOT change the system text — the catalog
+        derives from the core flag, keeping the prompt-cache prefix warm."""
+        reg = self._reg()
+        stage = SystemStage(prompt="sys", tool_registry=reg)
+        state = PipelineState()
+        await stage.execute(None, state)
+        before = state.system
+        reg.activate("hidden_alpha")
+        await stage.execute(None, state)
+        assert state.system == before
+        # ...while the tools export DID pick up the activation.
+        assert "hidden_alpha" in {d["name"] for d in state.tools}
+
+    @pytest.mark.asyncio
+    async def test_no_deferred_tools_no_catalog(self):
+        reg = ToolRegistry().register(_NamedTool("core_tool"))
+        stage = SystemStage(prompt="sys", tool_registry=reg)
+        state = PipelineState()
+        await stage.execute(None, state)
+        assert "Additional tools" not in state.system
+
+    @pytest.mark.asyncio
+    async def test_new_registration_refreshes_catalog(self):
+        reg = self._reg()
+        stage = SystemStage(prompt="sys", tool_registry=reg)
+        state = PipelineState()
+        await stage.execute(None, state)
+        reg.register(_NamedTool("hidden_gamma"), core=False)
+        await stage.execute(None, state)
+        assert "hidden_gamma" in state.system
+
+    @pytest.mark.asyncio
+    async def test_oversized_catalog_degrades_to_names_only(self):
+        reg = ToolRegistry().register(_NamedTool("core_tool"))
+        for i in range(120):
+            reg.register(_NamedTool(f"hidden_tool_number_{i:03d}"), core=False)
+        stage = SystemStage(prompt="sys", tool_registry=reg)
+        state = PipelineState()
+        await stage.execute(None, state)
+        block = state.system.split("Additional tools")[1]
+        assert "hidden_tool_number_000" in block
+        assert len(block) < 6_000  # capped, not 120 full lines

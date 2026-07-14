@@ -4,6 +4,28 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.59.0] — 2026-07-14
+
+### Added (progressive disclosure completed: catalog + browse + fuzzy)
+
+- **Deferred-tool catalog in the system prompt** (Stage 3): the model can
+  now SEE what exists beyond its tool list — a compact, cache-stable block
+  (`## Additional tools (hidden…)`: name + first-line one-liner + a
+  one-line ToolSearch usage rule). Derived from the registry's *core flag*
+  (not live activation state), so a mid-session ToolSearch activation does
+  NOT change the text — the prompt-cache prefix stays warm. Rebuilt only on
+  registry-version change (register/unregister/MCP re-seed). Size-capped
+  with graceful names-only degradation. Reaches every provider the same
+  way (Anthropic/OpenAI/local via `request.system`, CLI backends via
+  `--system-prompt`).
+- **`ToolSearch` browse mode**: `query` is now optional — no query (or
+  `*`) returns the full hidden catalog as a compact grouped list without
+  activating anything. Fixes "you can't search for what you don't know
+  exists".
+- **`ToolSearch` fuzzy fallback**: multi-word queries that AND-match
+  nothing retry with any-token (OR) matching, flagged `(fuzzy)` — a single
+  off keyword no longer zeroes the search.
+
 ## [2.58.0] — 2026-07-14
 
 ### Changed (documents family = a hierarchical skill, progressive disclosure)

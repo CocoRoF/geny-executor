@@ -157,8 +157,10 @@ class ToolSearchTool(Tool):
             "Search the full tool catalog by keyword — it contains more "
             "tools than your current tool list. Matching tools that are "
             "not yet in your tool list are activated automatically and "
-            "become callable on your next step. Use this whenever no "
-            "visible tool fits the task."
+            "become callable on your next step. Call with NO query to "
+            "BROWSE the whole hidden catalog as a compact list (nothing "
+            "is activated). Use this whenever no visible tool fits the "
+            "task."
         )
 
     @property
@@ -169,12 +171,12 @@ class ToolSearchTool(Tool):
                 "query": {
                     "type": "string",
                     "description": (
-                        "Keyword query. Multi-word queries require every "
-                        "token to match somewhere (name / description / "
-                        "input schema). An exact tool name is the most "
-                        "precise query."
+                        "Keyword query. An exact tool name is the most "
+                        "precise query; multi-word queries prefer results "
+                        "matching every token, falling back to any-token "
+                        "matches. OMIT (or pass '*') to browse the full "
+                        "hidden catalog without activating anything."
                     ),
-                    "minLength": 1,
                 },
                 "limit": {
                     "type": "integer",
@@ -187,7 +189,6 @@ class ToolSearchTool(Tool):
                     "exclusiveMinimum": 0,
                 },
             },
-            "required": ["query"],
         }
 
     def capabilities(self, input: Dict[str, Any]) -> ToolCapabilities:
@@ -199,26 +200,47 @@ class ToolSearchTool(Tool):
 
     async def execute(self, input: Dict[str, Any], context: ToolContext) -> ToolResult:
         query = (input.get("query") or "").strip()
-        if not query:
-            return ToolResult(content="query must not be empty", is_error=True)
+
+        registry = getattr(context, "tool_registry", None)
+        descriptors = self._collect_descriptors(context, registry)
+
+        # Browse mode — no query (or an explicit wildcard): return the
+        # hidden catalog as a compact, grouped list. Read-only: nothing is
+        # activated, so browsing costs no tool-list bloat. This is the
+        # "what exists beyond my list?" answer the model can't get from
+        # keyword search (you can't search for what you don't know exists).
+        if not query or query in ("*", "list", "all"):
+            return self._browse(descriptors, registry)
 
         limit = int(input.get("limit", _DEFAULT_LIMIT))
         limit = max(1, min(_HARD_LIMIT, limit))
 
-        registry = getattr(context, "tool_registry", None)
-        descriptors = self._collect_descriptors(context, registry)
         ranked: List[Tuple[int, Dict[str, Any]]] = []
         for desc in descriptors:
             score = _rank(desc, query)
             if score > 0:
                 ranked.append((score, desc))
 
+        fuzzy = False
+        if not ranked and len(query.split()) > 1:
+            # AND matching found nothing — fall back to any-token (OR)
+            # matching so a single off token doesn't zero the search.
+            for desc in descriptors:
+                score = max(_rank(desc, tok) for tok in query.split())
+                if score > 0:
+                    ranked.append((score, desc))
+            fuzzy = bool(ranked)
+
         ranked.sort(key=lambda pair: (-pair[0], str(pair[1].get("name", ""))))
         top = ranked[:limit]
 
         if not top:
             return ToolResult(
-                content=f"No matching tools for {query!r} (searched {len(descriptors)} tools).",
+                content=(
+                    f"No matching tools for {query!r} (searched "
+                    f"{len(descriptors)} tools). Call ToolSearch with no "
+                    "query to browse the full catalog."
+                ),
                 metadata={
                     "query": query,
                     "results_count": 0,
@@ -236,7 +258,10 @@ class ToolSearchTool(Tool):
                 if desc.get("_deferred") and self._activate(registry, name):
                     activated.append(name)
 
-        lines = [f"Matching {len(top)} tool(s) for {query!r}:"]
+        header = f"Matching {len(top)} tool(s) for {query!r}"
+        if fuzzy:
+            header += " (fuzzy: matched any keyword)"
+        lines = [header + ":"]
         for i, (score, desc) in enumerate(top, 1):
             name = desc.get("name", "?")
             d = str(desc.get("description", "")).strip()
@@ -263,6 +288,49 @@ class ToolSearchTool(Tool):
                 ],
                 "activated": activated,
                 "searched": len(descriptors),
+                "fuzzy": fuzzy,
+            },
+        )
+
+    @staticmethod
+    def _one_liner(desc: Dict[str, Any], max_chars: int = 80) -> str:
+        d = str(desc.get("description", "")).strip()
+        line = d.splitlines()[0] if d else "(no description)"
+        return line[: max_chars - 1] + "…" if len(line) > max_chars else line
+
+    def _browse(
+        self, descriptors: List[Dict[str, Any]], registry: Optional[Any]
+    ) -> ToolResult:
+        """Compact grouped catalog of the tools NOT in the model's list."""
+        hidden = [d for d in descriptors if d.get("_deferred")]
+        if not hidden:
+            return ToolResult(
+                content=(
+                    "Your tool list already contains every registered tool — "
+                    "nothing hidden to browse."
+                ),
+                metadata={"mode": "browse", "hidden_count": 0},
+            )
+        # Group by name prefix (text before the first '_') so families
+        # read as one scannable block.
+        groups: Dict[str, List[Dict[str, Any]]] = {}
+        for d in sorted(hidden, key=lambda x: str(x.get("name", ""))):
+            fam = str(d.get("name", "")).split("_", 1)[0]
+            groups.setdefault(fam, []).append(d)
+        lines = [
+            f"{len(hidden)} hidden tool(s) — not in your list until activated. "
+            "Activate with ToolSearch(\"<keyword or exact name>\"); the schema "
+            "arrives on your next step:"
+        ]
+        for fam in sorted(groups):
+            for d in groups[fam]:
+                lines.append(f"- {d.get('name')} — {self._one_liner(d)}")
+        return ToolResult(
+            content="\n".join(lines),
+            metadata={
+                "mode": "browse",
+                "hidden_count": len(hidden),
+                "hidden": [str(d.get("name")) for d in hidden],
             },
         )
 

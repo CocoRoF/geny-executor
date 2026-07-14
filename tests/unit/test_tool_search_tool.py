@@ -63,9 +63,11 @@ class TestSchemaAndCapabilities:
         assert caps.read_only is True
         assert caps.idempotent is True
 
-    def test_schema_has_query(self):
+    def test_schema_query_is_optional_for_browse(self):
         schema = ToolSearchTool().input_schema
-        assert "query" in schema["required"]
+        assert "query" in schema["properties"]
+        # Browse mode: calling with no query lists the hidden catalog.
+        assert "required" not in schema or "query" not in schema.get("required", [])
 
 
 class TestExecuteWithStateView:
@@ -89,10 +91,11 @@ class TestExecuteWithStateView:
         assert "Bash" not in names
 
     @pytest.mark.asyncio
-    async def test_empty_query_errors(self):
+    async def test_empty_query_browses(self):
         ctx = _ctx_with_tools([])
         result = await ToolSearchTool().execute({"query": ""}, ctx)
-        assert result.is_error
+        assert not result.is_error
+        assert result.metadata.get("mode") == "browse"
 
     @pytest.mark.asyncio
     async def test_no_matches_returns_empty_count(self):
@@ -176,3 +179,103 @@ class TestRegistry:
 
         assert BUILT_IN_TOOL_CLASSES["ToolSearch"] is _Registered
         assert "ToolSearch" in BUILT_IN_TOOL_FEATURES["meta"]
+
+
+# ── Progressive disclosure: browse mode + fuzzy fallback + registry ──
+
+
+def _make_tool(name: str, description: str):
+    from geny_executor.tools.base import Tool, ToolResult
+
+    class _T(Tool):
+        @property
+        def name(self) -> str:  # noqa: A003
+            return name
+
+        @property
+        def description(self) -> str:
+            return description
+
+        @property
+        def input_schema(self) -> Dict[str, Any]:
+            return {"type": "object", "properties": {}}
+
+        async def execute(self, input, context):  # noqa: A002
+            return ToolResult(content="ok")
+
+    return _T()
+
+
+def _registry_ctx():
+    from geny_executor.tools.registry import ToolRegistry
+
+    reg = ToolRegistry()
+    reg.register(_make_tool("Bash", "Run a shell command."), core=True)
+    reg.register(
+        _make_tool("send_direct_message_internal", "Delegate to your paired sub-worker."),
+        core=False,
+    )
+    reg.register(
+        _make_tool("knowledge_read", "Read a knowledge-repo document."), core=False
+    )
+    ctx = ToolContext(session_id="s", working_dir="", tool_registry=reg)
+    return reg, ctx
+
+
+class TestBrowseMode:
+    @pytest.mark.asyncio
+    async def test_no_query_lists_hidden_catalog_compactly(self):
+        reg, ctx = _registry_ctx()
+        result = await ToolSearchTool().execute({}, ctx)
+        assert not result.is_error
+        assert result.metadata["mode"] == "browse"
+        assert result.metadata["hidden_count"] == 2
+        # deferred tools listed with one-liners; core tools NOT listed
+        assert "send_direct_message_internal" in result.content
+        assert "knowledge_read" in result.content
+        assert "Bash" not in result.content.split("hidden tool")[1]
+        # browsing must NOT activate anything
+        assert not reg.is_exposed("knowledge_read")
+
+    @pytest.mark.asyncio
+    async def test_wildcard_query_browses(self):
+        _, ctx = _registry_ctx()
+        result = await ToolSearchTool().execute({"query": "*"}, ctx)
+        assert result.metadata.get("mode") == "browse"
+
+    @pytest.mark.asyncio
+    async def test_browse_with_everything_exposed(self):
+        from geny_executor.tools.registry import ToolRegistry
+
+        reg = ToolRegistry()
+        reg.register(_make_tool("Bash", "shell"), core=True)
+        ctx = ToolContext(session_id="s", working_dir="", tool_registry=reg)
+        result = await ToolSearchTool().execute({}, ctx)
+        assert not result.is_error
+        assert result.metadata["hidden_count"] == 0
+
+
+class TestFuzzyFallback:
+    @pytest.mark.asyncio
+    async def test_and_miss_falls_back_to_or(self):
+        ctx = _ctx_with_tools(
+            [
+                _desc("knowledge_read", "Read a knowledge-repo document."),
+                _desc("Bash", "Run a shell command."),
+            ]
+        )
+        # 'zzzz' matches nothing, 'knowledge' matches — AND would return 0.
+        result = await ToolSearchTool().execute({"query": "zzzz knowledge"}, ctx)
+        assert not result.is_error
+        assert result.metadata["results_count"] == 1
+        assert result.metadata["fuzzy"] is True
+        assert "fuzzy" in result.content
+
+    @pytest.mark.asyncio
+    async def test_search_still_activates_deferred(self):
+        reg, ctx = _registry_ctx()
+        result = await ToolSearchTool().execute({"query": "sub-worker"}, ctx)
+        assert not result.is_error
+        assert "send_direct_message_internal" in result.metadata["activated"]
+        assert reg.is_exposed("send_direct_message_internal")
+        assert "[activated]" in result.content

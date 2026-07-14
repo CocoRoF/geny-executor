@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 from geny_executor.core.schema import ConfigField, ConfigSchema
 from geny_executor.core.slot import StrategySlot
@@ -60,6 +60,10 @@ class SystemStage(Stage[Any, Any]):
         self._volatile_placement = (
             volatile_placement if volatile_placement in ("turn_context", "system") else "turn_context"
         )
+        # Deferred-tool catalog cache (progressive disclosure) — rebuilt
+        # only when the registry version moves; see _deferred_catalog_text.
+        self._catalog_cache: str = ""
+        self._catalog_version: Optional[int] = -1
 
     @property
     def _builder(self) -> PromptBuilder:
@@ -251,9 +255,77 @@ class SystemStage(Stage[Any, Any]):
         state.shared.pop("system_parts", None)
         return stable_text, volatile_text
 
+    # ── Deferred-tool catalog (progressive disclosure, tier 0) ─────────
+    #
+    # Only exposed tools ship schemas, so without help the model cannot
+    # know what ELSE exists — and you can't ToolSearch for a tool you've
+    # never heard of. This appends a compact, cache-stable catalog of the
+    # DEFERRED tools (name + first-line one-liner) plus a one-line usage
+    # rule to the system prompt. Derived from the registry's *core flag*
+    # (not the live activation state), so the text does not change when a
+    # ToolSearch activation happens mid-session — the prompt-cache prefix
+    # stays intact. Rebuilt only when the registry version moves
+    # (register/unregister/MCP re-seed), the same trigger that already
+    # rebuilds ``state.tools``.
+    _CATALOG_ONE_LINER_CHARS = 72
+    _CATALOG_MAX_CHARS = 4_000
+
+    def _deferred_catalog_text(self) -> str:
+        registry = self._tool_registry
+        if registry is None:
+            return ""
+        is_core = getattr(registry, "is_core", None)
+        get = getattr(registry, "get", None)
+        list_names = getattr(registry, "list_names", None)
+        if not (callable(is_core) and callable(get) and callable(list_names)):
+            return ""
+        entries: List[Tuple[str, str]] = []
+        for name in sorted(list_names()):
+            try:
+                if is_core(name):
+                    continue
+                tool = get(name)
+                desc = str(getattr(tool, "description", "") or "").strip()
+                line = desc.splitlines()[0] if desc else ""
+                if len(line) > self._CATALOG_ONE_LINER_CHARS:
+                    line = line[: self._CATALOG_ONE_LINER_CHARS - 1] + "…"
+                entries.append((name, line))
+            except Exception:  # noqa: BLE001 — a broken tool never breaks the prompt
+                continue
+        if not entries:
+            return ""
+        header = (
+            "## Additional tools (hidden — not in your tool list)\n"
+            f"{len(entries)} more tools exist. To use one, call "
+            'ToolSearch("<keyword or exact name>") — its schema arrives on '
+            "your next step. ToolSearch with no query browses this catalog."
+        )
+        lines = [f"- {n} — {d}" if d else f"- {n}" for n, d in entries]
+        body = "\n".join(lines)
+        if len(header) + len(body) > self._CATALOG_MAX_CHARS:
+            # Degrade gracefully: names only on one wrapped line.
+            body = ", ".join(n for n, _ in entries)[: self._CATALOG_MAX_CHARS]
+        return header + "\n" + body
+
     async def execute(self, input: Any, state: PipelineState) -> Any:
         # Build system prompt (stable prefix + volatile tail separation)
         system, volatile_text = self._assemble_system(state)
+
+        # Progressive disclosure: make the hidden catalog discoverable.
+        # Cache-stable text (see _deferred_catalog_text) appended AFTER the
+        # builder output; rebuilt only on registry-version change.
+        if self._tool_registry is not None:
+            reg_version = getattr(self._tool_registry, "version", None)
+            if self._catalog_version != reg_version:
+                self._catalog_cache = self._deferred_catalog_text()
+                self._catalog_version = reg_version
+            catalog = self._catalog_cache
+            if catalog:
+                if isinstance(system, str):
+                    system = (system + "\n\n" + catalog) if system else catalog
+                elif isinstance(system, list):
+                    system = [*system, {"type": "text", "text": catalog}]
+
         state.system = system
         if volatile_text:
             state.shared["turn_context_text"] = volatile_text
