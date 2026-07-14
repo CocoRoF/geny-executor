@@ -403,6 +403,84 @@ class DocPreviewTool(_DocToolBase):
         return ToolResult(content=str(result), metadata={"inline": True})
 
 
+class DocBuildTool(_DocToolBase):
+    """Build a new document from a structured spec (deterministic, no LLM)."""
+
+    @property
+    def name(self) -> str:
+        return "DocBuild"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Build a NEW .docx/.xlsx/.pptx from a structured spec YOU write. "
+            "Deterministic — no LLM, no API key (this is DocGenerate's engine "
+            "without the model: you do the thinking, this renders instantly). "
+            "The output extension picks the engine and the `spec` shape:\n"
+            "  • .docx ← spec is a MARKDOWN string (headings, paragraphs, "
+            "lists, tables, **bold**/*italic*).\n"
+            '  • .xlsx ← spec is {"sheets": [{"name", "headers": [...], '
+            '"rows": [[...]]}]}.\n'
+            '  • .pptx ← spec is {"slides": [{"layout", "title", '
+            '"subtitle" | "bullets", "notes"}]}; layout ∈ '
+            "title|content|section|title_only|two_content|blank (default "
+            "content); bullets accept strings or {text, level}.\n"
+            "PPTX uses standard built-in layouts (no design pipeline) — for a "
+            "designed deck use DocGenerate. Prefer DocBuild whenever you can "
+            "specify the content yourself: it is instant and free."
+        )
+
+    @property
+    def input_schema(self) -> Dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "spec": {
+                    "type": ["string", "object"],
+                    "description": (
+                        "docx: markdown string. xlsx: {sheets:[...]}. "
+                        "pptx: {slides:[...]}. Must match the output format."
+                    ),
+                },
+                "output": {
+                    "type": "string",
+                    "description": "Output path — extension (.docx/.xlsx/.pptx) selects the format.",
+                },
+                "lang": {"type": "string", "description": "BCP-47 language tag (optional)."},
+            },
+            "required": ["spec", "output"],
+        }
+
+    def capabilities(self, input: Dict[str, Any]) -> ToolCapabilities:
+        return ToolCapabilities(concurrency_safe=False, max_result_chars=20_000)
+
+    async def _run(self, input: Dict[str, Any], context: ToolContext) -> ToolResult:
+        engine = _load_edit2docs()
+        output = _resolve_doc_path(input.get("output") or "", context, must_exist=False)
+        if output.suffix.lower() not in _SUPPORTED_EXTS:
+            return ToolResult(
+                content=f"output must end in one of {_SUPPORTED_EXTS}", is_error=True
+            )
+        if "spec" not in input:
+            return ToolResult(content="spec is required", is_error=True)
+        kwargs: Dict[str, Any] = {}
+        lang = input.get("lang")
+        if lang:
+            kwargs["lang"] = str(lang)
+        result = await asyncio.to_thread(
+            engine.build_doc, input["spec"], str(output), **kwargs
+        )
+        payload = {
+            "path": str(getattr(result, "path", output)),
+            "page_count": getattr(result, "page_count", None),
+            "warnings": list(getattr(result, "warnings", []) or []),
+        }
+        return ToolResult(
+            content=json.dumps(payload, ensure_ascii=False, indent=1, default=str),
+            metadata=payload,
+        )
+
+
 class DocGenerateTool(_DocToolBase):
     """Create a new document from an intent (LLM-backed)."""
 
@@ -649,6 +727,7 @@ DOC_TOOL_CLASSES: Dict[str, type] = {
     "DocAnalyze": DocAnalyzeTool,
     "DocApplyEdits": DocApplyEditsTool,
     "DocEditChart": DocEditChartTool,
+    "DocBuild": DocBuildTool,
     "DocPreview": DocPreviewTool,
     "DocGenerate": DocGenerateTool,
     "DocEdit": DocEditTool,

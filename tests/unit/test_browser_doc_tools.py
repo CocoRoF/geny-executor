@@ -31,6 +31,7 @@ from geny_executor.tools.built_in.doc_tools import (
     DOC_TOOL_CLASSES,
     DocAnalyzeTool,
     DocApplyEditsTool,
+    DocBuildTool,
     DocEditChartTool,
     DocEditTool,
     DocGenerateTool,
@@ -278,6 +279,45 @@ class TestDocTools:
         check = await DocAnalyzeTool().execute({"path": summary["path"]}, ctx)
         assert "Q3 Sales" in check.content
         assert "Rev" in check.content
+
+    @pytest.mark.asyncio
+    async def test_build_docx_from_markdown(self, tmp_path):
+        ctx = ToolContext(working_dir=str(tmp_path))
+        result = await DocBuildTool().execute(
+            {"spec": "# Report\n\nBody **text**.\n\n- a\n- b", "output": "out.docx"},
+            ctx,
+        )
+        assert not result.is_error, result.content
+        summary = json.loads(result.content)
+        assert (tmp_path / "out.docx").exists()
+        # Round-trips through analyze.
+        check = await DocAnalyzeTool().execute({"path": summary["path"]}, ctx)
+        assert json.loads(check.content)["format"] == "docx"
+
+    @pytest.mark.asyncio
+    async def test_build_pptx_from_slide_spec(self, tmp_path):
+        ctx = ToolContext(working_dir=str(tmp_path))
+        result = await DocBuildTool().execute(
+            {
+                "spec": {"slides": [
+                    {"layout": "title", "title": "Deck", "subtitle": "2026"},
+                    {"layout": "content", "title": "Agenda", "bullets": ["A", "B"]},
+                ]},
+                "output": "deck.pptx",
+            },
+            ctx,
+        )
+        assert not result.is_error, result.content
+        assert json.loads(result.content)["page_count"] == 2
+        assert (tmp_path / "deck.pptx").exists()
+
+    @pytest.mark.asyncio
+    async def test_build_rejects_wrong_spec_type(self, tmp_path):
+        ctx = ToolContext(working_dir=str(tmp_path))
+        result = await DocBuildTool().execute(
+            {"spec": "markdown-not-a-dict", "output": "x.pptx"}, ctx
+        )
+        assert result.is_error
 
     @pytest.mark.asyncio
     async def test_edit_chart_out_of_range_soft_fails(self, chart_pptx_path, tmp_path):

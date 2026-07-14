@@ -4,6 +4,26 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.55.0] — 2026-07-14
+
+### Added (DocBuild — deterministic document generation, no LLM)
+
+- **`DocBuild`** built-in (documents family): builds a NEW `.docx`/`.xlsx`/
+  `.pptx` from a structured spec the agent writes — **no LLM, no API key**.
+  This is `DocGenerate`'s rendering engine without the model call (edit2docs
+  ≥ 0.10.0 `build_doc`): the output extension picks the engine and the `spec`
+  shape — docx ← markdown string, xlsx ← `{sheets:[...]}`, pptx ←
+  `{slides:[{layout,title,subtitle|bullets,notes}]}`. An agent driving its
+  own model can now generate documents with zero edit2docs model calls,
+  instead of falling back to raw python-pptx/python-docx.
+- Registered in `DOC_TOOL_CLASSES` and the `documents` feature group.
+- Completes the deterministic-tool surface: **6 of the 7 edit2docs
+  agent-tools are now keyless** (DocAnalyze, DocApplyEdits, DocEditChart,
+  DocBuild, DocPreview, DocRender); DocGenerate/DocEdit remain the LLM
+  convenience path. PPTX build uses standard built-in layouts — DocGenerate
+  stays the path for a designed deck.
+- Bumps the `edit2docs` floor to `>= 0.10.0` (adds `build_doc`).
+
 ## [2.54.0] — 2026-07-14
 
 ### Added (DocEditChart — deterministic native-chart editing, no LLM)
