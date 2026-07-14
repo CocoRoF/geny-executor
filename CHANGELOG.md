@@ -4,6 +4,33 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.57.0] — 2026-07-14
+
+### Changed (documents family consolidated: 10 → 8 tools, no dead tools)
+
+- **The tool list is the product.** Every remaining documents tool always
+  works; nothing advertised can only error.
+  - **`DocApplyEdits` absorbs `DocEditChart`** — one structured-edit
+    surface: edits with a `chart` index route to the chart engine
+    (title/data + embedded-workbook sync), the rest to the text engine,
+    chained on one output. `DocEditChart` is removed.
+  - **`DocRender` absorbs `DocPreview`** — `to: "md"` returns readable
+    content (preview.md for docx/xlsx, per-slide SVGs for pptx).
+    `DocPreview` is removed.
+  - **`DocGenerate` / `DocEdit` are feature-gated** — they advertise
+    `required_config_keys() -> ["feature:docs_llm"]`, so hosts without an
+    Anthropic key never register them. This kills the observed
+    failure mode where the model called `DocEdit`, got the 0 ms no-key
+    error, and fell back to python-pptx in a REPL.
+- **`DocXmlEdit` can now CREATE and DELETE parts** (edit2docs ≥ 0.12.0):
+  `xml` on a missing part creates it (`content_type` registers the
+  `[Content_Types].xml` Override) and `delete: true` removes one. Multi-
+  part operations — adding/removing slides — are now pure tool calls
+  (covered by an add-a-slide test that python-pptx reopens).
+- Keyless surface: DocAnalyze, DocApplyEdits, DocBuild, DocXmlRead,
+  DocXmlEdit, DocRender — six tools that cover analyze / structured edit /
+  build / raw-XML read / raw-XML write / render completely.
+
 ## [2.56.0] — 2026-07-14
 
 ### Added (DocXmlRead / DocXmlEdit — direct OOXML XML editing, no LLM)

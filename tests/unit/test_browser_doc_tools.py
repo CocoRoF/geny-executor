@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -32,10 +33,9 @@ from geny_executor.tools.built_in.doc_tools import (
     DocAnalyzeTool,
     DocApplyEditsTool,
     DocBuildTool,
-    DocEditChartTool,
     DocEditTool,
     DocGenerateTool,
-    DocPreviewTool,
+    DocRenderTool,
     DocXmlEditTool,
     DocXmlReadTool,
 )
@@ -258,8 +258,9 @@ class TestDocTools:
 
     @pytest.mark.asyncio
     async def test_edit_chart_retitle_and_data(self, chart_pptx_path, tmp_path):
+        """Chart edits ride DocApplyEdits — a `chart` key routes them."""
         ctx = ToolContext(working_dir=str(tmp_path))
-        result = await DocEditChartTool().execute(
+        result = await DocApplyEditsTool().execute(
             {
                 "path": "deck.pptx",
                 "edits": [
@@ -367,6 +368,46 @@ class TestDocTools:
         summary = json.loads(result.content)
         assert summary["applied"] == 0 and summary["failed"] >= 1
 
+    def test_llm_verbs_are_feature_gated(self):
+        """Keyless hosts must never see DocGenerate/DocEdit — they advertise
+        feature:docs_llm so progressive disclosure drops them."""
+        assert DocGenerateTool().required_config_keys() == ["feature:docs_llm"]
+        assert DocEditTool().required_config_keys() == ["feature:docs_llm"]
+
+    @pytest.mark.asyncio
+    async def test_xml_edit_creates_and_deletes_parts(self, chart_pptx_path, tmp_path):
+        ctx = ToolContext(working_dir=str(tmp_path))
+        # create a brand-new XML part (content type registered)
+        created = await DocXmlEditTool().execute(
+            {
+                "path": "deck.pptx",
+                "part": "ppt/slides/slide2.xml",
+                "xml": (
+                    await DocXmlReadTool().execute(
+                        {"path": "deck.pptx", "part": "ppt/slides/slide1.xml"}, ctx
+                    )
+                ).content,
+                "content_type": (
+                    "application/vnd.openxmlformats-officedocument"
+                    ".presentationml.slide+xml"
+                ),
+            },
+            ctx,
+        )
+        assert not created.is_error, created.content
+        listing = await DocXmlReadTool().execute({"path": "deck.pptx"}, ctx)
+        names = [q["part"] for q in json.loads(listing.content)["parts"]]
+        assert "ppt/slides/slide2.xml" in names
+        # delete it again
+        deleted = await DocXmlEditTool().execute(
+            {"path": "deck.pptx", "part": "ppt/slides/slide2.xml", "delete": True},
+            ctx,
+        )
+        assert not deleted.is_error, deleted.content
+        listing = await DocXmlReadTool().execute({"path": "deck.pptx"}, ctx)
+        names = [q["part"] for q in json.loads(listing.content)["parts"]]
+        assert "ppt/slides/slide2.xml" not in names
+
     @pytest.mark.asyncio
     async def test_xml_edit_requires_exactly_one_mode(self, chart_pptx_path, tmp_path):
         ctx = ToolContext(working_dir=str(tmp_path))
@@ -386,7 +427,7 @@ class TestDocTools:
     @pytest.mark.asyncio
     async def test_edit_chart_out_of_range_soft_fails(self, chart_pptx_path, tmp_path):
         ctx = ToolContext(working_dir=str(tmp_path))
-        result = await DocEditChartTool().execute(
+        result = await DocApplyEditsTool().execute(
             {"path": "deck.pptx", "edits": [{"chart": 9, "title": "nope"}]},
             ctx,
         )
@@ -413,11 +454,15 @@ class TestDocTools:
         assert summary["failed"] == 1
 
     @pytest.mark.asyncio
-    async def test_preview_docx_markdown(self, docx_path, tmp_path):
+    async def test_render_md_readable_content(self, docx_path, tmp_path):
+        """DocPreview folded into DocRender: to='md' returns readable content."""
         ctx = ToolContext(working_dir=str(tmp_path))
-        result = await DocPreviewTool().execute({"path": "doc.docx"}, ctx)
+        result = await DocRenderTool().execute({"path": "doc.docx", "to": "md"}, ctx)
         assert not result.is_error, result.content
-        assert "First paragraph" in result.content
+        payload = json.loads(result.content)
+        assert payload["to"] == "md"
+        md = Path(payload["paths"][0]).read_text(encoding="utf-8")
+        assert "First paragraph" in md
 
     @pytest.mark.asyncio
     async def test_path_guard_blocks_escape(self, tmp_path):

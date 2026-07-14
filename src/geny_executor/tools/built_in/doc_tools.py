@@ -11,28 +11,32 @@ Install: ``pip install 'geny-executor[docs]'``. The engine imports
 lazily; when missing, every tool returns a ToolResult error carrying
 the install hint.
 
-The tools mirror edit2docs' verbs:
+Seven always-on tools + two key-gated LLM conveniences:
 
 * ``DocAnalyze``    → ``analyze_doc``  — outline + addresses (no LLM)
-* ``DocApplyEdits`` → ``set_doc_text`` — deterministic text edits (no LLM)
-* ``DocEditChart``  → ``edit_chart``   — chart title/data (no LLM)
+* ``DocApplyEdits`` → ``set_doc_text`` + ``edit_chart`` — structured text
+  AND chart edits, one surface (no LLM)
 * ``DocBuild``      → ``build_doc``    — build from a spec (no LLM)
 * ``DocXmlRead``    → ``list_doc_parts`` / ``get_doc_xml`` — the package's
   raw XML (no LLM)
-* ``DocXmlEdit``    → ``set_doc_xml``  — patch a part's XML (no LLM)
-* ``DocPreview``    → ``preview_doc``  — markdown / SVG preview (no LLM)
-* ``DocRender``     → ``render_doc``   — page PNG/PDF/SVG (no LLM)
-* ``DocGenerate``   → ``generate_doc`` — create a document from intent (LLM)
-* ``DocEdit``       → ``edit_doc``     — natural-language editing (LLM)
+* ``DocXmlEdit``    → ``set_doc_xml``  — patch/create/delete a part (no LLM)
+* ``DocRender``     → ``render_doc``   — page PNG/PDF/SVG or readable
+  ``md`` content (no LLM)
+* ``DocGenerate``   → ``generate_doc`` — create from intent (LLM; gated on
+  ``feature:docs_llm``)
+* ``DocEdit``       → ``edit_doc``     — natural-language editing (LLM;
+  gated on ``feature:docs_llm``)
 
 The deterministic loop the model should prefer: DocAnalyze → pick
-addresses → DocApplyEdits / DocEditChart; for anything the structured
-verbs don't cover (colors, fills, fonts, geometry — documents ARE zipped
-XML) → DocXmlRead → DocXmlEdit. Office files should never need
-python-pptx/python-docx in a REPL. The LLM verbs read their Anthropic
-API key from ``ctx.extras['docs']['api_key']``, the ``ANTHROPIC_API_KEY``
-env var (ToolContext env or process), in that order;
-``ctx.extras['docs']['model']`` overrides the engine's default model.
+addresses → DocApplyEdits (text + charts); for anything the structured
+verbs don't cover (colors, fills, fonts, geometry, add/remove slides —
+documents ARE zipped XML) → DocXmlRead → DocXmlEdit. Office files should
+never need python-pptx/python-docx in a REPL. The LLM verbs advertise
+``required_config_keys() -> ["feature:docs_llm"]`` so hosts without an
+Anthropic key never register them (no dead tools). They read their key
+from ``ctx.extras['docs']['api_key']``, the ``ANTHROPIC_API_KEY`` env var
+(ToolContext env or process), in that order; ``ctx.extras['docs']
+['model']`` overrides the engine's default model.
 
 File access follows the executor's standard path guard: relative paths
 resolve against ``ToolContext.working_dir`` and everything must stay
@@ -57,6 +61,11 @@ _INSTALL_HINT = (
 )
 
 _SUPPORTED_EXTS = (".docx", ".xlsx", ".pptx")
+
+# The LLM verbs (DocGenerate / DocEdit) are hidden unless the host marks
+# this feature satisfied (i.e. an Anthropic key is actually available) —
+# a tool that can only error must never reach the model.
+_DOCS_LLM_FEATURE_KEY = "feature:docs_llm"
 
 _EDIT_ADDRESSING_DOC = (
     "Edit objects are format-dispatched by the file extension. DOCX: "
@@ -117,10 +126,10 @@ def _llm_kwargs(context: ToolContext) -> Dict[str, Any]:
             "No Anthropic API key for the document engine — set "
             "ctx.extras['docs']['api_key'] (host tool settings) or the "
             "ANTHROPIC_API_KEY environment variable. Every edit is possible "
-            "WITHOUT an LLM key: DocAnalyze then DocApplyEdits (text/"
-            "structure), DocEditChart (chart title/data), DocXmlRead + "
-            "DocXmlEdit (any other edit — colors, fonts, formatting), or "
-            "DocBuild (new document from your spec)."
+            "WITHOUT an LLM key: DocAnalyze then DocApplyEdits (text + "
+            "chart edits), DocXmlRead + DocXmlEdit (any other edit — "
+            "colors, fonts, formatting, add/remove slides), or DocBuild "
+            "(new document from your spec)."
         )
     kwargs: Dict[str, Any] = {"api_key": key}
     model = _docs_settings(context).get("model")
@@ -203,10 +212,17 @@ class DocApplyEditsTool(_DocToolBase):
     @property
     def description(self) -> str:
         return (
-            "Apply precise text edits to a .docx/.xlsx/.pptx file at "
-            "addresses from DocAnalyze. Deterministic — no LLM. Each edit "
-            "reports status applied | stale | not_found | invalid with a "
-            "reason; fix and resend only the failed ones. "
+            "Apply precise structured edits — text AND charts — to a "
+            ".docx/.xlsx/.pptx at addresses from DocAnalyze. Deterministic "
+            "— no LLM, no API key. Edits with a `chart` index (from "
+            "DocAnalyze's `charts` list) address native charts: "
+            '{"chart": 0, "title": "Q3"} retitles; {"chart": 0, '
+            '"categories": [...], "series": [{"name", "values"}]} sets the '
+            "data AND the embedded workbook (Office double-click-edit "
+            "matches). All other edits are format-specific text edits. "
+            "Each edit reports status applied | stale | not_found | "
+            "invalid with a reason; fix and resend only the failed ones. "
+            "For colors/fonts/formatting use DocXmlRead + DocXmlEdit. "
             + _EDIT_ADDRESSING_DOC
         )
 
@@ -247,14 +263,29 @@ class DocApplyEditsTool(_DocToolBase):
         output = (
             _resolve_doc_path(str(out), context, must_exist=False) if out else path
         )
-        result = await asyncio.to_thread(
-            engine.set_doc_text, str(path), edits, output=str(output)
-        )
-        results = list(getattr(result, "results", []) or [])
+        # One structured-edit surface: dicts with a `chart` key go to the
+        # chart engine, the rest to the text engine, chained on one output.
+        text_edits = [e for e in edits if "chart" not in e]
+        chart_edits = [e for e in edits if "chart" in e]
+        applied, results = 0, []
+        src = str(path)
+        if text_edits:
+            result = await asyncio.to_thread(
+                engine.set_doc_text, src, text_edits, output=str(output)
+            )
+            applied += getattr(result, "applied", 0)
+            results.extend(list(getattr(result, "results", []) or []))
+            src = str(getattr(result, "path", output))
+        if chart_edits:
+            result = await asyncio.to_thread(
+                engine.edit_chart, src, chart_edits, output=str(output)
+            )
+            applied += getattr(result, "applied", 0)
+            results.extend(list(getattr(result, "results", []) or []))
         failed = [r for r in results if r.get("status") != "applied"]
         summary = {
-            "path": str(getattr(result, "path", output)),
-            "applied": getattr(result, "applied", 0),
+            "path": str(output),
+            "applied": applied,
             "failed": len(failed),
             "results": results,
         }
@@ -262,85 +293,6 @@ class DocApplyEditsTool(_DocToolBase):
             content=json.dumps(summary, ensure_ascii=False, indent=1, default=str),
             # Partial application is normal engine feedback (stale guards
             # etc.) — surface it in content, not as a hard tool error.
-            metadata={"applied": summary["applied"], "failed": len(failed)},
-        )
-
-
-class DocEditChartTool(_DocToolBase):
-    """Apply deterministic native-chart edits (title / data)."""
-
-    @property
-    def name(self) -> str:
-        return "DocEditChart"
-
-    @property
-    def description(self) -> str:
-        return (
-            "Edit native charts in a .docx/.xlsx/.pptx file at addresses from "
-            "DocAnalyze's `charts` list. Deterministic — no LLM, no API key. "
-            "Two operations per edit (address a chart by its `chart` index):\n"
-            '  • Retitle:  {"chart": 0, "title": "Q3 Sales"}\n'
-            '  • Set data:  {"chart": 0, "categories": ["Q1","Q2"], '
-            '"series": [{"name": "Sales", "values": [120, 135]}]}\n'
-            "Setting data rewrites both the chart caches and its embedded "
-            "workbook, so Office's double-click-to-edit shows the same "
-            "numbers. Untouched package parts stay byte-identical. Each edit "
-            "reports status applied | not_found | invalid with a reason. "
-            "NOTE: this edits chart TITLE and DATA only. For colors, fills, "
-            "fonts and any other formatting use DocXmlRead + DocXmlEdit "
-            "(direct chart-XML patch) — NOT python-pptx."
-        )
-
-    @property
-    def input_schema(self) -> Dict[str, Any]:
-        return {
-            "type": "object",
-            "properties": {
-                "path": {"type": "string", "description": "Document file path."},
-                "edits": {
-                    "type": "array",
-                    "items": {"type": "object"},
-                    "minItems": 1,
-                    "description": (
-                        "Chart edit objects. Each has a `chart` index plus "
-                        "either `title` (retitle) or `categories`+`series` "
-                        "(set data). See tool description."
-                    ),
-                },
-                "output": {
-                    "type": "string",
-                    "description": "Output path. Default: edit in place (same path).",
-                },
-            },
-            "required": ["path", "edits"],
-        }
-
-    def capabilities(self, input: Dict[str, Any]) -> ToolCapabilities:
-        return ToolCapabilities(concurrency_safe=False, max_result_chars=30_000)
-
-    async def _run(self, input: Dict[str, Any], context: ToolContext) -> ToolResult:
-        engine = _load_edit2docs()
-        path = _resolve_doc_path(input.get("path") or "", context)
-        edits = input.get("edits") or []
-        if not isinstance(edits, list) or not all(isinstance(e, dict) for e in edits):
-            return ToolResult(content="edits must be a list of objects", is_error=True)
-        out = input.get("output")
-        output = (
-            _resolve_doc_path(str(out), context, must_exist=False) if out else path
-        )
-        result = await asyncio.to_thread(
-            engine.edit_chart, str(path), edits, output=str(output)
-        )
-        results = list(getattr(result, "results", []) or [])
-        failed = [r for r in results if r.get("status") != "applied"]
-        summary = {
-            "path": str(getattr(result, "path", output)),
-            "applied": getattr(result, "applied", 0),
-            "failed": len(failed),
-            "results": results,
-        }
-        return ToolResult(
-            content=json.dumps(summary, ensure_ascii=False, indent=1, default=str),
             metadata={"applied": summary["applied"], "failed": len(failed)},
         )
 
@@ -412,17 +364,21 @@ class DocXmlEditTool(_DocToolBase):
     @property
     def description(self) -> str:
         return (
-            "Patch one XML part of a .docx/.xlsx/.pptx with exact "
-            "find/replace edits (or replace the whole part via `xml`). "
+            "Patch, CREATE or DELETE one XML part of a .docx/.xlsx/.pptx. "
             "Deterministic, no LLM, no API key — the universal escape hatch "
             "for every edit the structured verbs don't cover: recolor chart "
             "bars/shapes (e.g. patch <a:srgbClr val=...> inside c:spPr), "
-            "fonts, fills, geometry, anything OOXML expresses. Workflow: "
+            "fonts, fills, geometry, add/remove slides. Workflow: "
             "DocXmlRead the part, copy EXACT substrings into "
-            '`edits: [{"find", "replace", "count" (0=all)}]`. Each edit '
-            "reports applied | not_found | invalid. The result must stay "
-            "well-formed XML or NOTHING is written; untouched parts stay "
-            "byte-identical. Prefer this over python-pptx in a REPL."
+            '`edits: [{"find", "replace", "count" (0=all)}]`. `xml` '
+            "replaces the whole part — and CREATES it if missing (pass "
+            "`content_type` to register the new part; e.g. add a slide by "
+            "creating slideN.xml + its _rels/*.rels, then patching "
+            "presentation.xml + its rels). `delete: true` removes a part. "
+            "Each edit reports applied | not_found | invalid. The result "
+            "must stay well-formed XML or NOTHING is written; untouched "
+            "parts stay byte-identical. Prefer this over python-pptx in a "
+            "REPL."
         )
 
     @property
@@ -450,7 +406,21 @@ class DocXmlEditTool(_DocToolBase):
                 },
                 "xml": {
                     "type": "string",
-                    "description": "Full replacement XML for the part (use OR `edits`).",
+                    "description": (
+                        "Full part XML — replaces, or CREATES a missing part."
+                    ),
+                },
+                "content_type": {
+                    "type": "string",
+                    "description": (
+                        "[Content_Types].xml Override for a newly created "
+                        "part, e.g. application/vnd.openxmlformats-"
+                        "officedocument.presentationml.slide+xml"
+                    ),
+                },
+                "delete": {
+                    "type": "boolean",
+                    "description": "Remove the part (also patch referencing rels).",
                 },
                 "output": {
                     "type": "string",
@@ -469,9 +439,12 @@ class DocXmlEditTool(_DocToolBase):
         part = str(input.get("part") or "")
         edits = input.get("edits")
         xml = input.get("xml")
-        if (edits is None) == (xml is None):
+        delete = bool(input.get("delete"))
+        modes = sum(1 for m in (edits is not None, xml is not None, delete) if m)
+        if modes != 1:
             return ToolResult(
-                content="pass exactly one of `edits` or `xml`", is_error=True
+                content="pass exactly one of `edits`, `xml` or `delete: true`",
+                is_error=True,
             )
         if edits is not None and (
             not isinstance(edits, list) or not all(isinstance(e, dict) for e in edits)
@@ -482,7 +455,14 @@ class DocXmlEditTool(_DocToolBase):
             _resolve_doc_path(str(out), context, must_exist=False) if out else path
         )
         result = await asyncio.to_thread(
-            engine.set_doc_xml, str(path), part, edits, xml=xml, output=str(output)
+            engine.set_doc_xml,
+            str(path),
+            part,
+            edits,
+            xml=xml,
+            content_type=(str(input["content_type"]) if input.get("content_type") else None),
+            delete=delete,
+            output=str(output),
         )
         results = list(getattr(result, "results", []) or [])
         failed = [r for r in results if r.get("status") != "applied"]
@@ -497,73 +477,6 @@ class DocXmlEditTool(_DocToolBase):
             content=json.dumps(summary, ensure_ascii=False, indent=1, default=str),
             metadata={"applied": summary["applied"], "failed": len(failed)},
         )
-
-
-class DocPreviewTool(_DocToolBase):
-    """Deterministic human/LLM-readable preview."""
-
-    @property
-    def name(self) -> str:
-        return "DocPreview"
-
-    @property
-    def description(self) -> str:
-        return (
-            "Render a readable preview of a .docx/.xlsx/.pptx file. DOCX/XLSX "
-            "return markdown text; PPTX renders one SVG file per slide (to "
-            "out_dir, default '<doc dir>/preview/') and returns the paths. "
-            "Deterministic — no LLM."
-        )
-
-    @property
-    def input_schema(self) -> Dict[str, Any]:
-        return {
-            "type": "object",
-            "properties": {
-                "path": {"type": "string", "description": "Document file path."},
-                "out_dir": {
-                    "type": "string",
-                    "description": (
-                        "Directory for preview artifacts (PPTX SVGs / preview.md). "
-                        "Omit for inline markdown (DOCX/XLSX) or the default "
-                        "preview dir (PPTX)."
-                    ),
-                },
-            },
-            "required": ["path"],
-        }
-
-    def capabilities(self, input: Dict[str, Any]) -> ToolCapabilities:
-        return ToolCapabilities(concurrency_safe=False, max_result_chars=60_000)
-
-    async def _run(self, input: Dict[str, Any], context: ToolContext) -> ToolResult:
-        engine = _load_edit2docs()
-        path = _resolve_doc_path(input.get("path") or "", context)
-        out_dir_in = input.get("out_dir")
-        kwargs: Dict[str, Any] = {}
-        if out_dir_in:
-            kwargs["out_dir"] = str(
-                resolve_and_validate(
-                    str(out_dir_in), context.working_dir or os.getcwd(), context.allowed_paths
-                )
-            )
-        elif path.suffix.lower() == ".pptx":
-            # SVG strings inline would blow the context — always go to disk.
-            kwargs["out_dir"] = str(path.parent / "preview")
-        result = await asyncio.to_thread(engine.preview_doc, str(path), **kwargs)
-        if isinstance(result, (list, tuple)):
-            paths = [str(p) for p in result]
-            return ToolResult(
-                content="Preview written:\n" + "\n".join(paths),
-                metadata={"paths": paths},
-            )
-        if isinstance(result, Path) or (
-            isinstance(result, str) and kwargs.get("out_dir") and os.path.isfile(str(result))
-        ):
-            return ToolResult(
-                content=f"Preview written: {result}", metadata={"paths": [str(result)]}
-            )
-        return ToolResult(content=str(result), metadata={"inline": True})
 
 
 class DocBuildTool(_DocToolBase):
@@ -650,6 +563,10 @@ class DocGenerateTool(_DocToolBase):
     @property
     def name(self) -> str:
         return "DocGenerate"
+
+    def required_config_keys(self):
+        # Progressive disclosure: keyless hosts never register the LLM verbs.
+        return [_DOCS_LLM_FEATURE_KEY]
 
     @property
     def description(self) -> str:
@@ -746,6 +663,10 @@ class DocEditTool(_DocToolBase):
     def name(self) -> str:
         return "DocEdit"
 
+    def required_config_keys(self):
+        # Progressive disclosure: keyless hosts never register the LLM verbs.
+        return [_DOCS_LLM_FEATURE_KEY]
+
     @property
     def description(self) -> str:
         return (
@@ -818,7 +739,10 @@ class DocRenderTool(_DocToolBase):
     @property
     def description(self) -> str:
         return (
-            "Render a .docx/.xlsx/.pptx file to page images or a PDF using "
+            "Render/inspect a .docx/.xlsx/.pptx file — page images, PDF, "
+            "vector pages, or readable content: to='md' writes preview.md "
+            "for docx/xlsx and per-slide SVGs for pptx (use it to READ a "
+            "document's content). Raster paths use "
             "the native engine (per-page SVG → PNG → PDF; no LibreOffice). "
             "to='png' writes page-1.png…N, to='pdf' writes <stem>.pdf, "
             "to='svg' writes the vector pages. Deterministic — no LLM."
@@ -832,8 +756,8 @@ class DocRenderTool(_DocToolBase):
                 "path": {"type": "string", "description": "Document file path."},
                 "to": {
                     "type": "string",
-                    "enum": ["png", "pdf", "svg"],
-                    "description": "Output kind (default png).",
+                    "enum": ["png", "pdf", "svg", "md"],
+                    "description": "Output kind (default png; md = readable content).",
                 },
                 "out_dir": {
                     "type": "string",
@@ -889,12 +813,13 @@ class DocRenderTool(_DocToolBase):
 DOC_TOOL_CLASSES: Dict[str, type] = {
     "DocAnalyze": DocAnalyzeTool,
     "DocApplyEdits": DocApplyEditsTool,
-    "DocEditChart": DocEditChartTool,
     "DocBuild": DocBuildTool,
     "DocXmlRead": DocXmlReadTool,
     "DocXmlEdit": DocXmlEditTool,
-    "DocPreview": DocPreviewTool,
+    "DocRender": DocRenderTool,
+    # LLM conveniences — gated on feature:docs_llm (required_config_keys),
+    # so keyless hosts never register them and the model never sees a tool
+    # that can only error.
     "DocGenerate": DocGenerateTool,
     "DocEdit": DocEditTool,
-    "DocRender": DocRenderTool,
 }
