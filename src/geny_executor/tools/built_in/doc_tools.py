@@ -110,7 +110,8 @@ def _llm_kwargs(context: ToolContext) -> Dict[str, Any]:
             "No Anthropic API key for the document engine — set "
             "ctx.extras['docs']['api_key'] (host tool settings) or the "
             "ANTHROPIC_API_KEY environment variable. For deterministic "
-            "edits without an LLM, use DocAnalyze + DocApplyEdits."
+            "edits without an LLM, use DocAnalyze then DocApplyEdits (text/"
+            "structure) or DocEditChart (chart title/data)."
         )
     kwargs: Dict[str, Any] = {"api_key": key}
     model = _docs_settings(context).get("model")
@@ -252,6 +253,85 @@ class DocApplyEditsTool(_DocToolBase):
             content=json.dumps(summary, ensure_ascii=False, indent=1, default=str),
             # Partial application is normal engine feedback (stale guards
             # etc.) — surface it in content, not as a hard tool error.
+            metadata={"applied": summary["applied"], "failed": len(failed)},
+        )
+
+
+class DocEditChartTool(_DocToolBase):
+    """Apply deterministic native-chart edits (title / data)."""
+
+    @property
+    def name(self) -> str:
+        return "DocEditChart"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Edit native charts in a .docx/.xlsx/.pptx file at addresses from "
+            "DocAnalyze's `charts` list. Deterministic — no LLM, no API key. "
+            "Two operations per edit (address a chart by its `chart` index):\n"
+            '  • Retitle:  {"chart": 0, "title": "Q3 Sales"}\n'
+            '  • Set data:  {"chart": 0, "categories": ["Q1","Q2"], '
+            '"series": [{"name": "Sales", "values": [120, 135]}]}\n'
+            "Setting data rewrites both the chart caches and its embedded "
+            "workbook, so Office's double-click-to-edit shows the same "
+            "numbers. Untouched package parts stay byte-identical. Each edit "
+            "reports status applied | not_found | invalid with a reason. "
+            "NOTE: this edits chart TITLE and DATA only — it does NOT change "
+            "colors, fills, fonts or other formatting. For visual/format "
+            "changes (e.g. recolor bars) use the REPL with python-pptx."
+        )
+
+    @property
+    def input_schema(self) -> Dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Document file path."},
+                "edits": {
+                    "type": "array",
+                    "items": {"type": "object"},
+                    "minItems": 1,
+                    "description": (
+                        "Chart edit objects. Each has a `chart` index plus "
+                        "either `title` (retitle) or `categories`+`series` "
+                        "(set data). See tool description."
+                    ),
+                },
+                "output": {
+                    "type": "string",
+                    "description": "Output path. Default: edit in place (same path).",
+                },
+            },
+            "required": ["path", "edits"],
+        }
+
+    def capabilities(self, input: Dict[str, Any]) -> ToolCapabilities:
+        return ToolCapabilities(concurrency_safe=False, max_result_chars=30_000)
+
+    async def _run(self, input: Dict[str, Any], context: ToolContext) -> ToolResult:
+        engine = _load_edit2docs()
+        path = _resolve_doc_path(input.get("path") or "", context)
+        edits = input.get("edits") or []
+        if not isinstance(edits, list) or not all(isinstance(e, dict) for e in edits):
+            return ToolResult(content="edits must be a list of objects", is_error=True)
+        out = input.get("output")
+        output = (
+            _resolve_doc_path(str(out), context, must_exist=False) if out else path
+        )
+        result = await asyncio.to_thread(
+            engine.edit_chart, str(path), edits, output=str(output)
+        )
+        results = list(getattr(result, "results", []) or [])
+        failed = [r for r in results if r.get("status") != "applied"]
+        summary = {
+            "path": str(getattr(result, "path", output)),
+            "applied": getattr(result, "applied", 0),
+            "failed": len(failed),
+            "results": results,
+        }
+        return ToolResult(
+            content=json.dumps(summary, ensure_ascii=False, indent=1, default=str),
             metadata={"applied": summary["applied"], "failed": len(failed)},
         )
 
@@ -568,6 +648,7 @@ class DocRenderTool(_DocToolBase):
 DOC_TOOL_CLASSES: Dict[str, type] = {
     "DocAnalyze": DocAnalyzeTool,
     "DocApplyEdits": DocApplyEditsTool,
+    "DocEditChart": DocEditChartTool,
     "DocPreview": DocPreviewTool,
     "DocGenerate": DocGenerateTool,
     "DocEdit": DocEditTool,

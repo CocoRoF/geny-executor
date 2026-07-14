@@ -31,6 +31,7 @@ from geny_executor.tools.built_in.doc_tools import (
     DOC_TOOL_CLASSES,
     DocAnalyzeTool,
     DocApplyEditsTool,
+    DocEditChartTool,
     DocEditTool,
     DocGenerateTool,
     DocPreviewTool,
@@ -203,6 +204,26 @@ def xlsx_path(tmp_path):
     return p
 
 
+@pytest.fixture
+def chart_pptx_path(tmp_path):
+    pptx = pytest.importorskip("pptx", reason="python-pptx not installed")
+    from pptx.chart.data import CategoryChartData
+    from pptx.enum.chart import XL_CHART_TYPE
+    from pptx.util import Inches
+
+    prs = pptx.Presentation()
+    slide = prs.slides.add_slide(prs.slide_layouts[5])
+    cd = CategoryChartData()
+    cd.categories = ["A", "B", "C"]
+    cd.add_series("S1", (1, 2, 3))
+    slide.shapes.add_chart(
+        XL_CHART_TYPE.COLUMN_CLUSTERED, Inches(1), Inches(1), Inches(6), Inches(4), cd
+    )
+    p = tmp_path / "deck.pptx"
+    prs.save(str(p))
+    return p
+
+
 class TestDocTools:
     @pytest.mark.asyncio
     async def test_analyze_docx(self, docx_path, tmp_path):
@@ -231,6 +252,46 @@ class TestDocTools:
         # The edit is visible to a fresh analyze (in-place default output).
         check = await DocAnalyzeTool().execute({"path": summary["path"]}, ctx)
         assert "99" in check.content
+
+    @pytest.mark.asyncio
+    async def test_edit_chart_retitle_and_data(self, chart_pptx_path, tmp_path):
+        ctx = ToolContext(working_dir=str(tmp_path))
+        result = await DocEditChartTool().execute(
+            {
+                "path": "deck.pptx",
+                "edits": [
+                    {"chart": 0, "title": "Q3 Sales"},
+                    {
+                        "chart": 0,
+                        "categories": ["Q1", "Q2", "Q3"],
+                        "series": [{"name": "Rev", "values": [10, 20, 30]}],
+                    },
+                ],
+            },
+            ctx,
+        )
+        assert not result.is_error, result.content
+        summary = json.loads(result.content)
+        assert summary["applied"] == 2
+        assert summary["failed"] == 0
+        # The retitle + data change is visible to a fresh analyze.
+        check = await DocAnalyzeTool().execute({"path": summary["path"]}, ctx)
+        assert "Q3 Sales" in check.content
+        assert "Rev" in check.content
+
+    @pytest.mark.asyncio
+    async def test_edit_chart_out_of_range_soft_fails(self, chart_pptx_path, tmp_path):
+        ctx = ToolContext(working_dir=str(tmp_path))
+        result = await DocEditChartTool().execute(
+            {"path": "deck.pptx", "edits": [{"chart": 9, "title": "nope"}]},
+            ctx,
+        )
+        # Out-of-range is soft engine feedback, not a hard tool error.
+        assert not result.is_error, result.content
+        summary = json.loads(result.content)
+        assert summary["applied"] == 0
+        assert summary["failed"] == 1
+        assert summary["results"][0]["status"] == "not_found"
 
     @pytest.mark.asyncio
     async def test_apply_edits_soft_fail_reports_status(self, xlsx_path, tmp_path):

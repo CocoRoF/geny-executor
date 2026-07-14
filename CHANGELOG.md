@@ -4,6 +4,30 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.54.0] — 2026-07-14
+
+### Added (DocEditChart — deterministic native-chart editing, no LLM)
+
+- **`DocEditChart`** built-in (documents family): applies deterministic
+  chart edits — retitle (`{"chart": i, "title": ...}`) and set-data
+  (`{"chart": i, "categories": [...], "series": [{"name", "values"}...]}`)
+  — at the chart addresses `DocAnalyze` already surfaces (its `charts`
+  list). Wraps `edit2docs.edit_chart`; **no Anthropic API key required**,
+  so an agent driving its own model can edit charts directly instead of
+  falling back to raw python-pptx. Setting data rewrites both the chart
+  caches and the embedded workbook (Office double-click-edit stays
+  consistent); untouched package parts stay byte-identical. Partial
+  application (`not_found` / `invalid`) is surfaced as engine feedback in
+  `content`, not a hard tool error — same contract as `DocApplyEdits`.
+- Registered in `DOC_TOOL_CLASSES` and the `documents` feature group, so
+  hosts that enable the documents feature expose it automatically.
+- **Scope note:** `DocEditChart` edits chart TITLE and DATA only — it does
+  not change colors, fills or other formatting. Visual/format changes
+  (e.g. recolor bars) remain the REPL's domain until edit2docs grows a
+  deterministic formatting verb.
+- The `DocEdit`/`DocGenerate` no-key error now points at both
+  `DocApplyEdits` (text/structure) and `DocEditChart` (chart title/data).
+
 ## [2.53.0] — 2026-07-13
 
 ### Added (SQL provider — session-scoped STM)
