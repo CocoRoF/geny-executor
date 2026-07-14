@@ -4,6 +4,23 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.59.1] — 2026-07-14
+
+### Fixed (CLI transport: large tool results killed delegated turns)
+
+- **32 MiB CLI stdout stream limit** (was asyncio's 64 KiB default): the
+  CLI emits one stream-json event per line with tool_result contents
+  inline — a DocXmlRead / big file Read / base64 image easily exceeded
+  64 KiB and `readline()` aborted the WHOLE turn with "Separator is
+  found, but chunk is longer than limit" (observed killing a delegated
+  15-slide PPTX build after 7 minutes of work). Both spawn paths (host
+  CLI + sandboxed launcher) now pass `limit=` — override via
+  `GENY_CLI_STREAM_LIMIT` (floor 64 KiB). A cap, not an allocation.
+- **Over-limit lines no longer kill the turn**: if a line still exceeds
+  the limit, `_aiter_lines` logs loudly, skips that one event (asyncio
+  discards the buffered bytes — unrecoverable by design) and keeps
+  streaming instead of propagating ValueError.
+
 ## [2.59.0] — 2026-07-14
 
 ### Added (progressive disclosure completed: catalog + browse + fuzzy)
