@@ -4,6 +4,26 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.58.0] — 2026-07-14
+
+### Changed (documents family = a hierarchical skill, progressive disclosure)
+
+- **`DocGuide`** (new, first in the family): the skill entry point. No topic
+  → the GENERATE | EDIT | INSPECT family map; topic → a deep per-task guide
+  (`build`, `generate`, `edit`, `edit.text`, `edit.chart`, `edit.xml`,
+  `render`, `recipes.slides`, `recipes.colors` — edit2docs ≥ 0.13.0
+  `doc_guide`). Guides render with the EXECUTOR tool names
+  (`_GUIDE_NAME_MAP`), so recipes reference the tools the model actually
+  has. Unknown topics fall back to the map — never a dead end.
+- **Every Doc\* description compacted to ≤ 320 chars** (test-enforced): the
+  frontmatter tier now costs a fraction of the tokens; the addressing
+  shapes and multi-call recipes that used to bloat descriptions live behind
+  `DocGuide(topic)`. `_EDIT_ADDRESSING_DOC` removed.
+- Multi-turn flow the family now teaches: pick GENERATE vs EDIT →
+  `DocGuide(topic)` when shapes/recipes are needed → act deterministically.
+- Bumps the `edit2docs` floor to `>= 0.13.0` (hierarchical `doc_guide`,
+  `OPENAI_TOOLS` for OpenAI-backend hosts).
+
 ## [2.57.0] — 2026-07-14
 
 ### Changed (documents family consolidated: 10 → 8 tools, no dead tools)

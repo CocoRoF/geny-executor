@@ -35,6 +35,7 @@ from geny_executor.tools.built_in.doc_tools import (
     DocBuildTool,
     DocEditTool,
     DocGenerateTool,
+    DocGuideTool,
     DocRenderTool,
     DocXmlEditTool,
     DocXmlReadTool,
@@ -367,6 +368,42 @@ class TestDocTools:
         assert not result.is_error
         summary = json.loads(result.content)
         assert summary["applied"] == 0 and summary["failed"] >= 1
+
+    @pytest.mark.asyncio
+    async def test_guide_root_map_with_executor_names(self, tmp_path):
+        """DocGuide is the skill entry point: family map rendered with the
+        EXECUTOR tool names (never the library verb names)."""
+        ctx = ToolContext(working_dir=str(tmp_path))
+        result = await DocGuideTool().execute({}, ctx)
+        assert not result.is_error, result.content
+        assert "GENERATE" in result.content and "EDIT" in result.content
+        assert "DocApplyEdits" in result.content
+        assert "DocXmlEdit" in result.content
+        assert "set_doc_text" not in result.content
+        assert result.metadata["topics"]
+
+    @pytest.mark.asyncio
+    async def test_guide_topic_and_prefix(self, tmp_path):
+        ctx = ToolContext(working_dir=str(tmp_path))
+        colors = await DocGuideTool().execute({"topic": "recipes.colors"}, ctx)
+        assert "srgbClr" in colors.content and "DocXmlEdit" in colors.content
+        recipes = await DocGuideTool().execute({"topic": "recipes"}, ctx)
+        assert "ADD A SLIDE" in recipes.content and "RECOLOR" in recipes.content
+        unknown = await DocGuideTool().execute({"topic": "zzz"}, ctx)
+        assert not unknown.is_error and "GENERATE" in unknown.content
+
+    def test_descriptions_stay_compact(self):
+        """Progressive-disclosure contract: frontmatter tier stays small;
+        the fat how-to lives behind DocGuide(topic)."""
+        for name, cls in DOC_TOOL_CLASSES.items():
+            desc = cls().description
+            assert len(desc) <= 320, (
+                f"{name} description grew to {len(desc)} chars — move "
+                "detail into edit2docs agent_guide GUIDES instead"
+            )
+
+    def test_guide_registered_first(self):
+        assert list(DOC_TOOL_CLASSES)[0] == "DocGuide"
 
     def test_llm_verbs_are_feature_gated(self):
         """Keyless hosts must never see DocGenerate/DocEdit — they advertise

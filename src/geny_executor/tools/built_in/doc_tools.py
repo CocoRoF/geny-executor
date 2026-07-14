@@ -11,8 +11,14 @@ Install: ``pip install 'geny-executor[docs]'``. The engine imports
 lazily; when missing, every tool returns a ToolResult error carrying
 the install hint.
 
-Seven always-on tools + two key-gated LLM conveniences:
+The family is a hierarchical skill with progressive disclosure: every
+description is compact (frontmatter tier); ``DocGuide`` returns the
+GENERATE|EDIT|INSPECT family map (body) and deep per-task guides by topic
+(resources — build, generate, edit, edit.text, edit.chart, edit.xml, render,
+recipes.slides, recipes.colors), rendered with the executor tool names via
+``_GUIDE_NAME_MAP``. Seven always-on tools + two key-gated LLM conveniences:
 
+* ``DocGuide``      → ``doc_guide``    — the skill map + topic guides (no LLM)
 * ``DocAnalyze``    → ``analyze_doc``  — outline + addresses (no LLM)
 * ``DocApplyEdits`` → ``set_doc_text`` + ``edit_chart`` — structured text
   AND chart edits, one surface (no LLM)
@@ -67,18 +73,6 @@ _SUPPORTED_EXTS = (".docx", ".xlsx", ".pptx")
 # a tool that can only error must never reach the model.
 _DOCS_LLM_FEATURE_KEY = "feature:docs_llm"
 
-_EDIT_ADDRESSING_DOC = (
-    "Edit objects are format-dispatched by the file extension. DOCX: "
-    '{"action":"replace","para":i,"new_text":...} | {"action":"replace",'
-    '"table":t,"row":r,"col":c,"new_text":...} | {"action":"insert_after",'
-    '"para":i,"markdown":...} (para=-1 prepends) | {"action":"delete","para":i}. '
-    'XLSX: {"action":"set_cell","sheet":name,"cell":"B3","value":...} | '
-    '{"action":"append_rows","sheet":name,"rows":[[...]]} | {"action":'
-    '"add_sheet","sheet":name,"headers":[...],"rows":[[...]]}. PPTX: '
-    '{"slide":i,"shape_id":id,"para":p,"new_text":...} (table cells add '
-    '"row"/"col"). Optional "old_text"/"old_value" guards reject stale edits. '
-    "Get addresses from DocAnalyze first."
-)
 
 
 def _load_edit2docs():
@@ -157,6 +151,75 @@ class _DocToolBase(Tool):
         raise NotImplementedError
 
 
+# Canonical edit2docs verb names → the executor tool names the model sees.
+# doc_guide renders every guide with these, so recipes reference REAL tools.
+_GUIDE_NAME_MAP = {
+    "doc_guide": "DocGuide",
+    "analyze_doc": "DocAnalyze",
+    "render_doc": "DocRender",
+    "set_doc_text": "DocApplyEdits",
+    "read_doc_xml": "DocXmlRead",
+    "set_doc_xml": "DocXmlEdit",
+    "build_doc": "DocBuild",
+    "generate_doc": "DocGenerate",
+    "edit_doc": "DocEdit",
+}
+
+
+class DocGuideTool(_DocToolBase):
+    """The skill entry point — hierarchical guide, progressive disclosure."""
+
+    @property
+    def name(self) -> str:
+        return "DocGuide"
+
+    @property
+    def description(self) -> str:
+        return (
+            "START HERE for .docx/.xlsx/.pptx work — the document skill. "
+            "No topic: the GENERATE|EDIT|INSPECT map. topic: deep guide "
+            "(build, generate, edit, edit.text, edit.chart, edit.xml, "
+            "render, recipes.slides, recipes.colors). Free, instant."
+        )
+
+    @property
+    def input_schema(self) -> Dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "topic": {
+                    "type": "string",
+                    "description": "Optional topic or prefix (e.g. 'recipes').",
+                },
+            },
+        }
+
+    def capabilities(self, input: Dict[str, Any]) -> ToolCapabilities:
+        return ToolCapabilities(
+            concurrency_safe=True,
+            read_only=True,
+            idempotent=True,
+            max_result_chars=30_000,
+        )
+
+    async def _run(self, input: Dict[str, Any], context: ToolContext) -> ToolResult:
+        engine = _load_edit2docs()
+        guide_fn = getattr(engine, "doc_guide", None)
+        if guide_fn is None:  # pragma: no cover — edit2docs < 0.13
+            return ToolResult(
+                content=(
+                    "This edit2docs version has no doc_guide — upgrade to "
+                    "edit2docs>=0.13.0 (pip install 'geny-executor[docs]')."
+                ),
+                is_error=True,
+            )
+        res = guide_fn(input.get("topic"), names=_GUIDE_NAME_MAP)
+        return ToolResult(
+            content=res["guide"],
+            metadata={"topic": res.get("topic", ""), "topics": res.get("topics", [])},
+        )
+
+
 class DocAnalyzeTool(_DocToolBase):
     """Outline a document — the address source for DocApplyEdits."""
 
@@ -167,11 +230,9 @@ class DocAnalyzeTool(_DocToolBase):
     @property
     def description(self) -> str:
         return (
-            "Analyze a .docx/.xlsx/.pptx file and return its addressable "
-            "outline: DOCX paragraphs ({para, style, text}) and table cells "
-            "({table, row, col, text}); XLSX sheets with sizes and sample "
-            "rows; PPTX slides with text shapes ({shape_id, para, text}). "
-            "Use these addresses in DocApplyEdits. Deterministic — no LLM."
+            "Outline + edit addresses + charts list for a .docx/.xlsx/.pptx. "
+            "Deterministic, no key. Run FIRST before any edit. "
+            "Guide: DocGuide('edit')."
         )
 
     @property
@@ -212,18 +273,10 @@ class DocApplyEditsTool(_DocToolBase):
     @property
     def description(self) -> str:
         return (
-            "Apply precise structured edits — text AND charts — to a "
-            ".docx/.xlsx/.pptx at addresses from DocAnalyze. Deterministic "
-            "— no LLM, no API key. Edits with a `chart` index (from "
-            "DocAnalyze's `charts` list) address native charts: "
-            '{"chart": 0, "title": "Q3"} retitles; {"chart": 0, '
-            '"categories": [...], "series": [{"name", "values"}]} sets the '
-            "data AND the embedded workbook (Office double-click-edit "
-            "matches). All other edits are format-specific text edits. "
-            "Each edit reports status applied | stale | not_found | "
-            "invalid with a reason; fix and resend only the failed ones. "
-            "For colors/fonts/formatting use DocXmlRead + DocXmlEdit. "
-            + _EDIT_ADDRESSING_DOC
+            "Deterministic structured edits at DocAnalyze addresses — "
+            "text/table/cell values AND chart title/data ({chart: i, ...}). "
+            "No key; byte-preserves the rest; per-edit statuses. Shapes: "
+            "DocGuide('edit.text'), DocGuide('edit.chart')."
         )
 
     @property
@@ -307,16 +360,9 @@ class DocXmlReadTool(_DocToolBase):
     @property
     def description(self) -> str:
         return (
-            "DOCX/XLSX/PPTX are zips of XML — read that XML directly. "
-            "Deterministic, no LLM, no API key. Without `part`: list every "
-            "part in the package (slides, charts, styles, themes, "
-            "sheets...). With `part` (e.g. ppt/slides/slide1.xml, "
-            "ppt/charts/chart1.xml, word/document.xml, "
-            "xl/worksheets/sheet1.xml): return that part's exact XML text. "
-            "Copy exact substrings from it and patch them with DocXmlEdit — "
-            "together they express EVERY edit OOXML can (colors, fills, "
-            "fonts, shape geometry, chart styling...). Prefer this over "
-            "python-pptx/python-docx in a REPL for office files."
+            "Documents are zips of XML. No part: the part map. With part: "
+            "that part's exact XML text. Pair with DocXmlEdit for ANY edit "
+            "(colors, fonts, slides). Guide: DocGuide('edit.xml')."
         )
 
     @property
@@ -364,21 +410,10 @@ class DocXmlEditTool(_DocToolBase):
     @property
     def description(self) -> str:
         return (
-            "Patch, CREATE or DELETE one XML part of a .docx/.xlsx/.pptx. "
-            "Deterministic, no LLM, no API key — the universal escape hatch "
-            "for every edit the structured verbs don't cover: recolor chart "
-            "bars/shapes (e.g. patch <a:srgbClr val=...> inside c:spPr), "
-            "fonts, fills, geometry, add/remove slides. Workflow: "
-            "DocXmlRead the part, copy EXACT substrings into "
-            '`edits: [{"find", "replace", "count" (0=all)}]`. `xml` '
-            "replaces the whole part — and CREATES it if missing (pass "
-            "`content_type` to register the new part; e.g. add a slide by "
-            "creating slideN.xml + its _rels/*.rels, then patching "
-            "presentation.xml + its rels). `delete: true` removes a part. "
-            "Each edit reports applied | not_found | invalid. The result "
-            "must stay well-formed XML or NOTHING is written; untouched "
-            "parts stay byte-identical. Prefer this over python-pptx in a "
-            "REPL."
+            "Patch (find/replace), CREATE (xml + content_type) or DELETE one "
+            "XML part. Well-formed-or-nothing; byte-preserving. The universal "
+            "edit — recolor, fonts, add/remove slides. Recipes: "
+            "DocGuide('recipes.slides'), DocGuide('recipes.colors')."
         )
 
     @property
@@ -489,21 +524,9 @@ class DocBuildTool(_DocToolBase):
     @property
     def description(self) -> str:
         return (
-            "Build a NEW .docx/.xlsx/.pptx from a structured spec YOU write. "
-            "Deterministic — no LLM, no API key (this is DocGenerate's engine "
-            "without the model: you do the thinking, this renders instantly). "
-            "The output extension picks the engine and the `spec` shape:\n"
-            "  • .docx ← spec is a MARKDOWN string (headings, paragraphs, "
-            "lists, tables, **bold**/*italic*).\n"
-            '  • .xlsx ← spec is {"sheets": [{"name", "headers": [...], '
-            '"rows": [[...]]}]}.\n'
-            '  • .pptx ← spec is {"slides": [{"layout", "title", '
-            '"subtitle" | "bullets", "notes"}]}; layout ∈ '
-            "title|content|section|title_only|two_content|blank (default "
-            "content); bullets accept strings or {text, level}.\n"
-            "PPTX uses standard built-in layouts (no design pipeline) — for a "
-            "designed deck use DocGenerate. Prefer DocBuild whenever you can "
-            "specify the content yourself: it is instant and free."
+            "GENERATE (deterministic): build a NEW document from YOUR spec — "
+            ".docx←markdown, .xlsx←{sheets}, .pptx←{slides}. Instant, no key. "
+            "Spec shapes: DocGuide('build')."
         )
 
     @property
@@ -571,12 +594,9 @@ class DocGenerateTool(_DocToolBase):
     @property
     def description(self) -> str:
         return (
-            "Generate a NEW .docx/.xlsx/.pptx document from a natural-"
-            "language intent (the output extension picks the engine). "
-            "Optional sources (files or URLs — pdf/docx/xlsx/pptx/html/epub/"
-            "ipynb...) ground the content. PPTX generation can take minutes. "
-            "Uses an LLM — requires an Anthropic API key (host docs settings "
-            "or ANTHROPIC_API_KEY)."
+            "GENERATE (LLM): a complete designed document from a one-line "
+            "intent (.pptx is slow — minutes). Options: DocGuide('generate'). "
+            "Keyless alternative: DocBuild."
         )
 
     @property
@@ -670,13 +690,9 @@ class DocEditTool(_DocToolBase):
     @property
     def description(self) -> str:
         return (
-            "Edit a .docx/.xlsx/.pptx file with a natural-language "
-            "instruction — the engine plans and applies the operations. "
-            "Prefer DocAnalyze + DocApplyEdits for precise, deterministic "
-            "changes; use this for broad or fuzzy edits. A pure question "
-            "returns an answer without changing the file. Uses an LLM — "
-            "requires an Anthropic API key (host docs settings or "
-            "ANTHROPIC_API_KEY)."
+            "EDIT (LLM): one natural-language edit turn. Prefer the "
+            "deterministic path: DocAnalyze → DocApplyEdits / DocXmlEdit. "
+            "Guide: DocGuide('edit')."
         )
 
     @property
@@ -739,13 +755,8 @@ class DocRenderTool(_DocToolBase):
     @property
     def description(self) -> str:
         return (
-            "Render/inspect a .docx/.xlsx/.pptx file — page images, PDF, "
-            "vector pages, or readable content: to='md' writes preview.md "
-            "for docx/xlsx and per-slide SVGs for pptx (use it to READ a "
-            "document's content). Raster paths use "
-            "the native engine (per-page SVG → PNG → PDF; no LibreOffice). "
-            "to='png' writes page-1.png…N, to='pdf' writes <stem>.pdf, "
-            "to='svg' writes the vector pages. Deterministic — no LLM."
+            "Render a document: to=md (read the content) | svg | png | pdf. "
+            "Deterministic, no key. Guide: DocGuide('render')."
         )
 
     @property
@@ -811,6 +822,7 @@ class DocRenderTool(_DocToolBase):
 
 
 DOC_TOOL_CLASSES: Dict[str, type] = {
+    "DocGuide": DocGuideTool,
     "DocAnalyze": DocAnalyzeTool,
     "DocApplyEdits": DocApplyEditsTool,
     "DocBuild": DocBuildTool,
