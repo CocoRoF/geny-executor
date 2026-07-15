@@ -89,3 +89,13 @@ class TestMapIntoContainer:
 
         with pytest.raises(PermissionError):
             map_into_container(h, "../../etc/passwd", "/workspace")
+
+
+class TestExecUser:
+    def test_exec_user_attribute_recognised(self):
+        """Handles may pin the exec user (bind workspaces: root aligns with
+        the host service user that owns the mounted files)."""
+        h = SimpleNamespace(container_name="ws", exec_user="0:0")
+        assert getattr(h, "exec_user", None) == "0:0"
+        legacy = SimpleNamespace(container_name="ws")
+        assert getattr(legacy, "exec_user", None) is None

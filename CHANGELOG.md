@@ -4,6 +4,17 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.60.1] — 2026-07-15
+
+### Fixed (bind-workspace writes: exec-user override)
+
+- ``sandbox_exec`` honours an optional ``exec_user`` on the handle
+  (``docker exec -u <user>``). Bind-mounted session workspaces are owned
+  by the host service user (typically root) while workspace containers
+  default to an unprivileged user — every sandboxed write got EACCES.
+  Handles for bind workspaces pin ``exec_user="0:0"`` so container-side
+  and host-side writers agree.
+
 ## [2.60.0] — 2026-07-15
 
 ### Added (workspace-unified sandboxes: host ↔ container path translation)

@@ -116,6 +116,13 @@ async def sandbox_exec(
 
     cwd = resolve_container_workdir(sandbox, cwd)
     exec_argv = ["exec", "-i", "-w", cwd]
+    # Optional handle protocol: run exec'ed commands as a specific user.
+    # Bind-mounted session workspaces are owned by the HOST service user
+    # (typically root); the container's default user (e.g. ubuntu:1000)
+    # gets EACCES on every write — "-u 0:0" aligns the writers.
+    exec_user = getattr(sandbox, "exec_user", None)
+    if exec_user:
+        exec_argv += ["-u", str(exec_user)]
     for k, v in dict(env or {}).items():
         exec_argv += ["--env", f"{k}={v}"]
     exec_argv += [sandbox.container_name, *list(argv)]
