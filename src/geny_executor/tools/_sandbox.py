@@ -23,6 +23,59 @@ class SandboxExecError(RuntimeError):
     """A ``docker exec`` into the sandbox failed to spawn."""
 
 
+# ── Host ↔ container path translation (workspace-unified sandboxes) ────
+#
+# A sandbox whose /workspace bind-mounts the session's HOST workspace can
+# advertise the mapping on the handle (both optional, duck-typed):
+#
+#   * ``container_workdir: str``  — the in-container mount root
+#     (conventionally "/workspace").
+#   * ``map_path(host_path) -> str | None`` — absolute host path →
+#     absolute container path (None = not under the mount).
+#
+# Legacy handles without these attributes keep the exact old behaviour.
+# The guard in :func:`resolve_container_workdir` also fixes the classic
+# failure mode where a HOST-absolute working_dir was passed verbatim to
+# ``docker exec -w`` and chdir-killed every call: an unmappable host
+# workdir now degrades to the container root instead of a dead exec.
+
+
+def resolve_container_workdir(sandbox: Any, workdir: Optional[str]) -> str:
+    """The ``docker exec -w`` value for this call — always container-side."""
+    default = getattr(sandbox, "container_workdir", None) or "/workspace"
+    if not workdir:
+        return default
+    mapper = getattr(sandbox, "map_path", None)
+    if callable(mapper):
+        try:
+            mapped = mapper(workdir)
+        except Exception:  # noqa: BLE001 — mapping must never break an exec
+            mapped = None
+        if mapped:
+            return str(mapped)
+    root = "/" + default.strip("/")
+    if workdir == root or workdir.startswith(root + "/"):
+        return workdir  # already container-side
+    # Host path with no mapping — exec at the container root rather than
+    # chdir-failing into a directory that does not exist in the container.
+    return default
+
+
+def map_into_container(sandbox: Any, file_path: str, workdir: Optional[str]) -> str:
+    """Resolve a tool-supplied path (relative OR host-absolute) to an
+    absolute in-container path, honouring the handle's mapping."""
+    p = file_path or "."
+    mapper = getattr(sandbox, "map_path", None)
+    if callable(mapper) and posixpath.isabs(p):
+        try:
+            mapped = mapper(p)
+        except Exception:  # noqa: BLE001
+            mapped = None
+        if mapped:
+            return str(mapped)
+    return container_path(p, resolve_container_workdir(sandbox, workdir))
+
+
 def container_path(file_path: str, workdir: str) -> str:
     """Resolve ``file_path`` to an absolute path *inside* the container,
     rooted at ``workdir`` (default ``/workspace``), refusing to escape it.
@@ -61,6 +114,7 @@ async def sandbox_exec(
     except Exception:  # pragma: no cover - defensive; exec surfaces real errors
         pass
 
+    cwd = resolve_container_workdir(sandbox, cwd)
     exec_argv = ["exec", "-i", "-w", cwd]
     for k, v in dict(env or {}).items():
         exec_argv += ["--env", f"{k}={v}"]
@@ -95,7 +149,7 @@ async def sandbox_exec(
 
 async def sb_read_bytes(sandbox: Any, path: str, *, workdir: str) -> bytes:
     """Read a file inside the container. Raises FileNotFoundError / OSError."""
-    cpath = container_path(path, workdir)
+    cpath = map_into_container(sandbox, path, workdir)
     rc, out, err = await sandbox_exec(sandbox, ["cat", "--", cpath], cwd=workdir)
     if rc != 0:
         msg = err.decode("utf-8", "replace").strip()
@@ -108,7 +162,7 @@ async def sb_read_bytes(sandbox: Any, path: str, *, workdir: str) -> bytes:
 async def sb_write_bytes(sandbox: Any, path: str, data: bytes, *, workdir: str) -> int:
     """Create/overwrite a file inside the container (parent dirs created).
     Returns bytes written."""
-    cpath = container_path(path, workdir)
+    cpath = map_into_container(sandbox, path, workdir)
     # mkdir -p the parent, then write stdin to the file. Single sh -c so the
     # path is quoted once; data flows over stdin (binary-safe, no escaping).
     script = f'mkdir -p "$(dirname "$1")" && cat > "$1"'

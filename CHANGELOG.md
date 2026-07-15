@@ -4,6 +4,22 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.60.0] — 2026-07-15
+
+### Added (workspace-unified sandboxes: host ↔ container path translation)
+
+- Sandbox handles can now advertise a path mapping (both optional,
+  duck-typed): ``container_workdir`` (the in-container mount root) and
+  ``map_path(host_path) -> container_path | None``. One translation layer
+  in ``tools/_sandbox.py`` (``resolve_container_workdir`` /
+  ``map_into_container``) applies it to EVERY sandboxed tool — Bash cwd,
+  Read/Write/Edit/Glob/Grep file paths — so a sandbox whose ``/workspace``
+  bind-mounts the session's host workspace presents ONE filesystem.
+- **Regression guard**: a HOST-absolute working_dir that cannot be mapped
+  no longer reaches ``docker exec -w`` verbatim (which chdir-killed every
+  call — "Bash has a broken working directory"); it degrades to the
+  container root instead. Legacy handles keep the exact old behaviour.
+
 ## [2.59.1] — 2026-07-14
 
 ### Fixed (CLI transport: large tool results killed delegated turns)
