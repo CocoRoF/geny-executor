@@ -165,7 +165,7 @@ async def sb_write_bytes(sandbox: Any, path: str, data: bytes, *, workdir: str) 
     cpath = map_into_container(sandbox, path, workdir)
     # mkdir -p the parent, then write stdin to the file. Single sh -c so the
     # path is quoted once; data flows over stdin (binary-safe, no escaping).
-    script = f'mkdir -p "$(dirname "$1")" && cat > "$1"'
+    script = 'mkdir -p "$(dirname "$1")" && cat > "$1"'
     rc, _out, err = await sandbox_exec(
         sandbox,
         ["sh", "-c", script, "sh", cpath],
