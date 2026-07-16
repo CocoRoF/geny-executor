@@ -47,6 +47,14 @@ class AtlassianNotConnectedError(Exception):
     """Raised when no usable Atlassian credentials are available."""
 
 
+class _ApiError(RuntimeError):
+    """A non-auth Atlassian API error, carrying the HTTP status."""
+
+    def __init__(self, status: int, message: str) -> None:
+        super().__init__(message)
+        self.status = status
+
+
 def _strip_html(markup: str) -> str:
     """Confluence storage XHTML → readable plain text (best-effort)."""
     text = re.sub(r"<(br|/p|/h[1-6]|/li|/tr)[^>]*>", "\n", markup or "")
@@ -127,13 +135,16 @@ class _AtlassianClient:
             )
         if resp.status_code >= 400:
             detail = resp.text[:400]
-            raise RuntimeError(f"Atlassian API {resp.status_code}: {detail}")
+            raise _ApiError(resp.status_code, f"Atlassian API {resp.status_code}: {detail}")
         if resp.status_code == 204 or not resp.content:
             return {}
         return resp.json()
 
     async def jira(self, method: str, path: str, **kw: Any) -> Any:
         return await self._request(method, f"{self._base}/rest/api/2{path}", **kw)
+
+    async def jira3(self, method: str, path: str, **kw: Any) -> Any:
+        return await self._request(method, f"{self._base}/rest/api/3{path}", **kw)
 
     async def confluence(self, method: str, path: str, **kw: Any) -> Any:
         base = self._confluence_base or f"{self._base}/wiki"
@@ -240,25 +251,34 @@ class JiraSearchTool(_AtlassianTool):
 
     async def _run(self, input: Dict[str, Any], client: _AtlassianClient) -> ToolResult:
         limit = max(1, min(100, int(input.get("max_results") or 20)))
-        data = await client.jira(
-            "POST",
-            "/search",
-            json_body={
-                "jql": str(input.get("jql") or ""),
-                "maxResults": limit,
-                "fields": [
-                    "summary", "status", "issuetype", "priority",
-                    "assignee", "updated",
-                ],
-            },
-        )
+        payload = {
+            "jql": str(input.get("jql") or ""),
+            "maxResults": limit,
+            "fields": [
+                "summary", "status", "issuetype", "priority",
+                "assignee", "updated",
+            ],
+        }
+        # Cloud removed ``/rest/api/2/search`` in 2026 (CHANGE-2046) in favour
+        # of ``/rest/api/3/search/jql``; Server/DC has no v3. Try the Cloud
+        # endpoint first and fall back on "no such endpoint" statuses only —
+        # a 400 (bad JQL) is the same on both and must surface as-is.
+        try:
+            data = await client.jira3("POST", "/search/jql", json_body=payload)
+        except _ApiError as exc:
+            if exc.status not in (404, 405, 410):
+                raise
+            data = await client.jira("POST", "/search", json_body=payload)
         rows = [_issue_row(i) for i in data.get("issues", [])]
+        total = data.get("total")  # absent on the v3 endpoint
+        out: Dict[str, Any] = {"issues": rows}
+        if total is not None:
+            out["total"] = total
+        if data.get("isLast") is False:
+            out["more"] = True
         return ToolResult(
-            content=json.dumps(
-                {"total": data.get("total"), "issues": rows},
-                ensure_ascii=False, indent=1,
-            ),
-            metadata={"total": data.get("total"), "returned": len(rows)},
+            content=json.dumps(out, ensure_ascii=False, indent=1),
+            metadata={"total": total, "returned": len(rows)},
         )
 
 

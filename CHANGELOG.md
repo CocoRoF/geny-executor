@@ -4,6 +4,18 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.61.1] — 2026-07-16
+
+### Fixed (jira_search on Atlassian Cloud)
+
+- Cloud removed ``/rest/api/2/search`` in 2026 (CHANGE-2046 — live sites
+  return **410 Gone**). ``jira_search`` now targets
+  ``/rest/api/3/search/jql`` first and falls back to the v2 endpoint
+  only on 404/405/410 (Server/DC has no v3); a 400 (bad JQL) surfaces
+  as-is without a wasted second call. The v3 response has no ``total``
+  — the tool emits ``more: true`` from ``isLast`` instead when the
+  result window overflowed.
+
 ## [2.61.0] — 2026-07-16
 
 ### Added (Atlassian tool family: Jira + Confluence)

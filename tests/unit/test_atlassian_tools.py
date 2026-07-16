@@ -129,7 +129,7 @@ async def test_api_error_surfaces_status_and_body():
 # ── Jira tools ───────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_jira_search_request_and_mapping():
+async def test_jira_search_uses_cloud_v3_endpoint():
     seen = {}
 
     async def handler(request):
@@ -137,7 +137,7 @@ async def test_jira_search_request_and_mapping():
         seen["auth"] = request.headers["Authorization"]
         seen["body"] = json.loads(request.content)
         return _json_response({
-            "total": 1,
+            "isLast": False,
             "issues": [{
                 "key": "ABC-1",
                 "fields": {
@@ -154,15 +154,46 @@ async def test_jira_search_request_and_mapping():
         {"jql": "project = ABC", "max_results": 5}, _client(handler)
     )
     assert not res.is_error
-    assert seen["url"] == f"{_BASE}/rest/api/2/search"
+    # Cloud removed /rest/api/2/search (CHANGE-2046) — v3 search/jql first.
+    assert seen["url"] == f"{_BASE}/rest/api/3/search/jql"
     assert seen["auth"].startswith("Basic ")
     assert seen["body"]["jql"] == "project = ABC"
     assert seen["body"]["maxResults"] == 5
     out = json.loads(res.content)
+    assert out["more"] is True  # isLast=False surfaced
     assert out["issues"][0] == {
         "key": "ABC-1", "summary": "s", "status": "In Progress", "type": "Task",
         "priority": "High", "assignee": "HR", "updated": "2026-07-16",
     }
+
+
+@pytest.mark.asyncio
+async def test_jira_search_falls_back_to_v2_on_server_dc():
+    urls = []
+
+    async def handler(request):
+        urls.append(str(request.url))
+        if "/rest/api/3/" in str(request.url):
+            return httpx.Response(404, text="no v3 here")
+        return _json_response({"total": 0, "issues": []})
+
+    res = await JiraSearchTool()._run_wrapped({"jql": "x"}, _client(handler))
+    assert not res.is_error
+    assert urls == [f"{_BASE}/rest/api/3/search/jql", f"{_BASE}/rest/api/2/search"]
+    assert json.loads(res.content)["total"] == 0
+
+
+@pytest.mark.asyncio
+async def test_jira_search_bad_jql_does_not_retry_v2():
+    urls = []
+
+    async def handler(request):
+        urls.append(str(request.url))
+        return httpx.Response(400, text='{"errorMessages":["bad jql"]}')
+
+    res = await JiraSearchTool()._run_wrapped({"jql": "x"}, _client(handler))
+    assert res.is_error and "bad jql" in res.content
+    assert len(urls) == 1  # a 400 is the same on both APIs — no second call
 
 
 @pytest.mark.asyncio
