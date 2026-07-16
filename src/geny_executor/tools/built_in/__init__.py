@@ -95,6 +95,10 @@ from geny_executor.tools.built_in.env_tools import EnvTool
 # from ``ctx.extras['google']``; gated via required_config_keys → hidden until the
 # host marks ``feature:google_connected`` satisfied.
 from geny_executor.tools.built_in.google_tools import GOOGLE_TOOL_CLASSES
+# Atlassian — native Jira/Confluence tools. Read credentials from
+# ``ctx.extras['atlassian']``; gated via required_config_keys → hidden until
+# the host marks ``feature:atlassian_connected`` satisfied.
+from geny_executor.tools.built_in.atlassian_tools import ATLASSIAN_TOOL_CLASSES
 # Browser — AI-native web exploration on the an-web engine (semantic snapshots,
 # per-session tabs, embedded V8; no Chromium). an-web itself imports lazily —
 # 'pip install geny-executor[browser]' (Python >= 3.12).
@@ -192,6 +196,9 @@ BUILT_IN_TOOL_CLASSES: Dict[str, Type[Tool]] = {
     # Google Workspace (gated on feature:google_connected — hidden until the host
     # injects OAuth creds + marks Google connected).
     **GOOGLE_TOOL_CLASSES,
+    # Atlassian (gated on feature:atlassian_connected — hidden until the host
+    # injects a site URL + API token and marks Atlassian connected).
+    **ATLASSIAN_TOOL_CLASSES,
     # Browser (an-web) — semantic web exploration; degrades to an install-hint
     # error when the optional an-web dependency is absent.
     **BROWSER_TOOL_CLASSES,
@@ -242,6 +249,8 @@ BUILT_IN_TOOL_FEATURES: Dict[str, List[str]] = {
     "cron": ["CronCreate", "CronDelete", "CronList"],
     "environment": ["env"],
     "google": list(GOOGLE_TOOL_CLASSES.keys()),
+    # Jira + Confluence control on the configured Atlassian site.
+    "atlassian": list(ATLASSIAN_TOOL_CLASSES.keys()),
     # Remote server ops over SSH/SFTP — run commands, transfer files, sudo.
     "ssh": list(SSH_TOOL_CLASSES.keys()),
 }
@@ -302,6 +311,7 @@ def get_builtin_tools(
 
 __all__ = [
     "AgentTool",
+    "ATLASSIAN_TOOL_CLASSES",
     "BROWSER_TOOL_CLASSES",
     "DOC_TOOL_CLASSES",
     "SSH_TOOL_CLASSES",

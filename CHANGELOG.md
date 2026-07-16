@@ -4,6 +4,29 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.61.0] — 2026-07-16
+
+### Added (Atlassian tool family: Jira + Confluence)
+
+- New optional built-in family ``atlassian`` (9 tools): ``jira_search``
+  (JQL), ``jira_issue``, ``jira_create``, ``jira_update``,
+  ``jira_comment``, ``jira_transition`` (list-or-apply dual mode),
+  ``confluence_search`` (CQL or plain text), ``confluence_page``
+  (readable text or raw storage XHTML), ``confluence_write``
+  (create / version-bumped update).
+- Same contract as the Google family: credentials come from
+  ``ctx.extras["atlassian"]`` (``base_url`` + ``api_token``, plus
+  ``email`` for Cloud Basic auth — omitted means Server/DC Bearer PAT,
+  optional ``confluence_base_url`` for split Server/DC installs); every
+  tool gates on ``required_config_keys() ->
+  ["feature:atlassian_connected"]`` so hosts hide the family until a
+  valid config exists; every failure funnels into
+  ``ToolResult(is_error=True)``.
+- Jira talks ``/rest/api/2`` (string bodies — identical on Cloud and
+  Server/DC, no ADF translation); Confluence talks
+  ``{site}/wiki/rest/api`` on Cloud or ``{confluence_base_url}/rest/api``
+  on Server/DC.
+
 ## [2.60.1] — 2026-07-15
 
 ### Fixed (bind-workspace writes: exec-user override)
