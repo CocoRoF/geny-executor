@@ -4,6 +4,14 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.61.2] — 2026-07-16
+
+### Changed (jira_search guidance)
+
+- ``jira_search`` description now warns that Cloud's v3 ``search/jql``
+  rejects unbounded queries (a bare ``ORDER BY`` returns 400) — agents
+  are told to always include a filter clause, saving a wasted turn.
+
 ## [2.61.1] — 2026-07-16
 
 ### Fixed (jira_search on Atlassian Cloud)

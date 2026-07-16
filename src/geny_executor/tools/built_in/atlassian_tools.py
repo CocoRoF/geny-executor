@@ -230,9 +230,10 @@ class JiraSearchTool(_AtlassianTool):
     def description(self) -> str:
         return (
             "Search Jira issues with JQL (e.g. 'project = ABC AND status != "
-            "Done ORDER BY updated DESC'). Returns key, summary, status, "
-            "type, priority, assignee, updated. Use jira_issue for full "
-            "detail."
+            "Done ORDER BY updated DESC'). Cloud rejects unbounded queries — "
+            "always include a filter (project / assignee / updated >= -30d), "
+            "not just ORDER BY. Returns key, summary, status, type, priority, "
+            "assignee, updated. Use jira_issue for full detail."
         )
 
     @property
