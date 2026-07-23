@@ -114,6 +114,22 @@ async def run_compaction(
     before_msgs = len(before_list)
     before_tokens = estimate_prompt_tokens(state)
 
+    # Deterministic pre-pass BEFORE the (expensive, lossy) compactor: dedup
+    # repeated tool outputs, strip stale base64 images, trim oversized stale
+    # results. In-place, count/order-preserving, pair-safe — so the watermark
+    # reconcile below and the compactor itself see a normal message list. The
+    # token-estimate memo keys on list length + head/tail ids, which this
+    # pass preserves, so it must be dropped for after_tokens to be honest.
+    try:
+        from geny_executor.core.context_prune import prune_messages
+
+        prune_metrics = prune_messages(state.messages or [])
+        if any(prune_metrics.get(k) for k in ("deduped", "images_stripped", "trimmed")):
+            state.shared.pop("_prompt_tokens_memo", None)
+            state.add_event("context.pruned", dict(prune_metrics))
+    except Exception:  # noqa: BLE001 — relief, never a gate
+        logger.debug("deterministic prune pass failed", exc_info=True)
+
     try:
         await compactor.compact(state)
     except Exception as exc:  # noqa: BLE001 — best effort

@@ -91,10 +91,20 @@ def _cache_system(state: PipelineState) -> None:
         parts = state.shared.get("system_parts")
         stable = parts.get("stable_text") if isinstance(parts, dict) else None
         volatile = parts.get("volatile_text") if isinstance(parts, dict) else None
-        if stable and volatile and system == f"{stable}\n\n{volatile}":
+        # Tolerant split: locate the volatile tail by POSITION instead of
+        # requiring the whole string to equal stable+"\n\n"+volatile exactly.
+        # Text appended between/after by later stages (e.g. the deferred-tool
+        # catalog) used to break that equality, silently pulling the volatile
+        # tail INSIDE the cached prefix — a full system re-prefill every turn.
+        # Splitting at the tail keeps concatenation byte-identical.
+        idx = -1
+        if stable and volatile and system.startswith(stable):
+            idx = system.rfind(volatile)
+        if idx > 0:
             state.system = [
-                {"type": "text", "text": stable, "cache_control": EPHEMERAL_CACHE},
-                {"type": "text", "text": f"\n\n{volatile}"},
+                {"type": "text", "text": system[:idx],
+                 "cache_control": EPHEMERAL_CACHE},
+                {"type": "text", "text": system[idx:]},
             ]
         else:
             state.system = [{"type": "text", "text": system, "cache_control": EPHEMERAL_CACHE}]

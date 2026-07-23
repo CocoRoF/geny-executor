@@ -97,6 +97,10 @@ class EventTypes(str, Enum):
     # ── Stage 2: Context ──
     CONTEXT_BUILT = "context.built"
     CONTEXT_COMPACTED = "context.compacted"
+    #: Deterministic (no-LLM) prune pass that runs before the compactor:
+    #: dedup repeated tool outputs, strip stale base64 images, trim
+    #: oversized stale results.
+    CONTEXT_PRUNED = "context.pruned"
     CONTEXT_COMPACTION_FAILED = "context.compaction_failed"
     CONTEXT_COMPACTION_RECORD_FAILED = "context.compaction_record_failed"
     # TTFT program (2.50.0): retrieval bounded / LLM compaction moved
@@ -355,6 +359,12 @@ PAYLOADS: Dict[EventTypes, Dict[str, str]] = {
         "messages_before": "int?",
         "messages_after": "int?",
         "saved_tokens_estimate": "int?",
+    },
+    EventTypes.CONTEXT_PRUNED: {
+        "deduped": "int — duplicate tool results rewritten to a back-reference",
+        "images_stripped": "int — stale base64 images replaced with a marker",
+        "trimmed": "int — oversized stale tool results shortened",
+        "chars_saved": "int — text chars removed (images excluded)",
     },
     EventTypes.CONTEXT_RETRIEVAL_TIMEOUT: {
         "timeout_s": "float — the retrieval_timeout_s bound that fired; the turn proceeds without memory",

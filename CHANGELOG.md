@@ -4,6 +4,47 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.62.0] — 2026-07-23
+
+Context-engineering hardening from the Hermes comparison audit. All
+systemic (no-LLM), all gated on effect-proving tests.
+
+### Added (deterministic prune pass — context.pruned)
+
+- ``core/context_prune.py``: a no-LLM relief pass that runs inside
+  ``run_compaction`` BEFORE the (expensive, lossy) summary compactor:
+  - **Dedup repeated tool outputs** by content hash — the newest copy keeps
+    full content, older identical results become a one-line back-reference.
+    Reading the same file five times no longer costs five full copies.
+  - **Strip stale base64 images** (recursing into ``tool_result`` content
+    lists) — a screenshot from twenty turns ago no longer rides every
+    request forever. Recent messages are never touched.
+  - **Trim oversized stale tool results** to head + an explicit
+    ``[N chars trimmed]`` marker.
+  Invariants: message count/order unchanged (STM watermark safe),
+  ``tool_use`` blocks and ids untouched (pair repair stays no-op), the
+  newest ``protect_last`` messages untouched. Savings roll into the
+  existing ``saved_tokens_estimate``; a new ``context.pruned`` event
+  carries the metrics. Measured: 4 duplicate reads → >30% of the prompt
+  estimate reclaimed before any LLM summarization.
+  NOTE: deliberately NOT wired into the background-compaction path — the
+  background shadow shallow-copies the message list (dicts shared with the
+  live request), so in-place pruning there would race the in-flight call.
+
+### Fixed (system-prompt cache split, volatile_placement="system")
+
+- The deferred-tool catalog was appended AFTER the joined
+  stable+volatile system string, breaking Stage 5's exact-equality split
+  — the volatile tail (clock, retrieved memory) silently ended up INSIDE
+  the cached prefix, re-prefilling the whole system prompt every turn in
+  the legacy layout. Two-sided fix: Stage 3 now inserts the (cache-stable)
+  catalog into the STABLE region before the volatile tail, and
+  ``_cache_system`` locates the volatile tail by POSITION (tolerant split,
+  byte-identical concatenation) instead of requiring exact equality — so
+  any future stable-text append degrades gracefully instead of silently
+  disabling the split. Default ``turn_context`` placement was already
+  cache-safe and is unchanged.
+
 ## [2.61.2] — 2026-07-16
 
 ### Changed (jira_search guidance)

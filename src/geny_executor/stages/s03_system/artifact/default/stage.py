@@ -322,7 +322,23 @@ class SystemStage(Stage[Any, Any]):
             catalog = self._catalog_cache
             if catalog:
                 if isinstance(system, str):
-                    system = (system + "\n\n" + catalog) if system else catalog
+                    parts_rec = state.shared.get("system_parts")
+                    if (isinstance(parts_rec, dict)
+                            and parts_rec.get("stable_text")
+                            and parts_rec.get("volatile_text")):
+                        # volatile_placement="system": the catalog is
+                        # CACHE-STABLE, so it belongs in the stable region —
+                        # BEFORE the volatile tail. Appending it after the
+                        # joined string used to break the Stage-5 split
+                        # (`system == stable + "\n\n" + volatile` no longer
+                        # held), which silently caching the volatile tail too
+                        # → a full system re-prefill every turn.
+                        stable = parts_rec["stable_text"]
+                        stable = f"{stable}\n\n{catalog}" if stable else catalog
+                        parts_rec["stable_text"] = stable
+                        system = f"{stable}\n\n{parts_rec['volatile_text']}"
+                    else:
+                        system = (system + "\n\n" + catalog) if system else catalog
                 elif isinstance(system, list):
                     system = [*system, {"type": "text", "text": catalog}]
 
