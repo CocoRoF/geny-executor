@@ -31,9 +31,42 @@ from geny_executor.memory.providers.file.timezone import now_in
 logger = logging.getLogger(__name__)
 
 MAX_STM_LINES = 2000
+#: Byte budget for the whole jsonl. The line cap alone let a session grow to
+#: 270 MB in production — 2,000 lines is no bound when single event lines
+#: carry hundreds of KB (inlined observation frames, giant tool results).
+#: recent()/search() and the transcripts UI re-read the WHOLE file, so the
+#: byte budget is what actually keeps those O(file) paths sane.
+MAX_STM_BYTES = 16 * 1024 * 1024
+#: A single record longer than this is truncated at append time (its
+#: ``content`` tail replaced with a marker). Applies to turns AND events —
+#: nothing conversational needs half a megabyte of inline payload.
+MAX_RECORD_BYTES = 64 * 1024
 #: Enforce the line cap every N appends (not every append — the cap
 #: re-reads the whole jsonl). Bounds the file to MAX_STM_LINES + this.
 _CAP_CHECK_EVERY = 200
+
+
+def _bound_record_line(line: str) -> str:
+    """Truncate an oversized serialized record to MAX_RECORD_BYTES.
+
+    The cut happens on the record's ``content`` field (the only place
+    multi-hundred-KB payloads ride), preserving valid JSON and stamping an
+    explicit marker so downstream readers know bytes were dropped."""
+    if len(line.encode("utf-8", "ignore")) <= MAX_RECORD_BYTES:
+        return line
+    try:
+        rec = json.loads(line)
+        content = rec.get("content")
+        if isinstance(content, str) and len(content) > 4096:
+            overshoot = len(line.encode("utf-8", "ignore")) - MAX_RECORD_BYTES
+            keep = max(4096, len(content) - overshoot - 256)
+            dropped = len(content) - keep
+            rec["content"] = (content[:keep]
+                              + f"\n… [{dropped} chars truncated at record cap]")
+            return json.dumps(rec, ensure_ascii=False)
+    except Exception:  # noqa: BLE001 — malformed record: hard-cut the line
+        pass
+    return line[: MAX_RECORD_BYTES // 2]
 
 
 class _JSONLSTMStore:
@@ -68,7 +101,7 @@ class _JSONLSTMStore:
 
     async def append(self, turn: Turn) -> None:
         rec = _turn_to_record(turn, self._tz)
-        line = json.dumps(rec, ensure_ascii=False)
+        line = _bound_record_line(json.dumps(rec, ensure_ascii=False))
         async with self._lock:
             self._path.parent.mkdir(parents=True, exist_ok=True)
             with self._path.open("a", encoding="utf-8") as fh:
@@ -90,6 +123,7 @@ class _JSONLSTMStore:
             self._appends_since_cap = 0
             try:
                 await self.enforce_line_cap()
+                await self.enforce_byte_cap()
             except Exception:  # noqa: BLE001 — capping is best-effort
                 logger.debug("stm: enforce_line_cap failed", exc_info=True)
 
@@ -118,6 +152,14 @@ class _JSONLSTMStore:
         if metadata:
             rec["metadata"] = dict(metadata)
         line = json.dumps(rec, ensure_ascii=False)
+        if len(line.encode("utf-8", "ignore")) > MAX_RECORD_BYTES:
+            # Event payloads (observation frames, giant tool results) were the
+            # production 270 MB transcript's fat lines. Keep the envelope,
+            # drop the payload with an explicit marker.
+            rec["data"] = {"truncated": True,
+                           "reason": f"event payload over {MAX_RECORD_BYTES} bytes"}
+            rec.pop("metadata", None)
+            line = json.dumps(rec, ensure_ascii=False)
         async with self._lock:
             self._path.parent.mkdir(parents=True, exist_ok=True)
             with self._path.open("a", encoding="utf-8") as fh:
@@ -145,6 +187,36 @@ class _JSONLSTMStore:
                 if len(out) >= limit:
                     break
         return out
+
+    async def enforce_byte_cap(self) -> int:
+        """Drop OLDEST lines until the file fits MAX_STM_BYTES. Returns
+        dropped-line count. Line cap alone is no bound when individual lines
+        are hundreds of KB — this is the bound that keeps the whole-file
+        readers (recent/search/transcripts UI) usable."""
+        async with self._lock:
+            try:
+                if (not self._path.exists()
+                        or self._path.stat().st_size <= MAX_STM_BYTES):
+                    return 0
+            except OSError:
+                return 0
+            lines = self._read_lines_sync()
+            sizes = [len(ln.encode("utf-8", "ignore")) + 1 for ln in lines]
+            total = sum(sizes)
+            drop = 0
+            while drop < len(lines) and total > MAX_STM_BYTES:
+                total -= sizes[drop]
+                drop += 1
+            if drop == 0:
+                return 0
+            tail = lines[drop:]
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self._path.with_suffix(self._path.suffix + ".tmp")
+            with tmp.open("w", encoding="utf-8") as fh:
+                for line in tail:
+                    fh.write(line + "\n")
+            tmp.replace(self._path)
+            return drop
 
     async def truncate(self, *, keep_last: int) -> int:
         """Rewrite the file to keep only the last `keep_last` lines.

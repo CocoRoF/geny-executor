@@ -4,6 +4,30 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.63.0] — 2026-07-30
+
+Storage growth policies — the caps that keep a long-lived session's disk
+footprint bounded (production evidence: a 270 MB transcript with 2,110
+lines; 1,482 checkpoint files / 367 MB in one session).
+
+### Added (STM transcript byte budget)
+
+- ``MAX_STM_BYTES`` (16 MiB): the periodic cap now also drops OLDEST lines
+  until the jsonl fits the byte budget. The 2,000-line cap alone was no
+  bound when single event lines carry hundreds of KB — and recent()/search()
+  plus the transcripts UI re-read the WHOLE file on every call.
+- ``MAX_RECORD_BYTES`` (64 KiB): oversized records are truncated at append
+  time — a turn's ``content`` tail is cut with an explicit marker; an
+  oversized EVENT payload (inlined observation frames, giant tool results —
+  the production fat lines) is reduced to a small envelope with
+  ``data.truncated=true``.
+
+### Added (checkpoint retention)
+
+- ``FilePersister`` keeps at most ``KEEP_LAST`` (100) checkpoints per
+  session, pruned oldest-first on the write path — no background job.
+  Checkpoints are resume points, not an archive.
+
 ## [2.62.0] — 2026-07-23
 
 Context-engineering hardening from the Hermes comparison audit. All

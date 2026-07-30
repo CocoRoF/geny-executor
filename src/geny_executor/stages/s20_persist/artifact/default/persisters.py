@@ -99,6 +99,12 @@ class FilePersister(Persister):
         # Run blocking IO in a thread so we don't stall the event loop.
         await asyncio.to_thread(self._write_sync, record)
 
+    #: Retention: keep at most this many checkpoint files per session. A
+    #: long-lived session accumulated 1,482 files (367 MB) in production —
+    #: checkpoints are resume points, not an archive; the recent tail is all
+    #: recovery ever needs.
+    KEEP_LAST = 100
+
     def _write_sync(self, record: CheckpointRecord) -> None:
         path = self._path_for(record.session_id, record.checkpoint_id)
         with self._lock:
@@ -109,6 +115,24 @@ class FilePersister(Persister):
                 fh.flush()
                 os.fsync(fh.fileno())
             os.replace(tmp, path)
+            self._prune_sync(path.parent)
+
+    def _prune_sync(self, session_dir: Path) -> None:
+        """Drop the oldest checkpoints beyond KEEP_LAST (by mtime). Called
+        under the lock, right after a successful write, so retention rides
+        the write path — no background job, no unbounded growth."""
+        try:
+            files = sorted(
+                session_dir.glob("*.json"),
+                key=lambda q: q.stat().st_mtime,
+            )
+            for stale in files[: max(0, len(files) - self.KEEP_LAST)]:
+                try:
+                    stale.unlink()
+                except OSError:
+                    continue
+        except OSError:
+            pass  # retention is best-effort; the write itself succeeded
 
     async def read(self, checkpoint_id: str) -> Optional[CheckpointRecord]:
         return await asyncio.to_thread(self._read_sync, checkpoint_id)
