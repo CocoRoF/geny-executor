@@ -4,6 +4,23 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.63.1] — 2026-07-30
+
+### Added (mcp 2.x compatibility)
+- Dual-generation streamable-HTTP shim: mcp 2.0.0 renamed
+  ``streamablehttp_client`` → ``streamable_http_client`` and moved header
+  configuration into a pre-built httpx client. The resolver serves both
+  names; the factory bridges both call conventions. Full MCP suite (267
+  tests) verified against mcp 1.27.0 AND 2.0.0 installed for real; pin
+  relaxed to ``mcp>=1.0.0,<3``.
+
+### Added (STM parsed-line cache)
+- ``recent()``/``search()`` re-read the whole jsonl every call — 16 MB of
+  IO+parse per operator-UI page view on a byte-capped transcript. The line
+  list is now cached against the file's (mtime_ns, size) signature: repeat
+  reads are O(1); our own appends/truncates (and any external edit)
+  invalidate naturally. Effect-gated: 20 repeat reads = 1 parse.
+
 ## [2.63.0] — 2026-07-30
 
 Storage growth policies — the caps that keep a long-lived session's disk

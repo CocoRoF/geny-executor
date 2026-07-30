@@ -117,3 +117,39 @@ def test_checkpoint_retention_bounds_file_count(tmp_path):
     assert len(files) == FilePersister.KEEP_LAST
     names = {f.stem for f in files}
     assert "ck0299" in names and "ck0000" not in names
+
+
+# ── parsed-line cache (whole-file re-read fix) ────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_line_cache_hits_until_file_changes(tmp_path, monkeypatch):
+    """EFFECT PROOF: repeat recent() calls parse the file ONCE; an append
+    (mtime/size change) invalidates and re-parses exactly once more."""
+    store = _mk_store(tmp_path)
+    for i in range(50):
+        await store.append(Turn(role="user", content=f"메시지 {i} " + "글" * 500))
+
+    opens = {"n": 0}
+    real_open = type(store._path).open
+
+    def counting_open(self, *a, **k):
+        if self == store._path:
+            opens["n"] += 1
+        return real_open(self, *a, **k)
+
+    monkeypatch.setattr(type(store._path), "open", counting_open)
+
+    store._lines_cache = None  # cold start
+    r1 = await store.recent(10)
+    assert opens["n"] == 1 and len(r1) == 10
+    for _ in range(20):
+        await store.recent(10)
+        await store.search("메시지", limit=3)
+    assert opens["n"] == 1, "repeat reads must be served from the cache"
+
+    await store.append(Turn(role="user", content="새 메시지"))
+    opens["n"] = 0
+    r2 = await store.recent(1)
+    assert r2[0].content == "새 메시지"
+    assert opens["n"] == 1, "append must invalidate exactly once"

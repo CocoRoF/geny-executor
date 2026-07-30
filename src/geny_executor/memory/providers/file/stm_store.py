@@ -91,6 +91,8 @@ class _JSONLSTMStore:
         self._tz = tz
         self._lock = LoopAgnosticLock()
         self._hooks = hooks or MemoryHooks()
+        #: (stat-signature, parsed lines) — see _read_lines_sync.
+        self._lines_cache: Optional[tuple] = None
         # Appends since the last line-cap enforcement (audit M2): the cap
         # runs periodically rather than every append (which would re-read
         # the whole jsonl each time), bounding the file to
@@ -293,10 +295,27 @@ class _JSONLSTMStore:
             return self._read_lines_sync()
 
     def _read_lines_sync(self) -> List[str]:
-        if not self._path.exists():
+        """Whole-file line read with an (mtime_ns, size)-keyed cache.
+
+        recent()/search() — and host UIs layered on them — re-read the entire
+        jsonl on every call; on a byte-capped 16 MB transcript that is 16 MB
+        of IO+strip per page view. The file only changes through our own
+        append/truncate (plus rare external edits, which move mtime/size and
+        invalidate naturally), so caching the parsed line list against the
+        stat signature makes repeat reads O(1) without any staleness window."""
+        try:
+            st = self._path.stat()
+        except OSError:
+            self._lines_cache = None
             return []
+        key = (st.st_mtime_ns, st.st_size)
+        cached = self._lines_cache
+        if cached is not None and cached[0] == key:
+            return cached[1]
         with self._path.open("r", encoding="utf-8") as fh:
-            return [line.rstrip("\n") for line in fh if line.strip()]
+            lines = [line.rstrip("\n") for line in fh if line.strip()]
+        self._lines_cache = (key, lines)
+        return lines
 
 
 # ── record <-> Turn converters ───────────────────────────────────────
