@@ -20,7 +20,7 @@ keywords = [
     "harness",
     "ai",
     "llm",
-    "mcp",
+    "mcp>=1.0.0,<2",
     "orchestration",
 ]
 classifiers = [
@@ -39,7 +39,7 @@ classifiers = [
 dependencies = [
     # Core runtime
     "anthropic>=0.52.0",
-    "mcp>=1.0.0",
+    "mcp>=1.0.0,<2",
     "pydantic>=2.0",
     "jsonschema>=4.0",
     # httpx — declared explicitly because WebFetch imports it directly
