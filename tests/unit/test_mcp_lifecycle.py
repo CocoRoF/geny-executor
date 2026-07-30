@@ -260,7 +260,7 @@ class TestRemoteTransportSelection:
             calls["headers"] = headers
             return _DummyCtx()
 
-        monkeypatch.setattr(shttp_mod, "streamablehttp_client", fake_streamable)
+        monkeypatch.setattr(shttp_mod, "streamablehttp_client", fake_streamable, raising=False)
         monkeypatch.setattr(sse_mod, "sse_client", fake_sse)
 
         conn = MCPServerConnection(
@@ -670,3 +670,62 @@ class TestFromManifestAsync:
         # ToolSearch — the deferred MCP adapter needs a discovery path).
         assert set(registry.list_names()) == {"builtin", "mcp__alpha__ping", "ToolSearch"}
         assert pipeline.tool_registry is registry
+
+
+class TestMcpSdkV2Compat:
+    """mcp 2.0 renamed streamablehttp_client → streamable_http_client and
+    moved headers into a pre-built httpx client. The shim must serve both
+    generations (2.0.0 shipped 2026-07-29 and broke unpinned installs)."""
+
+    def test_resolver_prefers_v1_name_then_v2(self, monkeypatch):
+        import mcp.client.streamable_http as shttp_mod
+        from geny_executor.tools.mcp.manager import _resolve_streamable_http_client
+
+        sentinel_v1 = lambda *a, **k: "v1"  # noqa: E731
+        monkeypatch.setattr(shttp_mod, "streamablehttp_client", sentinel_v1,
+                            raising=False)
+        assert _resolve_streamable_http_client() is sentinel_v1
+
+        monkeypatch.delattr(shttp_mod, "streamablehttp_client", raising=False)
+        def streamable_http_client(url, *, http_client=None):  # v2 shape
+            return ("v2", url, http_client)
+        monkeypatch.setattr(shttp_mod, "streamable_http_client",
+                            streamable_http_client, raising=False)
+        assert _resolve_streamable_http_client() is streamable_http_client
+
+    def test_factory_v1_passes_headers_kw(self):
+        from geny_executor.tools.mcp.manager import _streamable_factory
+
+        calls = {}
+        def streamablehttp_client(url, headers=None):
+            calls.update(url=url, headers=headers)
+            return "ctx"
+        fac = _streamable_factory(streamablehttp_client, "http://x", {"A": "1"})
+        assert fac() == "ctx"
+        assert calls == {"url": "http://x", "headers": {"A": "1"}}
+
+    def test_factory_v2_builds_http_client_for_headers(self, monkeypatch):
+        import mcp.client.streamable_http as shttp_mod
+        from geny_executor.tools.mcp.manager import _streamable_factory
+
+        built = {}
+        def create_mcp_http_client(headers=None):
+            built["headers"] = headers
+            return "HTTPX"
+        monkeypatch.setattr(shttp_mod, "create_mcp_http_client",
+                            create_mcp_http_client, raising=False)
+
+        seen = {}
+        def streamable_http_client(url, *, http_client=None):
+            seen.update(url=url, http_client=http_client)
+            return "ctx2"
+        fac = _streamable_factory(streamable_http_client, "http://y", {"B": "2"})
+        assert fac() == "ctx2"
+        assert seen == {"url": "http://y", "http_client": "HTTPX"}
+        assert built["headers"] == {"B": "2"}
+
+        # no headers → default client (None passthrough)
+        seen.clear()
+        fac2 = _streamable_factory(streamable_http_client, "http://z", None)
+        fac2()
+        assert seen["http_client"] is None

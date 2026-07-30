@@ -90,6 +90,39 @@ def _serialise_mcp_tool(t: Any) -> Dict[str, Any]:
 # client (the current MCP standard, replacing SSE).
 _SSE_TRANSPORTS = frozenset({"sse"})
 _STREAMABLE_HTTP_TRANSPORTS = frozenset({"http", "streamable-http", "streamable_http"})
+
+
+def _resolve_streamable_http_client():
+    """The streamable-HTTP client across mcp SDK generations.
+
+    mcp 1.x ships ``streamablehttp_client``; mcp 2.0 renamed it to
+    ``streamable_http_client`` (and moved header configuration into a
+    pre-built httpx client — see :func:`_streamable_factory`). Import
+    errors propagate to the caller's sdk_missing handling."""
+    import mcp.client.streamable_http as _shttp
+
+    client = getattr(_shttp, "streamablehttp_client", None)
+    if client is None:
+        client = getattr(_shttp, "streamable_http_client")
+    return client
+
+
+def _streamable_factory(client: Any, url: str, headers: Optional[Dict[str, str]]):
+    """Transport factory bridging the 1.x and 2.x call conventions.
+
+    1.x: ``streamablehttp_client(url, headers=...)``.
+    2.x: ``streamable_http_client(url, http_client=...)`` — headers ride a
+    pre-configured httpx client built by the SDK's own helper."""
+    if getattr(client, "__name__", "") == "streamable_http_client":
+        def _factory():
+            http_client = None
+            if headers:
+                from mcp.client.streamable_http import create_mcp_http_client
+
+                http_client = create_mcp_http_client(headers=dict(headers))
+            return client(url, http_client=http_client)
+        return _factory
+    return lambda: client(url, headers=headers)
 _HTTP_TRANSPORTS = _SSE_TRANSPORTS | _STREAMABLE_HTTP_TRANSPORTS
 
 
@@ -306,9 +339,7 @@ class MCPServerConnection:
 
                 remote_client = sse_client
             else:
-                from mcp.client.streamable_http import streamablehttp_client
-
-                remote_client = streamablehttp_client
+                remote_client = _resolve_streamable_http_client()
         except ImportError as exc:
             raise MCPConnectionError(
                 self.config.name,
@@ -333,8 +364,14 @@ class MCPServerConnection:
             )
 
         headers = self.config.headers or None
+        if use_sse:
+            transport_factory = (
+                lambda: remote_client(self.config.url, headers=headers))
+        else:
+            transport_factory = _streamable_factory(
+                remote_client, self.config.url, headers)
         await self._attach_session(
-            lambda: remote_client(self.config.url, headers=headers),
+            transport_factory,
             client_session_cls=ClientSession,
         )
 
