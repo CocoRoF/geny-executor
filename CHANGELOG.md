@@ -4,6 +4,39 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.64.0] — 2026-07-31
+
+### Added (audio/STT capability family)
+- `geny_executor.audio.stt` — the workspace's speech-to-text bridge.
+  The model has no audio content block, so this family is how workspace
+  audio becomes usable: `STTProvider` Protocol + `STTResult`/`STTError`
+  (categorized `auth|quota|transient|invalid|unknown`), a factory
+  `create_stt_client()` and the host-extension seam
+  `register_stt_provider()` (embedding-registry parity: serializable
+  configs, built-in names cannot be shadowed). Built-in provider #1:
+  `openai_compatible` — one httpx client covers OpenAI, vLLM-served
+  Whisper, Groq and every other `/v1/audio/transcriptions` server. No
+  new dependencies.
+- `Audio*` built-in tools, gated on `feature:stt_enabled` (no dead
+  tools — visible only when the host wires a provider through
+  `ctx.extras["stt"]`):
+  - `AudioTranscribe` — path-guarded workspace audio → transcript text
+    (optional timed segments), 50MB cap.
+  - `AudioListFiles` / `AudioInfo` — discovery + cost probing.
+- Sidecar transcript cache: results persist as
+  `<audio>.transcript.json` (text, segments, language, provider,
+  source sha256). Re-calls are served from the sidecar without touching
+  the STT service; the cache is sha-bound so changed audio always
+  re-transcribes. Because the sidecar is an ordinary workspace file it
+  joins Read/Grep/doc tools, memory, and multi-PC workspace sync for
+  free.
+- Effect-proving tests (14): gate drop/keep via `_gate_unconfigured_
+  tools`, measured zero repeat STT calls on cache hits, sha
+  invalidation, timestamps-upgrade re-transcription, path-guard/size
+  failures never reaching the provider, actionable error categories,
+  and the openai_compatible wire format (multipart fields, auth header,
+  HTTP-status→category mapping).
+
 ## [2.63.1] — 2026-07-30
 
 ### Added (mcp 2.x compatibility)

@@ -133,6 +133,7 @@ from geny_executor.tools.built_in.sandbox_exec_tool import SandboxExecTool
 # SSH — run commands / move files on the session's pre-configured servers.
 # Gated on feature:ssh_enabled; degrades to an install-hint error when the
 # optional ``asyncssh`` dependency is absent.
+from geny_executor.tools.built_in.audio_tools import AUDIO_TOOL_CLASSES
 from geny_executor.tools.built_in.ssh_tools import (
     SSH_TOOL_CLASSES,
     SshDownloadTool,
@@ -207,6 +208,7 @@ BUILT_IN_TOOL_CLASSES: Dict[str, Type[Tool]] = {
     # SSH — command/SFTP on the session's configured servers (gated on
     # feature:ssh_enabled); lazy-imports asyncssh with an install-hint fallback.
     **SSH_TOOL_CLASSES,
+    **AUDIO_TOOL_CLASSES,
 }
 
 
@@ -253,6 +255,8 @@ BUILT_IN_TOOL_FEATURES: Dict[str, List[str]] = {
     "atlassian": list(ATLASSIAN_TOOL_CLASSES.keys()),
     # Remote server ops over SSH/SFTP — run commands, transfer files, sudo.
     "ssh": list(SSH_TOOL_CLASSES.keys()),
+    # Workspace audio → text bridge (STT). Gated on feature:stt_enabled.
+    "audio": list(AUDIO_TOOL_CLASSES.keys()),
 }
 
 
@@ -315,6 +319,7 @@ __all__ = [
     "BROWSER_TOOL_CLASSES",
     "DOC_TOOL_CLASSES",
     "SSH_TOOL_CLASSES",
+    "AUDIO_TOOL_CLASSES",
     "SshListServersTool",
     "SshRunTool",
     "SshUploadTool",
