@@ -4,6 +4,37 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.64.1] — 2026-08-03
+
+### Fixed (audio family — adversarial review round)
+- Sidecar schema validation: hand-edited / foreign-schema
+  `.transcript.json` files (an expected input — they sync between PCs)
+  now read as cache-miss or partially-coerced cache, never a stack
+  trace; `AudioInfo` reports `malformed` instead of crashing.
+- Timestamps cache economics: the sidecar records a `timestamps` flag
+  and cache-hits key on it — servers that return no segments (or silent
+  audio) no longer cause unbounded re-billing of timestamps requests.
+- Concurrency: per-file locks collapse simultaneous transcribes of one
+  file into ONE paid STT call (call-count proven); sidecar staging uses
+  unique temp names.
+- Single-read integrity: the sha is computed over the same buffer that
+  is transcribed and recorded, closing the swap-during-call window that
+  could bind an old sha to a different file's transcript.
+- Sidecar write failure (disk full/quota) no longer discards the paid
+  transcript — it returns with a cache-not-saved warning.
+- `AudioListFiles` walks with directory pruning (node_modules/.git/…)
+  instead of materializing the whole tree, skips symlink files, and
+  reports truncation at the 200-file cap instead of implying
+  completeness.
+- `openai_compatible`: JSON responses without a `text` field are schema
+  errors (never cached as "(no speech detected)"); null/non-dict
+  segments tolerated; non-HTTPError httpx failures (InvalidURL) wrapped
+  as categorized STTError.
+- Registry rejects builders that return non-STTProvider objects.
+- `.mp4` removed from the audio table (video container ≠ audio file);
+  descriptions and the extension table now agree (`.oga` documented).
+- Audio-family tests 14 → 22.
+
 ## [2.64.0] — 2026-07-31
 
 ### Added (audio/STT capability family)

@@ -84,7 +84,13 @@ def create_stt_client(provider: str, **config: Any) -> STTProvider:
     with _CUSTOM_LOCK:
         custom = _CUSTOM_BUILDERS.get(key)
     if custom is not None:
-        return custom(**config)
+        client = custom(**config)
+        if not isinstance(client, STTProvider):
+            raise TypeError(
+                f"stt provider {provider!r} builder returned {type(client).__name__}, "
+                "which does not implement STTProvider"
+            )
+        return client
 
     if key in _BUILTIN_ALIASES:
         from geny_executor.audio.stt.openai_compatible import OpenAICompatibleSTT

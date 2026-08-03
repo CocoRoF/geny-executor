@@ -102,6 +102,8 @@ class OpenAICompatibleSTT:
             raise STTError(f"STT request timed out: {exc}", category="transient") from exc
         except httpx.HTTPError as exc:
             raise STTError(f"STT transport error: {exc}", category="transient") from exc
+        except Exception as exc:  # noqa: BLE001 — e.g. httpx.InvalidURL is NOT an HTTPError
+            raise STTError(f"STT request could not be built: {exc}", category="invalid") from exc
 
         if resp.status_code != 200:
             body = resp.text[:300]
@@ -121,6 +123,8 @@ class OpenAICompatibleSTT:
         if isinstance(raw_segments, list):
             segments = []
             for seg in raw_segments:
+                if not isinstance(seg, dict):
+                    continue  # null / string entries from lax servers
                 try:
                     segments.append(STTSegment(
                         start=float(seg.get("start", 0.0)),
@@ -130,6 +134,13 @@ class OpenAICompatibleSTT:
                 except (TypeError, ValueError):
                     continue
 
+        if isinstance(payload, dict) and "text" not in payload:
+            raise STTError(
+                "STT endpoint returned JSON without a 'text' field "
+                f"(keys: {sorted(payload)[:8]}) — not an OpenAI-compatible "
+                "transcription response",
+                category="invalid",
+            )
         text = str(payload.get("text", "")) if isinstance(payload, dict) else str(payload)
         duration = payload.get("duration") if isinstance(payload, dict) else None
         return STTResult(

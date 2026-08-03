@@ -29,7 +29,8 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-import time
+import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -44,7 +45,6 @@ AUDIO_EXTENSIONS = {
     ".wav": "audio/wav",
     ".mp3": "audio/mpeg",
     ".m4a": "audio/mp4",
-    ".mp4": "audio/mp4",
     ".ogg": "audio/ogg",
     ".oga": "audio/ogg",
     ".webm": "audio/webm",
@@ -62,6 +62,20 @@ _CATEGORY_HINTS = {
     "invalid": "the audio file could not be decoded — check the file format/contents",
     "unknown": "an unexpected STT failure occurred",
 }
+
+
+#: per-file locks — concurrent transcribes of one file collapse to one
+#: paid STT call; sidecar staging never races. Keyed by resolved path,
+#: bounded by workspace size (entries are tiny).
+_FILE_LOCKS: Dict[str, asyncio.Lock] = {}
+
+
+def _file_lock(target: Path) -> asyncio.Lock:
+    key = str(target)
+    lock = _FILE_LOCKS.get(key)
+    if lock is None:
+        lock = _FILE_LOCKS.setdefault(key, asyncio.Lock())
+    return lock
 
 
 def _err(code: str, message: str) -> ToolResult:
@@ -114,29 +128,89 @@ def _sidecar_path(audio: Path) -> Path:
     return audio.with_name(audio.name + _SIDECAR_SUFFIX)
 
 
+def _sanitize_sidecar(raw: Any) -> Optional[dict]:
+    """Schema-validate + coerce a sidecar payload.
+
+    Sidecars are ordinary workspace files — hand-edited or synced from
+    another PC with a foreign schema is an EXPECTED input, and a
+    malformed one must read as cache-miss, never as a stack trace.
+    Returns a clean dict (coerced types) or None.
+    """
+    if not isinstance(raw, dict):
+        return None
+    text = raw.get("text")
+    sha = raw.get("source_sha256")
+    if not isinstance(text, str) or not isinstance(sha, str) or len(sha) != 64:
+        return None
+    out: dict = {
+        "text": text,
+        "source_sha256": sha,
+        "source_file": str(raw.get("source_file") or ""),
+        "provider": str(raw.get("provider") or "?"),
+        "timestamps": bool(raw.get("timestamps", False)),
+    }
+    lang = raw.get("language")
+    if isinstance(lang, str) and lang:
+        out["language"] = lang
+    dur = raw.get("duration_seconds")
+    if isinstance(dur, (int, float)) and not isinstance(dur, bool):
+        out["duration_seconds"] = float(dur)
+    segs = raw.get("segments")
+    if isinstance(segs, list):
+        clean = []
+        for seg in segs:
+            if not isinstance(seg, dict):
+                continue
+            try:
+                clean.append({
+                    "start": float(seg.get("start", 0.0)),
+                    "end": float(seg.get("end", 0.0)),
+                    "text": str(seg.get("text", "")),
+                })
+            except (TypeError, ValueError):
+                continue
+        out["segments"] = clean
+    created = raw.get("created_at")
+    if isinstance(created, str):
+        out["created_at"] = created
+    return out
+
+
 def _load_sidecar(audio: Path, source_sha: str) -> Optional[dict]:
-    """Return the cached transcript IFF it matches the current audio bytes."""
+    """Return the cached transcript IFF it matches the current audio bytes
+    (schema-validated — anything malformed is a cache miss)."""
     sc = _sidecar_path(audio)
     if not sc.exists():
         return None
     try:
-        data = json.loads(sc.read_text(encoding="utf-8"))
+        data = _sanitize_sidecar(json.loads(sc.read_text(encoding="utf-8")))
     except (OSError, ValueError):
         return None
-    if data.get("source_sha256") != source_sha:
-        return None  # audio changed since transcription → stale
+    if data is None or data["source_sha256"] != source_sha:
+        return None  # malformed or audio changed → stale
     return data
 
 
-def _write_sidecar(audio: Path, source_sha: str, result: STTResult) -> dict:
+def _write_sidecar(
+    audio: Path, source_sha: str, result: STTResult, *, timestamps: bool,
+) -> dict:
     data = result.to_dict()
     data["source_sha256"] = source_sha
     data["source_file"] = audio.name
-    data["created_at"] = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+    # Whether a timestamps-run produced this sidecar. The cache-hit check
+    # keys on THIS flag, not on segment count — a server that returns no
+    # segments (or silent audio) must still cache-satisfy later
+    # timestamps requests instead of re-billing STT forever.
+    data["timestamps"] = bool(timestamps)
+    data["created_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
     sc = _sidecar_path(audio)
-    tmp = sc.with_suffix(sc.suffix + ".tmp")
-    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
-    tmp.replace(sc)
+    # unique tmp: concurrent writers must never share a staging inode
+    tmp = sc.with_name(f"{sc.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+        tmp.replace(sc)
+    finally:
+        tmp.unlink(missing_ok=True)
     return data
 
 
@@ -145,11 +219,12 @@ def _format_transcript(data: dict, *, cached: bool, include_segments: bool) -> s
     meta = []
     if data.get("language"):
         meta.append(f"language={data['language']}")
-    if data.get("duration_seconds") is not None:
-        meta.append(f"duration={data['duration_seconds']:.1f}s")
+    if isinstance(data.get("duration_seconds"), (int, float)):
+        meta.append(f"duration={float(data['duration_seconds']):.1f}s")
     meta.append(f"provider={data.get('provider', '?')}")
     meta.append("cached=yes" if cached else "cached=no")
-    lines.append(f"[transcript: {data.get('source_file', '?')} · {' · '.join(meta)}]")
+    fname = str(data.get("source_file", "?")).replace("\n", " ").replace("]", ")")
+    lines.append(f"[transcript: {fname} · {' · '.join(meta)}]")
     text = (data.get("text") or "").strip()
     lines.append(text if text else "(no speech detected)")
     if include_segments and data.get("segments"):
@@ -180,7 +255,7 @@ class AudioTranscribeTool(_AudioToolBase):
     @property
     def description(self) -> str:
         return (
-            "Transcribe a workspace audio file (wav/mp3/m4a/ogg/webm/flac) to "
+            "Transcribe a workspace audio file (wav/mp3/m4a/ogg/oga/webm/flac) to "
             "text with the configured STT model. Results are cached next to "
             "the file as <name>.transcript.json and reused until the audio "
             "changes; set force=true to re-transcribe. timestamps=true adds "
@@ -226,6 +301,7 @@ class AudioTranscribeTool(_AudioToolBase):
             return err
         assert target is not None
 
+        # cheap stat-based early exit; re-checked over the actual buffer
         size = target.stat().st_size
         if size > _MAX_AUDIO_BYTES:
             return _err(
@@ -235,39 +311,70 @@ class AudioTranscribeTool(_AudioToolBase):
             )
 
         include_segments = bool(input.get("timestamps"))
-        source_sha = await asyncio.to_thread(_sha256, target)
 
-        if not input.get("force"):
-            cached = _load_sidecar(target, source_sha)
-            if cached is not None and (not include_segments or cached.get("segments")):
-                return ToolResult(content=_format_transcript(
-                    cached, cached=True, include_segments=include_segments,
-                ))
+        # Per-file serialization: two concurrent transcribes of the same
+        # file must produce ONE paid STT call (the second becomes a cache
+        # hit inside the lock), and sidecar staging can never race.
+        lock = _file_lock(target)
+        async with lock:
+            # Single read: sha is computed over the SAME buffer that is
+            # transcribed and recorded — a mid-call file swap (sync,
+            # in-progress recording) can no longer bind the old sha to a
+            # different file's transcript.
+            audio_bytes = await asyncio.to_thread(target.read_bytes)
+            if len(audio_bytes) > _MAX_AUDIO_BYTES:
+                return _err(
+                    "TOO_LARGE",
+                    f"'{target.name}' is {len(audio_bytes) // (1024*1024)}MB (max "
+                    f"{_MAX_AUDIO_BYTES // (1024*1024)}MB). Split the audio first.",
+                )
+            source_sha = hashlib.sha256(audio_bytes).hexdigest()
 
-        try:
-            provider = _build_provider(cfg)
-        except (ValueError, TypeError) as exc:
-            return _err("STT_MISCONFIGURED", f"STT provider config invalid: {exc}")
+            if not input.get("force"):
+                cached = _load_sidecar(target, source_sha)
+                # Hit on the recorded timestamps FLAG, not segment count —
+                # silent audio / no-segment servers must still cache.
+                if cached is not None and (not include_segments or cached.get("timestamps")):
+                    return ToolResult(content=_format_transcript(
+                        cached, cached=True, include_segments=include_segments,
+                    ))
 
-        audio_bytes = await asyncio.to_thread(target.read_bytes)
-        mime = AUDIO_EXTENSIONS[target.suffix.lower()]
-        language = input.get("language") or cfg.get("language") or None
+            try:
+                provider = _build_provider(cfg)
+            except Exception as exc:  # noqa: BLE001 — host builders may raise anything
+                return _err("STT_MISCONFIGURED", f"STT provider config invalid: {exc}")
 
-        try:
-            result = await provider.transcribe(
-                audio_bytes,
-                mime_type=mime,
-                language=language,
-                timestamps=include_segments,
-            )
-        except STTError as exc:
-            hint = _CATEGORY_HINTS.get(exc.category, _CATEGORY_HINTS["unknown"])
-            return _err(f"STT_{exc.category.upper()}", f"{exc} — {hint}")
+            mime = AUDIO_EXTENSIONS[target.suffix.lower()]
+            language = input.get("language") or cfg.get("language") or None
 
-        data = await asyncio.to_thread(_write_sidecar, target, source_sha, result)
-        return ToolResult(content=_format_transcript(
-            data, cached=False, include_segments=include_segments,
-        ))
+            try:
+                result = await provider.transcribe(
+                    audio_bytes,
+                    mime_type=mime,
+                    language=language,
+                    timestamps=include_segments,
+                )
+            except STTError as exc:
+                hint = _CATEGORY_HINTS.get(exc.category, _CATEGORY_HINTS["unknown"])
+                return _err(f"STT_{exc.category.upper()}", f"{exc} — {hint}")
+            except Exception as exc:  # noqa: BLE001 — custom providers must not crash the turn
+                return _err("STT_UNKNOWN", f"STT provider failed unexpectedly: {exc}")
+
+            # A failed sidecar write (disk full, quota) must NOT discard
+            # the paid transcript — return it with a warning instead.
+            try:
+                data = await asyncio.to_thread(
+                    _write_sidecar, target, source_sha, result,
+                    timestamps=include_segments,
+                )
+                warning = ""
+            except OSError as exc:
+                data = result.to_dict()
+                data["source_file"] = target.name
+                warning = f"\n(warning: transcript cache could not be saved: {exc})"
+            return ToolResult(content=_format_transcript(
+                data, cached=False, include_segments=include_segments,
+            ) + warning)
 
 
 class AudioListFilesTool(_AudioToolBase):
@@ -280,7 +387,7 @@ class AudioListFilesTool(_AudioToolBase):
     @property
     def description(self) -> str:
         return (
-            "List audio files in the workspace (wav/mp3/m4a/ogg/webm/flac) "
+            "List audio files in the workspace (wav/mp3/m4a/ogg/oga/webm/flac) "
             "with size and whether a transcript sidecar already exists. Use "
             "before AudioTranscribe to see what can be transcribed."
         )
@@ -311,33 +418,53 @@ class AudioListFilesTool(_AudioToolBase):
         if not root.is_dir():
             return _err("NOT_FOUND", f"No such directory: {base}")
 
-        def _scan() -> List[dict]:
-            out: List[dict] = []
-            wd = Path(working_dir).resolve() if working_dir else root
-            for p in sorted(root.rglob("*")):
-                if not p.is_file() or p.suffix.lower() not in AUDIO_EXTENSIONS:
-                    continue
-                try:
-                    rel = str(p.resolve().relative_to(wd))
-                except ValueError:
-                    rel = str(p)
-                out.append({
-                    "path": rel,
-                    "size_bytes": p.stat().st_size,
-                    "transcribed": _sidecar_path(p).exists(),
-                })
-                if len(out) >= 200:
-                    break
-            return out
+        def _scan() -> tuple:
+            import os as _os
 
-        files = await asyncio.to_thread(_scan)
+            out: List[dict] = []
+            truncated = False
+            wd = Path(working_dir).resolve() if working_dir else root
+            skip_dirs = {"node_modules", ".git", ".venv", "venv", "__pycache__",
+                         ".canvas-preview", ".geny-sync", ".geny-sync-tmp"}
+            for droot, dirs, files in _os.walk(root, followlinks=False):
+                # prune heavy trees BEFORE descending — the old rglob walked
+                # multi-GB node_modules just to find nothing
+                dirs[:] = [d for d in dirs if d not in skip_dirs and not d.startswith(".")]
+                for fname in files:
+                    fp = Path(droot) / fname
+                    if fp.suffix.lower() not in AUDIO_EXTENSIONS:
+                        continue
+                    if fp.is_symlink():
+                        continue  # never advertise files the guard would reject
+                    if len(out) >= 200:
+                        truncated = True
+                        return out, truncated
+                    try:
+                        rel = str(fp.resolve().relative_to(wd))
+                    except (OSError, ValueError):
+                        continue
+                    try:
+                        size = fp.stat().st_size
+                    except OSError:
+                        continue
+                    out.append({
+                        "path": rel,
+                        "size_bytes": size,
+                        "transcribed": _sidecar_path(fp).exists(),
+                    })
+            return out, truncated
+
+        files, truncated = await asyncio.to_thread(_scan)
         if not files:
             return ToolResult(content="No audio files found in the workspace.")
+        files.sort(key=lambda f: f["path"])
         lines = [f"{len(files)} audio file(s):"]
         for f in files:
             mb = f["size_bytes"] / (1024 * 1024)
             mark = "✓ transcribed" if f["transcribed"] else "· not transcribed"
             lines.append(f"  {f['path']}  ({mb:.1f}MB, {mark})")
+        if truncated:
+            lines.append("(list truncated at 200 files — narrow the search with 'path')")
         return ToolResult(content="\n".join(lines))
 
 
@@ -385,18 +512,22 @@ class AudioInfoTool(_AudioToolBase):
         sc = _sidecar_path(target)
         if sc.exists():
             try:
-                data = json.loads(sc.read_text(encoding="utf-8"))
+                data = _sanitize_sidecar(json.loads(sc.read_text(encoding="utf-8")))
+            except (OSError, ValueError):
+                data = None
+            if data is None:
+                info["transcript"] = {"exists": True, "fresh": False, "malformed": True}
+            else:
                 current = await asyncio.to_thread(_sha256, target)
                 info["transcript"] = {
                     "exists": True,
-                    "fresh": data.get("source_sha256") == current,
+                    "fresh": data["source_sha256"] == current,
                     "language": data.get("language"),
                     "duration_seconds": data.get("duration_seconds"),
                     "provider": data.get("provider"),
-                    "chars": len(data.get("text") or ""),
+                    "timestamps": data.get("timestamps", False),
+                    "chars": len(data["text"]),
                 }
-            except (OSError, ValueError):
-                info["transcript"] = {"exists": True, "fresh": False}
         else:
             info["transcript"] = {"exists": False}
         return ToolResult(content=json.dumps(info, ensure_ascii=False, indent=1))

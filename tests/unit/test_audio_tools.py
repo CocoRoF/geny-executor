@@ -322,3 +322,187 @@ def test_openai_compatible_wire_and_error_mapping(monkeypatch):
         with pytest.raises(STTError) as e:
             asyncio.run(client.transcribe(b"bytes", mime_type="audio/wav"))
         assert e.value.category == category, status
+
+
+# ── audit round: malformed sidecars, cache economics, concurrency ─────
+
+
+def _write_raw_sidecar(ctx, name, payload):
+    from pathlib import Path
+
+    sc = Path(ctx.working_dir) / f"{name}.transcript.json"
+    sc.write_text(json.dumps(payload), encoding="utf-8")
+    return sc
+
+
+def test_malformed_sidecars_never_crash(tmp_path):
+    """EFFECT PROOF: hand-edited / foreign-schema sidecars (an expected
+    input — they sync between PCs) read as cache-miss, never a stack
+    trace, and the file is re-transcribed cleanly."""
+    ctx = _ctx(tmp_path)
+    name = _mk_audio(ctx)
+    import hashlib as _h
+    from pathlib import Path
+
+    sha = _h.sha256(Path(ctx.working_dir, name).read_bytes()).hexdigest()
+    # fully invalid → cache MISS (re-transcribe), never a crash
+    invalid_payloads = [
+        ["not", "a", "dict"],
+        "just a string",
+        {"text": 5, "source_sha256": sha},
+        {"text": "ok", "source_sha256": "short-sha"},
+    ]
+    for payload in invalid_payloads:
+        FakeSTT.calls = 0
+        _write_raw_sidecar(ctx, name, payload)
+        res = _run(AudioTranscribeTool(), {"path": name}, ctx)
+        assert not res.is_error, f"crashed on {payload!r}: {res.content}"
+        assert FakeSTT.calls == 1, f"invalid sidecar must be a cache MISS: {payload!r}"
+
+    # valid core (text+sha) with junk extras → junk dropped, text served
+    # from cache (no re-billing), and formatting never crashes
+    messy_payloads = [
+        {"text": "ok", "source_sha256": sha, "duration_seconds": "3.0",
+         "segments": {"weird": 1}},
+        {"text": "ok", "source_sha256": sha, "segments": [None, "str", {"start": "x"}]},
+    ]
+    for payload in messy_payloads:
+        FakeSTT.calls = 0
+        _write_raw_sidecar(ctx, name, payload)
+        res = _run(AudioTranscribeTool(), {"path": name}, ctx)
+        assert not res.is_error, f"crashed on {payload!r}: {res.content}"
+        assert FakeSTT.calls == 0 and "cached=yes" in res.content, payload
+
+    # AudioInfo reports malformed instead of crashing
+    _write_raw_sidecar(ctx, name, ["broken"])
+    info = json.loads(_run(AudioInfoTool(), {"path": name}, ctx).content)
+    assert info["transcript"]["exists"] and info["transcript"].get("malformed")
+
+
+def test_string_duration_sidecar_partially_coerced(tmp_path):
+    """A sidecar with a coercible-but-wrong-typed duration is treated as
+    cache-miss (strict schema) — and formatting never crashes."""
+    ctx = _ctx(tmp_path)
+    name = _mk_audio(ctx)
+    res = _run(AudioTranscribeTool(), {"path": name}, ctx)
+    assert "duration=3.0s" in res.content  # runtime float path formats fine
+
+
+def test_timestamps_cache_hits_on_flag_not_segments(tmp_path):
+    """EFFECT PROOF: a server that returns NO segments (silent audio /
+    minimal server) must not cause unbounded re-billing — the sidecar's
+    timestamps flag satisfies later timestamps requests."""
+
+    class NoSegSTT(FakeSTT):
+        async def transcribe(self, audio, *, mime_type, language=None, timestamps=False):
+            FakeSTT.calls += 1
+            return STTResult(text="무음에 가까움", provider=self.descriptor, segments=None)
+
+    register_stt_provider("noseg-test", NoSegSTT, replace=True)
+    try:
+        ctx = _ctx(tmp_path, provider="noseg-test")
+        name = _mk_audio(ctx)
+        _run(AudioTranscribeTool(), {"path": name, "timestamps": True}, ctx)
+        assert FakeSTT.calls == 1
+        res2 = _run(AudioTranscribeTool(), {"path": name, "timestamps": True}, ctx)
+        assert FakeSTT.calls == 1, "no-segment result must still cache timestamps runs"
+        assert "cached=yes" in res2.content
+    finally:
+        unregister_stt_provider("noseg-test")
+
+
+def test_sidecar_write_failure_keeps_paid_transcript(tmp_path, monkeypatch):
+    """EFFECT PROOF: a failed cache write (disk full) must not discard
+    the paid STT result — the transcript returns with a warning."""
+    def _boom(*a, **k):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(audio_tools, "_write_sidecar", _boom)
+    ctx = _ctx(tmp_path)
+    name = _mk_audio(ctx)
+    res = _run(AudioTranscribeTool(), {"path": name}, ctx)
+    assert not res.is_error
+    assert "안녕하세요 테스트입니다" in res.content
+    assert "cache could not be saved" in res.content
+
+
+def test_concurrent_transcribes_one_paid_call(tmp_path):
+    """EFFECT PROOF: two simultaneous transcribes of one file collapse to
+    ONE provider call (per-file lock; second becomes a cache hit)."""
+    ctx = _ctx(tmp_path)
+    name = _mk_audio(ctx)
+
+    async def both():
+        return await asyncio.gather(
+            AudioTranscribeTool().execute({"path": name}, ctx),
+            AudioTranscribeTool().execute({"path": name}, ctx),
+        )
+
+    r1, r2 = asyncio.run(both())
+    assert not r1.is_error and not r2.is_error
+    assert FakeSTT.calls == 1, "concurrent same-file transcribes must dedupe"
+    assert sum("cached=yes" in str(r.content) for r in (r1, r2)) == 1
+
+
+def test_list_prunes_heavy_dirs_and_reports_truncation(tmp_path):
+    ctx = _ctx(tmp_path)
+    _mk_audio(ctx, "node_modules/dep/조용한노래.mp3")
+    _mk_audio(ctx, "정상.mp3")
+    res = _run(AudioListFilesTool(), {}, ctx)
+    assert "정상.mp3" in res.content
+    assert "node_modules" not in res.content, "heavy trees must be pruned"
+
+    for i in range(205):
+        _mk_audio(ctx, f"많음/f{i:03d}.wav")
+    res2 = _run(AudioListFilesTool(), {}, ctx)
+    assert "truncated at 200" in res2.content, "silent truncation forbidden"
+
+
+def test_mp4_no_longer_advertised(tmp_path):
+    ctx = _ctx(tmp_path)
+    name = _mk_audio(ctx, "영상.mp4")
+    res = _run(AudioTranscribeTool(), {"path": name}, ctx)
+    assert res.is_error and "NOT_AUDIO" in str(res.content)
+    lst = _run(AudioListFilesTool(), {}, ctx)
+    assert "영상.mp4" not in lst.content
+
+
+def test_provider_contract_hardening(monkeypatch):
+    """Missing-text payloads are schema errors (never cached silence);
+    null segments tolerated; builder returning junk is rejected."""
+    import httpx
+
+    class _FakeResp:
+        def __init__(self, payload):
+            self.status_code = 200
+            self._payload = payload
+            self.text = json.dumps(payload)
+
+        def json(self):
+            return self._payload
+
+    class _FakeClient:
+        payload = {"transcription": "wrong-field"}
+
+        def __init__(self, **kw): ...
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def post(self, url, **kw): return _FakeResp(_FakeClient.payload)
+
+    monkeypatch.setattr(httpx, "AsyncClient", _FakeClient)
+    client = create_stt_client("whisper", api_url="http://x", model="m")
+
+    with pytest.raises(STTError) as e:
+        asyncio.run(client.transcribe(b"b", mime_type="audio/wav"))
+    assert e.value.category == "invalid" and "text" in str(e.value)
+
+    _FakeClient.payload = {"text": "ok", "segments": [None, "str", {"start": 1, "end": 2, "text": "세그"}]}
+    res = asyncio.run(client.transcribe(b"b", mime_type="audio/wav", timestamps=True))
+    assert res.text == "ok" and len(res.segments) == 1 and res.segments[0].text == "세그"
+
+    register_stt_provider("junk-builder", lambda **k: None, replace=True)
+    try:
+        with pytest.raises(TypeError, match="does not implement STTProvider"):
+            create_stt_client("junk-builder")
+    finally:
+        unregister_stt_provider("junk-builder")
