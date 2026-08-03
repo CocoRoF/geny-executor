@@ -4,6 +4,17 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.64.2] — 2026-08-03
+
+### Fixed
+- Filesystem NotesStore: the full-vault scan (`_ensure_loaded` — read +
+  frontmatter-parse of every note) now runs in a worker thread instead
+  of inline on the host's event loop. A 6.2k-note vault blocked the
+  loop ~19s on session resume, freezing health checks until the process
+  was watchdog-restarted mid-load — large sessions could never come
+  back up. Loop-responsiveness and scan-equivalence are locked in by
+  tests (`test_notes_store_offloop_scan.py`).
+
 ## [2.64.1] — 2026-08-03
 
 ### Fixed (audio family — adversarial review round)
