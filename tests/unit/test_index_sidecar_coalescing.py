@@ -128,3 +128,35 @@ async def test_index_batch_skips_unchanged_notes():
         items[3] = (items[3][0], "body 3 CHANGED")
         await vec.index_batch(items)
         assert embeds["n"] == first + 1
+
+
+@pytest.mark.asyncio
+async def test_burst_survives_tiny_default_executor():
+    """CI-shape regression: on a 2-vCPU runner the default to_thread pool is
+    ~6 workers; a delete burst filled every slot with LOCK WAITERS while the
+    gate holder's sidecar build sat queued behind them — starvation deadlock
+    (both 2.64.3 release pipelines hung exactly here). Memory offloads now
+    run on a dedicated pool, so the holder always makes progress no matter
+    how many waiters the default pool holds."""
+    import concurrent.futures
+
+    loop = asyncio.get_running_loop()
+    prev = getattr(loop, "_default_executor", None)
+    tiny = concurrent.futures.ThreadPoolExecutor(max_workers=2)
+    loop.set_default_executor(tiny)
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            p = _provider(td)
+            await p.initialize()
+            for i in range(12):
+                await p.notes().write(
+                    NoteDraft(title=f"t{i}", body=f"b{i}", category="observations", filename=f"t{i}.md")
+                )
+            await asyncio.wait_for(
+                asyncio.gather(*(p.notes().delete(f"t{i}.md") for i in range(12))),
+                timeout=30,
+            )
+    finally:
+        if prev is not None:
+            loop.set_default_executor(prev)
+        tiny.shutdown(wait=False)

@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, Iterable, List, Optional, Set, Tuple
 
 from geny_executor.memory._locks import LoopAgnosticLock
+from geny_executor.memory._offload import run_offloaded
 from geny_executor.memory.provider import (
     Importance,
     MemoryHooks,
@@ -466,7 +467,10 @@ class _FilesystemNotesStore(NotesHandle):
         # BLOCKS the host's event loop — health checks stop answering and the
         # process gets watchdog-killed mid-load. Run it in a worker thread;
         # callers already hold self._lock, so the swap below is single-flight.
-        cache = await asyncio.to_thread(self._scan_disk)
+        # Dedicated pool — the scan holder must never queue behind its own
+        # lock-waiters in the default to_thread pool (starvation deadlock on
+        # small machines; see memory/_offload.py).
+        cache = await run_offloaded(self._scan_disk)
         self._cache = cache
         self._explicit_links.clear()
         self._refresh_backlinks()

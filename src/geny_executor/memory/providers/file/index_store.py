@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 from geny_executor.memory._locks import LoopAgnosticLock
+from geny_executor.memory._offload import run_offloaded
 from geny_executor.memory.provider import NoteGraph, NoteMeta, NoteOutline, NoteSummary
 from geny_executor.memory.providers.file.graph_edges import derive_graph_edges
 from geny_executor.memory.providers.file.layout import DirectoryLayout
@@ -117,7 +118,7 @@ class _FileIndexStore:
             self._write_hierarchical_sidecars(payload, category=None)
             return payload
 
-        return await asyncio.to_thread(_work)
+        return await run_offloaded(_work)
 
     async def refresh_for_category(self, category: Optional[str]) -> None:
         """Incrementally refresh the on-disk sidecars affected by a
@@ -154,7 +155,10 @@ class _FileIndexStore:
                 for cat in pending:
                     self._write_hierarchical_sidecars(payload, category=cat)
 
-            await asyncio.to_thread(_work)
+            # Dedicated pool: lock WAITERS park in the default to_thread pool
+            # (LoopAgnosticLock) — running the holder's build there too can
+            # starve-deadlock small pools (see memory/_offload.py).
+            await run_offloaded(_work)
 
     async def tag_counts(self) -> Dict[str, int]:
         payload = await self._cached_or_compute()
@@ -449,7 +453,7 @@ class _FileIndexStore:
         """
         async with self._lock:
             notes = await self._notes.all()
-        return await asyncio.to_thread(self._payload_from_notes, notes)
+        return await run_offloaded(self._payload_from_notes, notes)
 
     async def _compute(self) -> Dict[str, Any]:
         notes = await self._notes.all()
