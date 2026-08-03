@@ -12,6 +12,7 @@ the format that `_FilesystemNotesStore` writes.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import tempfile
@@ -78,6 +79,15 @@ class _FileIndexStore:
         # keyed by a cheap (filename, updated_at) signature of the vault.
         self._edges_sig: Optional[tuple] = None
         self._edges_cache: Optional[List[Dict[str, Any]]] = None
+        # Sidecar-refresh coalescing (2.64.3). A burst of writes/deletes
+        # (e.g. an observation prune sweep) used to run one full-vault
+        # payload build PER CHANGE, inline on the event loop — a 6k-note
+        # vault blocked the loop for tens of seconds and got the host
+        # watchdog-restarted mid-sweep. Changes now just mark their
+        # category dirty; whoever holds the gate services ALL accumulated
+        # marks with ONE snapshot + one worker-thread compute/write.
+        self._refresh_dirty: Set[str] = set()
+        self._refresh_gate = LoopAgnosticLock()
 
     def set_category_descriptions(self, descriptions: Dict[str, str]) -> None:
         """Late-set or replace the canonical description map. Called
@@ -100,9 +110,14 @@ class _FileIndexStore:
         the disk view consistent.
         """
         async with self._lock:
-            payload = await self._compute()
-        self._write_hierarchical_sidecars(payload, category=None)
-        return payload
+            notes = await self._notes.all()
+
+        def _work() -> Dict[str, Any]:
+            payload = self._payload_from_notes(notes)
+            self._write_hierarchical_sidecars(payload, category=None)
+            return payload
+
+        return await asyncio.to_thread(_work)
 
     async def refresh_for_category(self, category: Optional[str]) -> None:
         """Incrementally refresh the on-disk sidecars affected by a
@@ -113,10 +128,33 @@ class _FileIndexStore:
 
         Other category shards are left untouched. Called after every
         ``NotesStore.write`` / ``update`` / ``delete``.
+
+        COALESCED + OFF-LOOP (2.64.3): concurrent callers mark their
+        category dirty and serialize on a gate — the gate holder services
+        every accumulated mark with ONE payload build, executed in a
+        worker thread so a large vault never stalls the event loop. A
+        burst of N deletes therefore costs ~2 builds, not N. Sidecars
+        are best-effort by contract; a torn read of a concurrently
+        mutated note is repaired by the next refresh.
         """
-        async with self._lock:
-            payload = await self._compute()
-        self._write_hierarchical_sidecars(payload, category=category)
+        self._refresh_dirty.add(category or "__all__")
+        async with self._refresh_gate:
+            if not self._refresh_dirty:
+                return  # a sibling gate-holder already serviced our mark
+            pending = set(self._refresh_dirty)
+            self._refresh_dirty.clear()
+            async with self._lock:
+                notes = await self._notes.all()
+
+            def _work() -> None:
+                payload = self._payload_from_notes(notes)
+                if "__all__" in pending:
+                    self._write_hierarchical_sidecars(payload, category=None)
+                    return
+                for cat in pending:
+                    self._write_hierarchical_sidecars(payload, category=cat)
+
+            await asyncio.to_thread(_work)
 
     async def tag_counts(self) -> Dict[str, int]:
         payload = await self._cached_or_compute()
@@ -410,10 +448,16 @@ class _FileIndexStore:
         cache, so ``_compute`` is fast even on large vaults.
         """
         async with self._lock:
-            return await self._compute()
+            notes = await self._notes.all()
+        return await asyncio.to_thread(self._payload_from_notes, notes)
 
     async def _compute(self) -> Dict[str, Any]:
         notes = await self._notes.all()
+        return self._payload_from_notes(notes)
+
+    def _payload_from_notes(self, notes) -> Dict[str, Any]:
+        """Pure payload build from a notes snapshot — sync by design so
+        heavy vaults can run it in a worker thread (2.64.3)."""
         files: Dict[str, Dict[str, Any]] = {}
         tag_map: Dict[str, List[str]] = {}
         link_graph: Dict[str, List[str]] = {}

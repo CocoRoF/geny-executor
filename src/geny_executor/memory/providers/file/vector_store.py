@@ -25,6 +25,8 @@ backend.
 
 from __future__ import annotations
 
+import hashlib
+
 import json
 import logging
 import math
@@ -133,10 +135,27 @@ class _FileVectorStore:
             return 0
         async with self._lock:
             await self._ensure_loaded()
-            texts = [text for _, text in items]
+            # Idempotent backfill (2.64.3): index_batch is the session-resume
+            # warm-up path — it used to re-embed EVERY note on every resume
+            # (6k-note vault ≈ minutes of embedding HTTP + real money, every
+            # 30-min idle-evict cycle). Rows persist a content sha, so only
+            # new/changed notes reach the embedder.
+            existing_sha = {
+                row.get("filename"): row.get("sha")
+                for row in self._rows
+                if row.get("sha")
+            }
+            todo = [
+                (ref, text)
+                for ref, text in items
+                if existing_sha.get(ref.filename) != _text_sha(text)
+            ]
+            if not todo:
+                return 0
+            texts = [text for _, text in todo]
             vectors = await self._embed_guarded(texts)
             added = 0
-            for (ref, text), vec in zip(items, vectors):
+            for (ref, text), vec in zip(todo, vectors):
                 self._validate_dim(vec)
                 removed = self._remove_by_filename(ref.filename)
                 self._vectors.append(vec)
@@ -423,6 +442,10 @@ class _FileVectorStore:
 # ── helpers ──────────────────────────────────────────────────────────
 
 
+def _text_sha(text: str) -> str:
+    return hashlib.sha1((text or "").encode("utf-8")).hexdigest()
+
+
 def _row_for(ref: NoteRef, text: str) -> Dict[str, Any]:
     return {
         "filename": ref.filename,
@@ -430,6 +453,10 @@ def _row_for(ref: NoteRef, text: str) -> Dict[str, Any]:
         "category": ref.category,
         "backend": ref.backend,
         "preview": (text or "")[:400],
+        # Content fingerprint — lets index_batch (session-resume backfill)
+        # skip re-embedding unchanged notes (2.64.3). Rows persisted before
+        # this field simply lack it and re-embed once, then carry it.
+        "sha": _text_sha(text),
     }
 
 

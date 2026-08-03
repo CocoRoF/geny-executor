@@ -4,6 +4,25 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.64.3] — 2026-08-03
+
+### Fixed (memory hot-path — prod loop-wedge round 3)
+- Index sidecar refresh is now COALESCED + OFF-LOOP: every note
+  write/update/delete used to run a full-vault payload build inline on
+  the host's event loop — an observation prune sweep over a 6k-note
+  vault blocked the loop for tens of seconds per sweep and got the
+  process watchdog-restarted mid-sweep. Changes now mark their category
+  dirty; the gate holder services all accumulated marks with ONE
+  worker-thread build (a 10-delete burst ≈ 2 builds, loop stays
+  responsive — both locked in by tests).
+- `snapshot()` / `_cached_or_compute` read paths build their payload in
+  a worker thread too (Opsidian graph/tag views on large vaults).
+- Vector `index_batch` (the session-resume warm-up) is idempotent:
+  file store rows persist a content sha and qdrant bulk-scrolls its
+  existing `content_sha1` payloads — unchanged notes never reach the
+  embedder again (previously EVERY resume re-embedded the entire vault:
+  minutes of embedding HTTP per idle-evict cycle, at real cost).
+
 ## [2.64.2] — 2026-08-03
 
 ### Fixed

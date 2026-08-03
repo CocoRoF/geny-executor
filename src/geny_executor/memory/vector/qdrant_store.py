@@ -172,8 +172,53 @@ class QdrantVectorStore:
         return await self.index_document(ref, [DocumentChunk(text=text)])
 
     async def index_batch(self, items: Sequence[Tuple[NoteRef, str]]) -> int:
+        """Bulk (re)index — the session-resume warm-up path.
+
+        Idempotent since 2.64.3: points already carry ``content_sha1``, so
+        one payload-only scroll of the collection lets unchanged notes skip
+        the embedder entirely. Re-embedding the whole vault on every resume
+        (6k notes ≈ minutes of embedding HTTP, repeated every idle-evict
+        cycle) was pure waste. Scroll failure falls back to full indexing —
+        correctness never depends on the skip.
+        """
+        if not items:
+            return 0
+        existing: Dict[str, str] = {}
+        try:
+            await self._ensure_collection()
+            qdrant = self._get_qdrant()
+            offset = None
+            while True:
+                batch, offset = await qdrant.scroll(
+                    collection_name=self._collection,
+                    limit=1024,
+                    offset=offset,
+                    with_payload=["filename", "content_sha1", "chunk_index", "chunk_count"],
+                    with_vectors=False,
+                )
+                for point in batch or []:
+                    payload = getattr(point, "payload", None) or {}
+                    # Only single-chunk chunk-0 points represent a plain note
+                    # body — multi-chunk documents always re-index.
+                    if payload.get("chunk_index") == 0 and payload.get("chunk_count") == 1:
+                        fname = payload.get("filename")
+                        sha = payload.get("content_sha1")
+                        if fname and sha:
+                            existing[str(fname)] = str(sha)
+                if not offset:
+                    break
+        except Exception:  # noqa: BLE001 — skip-map is an optimization only
+            logger.debug("qdrant: sha scroll failed — full re-index", exc_info=True)
+            existing = {}
+
         total = 0
         for ref, text in items:
+            # Compare the sha of the UNMODIFIED text — index_document stores
+            # sha1(chunk.text) verbatim (strip() is only its emptiness test).
+            if (text or "").strip() and existing.get(ref.filename) == hashlib.sha1(
+                (text or "").encode("utf-8")
+            ).hexdigest():
+                continue
             total += await self.index(ref, text)
         return total
 
