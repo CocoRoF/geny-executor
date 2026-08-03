@@ -10,6 +10,7 @@ output (or vice versa). No Geny code is imported.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import uuid
@@ -459,8 +460,21 @@ class _FilesystemNotesStore(NotesHandle):
     async def _ensure_loaded(self) -> None:
         if self._loaded:
             return
-        self._cache.clear()
+        # The full-vault scan (read + frontmatter-parse of every note, then a
+        # backlink recompute) is pure sync work: on a large vault it runs for
+        # tens of seconds (observed: 6.2k notes ≈ 19s) and, executed inline,
+        # BLOCKS the host's event loop — health checks stop answering and the
+        # process gets watchdog-killed mid-load. Run it in a worker thread;
+        # callers already hold self._lock, so the swap below is single-flight.
+        cache = await asyncio.to_thread(self._scan_disk)
+        self._cache = cache
         self._explicit_links.clear()
+        self._refresh_backlinks()
+        self._loaded = True
+
+    def _scan_disk(self) -> Dict[str, Note]:
+        """Synchronous full-vault scan — must stay loop-free (see caller)."""
+        cache: Dict[str, Note] = {}
         for category_dir in self._layout.category_dirs():
             if not category_dir.exists():
                 continue
@@ -470,9 +484,8 @@ class _FilesystemNotesStore(NotesHandle):
                     continue
                 note = self._load_note(path)
                 if note is not None:
-                    self._cache[note.ref.filename] = note
-        self._refresh_backlinks()
-        self._loaded = True
+                    cache[note.ref.filename] = note
+        return cache
 
     def _resolve_filename(self, draft: NoteDraft) -> str:
         if draft.filename:
