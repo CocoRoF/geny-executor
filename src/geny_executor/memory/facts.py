@@ -239,36 +239,31 @@ _IMPORTANCE_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3}
 
 
 IDENTITY_CARD_KINDS = ("identity", "relationship")
-_PROHIBITION_MARKERS = (
-    "금지", "금기", "언급하지", "하지 마", "하지마", "never mention", "do not ", "don't ",
-)
 
 
 def render_identity_card(facts: Sequence[Fact], *, max_chars: int = 600) -> str:
-    """Ultra-compact identity card — the facts a persona must NEVER act
-    ignorant of: who the user is, how to address them, standing
-    prohibitions. Injected by the retriever as its own never-dropped
-    layer (L1.4), independent of the pinned-notes budget, because the
-    field failure mode was exactly these facts silently falling out of
-    context and the persona asking its owner's name mid-relationship.
+    """Ultra-compact identity card — the facts a persona must never act
+    ignorant of. Selection is STRUCTURAL only: identity/relationship
+    kinds, plus any fact the extractor marked ``importance=critical``
+    (standing prohibitions land there) — no text heuristics, no
+    embedded instructions. The retriever injects it as its own
+    never-dropped layer (L1.4); plain facts, plainly labeled, and the
+    model's behavior follows from the facts being present.
 
-    Returns "" when nothing qualifies (caller may fall back to
-    identity-tagged pinned notes).
+    Returns "" when nothing qualifies.
     """
     if max_chars <= 0:
         return ""
     active = [f for f in facts if f.status == "active"]
-    picked: List[Fact] = [f for f in active if f.kind in IDENTITY_CARD_KINDS]
-    picked += [
+    picked: List[Fact] = [
         f
         for f in active
-        if f.kind == "preference"
-        and any(m in f.statement for m in _PROHIBITION_MARKERS)
+        if f.kind in IDENTITY_CARD_KINDS or f.importance == "critical"
     ]
     if not picked:
         return ""
     seen: Set[str] = set()
-    lines = ["[핀 고정 사실 — 이미 아는 것으로 전제할 것. 다시 묻지 말 것.]"]
+    lines = ["## 고정 사실"]
     used = len(lines[0])
     for f in picked:
         stmt = f.statement.strip()

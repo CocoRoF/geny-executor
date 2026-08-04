@@ -4,6 +4,17 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.64.5] — 2026-08-04
+
+### Changed (identity card — structural selection only)
+- The card no longer embeds behavioral instructions and no longer uses
+  text-marker heuristics. Selection is purely structural: kinds
+  identity/relationship plus any fact with ``importance=critical``;
+  the empty-ledger fallback selects critical-IMPORTANCE pinned notes
+  (was: hardcoded tag matching). Neutral "## 고정 사실" heading —
+  correct behavior emerges from the facts being present, not from
+  injected imperatives.
+
 ## [2.64.4] — 2026-08-04
 
 ### Added

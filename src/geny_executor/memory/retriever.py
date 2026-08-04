@@ -521,21 +521,23 @@ class MemoryAwareRetriever(MemoryRetriever):
                 return text
         except Exception:  # noqa: BLE001
             logger.debug("memory_aware: identity card (ledger) failed", exc_info=True)
-        # Fallback: identity-tagged notes in the pinned category — covers the
-        # (observed) real world where the ledger is empty but the persona has
-        # pinned "user name / honorific / taboo" notes by hand.
+        # Fallback when the ledger is empty: critical-IMPORTANCE notes in the
+        # pinned category. Structural field only — no tag/text heuristics;
+        # "critical importance" is precisely the author's declaration that
+        # this fact must never fall out of context.
         try:
             notes = self._provider.notes()
             metas = await notes.list(category=hooks.pin_category)
-            tags_of_interest = {"identity", "호칭", "금지주제", "금기", "이름"}
             picked = [
                 m
                 for m in metas
-                if tags_of_interest & {str(t) for t in (m.tags or [])}
+                if getattr(m, "importance", None) is not None
+                and getattr(m.importance, "value", str(m.importance)) == "critical"
+                and not m.ref.filename.startswith("__")
             ]
             if not picked:
                 return ""
-            lines = ["[핀 고정 사실 — 이미 아는 것으로 전제할 것. 다시 묻지 말 것.]"]
+            lines = ["## 고정 사실"]
             used = len(lines[0])
             seen: set = set()
             for m in picked:

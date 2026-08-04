@@ -29,16 +29,20 @@ class TestRenderIdentityCard:
     def test_identity_and_prohibition_selected(self):
         facts = [
             _fact("identity", "사용자 이름은 장하렴, 호칭은 '사장님' 고정", "f1"),
-            _fact("preference", "문어 이야기는 절대 언급하지 않는다 (금지)", "f2"),
-            _fact("knowledge", "드보트 140카오스 비교 기록", "f3"),
+            # Prohibitions are selected STRUCTURALLY (importance=critical),
+            # not by text matching.
+            _fact("preference", "문어 이야기는 절대 언급하지 않는다", "f2"),
+            _fact("knowledge", "드보트 140카오스 비교 기록", "f3", importance="high"),
         ]
         card = render_identity_card(facts, max_chars=600)
         assert "장하렴" in card and "문어" in card
-        assert "드보트" not in card, "non-identity knowledge must stay out of the card"
-        assert card.startswith("[핀 고정 사실")
+        assert "드보트" not in card, "non-critical knowledge must stay out of the card"
+        assert card.startswith("## 고정 사실")
 
     def test_empty_when_nothing_qualifies(self):
-        assert render_identity_card([_fact("knowledge", "x", "k1")], max_chars=600) == ""
+        assert render_identity_card(
+            [_fact("knowledge", "x", "k1", importance="high")], max_chars=600
+        ) == ""
         assert render_identity_card([], max_chars=600) == ""
 
     def test_bounded_by_max_chars(self):
@@ -114,14 +118,18 @@ class TestIdentityCardLayer:
         with tempfile.TemporaryDirectory() as td:
             p = FileMemoryProvider(root=Path(td), scope=Scope.SESSION)
             await p.initialize()
+            from geny_executor.memory.provider import Importance
             await p.notes().write(NoteDraft(
                 title="사용자 이름과 호칭", body="이름 장하렴, 호칭 사장님 절대 고정.",
-                category="critical", filename="name.md", tags=["identity"],
+                category="critical", filename="name.md",
+                importance=Importance.CRITICAL,
             ))
             hooks = MemoryHooks(identity_card_chars=600)
             r = GenyMemoryRetriever(p, hooks=hooks)
             card = await r._build_identity_card(hooks)
-            assert "장하렴" in card, "empty ledger must fall back to identity-tagged notes"
+            assert "장하렴" in card, (
+                "empty ledger must fall back to critical-importance pinned notes"
+            )
 
     async def test_card_survives_zero_budget_pressure(self):
         with tempfile.TemporaryDirectory() as td:
