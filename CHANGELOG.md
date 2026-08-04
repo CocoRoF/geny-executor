@@ -4,6 +4,27 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.64.4] — 2026-08-04
+
+### Added
+- **Identity Card layer (L1.4)**: a small (default 600-char) never-dropped
+  context layer rendering the fact ledger's identity/relationship/
+  prohibition facts (fallback: identity-tagged pinned notes) — the facts a
+  persona must never act ignorant of, independent of the pinned layer's
+  ratio budget. `MemoryHooks.identity_card_chars` (0 disables).
+- `MemoryHooks.search_exclude_categories`: categories excluded from the
+  retriever's AUTOMATIC keyword/vector layers (explicit memory_search tool
+  calls unaffected) — ambient buffers like screen observations can be 59%
+  of a vault and drown real recall.
+
+### Fixed (pinned starvation — the "asked its owner's name" bug)
+- `load_pinned`: per-note cap (max_chars/2) — one oversized always-newest
+  note (a 5.6k evergreen) can no longer claim the whole budget; return is
+  strictly bounded by max_chars. The fact ledger note now sorts FIRST.
+- Retriever pinned layer TRUNCATES instead of silently dropping when the
+  shared budget runs short — identity/prohibition facts no longer vanish
+  exactly on the turns with the most conversation history.
+
 ## [2.64.3] — 2026-08-03
 
 ### Fixed (memory hot-path — prod loop-wedge round 3)

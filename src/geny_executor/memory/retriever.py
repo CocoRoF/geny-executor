@@ -154,6 +154,17 @@ class MemoryAwareRetriever(MemoryRetriever):
         )
         _record("session_summary", before)
 
+        # ── L1.4: identity card — NEVER dropped, own budget ─────────
+        # The facts a persona must never act ignorant of (owner's name,
+        # honorific, standing prohibitions). Separate from the pinned layer
+        # because pinned is ratio-budgeted and was observed starving these
+        # exact facts out of context ("asked its owner's name").
+        before = total
+        total = await self._load_identity_card(
+            chunks, total, hooks, prefetched=pf.get("identity_card", _UNFETCHED)
+        )
+        _record("identity_card", before)
+
         # ── L1.5: pinned facts (always-inject, host-policy category) ──
         before = total
         total = await self._load_pinned_facts(
@@ -276,6 +287,9 @@ class MemoryAwareRetriever(MemoryRetriever):
 
         _add("summary", _fetch_summary)
 
+        if getattr(hooks, "identity_card_chars", 0) > 0:
+            _add("identity_card", lambda: self._build_identity_card(hooks))
+
         pinned_cap = _layer_cap(hooks, "pinned")
         if pinned_cap > 0:
             _add(
@@ -284,6 +298,22 @@ class MemoryAwareRetriever(MemoryRetriever):
                     category=hooks.pin_category, max_chars=pinned_cap
                 ),
             )
+
+        # Ambient-noise exclusion for the AUTOMATIC search layers (explicit
+        # memory_search tool calls are unaffected): screen-observation style
+        # buffers can dominate a vault and drown real recall.
+        _excluded = set(getattr(hooks, "search_exclude_categories", ()) or ())
+
+        def _drop_excluded(hits):
+            if not _excluded or not hits:
+                return hits
+            kept = []
+            for h in hits:
+                cat = (getattr(h, "metadata", None) or {}).get("category")
+                if cat in _excluded:
+                    continue
+                kept.append(h)
+            return kept
 
         if hooks.slim_mode or hooks.always_render_vault_map:
             _add(
@@ -302,11 +332,16 @@ class MemoryAwareRetriever(MemoryRetriever):
                     vec = self._provider.vector()
                     if vec is None:
                         return None
-                    return await vec.search(query, top_k=hooks.max_results)
+                    return _drop_excluded(await vec.search(query, top_k=hooks.max_results))
 
                 _add("vector", _fetch_vector)
 
-            _add("kw_notes", lambda: self._provider.notes().search(query, limit=hooks.max_results))
+            async def _fetch_kw_notes() -> Any:
+                return _drop_excluded(
+                    await self._provider.notes().search(query, limit=hooks.max_results)
+                )
+
+            _add("kw_notes", _fetch_kw_notes)
             _add("kw_ltm", lambda: self._provider.ltm().search(query, limit=hooks.max_results))
 
             async def _fetch_curated() -> Any:
@@ -442,6 +477,88 @@ class MemoryAwareRetriever(MemoryRetriever):
 
     # ── L1.5 ────────────────────────────────────────────────────────
 
+    async def _load_identity_card(
+        self,
+        chunks: List[MemoryChunk],
+        total: int,
+        hooks: MemoryHooks,
+        *,
+        prefetched: Any = _UNFETCHED,
+    ) -> int:
+        cap = getattr(hooks, "identity_card_chars", 0) or 0
+        if cap <= 0:
+            return total
+        if prefetched is not _UNFETCHED:
+            text = prefetched or ""
+        else:
+            text = await self._build_identity_card(hooks)
+        if not text:
+            return total
+        # By design this layer ignores the shared budget check: it is ≤ cap
+        # (small) and the whole point is that no budget pressure can evict it.
+        chunks.append(
+            MemoryChunk(
+                key="identity_card",
+                content=text,
+                source="identity_card",
+                relevance_score=3.0,
+                metadata={"layer": "identity_card", "char_count": len(text)},
+            )
+        )
+        return total + len(text)
+
+    async def _build_identity_card(self, hooks: MemoryHooks) -> str:
+        cap = getattr(hooks, "identity_card_chars", 0) or 0
+        if cap <= 0:
+            return ""
+        # Primary: the fact ledger's identity/relationship/prohibition rows.
+        try:
+            from geny_executor.memory.facts import FactLedger, render_identity_card
+
+            state = await FactLedger(self._provider).load()
+            text = render_identity_card(state.facts, max_chars=cap)
+            if text:
+                return text
+        except Exception:  # noqa: BLE001
+            logger.debug("memory_aware: identity card (ledger) failed", exc_info=True)
+        # Fallback: identity-tagged notes in the pinned category — covers the
+        # (observed) real world where the ledger is empty but the persona has
+        # pinned "user name / honorific / taboo" notes by hand.
+        try:
+            notes = self._provider.notes()
+            metas = await notes.list(category=hooks.pin_category)
+            tags_of_interest = {"identity", "호칭", "금지주제", "금기", "이름"}
+            picked = [
+                m
+                for m in metas
+                if tags_of_interest & {str(t) for t in (m.tags or [])}
+            ]
+            if not picked:
+                return ""
+            lines = ["[핀 고정 사실 — 이미 아는 것으로 전제할 것. 다시 묻지 말 것.]"]
+            used = len(lines[0])
+            seen: set = set()
+            for m in picked:
+                note = await notes.read(m.ref.filename)
+                if note is None or not (note.body or "").strip():
+                    continue
+                stmt = " ".join((note.body or "").split())
+                key = stmt.casefold()
+                if key in seen:
+                    continue
+                seen.add(key)
+                line = f"- {stmt}"
+                if len(line) > cap // 2:
+                    line = line[: cap // 2].rstrip() + "…"
+                if used + len(line) + 1 > cap:
+                    break
+                lines.append(line)
+                used += len(line) + 1
+            return "\n".join(lines) if len(lines) > 1 else ""
+        except Exception:  # noqa: BLE001
+            logger.debug("memory_aware: identity card (fallback) failed", exc_info=True)
+            return ""
+
     async def _load_pinned_facts(
         self,
         chunks: List[MemoryChunk],
@@ -466,8 +583,19 @@ class MemoryAwareRetriever(MemoryRetriever):
         if not content or not str(content).strip():
             return total
         body = str(content)
-        if total + len(body) > budget:
+        # TRUNCATE, never drop (2.64.4). Silently discarding the whole layer
+        # when it didn't fit meant identity/prohibition facts vanished exactly
+        # on the turns with the most conversation history — the persona then
+        # asked its owner's name mid-relationship. Pinned facts are the last
+        # layer that may disappear wholesale; a bounded slice always ships.
+        room = budget - total
+        if room <= 0:
             return total
+        if len(body) > room:
+            logger.debug(
+                "memory_aware: pinned facts truncated %d → %d chars", len(body), room
+            )
+            body = body[: max(0, room - 12)].rstrip() + "\n…(truncated)"
         chunks.append(
             MemoryChunk(
                 key="pinned_facts",

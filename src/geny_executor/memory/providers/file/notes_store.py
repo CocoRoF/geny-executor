@@ -404,12 +404,26 @@ class _FilesystemNotesStore(NotesHandle):
             modified = note.updated_at.isoformat() if note.updated_at else ""
             return (-note.importance.boost, "" if modified is None else "")  # placeholder
 
+        # Ordering (2.64.4): the fact LEDGER first — it is the designed
+        # always-inject note — then importance desc, then recency. Recency
+        # alone let a periodically-rewritten 5.6k evergreen note claim the
+        # front seat forever and crowd out identity/prohibition facts.
+        def _ledger_first(n: Note) -> int:
+            return 0 if n.ref.filename == "__facts__.md" else 1
+
         pool.sort(
             key=lambda n: (
+                _ledger_first(n),
                 -n.importance.boost,
                 -(n.updated_at.timestamp() if n.updated_at else 0.0),
             )
         )
+
+        # Per-note cap (2.64.4): one oversized note must never exhaust the
+        # whole budget. The old loop admitted the FIRST note whole even past
+        # max_chars — a 5.6k evergreen then starved every other pinned fact
+        # (and the downstream layer dropped the oversized result entirely).
+        per_note_cap = max(200, max_chars // 2)
 
         parts: List[str] = []
         used = 0
@@ -419,6 +433,8 @@ class _FilesystemNotesStore(NotesHandle):
                 continue
             header = f"## {note.title}" if note.title else ""
             piece = f"{header}\n{block}".strip() if header else block
+            if len(piece) > per_note_cap:
+                piece = piece[: per_note_cap - 12].rstrip() + "\n…(truncated)"
             cost = len(piece) + (2 if parts else 0)  # blank-line separator
             if used + cost > max_chars and parts:
                 break

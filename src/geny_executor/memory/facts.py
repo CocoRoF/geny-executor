@@ -36,7 +36,7 @@ import json
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Awaitable, Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Sequence, Set, Tuple
 
 from geny_executor.memory.rollup import _flatten_turn
 
@@ -236,6 +236,52 @@ _KIND_HEADINGS = {
 }
 
 _IMPORTANCE_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+
+
+IDENTITY_CARD_KINDS = ("identity", "relationship")
+_PROHIBITION_MARKERS = (
+    "금지", "금기", "언급하지", "하지 마", "하지마", "never mention", "do not ", "don't ",
+)
+
+
+def render_identity_card(facts: Sequence[Fact], *, max_chars: int = 600) -> str:
+    """Ultra-compact identity card — the facts a persona must NEVER act
+    ignorant of: who the user is, how to address them, standing
+    prohibitions. Injected by the retriever as its own never-dropped
+    layer (L1.4), independent of the pinned-notes budget, because the
+    field failure mode was exactly these facts silently falling out of
+    context and the persona asking its owner's name mid-relationship.
+
+    Returns "" when nothing qualifies (caller may fall back to
+    identity-tagged pinned notes).
+    """
+    if max_chars <= 0:
+        return ""
+    active = [f for f in facts if f.status == "active"]
+    picked: List[Fact] = [f for f in active if f.kind in IDENTITY_CARD_KINDS]
+    picked += [
+        f
+        for f in active
+        if f.kind == "preference"
+        and any(m in f.statement for m in _PROHIBITION_MARKERS)
+    ]
+    if not picked:
+        return ""
+    seen: Set[str] = set()
+    lines = ["[핀 고정 사실 — 이미 아는 것으로 전제할 것. 다시 묻지 말 것.]"]
+    used = len(lines[0])
+    for f in picked:
+        stmt = f.statement.strip()
+        key = stmt.casefold()
+        if not stmt or key in seen:
+            continue
+        seen.add(key)
+        line = f"- {stmt}"
+        if used + len(line) + 1 > max_chars:
+            break
+        lines.append(line)
+        used += len(line) + 1
+    return "\n".join(lines) if len(lines) > 1 else ""
 
 
 def render_ledger_markdown(facts: Sequence[Fact]) -> str:

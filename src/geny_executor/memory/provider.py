@@ -1275,6 +1275,18 @@ class MemoryHooks:
     # `NotesHandle.load_pinned(category=...)` and stamped on retrieved
     # chunks as `metadata["host_layer"]`.
     pin_category: str = "critical"
+
+    # L1.4 Identity Card (2.64.4) — its OWN small budget, never dropped and
+    # independent of the pinned layer's ratio budgeting. Rendered from the
+    # fact ledger's identity/relationship/prohibition facts (fallback:
+    # identity-tagged pinned notes). 0 disables the layer.
+    identity_card_chars: int = 600
+
+    # Categories excluded from the retriever's AUTOMATIC keyword/vector
+    # layers (explicit memory_search tool calls are unaffected). Ambient
+    # buffers like screen observations can dominate a vault (observed: 59%
+    # of 6.2k notes) and drown real recall in noise.
+    search_exclude_categories: Tuple[str, ...] = ()
     # STM tail size injected as the L0 chunk regardless of query overlap.
     recent_turns: int = 6
     # When True, MemoryAwareRetriever returns only L0/L1/L1.5/L1.7 and
