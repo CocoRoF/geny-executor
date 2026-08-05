@@ -4,6 +4,20 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.64.6] — 2026-08-05
+
+### Changed
+- Bumps the `edit2docs` floor to `>= 0.14.0` (`docs` extra) so the Doc*
+  built-ins install the current engine. 0.14.0 adds **themed decks**
+  (`build_doc` renders a deterministic design in one call) and finishes
+  the agent-surface consolidation to eight verbs; the `DocGuide`
+  recipes — which `doc_tools` delegates straight to `edit2docs.doc_guide`
+  — surface the themed-deck recipe automatically once 0.14.0 is present.
+  No `doc_tools` code change: every verb geny-executor wraps
+  (`set_doc_text`, `edit_chart`, `list_doc_parts`, `get_doc_xml`,
+  `build_doc`, `analyze_doc`, `render_doc`, …) is still a first-class
+  `edit2docs` library function in 0.14.0.
+
 ## [2.64.5] — 2026-08-04
 
 ### Changed (identity card — structural selection only)
