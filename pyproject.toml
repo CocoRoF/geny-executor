@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "geny-executor"
-version = "2.64.6"
+version = "2.64.7"
 description = "Harness-engineered agent pipeline library with 21-stage dual-abstraction architecture, built on the Anthropic API"
 readme = "README.md"
 license = "Apache-2.0"
@@ -85,7 +85,7 @@ browser = [
 ]
 # Doc* built-ins — edit2docs document engine (docx/xlsx/pptx).
 docs = [
-    "edit2docs>=0.14.0",
+    "edit2docs>=0.15.0",
 ]
 # Ssh* built-ins — remote command/SFTP over SSH. Pure-async (asyncssh),
 # lazy-imported so the core install stays lean.

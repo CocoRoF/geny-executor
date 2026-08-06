@@ -158,6 +158,7 @@ _GUIDE_NAME_MAP = {
     "analyze_doc": "DocAnalyze",
     "render_doc": "DocRender",
     "set_doc_text": "DocApplyEdits",
+    "arrange_doc": "DocArrange",
     "read_doc_xml": "DocXmlRead",
     "set_doc_xml": "DocXmlEdit",
     "build_doc": "DocBuild",
@@ -346,6 +347,76 @@ class DocApplyEditsTool(_DocToolBase):
             content=json.dumps(summary, ensure_ascii=False, indent=1, default=str),
             # Partial application is normal engine feedback (stale guards
             # etc.) — surface it in content, not as a hard tool error.
+            metadata={"applied": summary["applied"], "failed": len(failed)},
+        )
+
+
+class DocArrangeTool(_DocToolBase):
+    """Deterministic STRUCTURAL edits — whole slides / sheets as objects."""
+
+    @property
+    def name(self) -> str:
+        return "DocArrange"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Deterministic STRUCTURAL edits: duplicate / move / delete whole "
+            "slides (.pptx) or sheets (.xlsx); rename sheets. No key; byte-"
+            "preserving. ops apply in order — target = slide index or sheet "
+            "name/index, to = position. Guide: DocGuide('arrange')."
+        )
+
+    @property
+    def input_schema(self) -> Dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Document file path."},
+                "ops": {
+                    "type": "array",
+                    "items": {"type": "object"},
+                    "description": (
+                        "Structural ops, e.g. {op:'duplicate',target:0,to:3} or "
+                        "{op:'rename',target:'Sheet1',name:'Summary'}. Shapes: "
+                        "DocGuide('arrange')."
+                    ),
+                },
+                "output": {
+                    "type": "string",
+                    "description": "Output path (default: in place).",
+                },
+            },
+            "required": ["path", "ops"],
+        }
+
+    def capabilities(self, input: Dict[str, Any]) -> ToolCapabilities:
+        return ToolCapabilities(concurrency_safe=False, max_result_chars=30_000)
+
+    async def _run(self, input: Dict[str, Any], context: ToolContext) -> ToolResult:
+        engine = _load_edit2docs()
+        path = _resolve_doc_path(input.get("path") or "", context)
+        ops = input.get("ops") or []
+        if not isinstance(ops, list) or not all(isinstance(o, dict) for o in ops):
+            return ToolResult(content="ops must be a list of objects", is_error=True)
+        out = input.get("output")
+        output = (
+            _resolve_doc_path(str(out), context, must_exist=False) if out else path
+        )
+        result = await asyncio.to_thread(
+            engine.arrange_doc, str(path), ops, output=str(output)
+        )
+        results = list(getattr(result, "results", []) or [])
+        failed = [r for r in results if r.get("status") != "applied"]
+        summary = {
+            "path": str(getattr(result, "path", output)),
+            "applied": getattr(result, "applied", 0),
+            "failed": len(failed),
+            "results": results,
+            "warnings": list(getattr(result, "warnings", []) or []),
+        }
+        return ToolResult(
+            content=json.dumps(summary, ensure_ascii=False, indent=1, default=str),
             metadata={"applied": summary["applied"], "failed": len(failed)},
         )
 
@@ -825,6 +896,7 @@ DOC_TOOL_CLASSES: Dict[str, type] = {
     "DocGuide": DocGuideTool,
     "DocAnalyze": DocAnalyzeTool,
     "DocApplyEdits": DocApplyEditsTool,
+    "DocArrange": DocArrangeTool,
     "DocBuild": DocBuildTool,
     "DocXmlRead": DocXmlReadTool,
     "DocXmlEdit": DocXmlEditTool,

@@ -4,6 +4,20 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.64.7] — 2026-08-06
+
+### Added
+- **`DocArrange` built-in** (documents family) — deterministic STRUCTURAL
+  document edits: duplicate / move / delete whole slides (.pptx) or sheets
+  (.xlsx), and rename sheets. No Anthropic key, byte-preserving (a copy adds
+  parts; untouched slides/sheets stay byte-identical). Wraps
+  `edit2docs.arrange_doc`; ops apply in sequence with per-op statuses. The
+  `DocGuide('arrange')` recipe is served straight from the engine.
+
+### Changed
+- Bumps the `edit2docs` floor to `>= 0.15.0` (the `arrange_doc` verb +
+  contextifier 0.5.0 structural raw primitives).
+
 ## [2.64.6] — 2026-08-05
 
 ### Changed

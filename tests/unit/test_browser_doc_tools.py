@@ -32,6 +32,7 @@ from geny_executor.tools.built_in.doc_tools import (
     DOC_TOOL_CLASSES,
     DocAnalyzeTool,
     DocApplyEditsTool,
+    DocArrangeTool,
     DocBuildTool,
     DocEditTool,
     DocGenerateTool,
@@ -258,6 +259,29 @@ class TestDocTools:
         assert "99" in check.content
 
     @pytest.mark.asyncio
+    async def test_arrange_duplicate_slide(self, tmp_path):
+        """DocArrange duplicates a slide (4 slides from 3), best-effort."""
+        pytest.importorskip("pptx", reason="python-pptx not installed")
+        ctx = ToolContext(working_dir=str(tmp_path))
+        built = await DocBuildTool().execute(
+            {
+                "spec": {"slides": [{"title": "A"}, {"title": "B"}, {"title": "C"}]},
+                "output": "deck.pptx",
+            },
+            ctx,
+        )
+        assert not built.is_error, built.content
+        result = await DocArrangeTool().execute(
+            {"path": "deck.pptx", "ops": [{"op": "duplicate", "target": 0, "to": 3}]},
+            ctx,
+        )
+        assert not result.is_error, result.content
+        summary = json.loads(result.content)
+        assert summary["applied"] == 1 and summary["failed"] == 0
+        info = await DocAnalyzeTool().execute({"path": summary["path"]}, ctx)
+        assert len(json.loads(info.content)["slides"]) == 4
+
+    @pytest.mark.asyncio
     async def test_edit_chart_retitle_and_data(self, chart_pptx_path, tmp_path):
         """Chart edits ride DocApplyEdits — a `chart` key routes them."""
         ctx = ToolContext(working_dir=str(tmp_path))
@@ -388,7 +412,8 @@ class TestDocTools:
         colors = await DocGuideTool().execute({"topic": "recipes.colors"}, ctx)
         assert "srgbClr" in colors.content and "DocXmlEdit" in colors.content
         recipes = await DocGuideTool().execute({"topic": "recipes"}, ctx)
-        assert "ADD A SLIDE" in recipes.content and "RECOLOR" in recipes.content
+        assert "COPY / MOVE / DELETE a slide" in recipes.content  # recipes.slides
+        assert "RECOLOR" in recipes.content  # recipes.colors
         unknown = await DocGuideTool().execute({"topic": "zzz"}, ctx)
         assert not unknown.is_error and "GENERATE" in unknown.content
 
