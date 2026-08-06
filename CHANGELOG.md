@@ -4,6 +4,17 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.64.8] — 2026-08-06
+
+### Changed
+- **`DocGuide` gains an optional `path`** — passing the document you're
+  working on scopes the returned topic list to that file's format
+  (`.docx` drops slide/sheet topics like `arrange` and `recipes.slides`).
+  Rides edit2docs 0.16's extension-scoped `doc_guide(fmt=...)`; older
+  engines silently ignore it (graceful `TypeError` fallback).
+- Bumps the `edit2docs` floor to `>= 0.16.0` (extension-scoped tools +
+  `doc_guide(fmt=...)`; 0.16.1 also adds the hosted `/v1/models` route).
+
 ## [2.64.7] — 2026-08-06
 
 ### Added

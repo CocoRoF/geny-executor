@@ -179,8 +179,9 @@ class DocGuideTool(_DocToolBase):
         return (
             "START HERE for .docx/.xlsx/.pptx work — the document skill. "
             "No topic: the GENERATE|EDIT|INSPECT map. topic: deep guide "
-            "(build, generate, edit, edit.text, edit.chart, edit.xml, "
-            "render, recipes.slides, recipes.colors). Free, instant."
+            "(build, edit.text, edit.chart, edit.xml, render, "
+            "recipes.slides, ...). Pass path to scope to a file's format. "
+            "Free, instant."
         )
 
     @property
@@ -191,6 +192,13 @@ class DocGuideTool(_DocToolBase):
                 "topic": {
                     "type": "string",
                     "description": "Optional topic or prefix (e.g. 'recipes').",
+                },
+                "path": {
+                    "type": "string",
+                    "description": (
+                        "Optional document path — scopes the topic list to "
+                        "that file's format (.docx / .xlsx / .pptx)."
+                    ),
                 },
             },
         }
@@ -214,7 +222,19 @@ class DocGuideTool(_DocToolBase):
                 ),
                 is_error=True,
             )
-        res = guide_fn(input.get("topic"), names=_GUIDE_NAME_MAP)
+        # Scope the topic list to the document's format when a path is
+        # supplied (edit2docs>=0.16 doc_guide(fmt=...)). Older engines that
+        # don't accept fmt are handled by the retry below.
+        fmt = None
+        raw_path = input.get("path")
+        if raw_path:
+            ext = str(raw_path).lower().rsplit(".", 1)[-1]
+            if ext in ("docx", "xlsx", "pptx"):
+                fmt = ext
+        try:
+            res = guide_fn(input.get("topic"), names=_GUIDE_NAME_MAP, fmt=fmt)
+        except TypeError:  # pragma: no cover — edit2docs < 0.16 (no fmt kwarg)
+            res = guide_fn(input.get("topic"), names=_GUIDE_NAME_MAP)
         return ToolResult(
             content=res["guide"],
             metadata={"topic": res.get("topic", ""), "topics": res.get("topics", [])},

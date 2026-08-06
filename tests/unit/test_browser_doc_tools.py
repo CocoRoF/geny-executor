@@ -581,3 +581,19 @@ class TestDocTools:
         result = await DocAnalyzeTool().execute({"path": "notes.txt"}, ctx)
         assert result.is_error
         assert "Unsupported document format" in result.content
+
+
+@pytest.mark.asyncio
+async def test_docguide_path_scopes_topics(tmp_path):
+    """DocGuide(path=...) trims the topic list to the file's format
+    (edit2docs>=0.16 doc_guide(fmt=...))."""
+    from geny_executor.tools.built_in.doc_tools import DocGuideTool
+
+    ctx = ToolContext(working_dir=str(tmp_path))
+    full = await DocGuideTool().execute({}, ctx)
+    docx = await DocGuideTool().execute({"path": "report.docx"}, ctx)
+    pptx = await DocGuideTool().execute({"path": "deck.pptx"}, ctx)
+    assert "arrange" in full.metadata["topics"]
+    assert "arrange" not in docx.metadata["topics"]
+    assert "recipes.slides" not in docx.metadata["topics"]
+    assert "recipes.slides" in pptx.metadata["topics"]
