@@ -1,5 +1,9 @@
 # Changelog
 
+All notable changes to `geny-executor` are recorded here. The format
+follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
+this project adheres to [Semantic Versioning](https://semver.org/).
+
 ## [2.65.0] — 2026-08-09
 
 ### Fixed (deleting a note now deletes its index row)
@@ -17,10 +21,6 @@ of its index (3,210 of 8,717 nodes) being notes whose files were long gone.
 - A failing removal logs and continues: the markdown delete already happened
   and is authoritative, and the leftover row is what boot reconciliation is
   for. Reporting failure for work that succeeded would be worse.
-
-All notable changes to `geny-executor` are recorded here. The format
-follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
-this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [2.64.8] — 2026-08-06
 
