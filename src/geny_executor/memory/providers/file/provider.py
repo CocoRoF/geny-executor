@@ -113,6 +113,9 @@ class FileMemoryProvider(MemoryProvider):
         # store depends on the notes store's body lookup.
         if self._vector is not None:
             self._notes.attach_vector_indexer(self._vector.index)
+            # …and the counterpart, so a deleted note leaves the index too.
+            if hasattr(self._vector, "remove"):
+                self._notes.attach_vector_remover(self._vector.remove)
         self._initialized = False
         self._descriptor = self._build_descriptor()
 
@@ -425,6 +428,9 @@ class FileMemoryProvider(MemoryProvider):
         self._vector = self._build_vector_store()
         if self._vector is not None:
             self._notes.attach_vector_indexer(self._vector.index)
+            # …and the counterpart, so a deleted note leaves the index too.
+            if hasattr(self._vector, "remove"):
+                self._notes.attach_vector_remover(self._vector.remove)
         await self._index.rebuild()
 
     async def promote(self, ref: NoteRef, to: Scope) -> NoteRef:

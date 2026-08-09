@@ -1,5 +1,23 @@
 # Changelog
 
+## [2.65.0] — 2026-08-09
+
+### Fixed (deleting a note now deletes its index row)
+Writes have had an auto-vector hook since the beginning; deletes never did.
+A deleted note kept its vector row, so search went on scoring a memory that
+no longer existed and could not resolve a body for it. A forward scan at boot
+cannot find these either — iterating the files that exist never visits the
+ones that don't — so they only accumulate. One production vault reached 36%
+of its index (3,210 of 8,717 nodes) being notes whose files were long gone.
+
+- `_FilesystemNotesStore.attach_vector_remover(remover)`, symmetric with
+  `attach_vector_indexer`, fired by `delete()` outside the write lock.
+- `FileMemoryProvider` wires it wherever it wires the indexer, guarded on the
+  store actually offering `remove`.
+- A failing removal logs and continues: the markdown delete already happened
+  and is authoritative, and the leftover row is what boot reconciliation is
+  for. Reporting failure for work that succeeded would be worse.
+
 All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).

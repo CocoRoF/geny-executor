@@ -78,6 +78,11 @@ class _FilesystemNotesStore(NotesHandle):
         self._loaded = False
         self._explicit_links: Dict[str, Set[str]] = {}
         self._vector_indexer = vector_indexer
+        #: Counterpart to the indexer. Writes had one from the start and
+        #: deletes did not, so a deleted note stayed in the vector index —
+        #: still scored by search, still returned, with no body to resolve.
+        #: A host measured 36% of its index as notes whose files were gone.
+        self._vector_remover: Optional[Callable[[NoteRef], Awaitable[Any]]] = None
         self._hooks = hooks or MemoryHooks()
         # Index-refresh hook (set by FileMemoryProvider once
         # _FileIndexStore is wired). Fired after every successful
@@ -94,6 +99,16 @@ class _FilesystemNotesStore(NotesHandle):
         construction order) and then plug the indexer in.
         """
         self._vector_indexer = indexer
+
+    def attach_vector_remover(self, remover) -> None:
+        """Wire (or detach) the auto-vector REMOVAL callback.
+
+        Symmetric with ``attach_vector_indexer``. Without it, deleting a note
+        removes the markdown and leaves the vector row behind: search keeps
+        scoring a memory that no longer exists, and the only way to notice is
+        a full reconciliation pass at boot.
+        """
+        self._vector_remover = remover
 
     def attach_index_refresh(
         self,
@@ -304,6 +319,21 @@ class _FilesystemNotesStore(NotesHandle):
                 tgts.discard(filename)
             self._refresh_backlinks()
             deleted_category = note.category
+            remover = self._vector_remover
+            ref_for_removal = note.ref
+        # Outside the write lock, like the indexer on the write path — the
+        # vector store has its own lock and must not nest inside this one.
+        if remover is not None:
+            try:
+                await remover(ref_for_removal)
+            except Exception:  # noqa: BLE001
+                # The markdown delete is authoritative and has already
+                # happened; a failed index removal is drift the boot
+                # reconciliation will clean up, not a reason to fail here.
+                logger.warning(
+                    "notes.delete: vector removal failed for %s",
+                    filename, exc_info=True,
+                )
         await self._refresh_index_for(deleted_category)
         return True
 
