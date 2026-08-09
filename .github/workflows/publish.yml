@@ -95,9 +95,10 @@ jobs:
   publish-testpypi:
     name: Publish to TestPyPI
     needs: [build, test]
-    if: >-
-      github.event_name == 'release' ||
-      (github.event_name == 'workflow_dispatch' && inputs.target == 'testpypi')
+    # Manual dispatch ONLY. A published release goes to PyPI; sending it to
+    # TestPyPI as well made every release finish red (no trusted publisher is
+    # configured there), which trains everyone to ignore a failed publish.
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'testpypi'
     runs-on: ubuntu-latest
     environment:
       name: testpypi
