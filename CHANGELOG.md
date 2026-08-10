@@ -1,5 +1,9 @@
 # Changelog
 
+All notable changes to `geny-executor` are recorded here. The format
+follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
+this project adheres to [Semantic Versioning](https://semver.org/).
+
 ## [2.65.1] — 2026-08-10
 
 ### Fixed (a dead hot spare stalled every following turn)
@@ -16,10 +20,6 @@ in 11 s with `GENY_CLI_PREWARM=0`.
 
 - `_process_alive()` asks the kernel (`kill(pid, 0)`) instead of trusting
   the transport's bookkeeping; `_take_spare` uses it.
-
-All notable changes to `geny-executor` are recorded here. The format
-follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
-this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [2.65.0] — 2026-08-09
 
