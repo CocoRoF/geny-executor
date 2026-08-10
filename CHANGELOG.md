@@ -1,5 +1,22 @@
 # Changelog
 
+## [2.65.1] — 2026-08-10
+
+### Fixed (a dead hot spare stalled every following turn)
+The prewarm starts a `claude` process after a turn so the next one skips
+Node boot, auth and MCP startup, and `_take_spare` reused it whenever the
+argv matched and `returncode` was None.
+
+`returncode` is bookkeeping: it stays None until the event loop reaps the
+child, so a process that already exited reads as a healthy spare forever.
+The turn handed its prompt to a dead pipe and waited. In production the CLI
+started, listed its 103 tools, exited — and every subsequent turn stalled
+until a host-side watchdog abandoned it at 320 s. The same session answered
+in 11 s with `GENY_CLI_PREWARM=0`.
+
+- `_process_alive()` asks the kernel (`kill(pid, 0)`) instead of trusting
+  the transport's bookkeeping; `_take_spare` uses it.
+
 All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).

@@ -113,6 +113,29 @@ def _classify_cli_result(result: CLIResult, *, cli_version: str = "") -> APIErro
     )
 
 
+def _process_alive(proc: Any) -> bool:
+    """Is this child still running, really?
+
+    ``asyncio.subprocess.Process.returncode`` is bookkeeping: it stays None
+    until the event loop reaps the child. A process that already exited can
+    therefore look alive indefinitely. Ask the kernel instead.
+    """
+    if getattr(proc, "returncode", None) is not None:
+        return False
+    pid = getattr(proc, "pid", None)
+    if not pid:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True          # exists, owned by someone else — still alive
+    except OSError:
+        return False
+    return True
+
+
 class ClaudeCodeCLIClient(BaseClient):
     """Subprocess-backed Claude Code client."""
 
@@ -276,7 +299,20 @@ class ClaudeCodeCLIClient(BaseClient):
         The spare is only valid for an IDENTICAL argv (model, MCP config,
         session resume flags, permissions — everything). Any drift means
         the prewarmed process was booted with stale config: discard it
-        and spawn fresh. Also discards a spare that died while idle.
+        and spawn fresh.
+
+        It must also still be ALIVE, and ``returncode`` is not enough to
+        know that. It is only set once asyncio has reaped the child; a
+        process that exited without the transport noticing keeps
+        ``returncode is None`` forever, so a corpse reads as a healthy
+        spare. The turn then hands its prompt to a dead pipe and waits —
+        which is exactly what happened in production: the CLI started,
+        listed its tools, exited, and every subsequent turn stalled until a
+        watchdog abandoned it. Turning the prewarm off made the same
+        session answer in 11 s.
+
+        ``kill(pid, 0)`` costs a syscall and answers the question the
+        bookkeeping cannot.
         """
         spare = self._spare
         if spare is None:
@@ -286,7 +322,7 @@ class ClaudeCodeCLIClient(BaseClient):
         if expire_task is not None:
             expire_task.cancel()
         proc = spare["proc"]
-        if spare["argv"] != list(argv) or proc.returncode is not None:
+        if spare["argv"] != list(argv) or not _process_alive(proc):
             self._discard_spare_proc(spare)
             return None
         return proc
