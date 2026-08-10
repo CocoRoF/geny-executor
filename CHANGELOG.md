@@ -4,6 +4,37 @@ All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.65.2] — 2026-08-10
+
+### Fixed (a finished CLI could still park a turn on its own stdout)
+A turn stopped answering. The stack said the pipeline was inside
+`_call_streaming`, awaiting the client's stream; the CLI trace said that
+same invocation had exited `rc=0` with a complete answer seconds in. Both
+were true.
+
+A pipe reaches EOF when the *last* writer closes it, and the CLI is not the
+only writer — it spawns MCP servers as children and they inherit its stdout.
+One that outlives it holds the write end open, so `readline()` blocks on a
+pipe nothing will ever write to again, and the reader waits out the full
+`timeout_s`. Worse, `proc.wait()` cannot rescue it: asyncio completes
+`wait()` only once the child has exited **and** every pipe has disconnected,
+which is the exact condition the leaked descriptor prevents. The previous
+fix (2.65.1) removed one way to reach this state; this removes the state.
+
+- The read loop polls `proc.returncode` — set by the child watcher, pipes or
+  no pipes — instead of awaiting `wait()`. Once the child is gone, stdout
+  gets `exit_drain_grace_s` (default 5 s) to produce anything further, then
+  the stream ends. Buffered output still arrives; draining a buffer is
+  instant next to that grace.
+- `_reap()` bounds the exit-status wait the same way, and kills the process
+  group on the leaked-FD path — which is what finally releases the
+  descriptor. `_kill_tree(force=True)` no longer returns early just because
+  the direct child is already reaped; the survivors are the point.
+- Regression suite `test_cli_leaked_stdout.py` reproduces the shape exactly
+  (full answer, clean exit, one forked child sitting on the FD) and pins
+  that a healthy stream still ends on real EOF with no added latency, and
+  that a slow *live* child keeps its full budget.
+
 ## [2.65.1] — 2026-08-10
 
 ### Fixed (a dead hot spare stalled every following turn)

@@ -71,6 +71,12 @@ logger = logging.getLogger(__name__)
 # discarded, so the line is unrecoverable). Delegated heavy work makes
 # large tool results routine, so the default is deliberately generous:
 # 32 MiB (a cap, not an allocation — memory is used only per actual line).
+#: How often the stream reader looks up from the pipe to check whether
+#: the child is still alive. Only ever costs a wakeup when no line has
+#: arrived, so a busy stream never pays it.
+_EXIT_POLL_S = 0.25
+
+
 def _cli_stream_limit() -> int:
     raw = os.environ.get("GENY_CLI_STREAM_LIMIT", "").strip()
     try:
@@ -221,6 +227,22 @@ class CLIProcessRunner:
     cwd: Optional[str] = None
     timeout_s: float = 300.0
     kill_grace_s: float = 2.0
+    #: How long to keep reading stdout AFTER the child has exited.
+    #:
+    #: A pipe reaches EOF when the last writer closes it — which is not
+    #: the same event as "the child exited". The CLI spawns MCP servers
+    #: as its own children, and they inherit its stdout; one that
+    #: outlives it (or ignores the parent-death signal) holds the write
+    #: end open, so ``readline()`` blocks on a pipe nothing will ever
+    #: write to again. Waiting on EOF alone therefore parks the turn for
+    #: the FULL ``timeout_s`` — 2026-08-10 in production that was a dead
+    #: CLI (rc=0, output complete) and a turn that hung until a
+    #: host-side stall guard abandoned it minutes later.
+    #:
+    #: After exit, anything still in flight is bytes already written to
+    #: the pipe buffer, which drain immediately. This grace is generous
+    #: for that and short enough that a leaked FD costs seconds.
+    exit_drain_grace_s: float = 5.0
 
     def __post_init__(self) -> None:
         if not self.binary:
@@ -301,9 +323,15 @@ class CLIProcessRunner:
         stderr_task = asyncio.create_task(_collect_stderr(proc.stderr, stderr_buf))
 
         try:
-            async for line in _aiter_lines(proc.stdout, timeout_s=self.timeout_s, start_t=t0):
+            async for line in _aiter_lines(
+                proc.stdout,
+                timeout_s=self.timeout_s,
+                start_t=t0,
+                proc=proc,
+                drain_grace_s=self.exit_drain_grace_s,
+            ):
                 yield line
-            rc = await proc.wait()
+            rc = await self._reap(proc)
         except CLITimeout:
             await self._kill_tree(proc)
             raise
@@ -355,10 +383,50 @@ class CLIProcessRunner:
             timeout=self.timeout_s,
         )
 
+    # ------------------------------------------------------------- reap
+    async def _reap(self, proc: asyncio.subprocess.Process) -> int:
+        """Exit status, without betting the turn on ``proc.wait()``.
+
+        ``wait()`` completes only when the child has exited AND every
+        pipe has disconnected. A survivor holding the inherited stdout
+        satisfies the first and blocks the second forever, so awaiting
+        it here would re-introduce exactly the hang the read loop just
+        escaped.
+
+        So: give ``wait()`` a short window, and if it does not land,
+        take the returncode the child watcher already recorded and kill
+        the process group — which is also what finally releases the
+        leaked descriptor.
+        """
+        try:
+            return await asyncio.wait_for(proc.wait(), timeout=self.kill_grace_s)
+        except asyncio.TimeoutError:
+            pass
+        rc = proc.returncode
+        if rc is None:
+            # Still genuinely running — the caller's ladder owns it.
+            return -1
+        logger.warning(
+            "CLI exited rc=%s but a pipe stayed open — killing the process "
+            "group to release it", rc,
+        )
+        await self._kill_tree(proc, force=True)
+        return rc
+
     # ------------------------------------------------------------- kill
-    async def _kill_tree(self, proc: asyncio.subprocess.Process) -> None:
-        """Send SIGTERM, wait grace, then SIGKILL the process group."""
-        if proc.returncode is not None:
+    async def _kill_tree(
+        self, proc: asyncio.subprocess.Process, *, force: bool = False
+    ) -> None:
+        """Send SIGTERM, wait grace, then SIGKILL the process group.
+
+        ``force`` keeps going when the direct child is already reaped:
+        the group can still hold survivors it spawned — an MCP server
+        sitting on the inherited stdout — and those are precisely what
+        needs signalling. Without it the early return below reads "the
+        child is gone, nothing to kill", which is exactly wrong for the
+        case that leaks.
+        """
+        if proc.returncode is not None and not force:
             return
         try:
             if sys.platform != "win32":
@@ -512,33 +580,92 @@ async def _aiter_lines(
     *,
     timeout_s: float,
     start_t: float,
+    proc: Optional[asyncio.subprocess.Process] = None,
+    drain_grace_s: float = 5.0,
 ) -> AsyncIterator[bytes]:
+    """Yield stdout lines until EOF — or until the child is gone and quiet.
+
+    Once the child has exited, EOF is no longer guaranteed to arrive at
+    all: an inherited write end can keep the pipe open indefinitely. So
+    the read budget collapses to ``drain_grace_s`` from the moment the
+    exit is observed, and the iterator ends on the first quiet moment
+    instead of parking on ``timeout_s``. Bytes already in the pipe are
+    still delivered — draining a buffer is instant next to that grace.
+    """
     if stream is None:
         return
-    while True:
-        elapsed = time.monotonic() - start_t
-        remaining = timeout_s - elapsed
-        if remaining <= 0:
-            raise CLITimeout(f"stream timeout after {timeout_s:.1f}s")
-        try:
-            line = await asyncio.wait_for(stream.readline(), timeout=remaining)
-        except asyncio.TimeoutError as e:
-            raise CLITimeout(f"stream readline timeout after {timeout_s:.1f}s") from e
-        except ValueError as e:
-            # asyncio raises ValueError("Separator is found, but chunk is
-            # longer than limit") when ONE line exceeds the StreamReader
-            # limit — and discards the buffered bytes, so the line is
-            # unrecoverable. With the 32 MiB default this is near
-            # impossible; if it still happens, losing ONE event beats
-            # killing the whole delegated turn. Log loudly and continue.
-            logger.warning(
-                "CLI stream line exceeded the %d-byte limit — skipping one "
-                "event and continuing (%s)", _cli_stream_limit(), e,
+    read_task: Optional[asyncio.Task[bytes]] = None
+    died_at: Optional[float] = None
+    try:
+        while True:
+            now = time.monotonic()
+            remaining = timeout_s - (now - start_t)
+            if remaining <= 0:
+                raise CLITimeout(f"stream timeout after {timeout_s:.1f}s")
+
+            # One read task, carried across iterations: a readline that
+            # loses the race must NOT be discarded, or the bytes it is
+            # mid-way through consuming are lost.
+            if read_task is None:
+                read_task = asyncio.ensure_future(stream.readline())
+
+            if died_at is None and proc is not None and proc.returncode is not None:
+                died_at = now
+            if died_at is not None:
+                grace_left = drain_grace_s - (now - died_at)
+                if grace_left <= 0:
+                    logger.warning(
+                        "CLI exited but stdout stayed open for %.1fs — ending "
+                        "the stream (an inherited pipe write end is still "
+                        "held; the answer is complete, the FD is not).",
+                        drain_grace_s,
+                    )
+                    return
+                budget = min(remaining, grace_left)
+            else:
+                # Poll rather than await the child: ``proc.wait()`` cannot
+                # be the death signal here, because asyncio only completes
+                # it once every pipe has ALSO disconnected — which is the
+                # exact condition a leaked stdout FD prevents. The
+                # returncode, by contrast, is set the moment the child
+                # watcher reaps, pipes or no pipes.
+                budget = min(remaining, _EXIT_POLL_S)
+
+            done, _pending = await asyncio.wait(
+                {read_task}, timeout=budget, return_when=asyncio.FIRST_COMPLETED
             )
-            continue
-        if not line:
-            return
-        yield line
+
+            if read_task not in done:
+                if died_at is not None or budget < remaining:
+                    # Either draining after exit, or just a poll tick with
+                    # budget left — go round again.
+                    continue
+                raise CLITimeout(f"stream readline timeout after {timeout_s:.1f}s")
+
+            try:
+                line = read_task.result()
+            except ValueError as e:
+                # asyncio raises ValueError("Separator is found, but chunk is
+                # longer than limit") when ONE line exceeds the StreamReader
+                # limit — and discards the buffered bytes, so the line is
+                # unrecoverable. With the 32 MiB default this is near
+                # impossible; if it still happens, losing ONE event beats
+                # killing the whole delegated turn. Log loudly and continue.
+                logger.warning(
+                    "CLI stream line exceeded the %d-byte limit — skipping one "
+                    "event and continuing (%s)", _cli_stream_limit(), e,
+                )
+                read_task = None
+                continue
+            finally:
+                if read_task is not None and read_task.done():
+                    read_task = None
+            if not line:
+                return
+            yield line
+    finally:
+        if read_task is not None and not read_task.done():
+            read_task.cancel()
 
 
 async def _drain_stdin(

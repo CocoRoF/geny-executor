@@ -474,6 +474,32 @@ def _stream_then_hang(argv: List[str]) -> int:
     return 0
 
 
+def _leaky_child_then_exit(argv: List[str]) -> int:
+    """Answer in full, exit 0 — and leave a child holding stdout open.
+
+    This is the production failure of 2026-08-10, reduced. The real CLI
+    spawns MCP servers as its own children; they inherit its stdout. When
+    the CLI exits, the pipe does NOT reach EOF, because the write end is
+    still open in the survivor. A reader that waits for EOF alone waits
+    forever on a process that finished minutes ago — the turn hangs with
+    a complete answer sitting in it.
+
+    The forked child holds the FD and sleeps. It writes nothing: the
+    point is the open descriptor, not the data.
+    """
+    pid = os.fork()
+    if pid == 0:  # child — inherits stdout, outlives the parent
+        try:
+            os.setsid()
+        except OSError:
+            pass
+        time.sleep(600)
+        os._exit(0)
+    rc = _ok_stream_event(argv)
+    sys.stdout.flush()
+    return rc
+
+
 def _permission_fail(argv: List[str]) -> int:
     sys.stderr.write("permission denied: tool Bash blocked by policy\n")
     return 1
@@ -520,6 +546,7 @@ SCENARIOS = {
     "ok_result_envelope": _ok_result_envelope,
     "stream_unknown_lines": _stream_unknown_lines,
     "stream_then_hang": _stream_then_hang,
+    "leaky_child_then_exit": _leaky_child_then_exit,
     "message_form_auth_failed": _message_form_auth_failed,
     "auth_fail": _auth_fail,
     "permission_fail": _permission_fail,
