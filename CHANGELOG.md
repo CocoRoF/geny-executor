@@ -1,5 +1,32 @@
 # Changelog
 
+## [2.65.3] — 2026-08-11
+
+### Fixed (a cancelled acquirer walked off with the memory lock)
+Turns stopped answering and stayed that way until a restart. Three separate
+stacks — the turn's own memory write, the compaction kick, the conversation
+archiver — were all parked in `LoopAgnosticLock._acquire_without_blocking_loop`,
+and **no task in the process held the lock**.
+
+A worker thread blocked in `lock.acquire()` cannot be cancelled. Cancelling the
+*await* abandoned the waiter while the thread went on to take the mutex on
+behalf of a caller that no longer existed: `__aenter__` never returned, so
+`__aexit__` never ran, and the mutex was held forever by nobody. Every later
+acquirer parked behind it.
+
+The trigger was mundane and frequent — a host-side stall guard abandoning a
+slow turn. One stall leaked the lock; from then on *every* turn stalled, which
+is why the symptom looked like a spreading failure rather than a single bug.
+
+- The worker now decides what to do with the lock it just took, in the worker,
+  under a handoff mutex that closes the race between "the thread took it" and
+  "the caller went away". Handing back through a loop callback would only work
+  while the loop is still running — and a loop going away is one of the things
+  that cancels an acquire in the first place.
+- `test_lock_cancel_leak.py` pins it, plus the two properties the fix must not
+  break: a contended acquirer still waits its turn, and the event loop keeps
+  running while it does.
+
 All notable changes to `geny-executor` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).

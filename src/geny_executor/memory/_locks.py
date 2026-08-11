@@ -70,7 +70,56 @@ class LoopAgnosticLock:
         # Contended: wait in a worker thread so the event loop keeps running
         # (and the current holder — possibly a coroutine on THIS loop that
         # yielded mid-critical-section — can make progress and release).
-        await asyncio.to_thread(self._lock.acquire)
+        #
+        # CANCELLATION LEAKS THE MUTEX unless it is handled here, and the
+        # leak is permanent. A worker thread blocked in ``lock.acquire()``
+        # cannot be cancelled: cancelling the *await* abandons the waiter
+        # while the thread goes on to take the lock, on behalf of a caller
+        # that no longer exists. ``__aenter__`` never returns, so
+        # ``__aexit__`` never runs, and the mutex is held forever by
+        # nobody. Every later acquirer — the turn's own memory write, the
+        # compaction kick, the conversation archiver — then parks on it,
+        # so the session stops answering until the process restarts.
+        #
+        # Production, 2026-08-11: turns were being abandoned by a
+        # host-side stall guard, and each abandonment leaked this lock, so
+        # one stall turned into every later turn stalling. Observed as
+        # three separate stacks parked in this method with no holder
+        # anywhere in the task list.
+        #
+        # So the WORKER decides what to do with the lock it just took, and
+        # decides it in the worker. Handing back via a loop callback would
+        # work only while the loop is still running — and "the loop is
+        # going away" is exactly one of the situations that cancels an
+        # acquire. ``handoff`` guards the one race that matters: the
+        # instant between the thread taking the mutex and the caller
+        # deciding it no longer wants it.
+        handoff = threading.Lock()
+        state = {"cancelled": False, "held": False}
+
+        def _take() -> bool:
+            self._lock.acquire()
+            with handoff:
+                if state["cancelled"]:
+                    self._lock.release()   # nobody is waiting for it now
+                    return False
+                state["held"] = True
+                return True
+
+        waiter = asyncio.ensure_future(asyncio.to_thread(_take))
+        try:
+            # shield: cancelling the inner task would not stop the thread,
+            # it would only hide what the thread went on to do.
+            await asyncio.shield(waiter)
+        except asyncio.CancelledError:
+            with handoff:
+                if state["held"]:
+                    # The thread already took it for us; give it straight
+                    # back, here, without needing the loop again.
+                    self._lock.release()
+                else:
+                    state["cancelled"] = True
+            raise
 
     async def __aenter__(self) -> "LoopAgnosticLock":
         await self._acquire_without_blocking_loop()
