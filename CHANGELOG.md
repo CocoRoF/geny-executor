@@ -1,5 +1,24 @@
 # Changelog
 
+## [2.65.4] — 2026-08-18
+
+### Fixed (the write hook indexed a note without the note)
+The auto-vector hook called its indexer with `(ref, body)` while a host's
+periodic reconciliation offered the whole `Note`. Two write paths, two shapes.
+
+That is not merely a lost field. A vector store whose idempotence digest covers
+title/tags/importance never settles: the hook writes digest A, the
+reconciliation rewrites digest B, the next edit writes A again — the note
+re-indexes forever. Observed in production as freshly written notes showing a
+blank title in the catalogue while reconciled ones had it.
+
+- `VectorIndexer` may now take the `Note` as a third positional argument, and
+  the hook offers it.
+- Whether an indexer wants it is decided by SIGNATURE, never by try/except, so
+  a genuine `TypeError` raised inside an indexer is never mistaken for "wrong
+  arity" and silently retried with less information. Every `VectorStore` in
+  this package keeps the two-argument shape and is unaffected.
+
 ## [2.65.3] — 2026-08-11
 
 ### Fixed (a cancelled acquirer walked off with the memory lock)

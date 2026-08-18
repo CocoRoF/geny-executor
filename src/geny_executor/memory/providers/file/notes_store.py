@@ -45,7 +45,40 @@ logger = logging.getLogger(__name__)
 # the vector layer can keep its index in lockstep with markdown disk
 # state. Returning the chunk count is informational; failures are
 # swallowed (logger.warning) to keep markdown writes authoritative.
-VectorIndexer = Callable[[NoteRef, str], Awaitable[int]]
+#: ``(ref, body)`` — and, for indexers that want it, the Note itself as a
+#: third positional argument. Passing it is what lets a vector store index
+#: what the note IS (title, tags, importance) and not merely what it says.
+#:
+#: It matters that BOTH write paths agree. A store whose idempotence digest
+#: covers that metadata will re-index a note forever if the write hook sends
+#: a bare row and a later reconciliation sends a rich one: the digests never
+#: settle. Observed in production 2026-08-18 as freshly written notes
+#: showing a blank title in the catalogue while the reconciled ones had it.
+VectorIndexer = Callable[..., Awaitable[int]]
+
+def _indexer_takes_note(indexer: Any) -> bool:
+    """Whether *indexer* has room for the note as a third argument.
+
+    Asked by signature rather than by try/except so a genuine TypeError
+    raised INSIDE the indexer is never mistaken for "wrong arity" and
+    silently retried with less information.
+    """
+    import inspect
+
+    # NOT unwrapped to ``__func__``: ``signature`` on a BOUND method already
+    # omits ``self``, and unwrapping puts it back — which counted a plain
+    # ``index(self, ref, text)`` as having room for a third argument.
+    try:
+        params = inspect.signature(indexer).parameters
+    except (TypeError, ValueError):  # pragma: no cover — builtins
+        return False
+    if any(p.kind is inspect.Parameter.VAR_POSITIONAL for p in params.values()):
+        return True
+    positional = [p for p in params.values()
+                  if p.kind in (inspect.Parameter.POSITIONAL_ONLY,
+                                inspect.Parameter.POSITIONAL_OR_KEYWORD)]
+    return len(positional) >= 3
+
 
 
 _WIKILINK = re.compile(r"\[\[([^\]\|]+)(?:\|([^\]]+))?\]\]")
@@ -187,11 +220,13 @@ class _FilesystemNotesStore(NotesHandle):
             self._refresh_backlinks()
             indexer = self._vector_indexer
             ref_for_index, body_for_index = note.ref, note.body
+            note_for_index = note
             note_meta = note.as_meta()
         # Run auto-vector outside the write lock — embedding the body
         # is an HTTP round-trip and must never block other note ops.
         if indexer is not None and body_for_index:
-            await self._safe_index(indexer, ref_for_index, body_for_index)
+            await self._safe_index(indexer, ref_for_index, body_for_index,
+                                   note_for_index)
         await self._refresh_index_for(note.category)
         await _fire_hook(
             self._hooks.after_note_write,
@@ -230,9 +265,11 @@ class _FilesystemNotesStore(NotesHandle):
             self._refresh_backlinks()
             indexer = self._vector_indexer
             ref_for_index, body_for_index = current.ref, current.body
+            note_for_index = current
             note_meta = current.as_meta()
         if indexer is not None and body_for_index:
-            await self._safe_index(indexer, ref_for_index, body_for_index)
+            await self._safe_index(indexer, ref_for_index, body_for_index,
+                                   note_for_index)
         await self._refresh_index_for(current.category)
         await _fire_hook(
             self._hooks.after_note_update,
@@ -257,7 +294,8 @@ class _FilesystemNotesStore(NotesHandle):
             logger.debug("index refresh callback failed for category=%r", category, exc_info=True)
 
     @staticmethod
-    async def _safe_index(indexer: VectorIndexer, ref: NoteRef, body: str) -> None:
+    async def _safe_index(indexer: VectorIndexer, ref: NoteRef, body: str,
+                          note: Any = None) -> None:
         """Best-effort indexer call — markdown writes win on any
         embedding failure.
 
@@ -274,7 +312,14 @@ class _FilesystemNotesStore(NotesHandle):
         from geny_executor.memory.embedding.client import EmbeddingError
 
         try:
-            await indexer(ref, body)
+            # Offer the note; fall back for indexers written to the older
+            # two-argument shape. Every VectorStore in this package takes
+            # (ref, text), so the fallback is the normal path for them —
+            # only a host store that opted in receives the metadata.
+            if note is not None and _indexer_takes_note(indexer):
+                await indexer(ref, body, note)
+            else:
+                await indexer(ref, body)
         except EmbeddingError as exc:
             if getattr(exc, "category", "unknown") == "unknown":
                 logger.warning(
