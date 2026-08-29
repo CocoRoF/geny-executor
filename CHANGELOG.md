@@ -1,5 +1,26 @@
 # Changelog
 
+## [2.65.5] — 2026-08-29
+
+### Fixed (evergreen "identity" had become a personality description)
+The evergreen note is distilled from transcripts, so `## Identity` drifted into
+a record of how the agent had been *behaving*: temperament, tone, manner. That
+reads as a durable fact and is injected every turn — so when a host changed the
+agent's configured character, the memory went on asserting the old one, in the
+user's own words, with more specificity and more recency than the character
+section far above it.
+
+Observed in production: a session moved onto a warm, playful ESFP preset and
+kept answering "차갑고 조용해. 감정 잘 안 드러내", quoting its own evergreen
+line `cold analytical clinical counselor, structure-before-empathy-FIXED`.
+
+Character is configuration; a transcript is a record of how the agent behaved,
+not a rule for how it must behave. Both evergreen merge instructions now scope
+`## Identity` to standing facts — name, role, agreements, taboos — and say to
+drop temperament claims when merging, so a vault already carrying them sheds
+them rather than keeping them forever. The preserve clause is untouched: names,
+preferences and commitments are still never lost.
+
 ## [2.65.4] — 2026-08-18
 
 ### Fixed (the write hook indexed a note without the note)

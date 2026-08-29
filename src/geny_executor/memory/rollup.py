@@ -233,6 +233,32 @@ EVERGREEN_FILENAME = "__evergreen__.md"
 EVERGREEN_CATEGORY = "critical"
 
 
+#: What ``## Identity`` is FOR — and what it is not.
+#:
+#: The evergreen is distilled from transcripts, so "identity" drifted into
+#: a description of how the agent had been behaving: temperament, tone,
+#: manner. That reads as a durable fact and is injected every turn, so
+#: when a host later changed the agent's configured character the memory
+#: went on asserting the old one — in the user's own words, with more
+#: specificity and more recency than the character section far above it.
+#:
+#: Observed 2026-08-29: a persona moved to warm/playful and the agent kept
+#: answering "차갑고 조용해. 감정 잘 안 드러내", quoting its own evergreen
+#: line "cold analytical clinical counselor, structure-before-empathy-FIXED".
+#:
+#: Character is configuration. This section records WHO the agent is to
+#: this user — its name, role, standing agreements and taboos — not what
+#: it is like.
+_IDENTITY_SCOPE = (
+    "## Identity holds standing facts about who you are to this user — "
+    "your name, your role, agreements and taboos that must never lapse. "
+    "It is NOT a personality description: do not record or carry forward "
+    "claims about your temperament, tone, warmth or manner (cold, playful, "
+    "quiet, analytical). Those come from your configured character, which "
+    "can change, and a transcript is a record of how you behaved, not a "
+    "rule for how you must behave. Drop such lines when merging."
+)
+
 def build_evergreen_instruction(
     *, current: str, recent_digest: str, max_chars: int
 ) -> str:
@@ -255,6 +281,7 @@ def build_evergreen_instruction(
         "user's own wording. Return structured Markdown (## Identity / ## User / "
         "## Durable Facts / ## Preferences & Commitments / ## Long-running Threads "
         "— omit empty sections). "
+        f"{_IDENTITY_SCOPE} "
         f"Keep the whole evergreen under ~{max_chars} characters.\n\n"
         f"CURRENT EVERGREEN (+ pinned critical facts):\n"
         f"{current.strip() or '(none yet)'}\n\n"
@@ -277,7 +304,8 @@ def build_evergreen_instruction_structured(
         f"{PRESERVE_CLAUSE}\n"
         "RULES: keep ONLY durable knowledge — drop ephemeral / one-off "
         "chatter; merge duplicates; NEVER lose a durable fact, name, "
-        "preference, or commitment; prefer the user's own wording. Keep the "
+        "preference, or commitment; prefer the user's own wording. "
+        f"{_IDENTITY_SCOPE} Keep the "
         f"total content under ~{max_chars} characters. Output ONLY JSON "
         "matching the provided schema (empty arrays where a section is "
         "truly empty).\n\n"
