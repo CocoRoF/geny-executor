@@ -1,5 +1,20 @@
 # Changelog
 
+## [2.65.6] — 2026-08-29
+
+### Reverted (2.65.5's evergreen identity rule)
+2.65.5 told the evergreen merge to keep temperament out of `## Identity`, on
+the theory that a stale self-description there was overriding a changed
+persona. Measured against the case it was written for, it was not: removing
+the temperament lines from `__evergreen__` and the fact ledger changed the
+agent's answer not at all — the same self-description also lives in the
+conversations, the executions log, the transcript summary and the daily
+digest, which is simply what a memory of having behaved that way looks like.
+
+A prompt rule that does not move the behaviour it was added for is weight in
+every merge for nothing, so it goes. Memory carrying the past is not a defect
+to be instructed away.
+
 ## [2.65.5] — 2026-08-29
 
 ### Fixed (evergreen "identity" had become a personality description)
