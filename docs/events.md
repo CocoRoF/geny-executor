@@ -3,8 +3,8 @@
 <!-- AUTO-GENERATED — do not edit by hand. -->
 <!-- Regenerate: python scripts/gen_event_docs.py -->
 
-> Generated from `geny_executor.events.catalog` on 2026-06-20.
-> Catalogue version: **4** · events: **115**
+> Generated from `geny_executor.events.catalog` on 2026-09-17.
+> Catalogue version: **4** · events: **121**
 
 Every event name the engine emits, value == wire string. The enum
 is a *names registry*, not a rename — consumers matching raw strings
@@ -177,6 +177,14 @@ Enum member: `EventTypes.INPUT_NORMALIZED`
 |---|---|
 | `text_length` | int — normalized text length |
 
+### `input.tool_calls_repaired`
+
+Enum member: `EventTypes.INPUT_TOOL_CALLS_REPAIRED`
+
+| Field | Description |
+|---|---|
+| `count` | int — synthetic tool_results injected for an interrupted tool turn |
+
 ## Stage 2 — Context
 
 ### `context.built`
@@ -197,10 +205,21 @@ Enum member: `EventTypes.CONTEXT_COMPACTED`
 | Field | Description |
 |---|---|
 | `strategy` | str — compactor name/class |
-| `trigger` | str? — 'proactive' (Stage 2) \| 'guard' (Stage 4) |
+| `trigger` | str? — 'proactive' (Stage 2) \| 'guard' (Stage 4) \| 'background' (applied next turn) |
 | `messages_before` | int? |
 | `messages_after` | int? |
 | `saved_tokens_estimate` | int? |
+
+### `context.pruned`
+
+Enum member: `EventTypes.CONTEXT_PRUNED`
+
+| Field | Description |
+|---|---|
+| `deduped` | int — duplicate tool results rewritten to a back-reference |
+| `images_stripped` | int — stale base64 images replaced with a marker |
+| `trimmed` | int — oversized stale tool results shortened |
+| `chars_saved` | int — text chars removed (images excluded) |
 
 ### `context.compaction_failed`
 
@@ -220,6 +239,23 @@ Enum member: `EventTypes.CONTEXT_COMPACTION_RECORD_FAILED`
 |---|---|
 | `compactor` | str |
 | `error` | str |
+
+### `context.retrieval_timeout`
+
+Enum member: `EventTypes.CONTEXT_RETRIEVAL_TIMEOUT`
+
+| Field | Description |
+|---|---|
+| `timeout_s` | float — the retrieval_timeout_s bound that fired; the turn proceeds without memory |
+
+### `context.compaction_scheduled`
+
+Enum member: `EventTypes.CONTEXT_COMPACTION_SCHEDULED`
+
+| Field | Description |
+|---|---|
+| `compactor` | str — compactor name/class |
+| `snapshot_messages` | int — history length the background summary covers |
 
 ## Stage 18 — Memory (+ Stage 2 compaction)
 
@@ -322,6 +358,21 @@ Enum member: `EventTypes.API_RESPONSE`
 | `tool_calls` | int |
 | `input_tokens` | int |
 | `output_tokens` | int |
+| `cache_read_input_tokens` | int — prompt-cache hit tokens (0 when the provider reports none) |
+| `cache_creation_input_tokens` | int — tokens written to the prompt cache this call |
+
+### `api.ttft`
+
+Enum member: `EventTypes.API_TTFT`
+
+| Field | Description |
+|---|---|
+| `ttft_ms` | float — ms from api.request admission to first content chunk (stream) or full response (non-stream) |
+| `provider` | str — BaseClient.provider of the serving backend |
+| `model` | str — model id/alias the call was routed to |
+| `stream` | bool — False means first_visible is the completed response |
+| `iteration` | int — tool-loop iteration this call belongs to |
+| `first_visible` | str — chunk type that broke silence (text_delta/thinking_delta/tool_use/input_json_delta) or 'complete' |
 
 ### `api.retry`
 
@@ -334,6 +385,13 @@ Enum member: `EventTypes.API_RETRY`
 | `code` | str? — ExecutorErrorCode value (non-stream path) |
 | `delay` | float — backoff seconds before next attempt |
 | `stream` | bool? — True on the streaming retry path |
+
+### `api.stream_restart`
+
+Enum member: `EventTypes.API_STREAM_RESTART`
+
+_No payload fields — identity is carried on the event envelope_
+_(type / stage / iteration / seq / run_id / session_id)._
 
 ### `api.error`
 
