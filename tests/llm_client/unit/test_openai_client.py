@@ -458,3 +458,38 @@ def test_vllm_provenance_reports_vllm_provider_with_openai_sdk() -> None:
     prov = client._provenance()
     assert prov["provider"] == "vllm"
     assert prov["sdk_version"] == openai_sdk.__version__
+
+
+def test_a_reasoning_model_with_tools_is_not_sent_an_effort() -> None:
+    """Chat Completions refuses the combination: "Function tools with
+    reasoning_effort are not supported ... use /v1/responses or set
+    reasoning_effort to 'none'". An agent always has tools, so on this wire
+    the choice is between sending the effort and answering at all — found in
+    production, where every turn 400'd on a correctly configured account."""
+    client = OpenAIClient(api_key="sk-mock")
+    kwargs = client._build_kwargs(_req(
+        model="gpt-5.6-terra",
+        thinking={"type": "enabled", "budget_tokens": 8000},
+        tools=[{"name": "Read", "description": "d", "input_schema": {"type": "object"}}],
+    ))
+    assert "reasoning_effort" not in kwargs
+    assert kwargs["tools"], "the tools are what we kept"
+
+
+def test_a_reasoning_model_without_tools_still_reasons_on_request() -> None:
+    client = OpenAIClient(api_key="sk-mock")
+    kwargs = client._build_kwargs(_req(
+        model="gpt-5.6-terra",
+        thinking={"type": "enabled", "budget_tokens": 8000},
+    ))
+    assert kwargs["reasoning_effort"]
+
+
+def test_a_classic_model_keeps_both() -> None:
+    client = OpenAIClient(api_key="sk-mock")
+    kwargs = client._build_kwargs(_req(
+        model="gpt-4o",
+        thinking={"type": "enabled", "budget_tokens": 8000},
+        tools=[{"name": "Read", "description": "d", "input_schema": {"type": "object"}}],
+    ))
+    assert kwargs["tools"] and kwargs.get("reasoning_effort")

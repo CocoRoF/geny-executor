@@ -361,7 +361,26 @@ class OpenAIClient(BaseClient):
 
         if request.thinking:
             effort = canonical_thinking_to_openai(request.thinking)
-            if effort:
+            # Chat Completions refuses the combination outright:
+            #
+            #   Function tools with reasoning_effort are not supported for
+            #   gpt-5.6-terra in /v1/chat/completions. To use function tools,
+            #   use /v1/responses or set reasoning_effort to 'none'.
+            #
+            # An agent always has tools, so on this wire the choice is between
+            # sending the effort and answering at all. Found in production:
+            # every single turn 400'd on a correctly configured account.
+            #
+            # The model still reasons — it just does so at its own default
+            # rather than the budget Stage 8 asked for. Honouring that budget
+            # needs the Responses API, which is a different client.
+            if effort and request.tools and _model_rejects_sampling_controls(request.model):
+                logger.debug(
+                    "openai: %r takes tools OR reasoning_effort on chat/completions, "
+                    "not both — effort dropped so the tool loop can run",
+                    request.model,
+                )
+            elif effort:
                 kwargs["reasoning_effort"] = effort
 
         return kwargs

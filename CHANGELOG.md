@@ -1,5 +1,24 @@
 # Changelog
 
+## [2.66.3] — 2026-09-17
+
+### Fixed (an agent on a gpt-5 model could not take a single turn)
+
+Chat Completions refuses the combination:
+
+    Function tools with reasoning_effort are not supported for gpt-5.6-terra
+    in /v1/chat/completions. To use function tools, use /v1/responses or set
+    reasoning_effort to 'none'.
+
+An agent always has tools, so on this wire the choice was between sending the
+thinking budget and answering at all — every turn 400'd on a correctly
+configured production account. The effort is now dropped when tools are
+present on those models.
+
+The model still reasons, at its own default rather than the budget Stage 8
+asked for. Honouring that budget needs the Responses API, which is a
+different client.
+
 ## [2.66.2] — 2026-09-17
 
 ### Fixed (a spend cap failed the turn instead of falling back)
