@@ -1,5 +1,23 @@
 # Changelog
 
+## [2.66.1] — 2026-09-17
+
+### Fixed (a reasoning model could not answer a single turn)
+
+OpenAI's reasoning families refuse the sampling controls as well as the
+classic `max_tokens`:
+
+    Unsupported value: 'temperature' does not support 0.0 with this model.
+    Only the default (1) value is supported.
+
+The client already knew the family — the `max_tokens` → `max_completion_tokens`
+rename reads the same table — so only half the knowledge was applied.
+`temperature` and `top_p` are now dropped for those models.
+
+Found on a production account that was configured correctly, reachable, and
+400'd on every call. Dropping the values is not a loss of control: the model
+would not have honoured them either way.
+
 ## [2.66.0] — 2026-09-17
 
 ### Fixed (a turn ended on the iteration its tools ran — every API backend)

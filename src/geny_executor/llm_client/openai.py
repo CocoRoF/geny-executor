@@ -61,6 +61,27 @@ def _model_requires_max_completion_tokens(model: str) -> bool:
     return any(model.startswith(prefix) for prefix in _MAX_COMPLETION_TOKENS_PREFIXES)
 
 
+def _model_rejects_sampling_controls(model: str) -> bool:
+    """True iff ``model`` refuses ``temperature`` / ``top_p``.
+
+    The same families. A reasoning model accepts only the default sampling
+    controls and 400s on anything else:
+
+      ``Unsupported value: 'temperature' does not support 0.0 with this
+        model. Only the default (1) value is supported.``
+
+    Observed in production on the first call to ``gpt-5.6-terra``: the
+    account was configured correctly, reachable, and could not answer a
+    single turn. The rename above was already taught to this family; the
+    sampling controls were not, so half the knowledge was applied.
+
+    Dropping them is not a loss of control — the value the caller asked for
+    is one the model will not honour either way. The alternative is a 400 on
+    every call.
+    """
+    return any(model.startswith(prefix) for prefix in _MAX_COMPLETION_TOKENS_PREFIXES)
+
+
 class OpenAIClient(BaseClient):
     """OpenAI Chat Completions API client.
 
@@ -319,10 +340,17 @@ class OpenAIClient(BaseClient):
                 kwargs["max_completion_tokens"] = request.max_tokens
             else:
                 kwargs["max_tokens"] = request.max_tokens
-        if request.temperature is not None:
-            kwargs["temperature"] = request.temperature
-        if request.top_p is not None:
-            kwargs["top_p"] = request.top_p
+        if _model_rejects_sampling_controls(request.model):
+            if request.temperature is not None or request.top_p is not None:
+                logger.debug(
+                    "openai: model %r takes only default sampling — temperature/top_p dropped",
+                    request.model,
+                )
+        else:
+            if request.temperature is not None:
+                kwargs["temperature"] = request.temperature
+            if request.top_p is not None:
+                kwargs["top_p"] = request.top_p
         if request.stop_sequences:
             kwargs["stop"] = request.stop_sequences
 

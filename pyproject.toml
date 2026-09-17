@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "geny-executor"
-version = "2.66.0"
+version = "2.66.1"
 description = "Harness-engineered agent pipeline library — one 21-stage architecture, many model accounts behind one conversation"
 readme = "README.md"
 license = "Apache-2.0"

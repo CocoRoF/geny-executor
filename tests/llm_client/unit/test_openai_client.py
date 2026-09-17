@@ -222,6 +222,40 @@ def test_build_kwargs_keeps_max_tokens_for_classic_models() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Reasoning families also refuse the sampling controls
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("model", ["o1", "o3-mini", "gpt-5", "gpt-5.6-terra"])
+def test_a_reasoning_model_is_not_sent_temperature(model: str) -> None:
+    """Observed in production on the first call to gpt-5.6-terra: the account
+    was configured correctly, reachable, and could not answer a single turn —
+    ``Unsupported value: 'temperature' does not support 0.0 with this model``.
+
+    The family was already known here (the max_tokens rename uses the same
+    table); only half the knowledge was applied."""
+    client = OpenAIClient(api_key="sk-mock")
+    kwargs = client._build_kwargs(_req(model=model, temperature=0.0, top_p=0.9))
+    assert "temperature" not in kwargs
+    assert "top_p" not in kwargs
+
+
+def test_a_classic_model_still_gets_them() -> None:
+    client = OpenAIClient(api_key="sk-mock")
+    kwargs = client._build_kwargs(_req(model="gpt-4o", temperature=0.2, top_p=0.9))
+    assert kwargs["temperature"] == 0.2
+    assert kwargs["top_p"] == 0.9
+
+
+def test_dropping_them_leaves_the_rest_of_the_request_intact() -> None:
+    client = OpenAIClient(api_key="sk-mock")
+    kwargs = client._build_kwargs(_req(model="gpt-5.6-terra", temperature=0.0, max_tokens=64))
+    assert kwargs["model"] == "gpt-5.6-terra"
+    assert kwargs["max_completion_tokens"] == 64
+    assert kwargs["messages"]
+
+
+# ---------------------------------------------------------------------------
 # max_tokens → max_completion_tokens: reactive heal
 # ---------------------------------------------------------------------------
 
