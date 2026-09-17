@@ -141,6 +141,11 @@ class CredentialBundle:
     def preferred_provider(
         self,
         order: Sequence[str] = (
+            # A configured route answers first: it is an explicit choice the
+            # user made, and every other entry here is a heuristic. Skipping
+            # past it would send a sub-agent to a different account than its
+            # parent — the misrouting class this function exists to close.
+            "geny_router",
             "claude_code_cli",
             "anthropic",
             "openai",

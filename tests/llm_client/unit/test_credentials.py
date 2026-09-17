@@ -218,3 +218,23 @@ def test_preferred_provider_oauth_cli_counts() -> None:
         "claude_code_cli": ProviderCredentials(auth_mode="oauth"),
     })
     assert b.preferred_provider() == "claude_code_cli"
+
+
+def test_preferred_provider_puts_a_configured_route_first() -> None:
+    """A route is a decision the user made; every other entry in the order is
+    a heuristic. Skipping past it sends a sub-agent to a different account
+    than its parent — the misrouting class the order exists to close."""
+    b = CredentialBundle(by_provider={
+        "geny_router": ProviderCredentials(extras={"targets": [{"engineProvider": "anthropic", "model": "m"}]}),
+        "anthropic": ProviderCredentials(api_key="sk-x"),
+        "claude_code_cli": ProviderCredentials(binary_path="/usr/bin/claude"),
+    })
+    assert b.preferred_provider() == "geny_router"
+
+
+def test_an_unrouted_bundle_still_prefers_the_cli() -> None:
+    b = CredentialBundle(by_provider={
+        "anthropic": ProviderCredentials(api_key="sk-x"),
+        "claude_code_cli": ProviderCredentials(binary_path="/usr/bin/claude"),
+    })
+    assert b.preferred_provider() == "claude_code_cli"
