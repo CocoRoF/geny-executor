@@ -168,8 +168,6 @@ async def test_run_compaction_prunes_before_compactor_and_measures():
     result = await run_compaction(s, _NoopCompactor(), trigger="guard")
     assert result["ok"] is True
 
-    events = {e[0] if isinstance(e, tuple) else e.get("type"): e
-              for e in getattr(s, "events", [])} if hasattr(s, "events") else {}
     event_types = [getattr(e, "type", None) or (e[0] if isinstance(e, tuple) else e.get("type"))
                    for e in (s.events or [])]
     assert "context.pruned" in event_types

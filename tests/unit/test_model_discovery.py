@@ -1,7 +1,7 @@
 """Per-provider model discovery (2.9.0)."""
 import pytest
 from geny_executor.llm_client.model_discovery import (
-    ModelDiscovery, ModelInfo, _HttpResult, discover_models,
+    ModelInfo, _HttpResult, discover_models,
 )
 
 

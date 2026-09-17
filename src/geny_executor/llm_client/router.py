@@ -106,8 +106,8 @@ class RouterClient(BaseClient):
 
     # the prompt-cache stage only places Anthropic markers when the client
     # says it IS anthropic; the router forwards that truth for the primary
-    @property  # type: ignore[override]
-    def provider(self) -> str:
+    @property
+    def provider(self) -> str:  # type: ignore[override]
         primary = self._targets[0]
         return "anthropic" if primary.get("engineProvider") == "anthropic" else "geny_router"
 
@@ -132,7 +132,8 @@ class RouterClient(BaseClient):
         return client
 
     def _order(self) -> list[int]:
-        ready, cooling = [], []
+        ready: list[int] = []
+        cooling: list[int] = []
         for i, target in enumerate(self._targets):
             (cooling if failover.cooling(str(target.get("accountId") or "")) else ready).append(i)
         # everything cooling: still try, earliest recovery first — refusing

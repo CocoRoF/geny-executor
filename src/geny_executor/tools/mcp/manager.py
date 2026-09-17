@@ -365,8 +365,8 @@ class MCPServerConnection:
 
         headers = self.config.headers or None
         if use_sse:
-            transport_factory = (
-                lambda: remote_client(self.config.url, headers=headers))
+            def transport_factory():
+                return remote_client(self.config.url, headers=headers)
         else:
             transport_factory = _streamable_factory(
                 remote_client, self.config.url, headers)

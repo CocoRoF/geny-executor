@@ -36,7 +36,7 @@ import json
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Awaitable, Callable, Dict, List, Optional, Sequence, Set, Tuple
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Sequence, Set
 
 from geny_executor.memory.rollup import _flatten_turn
 

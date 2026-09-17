@@ -211,8 +211,8 @@ def test_concurrent_writes_serialize_correctly() -> None:
 # while the first held-across-await froze the loop forever (the holder
 # could never resume to release). This reproduces that exact shape.
 
-import pytest
-from geny_executor.memory._locks import LoopAgnosticLock
+import pytest  # noqa: E402 — the header above is the test's whole point
+from geny_executor.memory._locks import LoopAgnosticLock  # noqa: E402
 
 
 @pytest.mark.asyncio

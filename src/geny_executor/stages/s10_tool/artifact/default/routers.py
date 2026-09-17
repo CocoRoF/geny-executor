@@ -315,7 +315,7 @@ class RegistryRouter(ToolRouter):
                 )
             else:
                 result = await tool.execute(tool_input, context)
-        except asyncio.TimeoutError as exc:
+        except asyncio.TimeoutError:
             logger.warning("tool %s timed out after %.1fs", tool.name, timeout_s)
             await _fire_hook("on_error", tool.name, tool, None, context)
             return make_error_result(

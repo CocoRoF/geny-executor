@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import os
 
-import pytest
 
 from geny_executor.llm_client.claude_code import (
     ClaudeCodeCLIClient,

@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Dict, List, Optional, Sequence, Set
+from typing import Any, Dict, List, Optional, Sequence, Set
 
 from geny_executor.memory.composite.handles import (
     _CompositeCuratedHandle,

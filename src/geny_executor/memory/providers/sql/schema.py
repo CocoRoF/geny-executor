@@ -164,7 +164,7 @@ def _ddl(dialect: Dialect) -> Tuple[str, ...]:
             updated_at  TEXT
         )
         """,
-        f"""
+        """
         CREATE TABLE IF NOT EXISTS stm_summary (
             id   INTEGER PRIMARY KEY,
             body TEXT NOT NULL

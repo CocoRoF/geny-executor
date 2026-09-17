@@ -184,7 +184,7 @@ class TestBackgroundCompaction:
         state.context_window_budget = 1000
         for i in range(12):
             role = "user" if i % 2 == 0 else "assistant"
-            state.messages.append({"role": role, "content": f"글" * 280})
+            state.messages.append({"role": role, "content": "글" * 280})
 
         await stage.execute("in", state)  # ~85% → schedule, not block
         assert any(e["type"] == "context.compaction_scheduled" for e in state.events)

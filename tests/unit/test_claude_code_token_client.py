@@ -26,9 +26,7 @@ the real binary does.
 from __future__ import annotations
 
 import json
-import os
 import stat
-import sys
 from pathlib import Path
 from typing import Any, Dict, List
 

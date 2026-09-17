@@ -22,7 +22,6 @@ from geny_executor.tools._ssh import (
 from geny_executor.tools.built_in._ssh_store import SSHServerStore
 from geny_executor.tools.built_in import ssh_tools
 from geny_executor.tools.built_in.ssh_tools import (
-    SshDownloadTool,
     SshListServersTool,
     SshRunTool,
     SshUploadTool,
@@ -40,7 +39,7 @@ _PW_SERVER = {"name": "prod", "host": "1.2.3.4", "port": 2222, "user": "hrjang",
 # ── SSHServerStore ───────────────────────────────────────────────────
 
 def test_store_from_extras_writes_per_session_file(tmp_path):
-    store = SSHServerStore.from_context(_ctx(tmp_path, [_PW_SERVER]))
+    SSHServerStore.from_context(_ctx(tmp_path, [_PW_SERVER]))
     # Persisted to <storage_path>/ssh/servers.json (the "파일형태" record).
     f = tmp_path / "ssh" / "servers.json"
     assert f.is_file()

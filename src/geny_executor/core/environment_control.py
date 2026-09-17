@@ -26,7 +26,7 @@ cannot invent arbitrary tools.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
@@ -774,9 +774,9 @@ class PipelineEnvironment:
             "authored_skills": list(self._authored_skills.values()),
             # Real (unmasked) values so a resume restores working settings —
             # stored in the session's own scoped storage, like the manifest.
-            "tool_settings": {g: dict(self._extras().get(g, {})) for g in self._setting_groups()}
-            if self._extras() is not None
-            else {},
+            "tool_settings": {
+                g: dict((self._extras() or {}).get(g, {})) for g in self._setting_groups()
+            },
             "config": self._config_overrides(),
             "changelog": self.changelog(),
         }
