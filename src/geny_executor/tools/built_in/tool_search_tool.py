@@ -273,8 +273,7 @@ class ToolSearchTool(Tool):
             lines.append(f"{i}. {name} — {one_liner}{tag}")
         if activated:
             lines.append(
-                "Activated tool schemas become available on your next step — "
-                "call them then."
+                "Activated tool schemas become available on your next step — call them then."
             )
 
         return ToolResult(
@@ -298,9 +297,7 @@ class ToolSearchTool(Tool):
         line = d.splitlines()[0] if d else "(no description)"
         return line[: max_chars - 1] + "…" if len(line) > max_chars else line
 
-    def _browse(
-        self, descriptors: List[Dict[str, Any]], registry: Optional[Any]
-    ) -> ToolResult:
+    def _browse(self, descriptors: List[Dict[str, Any]], registry: Optional[Any]) -> ToolResult:
         """Compact grouped catalog of the tools NOT in the model's list."""
         hidden = [d for d in descriptors if d.get("_deferred")]
         if not hidden:
@@ -319,7 +316,7 @@ class ToolSearchTool(Tool):
             groups.setdefault(fam, []).append(d)
         lines = [
             f"{len(hidden)} hidden tool(s) — not in your list until activated. "
-            "Activate with ToolSearch(\"<keyword or exact name>\"); the schema "
+            'Activate with ToolSearch("<keyword or exact name>"); the schema '
             "arrives on your next step:"
         ]
         for fam in sorted(groups):

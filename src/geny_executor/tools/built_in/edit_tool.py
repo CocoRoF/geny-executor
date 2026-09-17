@@ -69,7 +69,9 @@ class EditTool(Tool):
 
             wd = context.working_dir or "/workspace"
             try:
-                content = (await sb_read_bytes(context.sandbox, file_path, workdir=wd)).decode("utf-8")
+                content = (await sb_read_bytes(context.sandbox, file_path, workdir=wd)).decode(
+                    "utf-8"
+                )
             except FileNotFoundError:
                 return ToolResult(content=f"File not found: {file_path}", is_error=True)
             except PermissionError as e:
@@ -87,9 +89,7 @@ class EditTool(Tool):
                     content=f"old_string appears {count} times in file. Provide more context to make it unique, or set replace_all=true.",
                     is_error=True,
                 )
-            new_content = content.replace(
-                old_string, new_string, count if replace_all else 1
-            )
+            new_content = content.replace(old_string, new_string, count if replace_all else 1)
             try:
                 await sb_write_bytes(
                     context.sandbox, file_path, new_content.encode("utf-8"), workdir=wd

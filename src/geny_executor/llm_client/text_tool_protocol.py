@@ -10,6 +10,7 @@ native tool-calling API. The CLI never runs anything itself.
 
 Everything here is pure (no I/O) so it can be tested without a model.
 """
+
 from __future__ import annotations
 
 import json
@@ -71,7 +72,11 @@ def render_system_prompt(system: Any, tools: Optional[list[dict[str, Any]]]) -> 
     if not tools:
         return base
     catalogue = json.dumps([_tool_entry(t) for t in tools if t.get("name")], ensure_ascii=False)
-    parts = [p for p in (base, PROTOCOL_HEADER, "## Available tools\n<tools>\n" + catalogue + "\n</tools>") if p]
+    parts = [
+        p
+        for p in (base, PROTOCOL_HEADER, "## Available tools\n<tools>\n" + catalogue + "\n</tools>")
+        if p
+    ]
     return "\n\n".join(parts)
 
 
@@ -173,8 +178,9 @@ def render_transcript(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         tail = f"{last_text}\n\nContinue your previous assistant message."
     elif "<tool_result" in last_text:
         tail = (
-            "The harness executed your tool calls:\n\n" + last_text +
-            "\n\nContinue as the assistant: call more tools or give the final answer."
+            "The harness executed your tool calls:\n\n"
+            + last_text
+            + "\n\nContinue as the assistant: call more tools or give the final answer."
         )
     else:
         tail = last_text
@@ -221,10 +227,14 @@ def parse_call(body: str, known: Optional[set[str]] = None) -> Optional[ParsedCa
     if not isinstance(name, str) or not name:
         return None
     if any(k in data for k in ("arguments", "input", "parameters", "args")):
-        args = data.get("arguments", data.get("input", data.get("parameters", data.get("args", {}))))
+        args = data.get(
+            "arguments", data.get("input", data.get("parameters", data.get("args", {})))
+        )
     else:
         # arguments written flat next to the name: {"name": "Write", "file_path": …}
-        args = {k: v for k, v in data.items() if k not in ("name", "tool", "tool_name", "id", "type")}
+        args = {
+            k: v for k, v in data.items() if k not in ("name", "tool", "tool_name", "id", "type")
+        }
     if isinstance(args, str):
         parsed = _loads_lenient(args)
         args = parsed if isinstance(parsed, dict) else {"input": args}
@@ -274,7 +284,7 @@ class StreamSplitter:
                         break
                     call = parse_call(self._buf[:end], self.known)
                     if call is not None:
-                        self._buf = self._buf[end + len(CLOSE):]
+                        self._buf = self._buf[end + len(CLOSE) :]
                         break
                     search = end + len(CLOSE)
                 if call is None:
@@ -291,13 +301,13 @@ class StreamSplitter:
                     break
                 if not self.calls:
                     out.append(before)
-                self._buf = self._buf[start + len(OPEN):]
+                self._buf = self._buf[start + len(OPEN) :]
                 self._inside = True
                 continue
             # keep a tail that could be the start of "<tool_call>"
             keep = _partial_prefix(self._buf, OPEN)
             release = self._buf[: len(self._buf) - keep]
-            self._buf = self._buf[len(self._buf) - keep:]
+            self._buf = self._buf[len(self._buf) - keep :]
             if self.calls:
                 if release.strip():
                     self.finished = True

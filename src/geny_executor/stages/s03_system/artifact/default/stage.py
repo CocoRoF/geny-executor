@@ -58,7 +58,9 @@ class SystemStage(Stage[Any, Any]):
         self._prompt = prompt
         self._template_vars: Dict[str, Any] = dict(template_vars or {})
         self._volatile_placement = (
-            volatile_placement if volatile_placement in ("turn_context", "system") else "turn_context"
+            volatile_placement
+            if volatile_placement in ("turn_context", "system")
+            else "turn_context"
         )
         # Deferred-tool catalog cache (progressive disclosure) — rebuilt
         # only when the registry version moves; see _deferred_catalog_text.
@@ -323,9 +325,11 @@ class SystemStage(Stage[Any, Any]):
             if catalog:
                 if isinstance(system, str):
                     parts_rec = state.shared.get("system_parts")
-                    if (isinstance(parts_rec, dict)
-                            and parts_rec.get("stable_text")
-                            and parts_rec.get("volatile_text")):
+                    if (
+                        isinstance(parts_rec, dict)
+                        and parts_rec.get("stable_text")
+                        and parts_rec.get("volatile_text")
+                    ):
                         # volatile_placement="system": the catalog is
                         # CACHE-STABLE, so it belongs in the stable region —
                         # BEFORE the volatile tail. Appending it after the
@@ -361,9 +365,7 @@ class SystemStage(Stage[Any, Any]):
         # the request payload until discovered — that's the token contract.
         if self._tool_registry is not None:
             reg_version = getattr(self._tool_registry, "version", None)
-            if not state.tools or (
-                reg_version is not None and reg_version != state.tools_version
-            ):
+            if not state.tools or (reg_version is not None and reg_version != state.tools_version):
                 try:
                     state.tools = self._tool_registry.to_api_format(exposed_only=True)
                 except TypeError:

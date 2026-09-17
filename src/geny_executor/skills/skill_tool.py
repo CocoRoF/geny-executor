@@ -378,9 +378,7 @@ class SkillTool(Tool):
         # Guard: target must be base itself's child (within the skill dir).
         if base != target and base not in target.parents:
             return ToolResult(
-                content=(
-                    f"resource {rel!r} escapes the skill directory — refused."
-                ),
+                content=(f"resource {rel!r} escapes the skill directory — refused."),
                 is_error=True,
             )
         if not target.is_file():

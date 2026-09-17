@@ -25,9 +25,7 @@ logger = logging.getLogger(__name__)
 _STATE_LAST_RECORDED = "memory.last_recorded_idx"
 
 
-def reconcile_recorded_index(
-    before: List[Any], after: List[Any], metadata: dict
-) -> None:
+def reconcile_recorded_index(before: List[Any], after: List[Any], metadata: dict) -> None:
     """Translate Stage-18's STM watermark across a compaction (audit D3).
 
     Stage 18 records ``state.messages[last_idx:]`` as STM turns and sets

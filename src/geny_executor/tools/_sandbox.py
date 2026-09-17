@@ -88,9 +88,7 @@ def container_path(file_path: str, workdir: str) -> str:
     joined = raw if posixpath.isabs(raw) else posixpath.join(base, raw)
     norm = posixpath.normpath(joined)
     if norm != base and not norm.startswith(base.rstrip("/") + "/"):
-        raise PermissionError(
-            f"path {file_path!r} resolves outside the sandbox workdir {base!r}"
-        )
+        raise PermissionError(f"path {file_path!r} resolves outside the sandbox workdir {base!r}")
     return norm
 
 
@@ -141,9 +139,7 @@ async def sandbox_exec(
         raise SandboxExecError(f"failed to spawn {launcher!r}: {e}") from e
 
     try:
-        out, err = await asyncio.wait_for(
-            proc.communicate(input=input_bytes), timeout=timeout_s
-        )
+        out, err = await asyncio.wait_for(proc.communicate(input=input_bytes), timeout=timeout_s)
     except asyncio.TimeoutError:
         try:
             proc.kill()

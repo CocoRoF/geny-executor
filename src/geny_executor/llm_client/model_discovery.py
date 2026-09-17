@@ -137,11 +137,7 @@ def _parse_anthropic_models(body: Any) -> List[ModelInfo]:
                 out.append(
                     ModelInfo(
                         id=str(m["id"]),
-                        display_name=(
-                            str(m["display_name"])
-                            if m.get("display_name")
-                            else None
-                        ),
+                        display_name=(str(m["display_name"]) if m.get("display_name") else None),
                     )
                 )
     return out
@@ -160,13 +156,11 @@ def _parse_google_models(body: Any) -> List[ModelInfo]:
             if isinstance(methods, list) and methods and "generateContent" not in methods:
                 continue
             raw = str(m["name"])
-            mid = raw[len("models/"):] if raw.startswith("models/") else raw
+            mid = raw[len("models/") :] if raw.startswith("models/") else raw
             out.append(
                 ModelInfo(
                     id=mid,
-                    display_name=(
-                        str(m["displayName"]) if m.get("displayName") else None
-                    ),
+                    display_name=(str(m["displayName"]) if m.get("displayName") else None),
                 )
             )
     return out
@@ -221,9 +215,7 @@ async def discover_models(
             if not api_key:
                 return ModelDiscovery(provider=p, error="no api_key")
             base = (base_url or _CLOUD_BASE["google"]).rstrip("/")
-            res = await _get(
-                f"{base}/models?pageSize=1000&key={api_key}", {}, transport, timeout
-            )
+            res = await _get(f"{base}/models?pageSize=1000&key={api_key}", {}, transport, timeout)
             parse = _parse_google_models
         else:
             return ModelDiscovery(provider=p, error=f"unsupported provider {p!r}")

@@ -66,17 +66,23 @@ _TUNABLE_PIPELINE_KEYS: Dict[str, type] = {
     "single_turn": bool,
 }
 # Never editable at runtime — identity / credentials / wiring.
-_CORE_LOCKED_KEYS = frozenset(
-    {"model", "provider", "api_key", "base_url", "name", "credentials"}
-)
+_CORE_LOCKED_KEYS = frozenset({"model", "provider", "api_key", "base_url", "name", "credentials"})
 # extras keys that are runtime HANDLES (objects), not editable settings. The
 # value-is-a-dict heuristic already excludes most; this names the known ones
 # defensively so they never surface as "settings" even if dict-shaped.
 _RESERVED_EXTRAS_KEYS = frozenset(
     {
-        "workspace_stack", "task_registry", "task_runner", "cron_store",
-        "cron_runner", "agent_orchestrator", "subagent_manager", "mcp_manager",
-        "mcp_config", "notification_endpoints", "env_extras",
+        "workspace_stack",
+        "task_registry",
+        "task_runner",
+        "cron_store",
+        "cron_runner",
+        "agent_orchestrator",
+        "subagent_manager",
+        "mcp_manager",
+        "mcp_config",
+        "notification_endpoints",
+        "env_extras",
     }
 )
 _SECRET_NAME_HINTS = ("key", "token", "secret", "password", "passwd", "credential")
@@ -100,9 +106,9 @@ class EnvChangeEntry:
     """One change-log entry for an environment mutation."""
 
     seq: int
-    action: str          # set_prompt | append_prompt | enable_tool | disable_tool | enable_skill | disable_skill | create_skill | edit_skill | save
-    target: str = ""     # tool/skill name (or "")
-    detail: str = ""     # human-readable summary
+    action: str  # set_prompt | append_prompt | enable_tool | disable_tool | enable_skill | disable_skill | create_skill | edit_skill | save
+    target: str = ""  # tool/skill name (or "")
+    detail: str = ""  # human-readable summary
     ok: bool = True
 
     def to_dict(self) -> Dict[str, Any]:
@@ -258,7 +264,10 @@ class PipelineEnvironment:
             "active_skills": self.active_skills(),
             "available_skills": self.available_skills(),
             "setting_groups": self._setting_groups(),
-            "config": {**self.get_config().get("model", {}), **self.get_config().get("pipeline", {})},
+            "config": {
+                **self.get_config().get("model", {}),
+                **self.get_config().get("pipeline", {}),
+            },
             "changes": len(self._log),
             "persistable": self._persistence is not None,
         }
@@ -285,8 +294,7 @@ class PipelineEnvironment:
         b = self._prompt_builder
         if b is None or not hasattr(b, "set_base"):
             return (
-                "prompt is not editable in this environment (no mutable prompt "
-                "builder installed)"
+                "prompt is not editable in this environment (no mutable prompt builder installed)"
             )
         return None
 
@@ -597,9 +605,7 @@ class PipelineEnvironment:
             from geny_executor.skills.skill_tool import SkillTool
 
             self._registry.unregister(sid)
-            self._registry.register(
-                SkillTool(new_skill, fork_runner=self._skill_fork_runner)
-            )
+            self._registry.register(SkillTool(new_skill, fork_runner=self._skill_fork_runner))
         msg = f"edited skill '{sid}'"
         self._record("edit_skill", sid, msg)
         return True, msg

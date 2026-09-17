@@ -446,7 +446,8 @@ def canonical_messages_to_openai(
                         {
                             "role": "tool",
                             "tool_call_id": tr.get("tool_use_id", ""),
-                            "content": tr_text or "(the tool returned an image; see the next message)",
+                            "content": tr_text
+                            or "(the tool returned an image; see the next message)",
                         }
                     )
                     if tr_images:

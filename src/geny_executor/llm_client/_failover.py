@@ -6,6 +6,7 @@ moves on and marks that account cooling so every other agent in the process
 skips it too. This module owns that shared, process-wide state and the
 classification that decides whether a failure is worth failing over at all.
 """
+
 from __future__ import annotations
 
 import re
@@ -117,7 +118,9 @@ def category_of(exc: BaseException) -> ErrorCategory:
         if cat == ErrorCategory.CLI_AUTH_FAILED:
             return ErrorCategory.AUTH
         return cat
-    status = getattr(exc, "status_code", None) or getattr(getattr(exc, "response", None), "status_code", None)
+    status = getattr(exc, "status_code", None) or getattr(
+        getattr(exc, "response", None), "status_code", None
+    )
     return classify_text(str(exc), status if isinstance(status, int) else None)
 
 

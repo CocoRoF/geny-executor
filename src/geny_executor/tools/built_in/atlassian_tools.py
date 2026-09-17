@@ -98,8 +98,7 @@ class _AtlassianClient:
         api_token = str(bag.get("api_token") or "").strip()
         if not base_url or not api_token:
             raise AtlassianNotConnectedError(
-                "Atlassian credentials are incomplete (base_url + api_token "
-                "required)."
+                "Atlassian credentials are incomplete (base_url + api_token required)."
             )
         return cls(
             base_url,
@@ -125,9 +124,7 @@ class _AtlassianClient:
         if self._transport is not None:
             kwargs["transport"] = self._transport
         async with httpx.AsyncClient(**kwargs) as client:
-            resp = await client.request(
-                method, url, params=params, json=json_body, headers=headers
-            )
+            resp = await client.request(method, url, params=params, json=json_body, headers=headers)
         if resp.status_code in (401, 403):
             raise AtlassianNotConnectedError(
                 f"Atlassian rejected the credentials (HTTP {resp.status_code}) "
@@ -181,9 +178,7 @@ class _AtlassianTool(Tool):
             return ToolResult(content=str(exc), is_error=True)
         return await self._run_wrapped(input, client)
 
-    async def _run_wrapped(
-        self, input: Dict[str, Any], client: _AtlassianClient
-    ) -> ToolResult:
+    async def _run_wrapped(self, input: Dict[str, Any], client: _AtlassianClient) -> ToolResult:
         """``_run`` with the family's error funneling (tests inject a client)."""
         try:
             return await self._run(input or {}, client)
@@ -256,8 +251,12 @@ class JiraSearchTool(_AtlassianTool):
             "jql": str(input.get("jql") or ""),
             "maxResults": limit,
             "fields": [
-                "summary", "status", "issuetype", "priority",
-                "assignee", "updated",
+                "summary",
+                "status",
+                "issuetype",
+                "priority",
+                "assignee",
+                "updated",
             ],
         }
         # Cloud removed ``/rest/api/2/search`` in 2026 (CHANGE-2046) in favour
@@ -347,9 +346,7 @@ class JiraCreateTool(_AtlassianTool):
         )
 
     def capabilities(self, input: Dict[str, Any]) -> ToolCapabilities:
-        return ToolCapabilities(
-            concurrency_safe=False, read_only=False, network_egress=True
-        )
+        return ToolCapabilities(concurrency_safe=False, read_only=False, network_egress=True)
 
     @property
     def input_schema(self) -> Dict[str, Any]:
@@ -403,9 +400,7 @@ class JiraUpdateTool(_AtlassianTool):
         )
 
     def capabilities(self, input: Dict[str, Any]) -> ToolCapabilities:
-        return ToolCapabilities(
-            concurrency_safe=False, read_only=False, network_egress=True
-        )
+        return ToolCapabilities(concurrency_safe=False, read_only=False, network_egress=True)
 
     @property
     def input_schema(self) -> Dict[str, Any]:
@@ -454,9 +449,7 @@ class JiraCommentTool(_AtlassianTool):
         return "Add a comment to a Jira issue (plain text / wiki markup)."
 
     def capabilities(self, input: Dict[str, Any]) -> ToolCapabilities:
-        return ToolCapabilities(
-            concurrency_safe=False, read_only=False, network_egress=True
-        )
+        return ToolCapabilities(concurrency_safe=False, read_only=False, network_egress=True)
 
     @property
     def input_schema(self) -> Dict[str, Any]:
@@ -472,7 +465,8 @@ class JiraCommentTool(_AtlassianTool):
     async def _run(self, input: Dict[str, Any], client: _AtlassianClient) -> ToolResult:
         key = str(input.get("key") or "").strip()
         data = await client.jira(
-            "POST", f"/issue/{key}/comment",
+            "POST",
+            f"/issue/{key}/comment",
             json_body={"body": str(input.get("body") or "")},
         )
         return ToolResult(
@@ -518,19 +512,19 @@ class JiraTransitionTool(_AtlassianTool):
         key = str(input.get("key") or "").strip()
         data = await client.jira("GET", f"/issue/{key}/transitions")
         transitions = [
-            {"id": t.get("id"), "name": t.get("name"),
-             "to": ((t.get("to") or {}).get("name"))}
+            {"id": t.get("id"), "name": t.get("name"), "to": ((t.get("to") or {}).get("name"))}
             for t in data.get("transitions", [])
         ]
         to = str(input.get("to") or "").strip()
         if not to:
             return ToolResult(
-                content=json.dumps({"key": key, "transitions": transitions}, ensure_ascii=False, indent=1),
+                content=json.dumps(
+                    {"key": key, "transitions": transitions}, ensure_ascii=False, indent=1
+                ),
                 metadata={"key": key},
             )
         match = next(
-            (t for t in transitions
-             if t["id"] == to or str(t["name"]).lower() == to.lower()),
+            (t for t in transitions if t["id"] == to or str(t["name"]).lower() == to.lower()),
             None,
         )
         if match is None:
@@ -542,7 +536,8 @@ class JiraTransitionTool(_AtlassianTool):
                 is_error=True,
             )
         await client.jira(
-            "POST", f"/issue/{key}/transitions",
+            "POST",
+            f"/issue/{key}/transitions",
             json_body={"transition": {"id": match["id"]}},
         )
         return ToolResult(
@@ -644,7 +639,8 @@ class ConfluencePageTool(_AtlassianTool):
     async def _run(self, input: Dict[str, Any], client: _AtlassianClient) -> ToolResult:
         pid = str(input.get("page_id") or "").strip()
         data = await client.confluence(
-            "GET", f"/content/{pid}",
+            "GET",
+            f"/content/{pid}",
             params={"expand": "body.storage,version,space"},
         )
         storage = (((data.get("body") or {}).get("storage") or {}).get("value")) or ""
@@ -678,9 +674,7 @@ class ConfluenceWriteTool(_AtlassianTool):
         )
 
     def capabilities(self, input: Dict[str, Any]) -> ToolCapabilities:
-        return ToolCapabilities(
-            concurrency_safe=False, read_only=False, network_egress=True
-        )
+        return ToolCapabilities(concurrency_safe=False, read_only=False, network_egress=True)
 
     @property
     def input_schema(self) -> Dict[str, Any]:
@@ -711,9 +705,7 @@ class ConfluenceWriteTool(_AtlassianTool):
                 "version": {"number": version},
                 "body": {"storage": {"value": body, "representation": "storage"}},
             }
-            data = await client.confluence(
-                "PUT", f"/content/{page_id}", json_body=payload
-            )
+            data = await client.confluence("PUT", f"/content/{page_id}", json_body=payload)
             return ToolResult(
                 content=json.dumps(
                     {"updated": data.get("id"), "version": version}, ensure_ascii=False
@@ -738,8 +730,11 @@ class ConfluenceWriteTool(_AtlassianTool):
         data = await client.confluence("POST", "/content", json_body=payload)
         return ToolResult(
             content=json.dumps(
-                {"created": data.get("id"), "title": title,
-                 "url": ((data.get("_links") or {}).get("webui"))},
+                {
+                    "created": data.get("id"),
+                    "title": title,
+                    "url": ((data.get("_links") or {}).get("webui")),
+                },
                 ensure_ascii=False,
             ),
             metadata={"id": data.get("id")},

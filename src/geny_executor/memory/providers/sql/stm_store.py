@@ -31,9 +31,7 @@ from geny_executor.memory.providers.sql.connection import _SQLConnection
 class _SQLSTMStore:
     """`STMHandle`-conformant store on SQL (SQLite or Postgres)."""
 
-    def __init__(
-        self, conn: _SQLConnection, *, tz: tzinfo, session_id: str = ""
-    ) -> None:
+    def __init__(self, conn: _SQLConnection, *, tz: tzinfo, session_id: str = "") -> None:
         self._conn = conn
         self._tz = tz
         self._session_id = str(session_id or "")
@@ -143,9 +141,7 @@ class _SQLSTMStore:
         if total <= keep_last:
             return 0
         if keep_last == 0:
-            await self._conn.execute(
-                f"DELETE FROM stm_turns WHERE {where}", scope_params
-            )
+            await self._conn.execute(f"DELETE FROM stm_turns WHERE {where}", scope_params)
             return total
         cutoff = await self._conn.fetchone(
             f"SELECT id FROM stm_turns WHERE {where} ORDER BY id DESC LIMIT 1 OFFSET ?",

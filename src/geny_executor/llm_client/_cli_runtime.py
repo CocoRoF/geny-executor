@@ -86,7 +86,6 @@ def _cli_stream_limit() -> int:
     return v if v >= 2**16 else 32 * 1024 * 1024
 
 
-
 # ---------------------------------------------------------------------------
 # Exceptions
 # ---------------------------------------------------------------------------
@@ -407,16 +406,14 @@ class CLIProcessRunner:
             # Still genuinely running — the caller's ladder owns it.
             return -1
         logger.warning(
-            "CLI exited rc=%s but a pipe stayed open — killing the process "
-            "group to release it", rc,
+            "CLI exited rc=%s but a pipe stayed open — killing the process group to release it",
+            rc,
         )
         await self._kill_tree(proc, force=True)
         return rc
 
     # ------------------------------------------------------------- kill
-    async def _kill_tree(
-        self, proc: asyncio.subprocess.Process, *, force: bool = False
-    ) -> None:
+    async def _kill_tree(self, proc: asyncio.subprocess.Process, *, force: bool = False) -> None:
         """Send SIGTERM, wait grace, then SIGKILL the process group.
 
         ``force`` keeps going when the direct child is already reaped:
@@ -527,9 +524,7 @@ class ContainerCLIRunner(CLIProcessRunner):
         if self.sandbox is None:
             raise ValueError("ContainerCLIRunner requires sandbox=")
 
-    async def _spawn(
-        self, argv: Sequence[str]
-    ) -> tuple[asyncio.subprocess.Process, float]:
+    async def _spawn(self, argv: Sequence[str]) -> tuple[asyncio.subprocess.Process, float]:
         sandbox = self.sandbox
         assert sandbox is not None  # guaranteed by __post_init__
         # First spawn after a host restart may hit a stopped container.
@@ -564,9 +559,7 @@ class ContainerCLIRunner(CLIProcessRunner):
         if sys.platform != "win32":
             kwargs["start_new_session"] = True
         kwargs["limit"] = _cli_stream_limit()
-        proc = await asyncio.create_subprocess_exec(
-            self.launcher, *exec_argv, **kwargs
-        )
+        proc = await asyncio.create_subprocess_exec(self.launcher, *exec_argv, **kwargs)
         return proc, time.monotonic()
 
 
@@ -653,7 +646,9 @@ async def _aiter_lines(
                 # killing the whole delegated turn. Log loudly and continue.
                 logger.warning(
                     "CLI stream line exceeded the %d-byte limit — skipping one "
-                    "event and continuing (%s)", _cli_stream_limit(), e,
+                    "event and continuing (%s)",
+                    _cli_stream_limit(),
+                    e,
                 )
                 read_task = None
                 continue

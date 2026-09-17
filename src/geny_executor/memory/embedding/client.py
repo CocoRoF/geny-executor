@@ -90,7 +90,8 @@ def _bound_input(text: str) -> str:
             "embedding input exceeds the 8192-token budget (%d bytes); "
             "truncating to %d bytes for the vector. Chunk long text before "
             "embedding to avoid losing coverage.",
-            len(encoded), _TRUNCATE_TO_BYTES,
+            len(encoded),
+            _TRUNCATE_TO_BYTES,
         )
         _truncation_warned = True
     return encoded[:_TRUNCATE_TO_BYTES].decode("utf-8", errors="ignore")

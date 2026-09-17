@@ -72,15 +72,13 @@ class GlobTool(Tool):
             # nothing; print only regular files, newest first.
             cmd = (
                 f"shopt -s globstar nullglob dotglob; cd {shlex.quote(spath)} 2>/dev/null || exit 0; "
-                f"for f in {pattern}; do [ -f \"$f\" ] && printf '%s\\t%s\\n' \"$(stat -c %Y \"$f\" 2>/dev/null)\" \"$f\"; done "
+                f'for f in {pattern}; do [ -f "$f" ] && printf \'%s\\t%s\\n\' "$(stat -c %Y "$f" 2>/dev/null)" "$f"; done '
                 f"| sort -rn | cut -f2- | head -n {_MAX_RESULTS}"
             )
             rc, out, _err = await sb_run(context.sandbox, cmd, workdir=wd)
             out = out.strip()
             if not out:
-                return ToolResult(
-                    content=f"No files matching '{pattern}' in {search_path}"
-                )
+                return ToolResult(content=f"No files matching '{pattern}' in {search_path}")
             return ToolResult(content=out)
 
         base = Path(search_path)

@@ -182,7 +182,7 @@ class SshRunTool(_SSHToolBase):
         except (TypeError, ValueError):
             timeout = _DEFAULT_TIMEOUT
         timeout = max(1.0, min(timeout, _MAX_TIMEOUT))
-        cwd = (input.get("cwd") or None)
+        cwd = input.get("cwd") or None
         sudo = bool(input.get("sudo"))
         if sudo and not server.get("password"):
             return _err(
@@ -193,9 +193,7 @@ class SshRunTool(_SSHToolBase):
 
         name = server.get("name")
         try:
-            rc, out, err_out = await ssh_exec(
-                server, command, timeout=timeout, cwd=cwd, sudo=sudo
-            )
+            rc, out, err_out = await ssh_exec(server, command, timeout=timeout, cwd=cwd, sudo=sudo)
         except SSHUnavailableError as exc:
             return _err("SSH_UNAVAILABLE", str(exc))
         except SSHConfigError as exc:
@@ -248,7 +246,10 @@ class SshUploadTool(_SSHToolBase):
             "type": "object",
             "properties": {
                 "server": {"type": "string", "description": "Configured server name."},
-                "local_path": {"type": "string", "description": "File in session storage to upload."},
+                "local_path": {
+                    "type": "string",
+                    "description": "File in session storage to upload.",
+                },
                 "remote_path": {"type": "string", "description": "Destination path on the server."},
             },
             "required": ["server", "local_path", "remote_path"],
@@ -267,7 +268,9 @@ class SshUploadTool(_SSHToolBase):
         if not local.is_file():
             return _err("NOT_FOUND", f"Local file not found: {input.get('local_path')}")
         if local.stat().st_size > _MAX_TRANSFER_BYTES:
-            return _err("TOO_LARGE", f"File exceeds {_MAX_TRANSFER_BYTES // (1024*1024)} MB transfer cap.")
+            return _err(
+                "TOO_LARGE", f"File exceeds {_MAX_TRANSFER_BYTES // (1024 * 1024)} MB transfer cap."
+            )
         remote_path = str(input.get("remote_path") or "").strip()
         if not remote_path:
             return _err("NO_REMOTE_PATH", "Provide 'remote_path'.")

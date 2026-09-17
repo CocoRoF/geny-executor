@@ -51,9 +51,7 @@ def _is_tool_result_only(msg: Dict[str, Any]) -> bool:
     content = msg.get("content")
     if not isinstance(content, list) or not content:
         return False
-    return all(
-        isinstance(b, dict) and b.get("type") == "tool_result" for b in content
-    )
+    return all(isinstance(b, dict) and b.get("type") == "tool_result" for b in content)
 
 
 def repair_dangling_tool_calls(messages: List[Dict[str, Any]]) -> int:

@@ -91,14 +91,17 @@ from geny_executor.tools.built_in.plan_mode_tools import (
     ExitPlanModeTool,
 )
 from geny_executor.tools.built_in.env_tools import EnvTool
+
 # Google Workspace — native Gmail/Calendar/Drive/Tasks tools. Read the OAuth token
 # from ``ctx.extras['google']``; gated via required_config_keys → hidden until the
 # host marks ``feature:google_connected`` satisfied.
 from geny_executor.tools.built_in.google_tools import GOOGLE_TOOL_CLASSES
+
 # Atlassian — native Jira/Confluence tools. Read credentials from
 # ``ctx.extras['atlassian']``; gated via required_config_keys → hidden until
 # the host marks ``feature:atlassian_connected`` satisfied.
 from geny_executor.tools.built_in.atlassian_tools import ATLASSIAN_TOOL_CLASSES
+
 # Browser — AI-native web exploration on the an-web engine (semantic snapshots,
 # per-session tabs, embedded V8; no Chromium). an-web itself imports lazily —
 # 'pip install geny-executor[browser]' (Python >= 3.12).
@@ -112,6 +115,7 @@ from geny_executor.tools.built_in.browser_tools import (
     BrowserNavigateTool,
     BrowserSnapshotTool,
 )
+
 # Doc — office documents (docx/xlsx/pptx) on the edit2docs engine: addressable
 # outlines, deterministic edits, generation. Lazy import — 'pip install
 # geny-executor[docs]'.
@@ -128,9 +132,11 @@ from geny_executor.tools.built_in.doc_tools import (
     DocXmlEditTool,
     DocXmlReadTool,
 )
+
 # NOT in BUILT_IN_TOOL_CLASSES: SandboxExecTool is instantiated per Sandbox Tool
 # Pack (with a spec + a live SandboxHandle), not activated by a manifest name.
 from geny_executor.tools.built_in.sandbox_exec_tool import SandboxExecTool
+
 # SSH — run commands / move files on the session's pre-configured servers.
 # Gated on feature:ssh_enabled; degrades to an install-hint error when the
 # optional ``asyncssh`` dependency is absent.

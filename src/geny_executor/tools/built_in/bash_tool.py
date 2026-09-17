@@ -17,8 +17,21 @@ from geny_executor.tools.base import Tool, ToolContext, ToolResult
 # a fully-trusted single-tenant deployment.
 _SAFE_ENV_KEYS = frozenset(
     {
-        "PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "LANGUAGE",
-        "TERM", "TZ", "TMPDIR", "PWD", "HOSTNAME", "DISPLAY", "COLUMNS", "LINES",
+        "PATH",
+        "HOME",
+        "USER",
+        "LOGNAME",
+        "SHELL",
+        "LANG",
+        "LANGUAGE",
+        "TERM",
+        "TZ",
+        "TMPDIR",
+        "PWD",
+        "HOSTNAME",
+        "DISPLAY",
+        "COLUMNS",
+        "LINES",
     }
 )
 
@@ -27,15 +40,12 @@ def _scrubbed_env(extra: Dict[str, str] | None) -> Dict[str, str]:
     if os.environ.get("GENY_BASH_INHERIT_ENV", "").strip() in ("1", "true", "yes"):
         env = os.environ.copy()
     else:
-        env = {
-            k: v
-            for k, v in os.environ.items()
-            if k in _SAFE_ENV_KEYS or k.startswith("LC_")
-        }
+        env = {k: v for k, v in os.environ.items() if k in _SAFE_ENV_KEYS or k.startswith("LC_")}
         env.setdefault("PATH", "/usr/local/bin:/usr/bin:/bin")
     if extra:
         env.update(extra)
     return env
+
 
 _DEFAULT_TIMEOUT_MS = 120_000  # 2 minutes
 _MAX_TIMEOUT_MS = 600_000  # 10 minutes
@@ -101,9 +111,7 @@ class BashTool(Tool):
                     timeout_s=timeout_s,
                 )
             except asyncio.TimeoutError:
-                return ToolResult(
-                    content=f"Command timed out after {timeout_ms}ms", is_error=True
-                )
+                return ToolResult(content=f"Command timed out after {timeout_ms}ms", is_error=True)
             except Exception as e:  # noqa: BLE001
                 return ToolResult(content=f"Sandbox exec failed: {e}", is_error=True)
             if len(stdout) > _MAX_OUTPUT:

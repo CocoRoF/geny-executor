@@ -18,6 +18,7 @@ documented answer is either to give up reasoning (``reasoning_effort:
 "none"``) or to use this wire. Giving up reasoning on every tool-using turn of
 a reasoning agent is not a trade worth making.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -62,8 +63,10 @@ def _sha256(text: str) -> str:
 def _image_part(block: dict[str, Any]) -> Optional[dict[str, Any]]:
     src = block.get("source") or {}
     if src.get("type") == "base64" and src.get("data"):
-        return {"type": "input_image",
-                "image_url": f"data:{src.get('media_type', 'image/png')};base64,{src['data']}"}
+        return {
+            "type": "input_image",
+            "image_url": f"data:{src.get('media_type', 'image/png')};base64,{src['data']}",
+        }
     if src.get("type") == "url" and src.get("url"):
         return {"type": "input_image", "image_url": src["url"]}
     return None
@@ -93,15 +96,25 @@ def to_input(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         if isinstance(content, str):
             if content:
                 part = "output_text" if role == "assistant" else "input_text"
-                items.append({"type": "message", "role": role if role in ("user", "assistant") else "user",
-                              "content": [{"type": part, "text": content}]})
+                items.append(
+                    {
+                        "type": "message",
+                        "role": role if role in ("user", "assistant") else "user",
+                        "content": [{"type": part, "text": content}],
+                    }
+                )
             continue
         parts: List[Dict[str, Any]] = []
 
         def flush() -> None:
             if parts:
-                items.append({"type": "message", "role": "assistant" if role == "assistant" else "user",
-                              "content": list(parts)})
+                items.append(
+                    {
+                        "type": "message",
+                        "role": "assistant" if role == "assistant" else "user",
+                        "content": list(parts),
+                    }
+                )
                 parts.clear()
 
         for block in content if isinstance(content, list) else []:
@@ -109,27 +122,35 @@ def to_input(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 continue
             kind = block.get("type")
             if kind == "text" and block.get("text"):
-                parts.append({"type": "output_text" if role == "assistant" else "input_text",
-                              "text": str(block["text"])})
+                parts.append(
+                    {
+                        "type": "output_text" if role == "assistant" else "input_text",
+                        "text": str(block["text"]),
+                    }
+                )
             elif kind == "image" and role != "assistant":
                 image = _image_part(block)
                 if image:
                     parts.append(image)
             elif kind == "tool_use":
                 flush()
-                items.append({
-                    "type": "function_call",
-                    "call_id": str(block.get("id") or ""),
-                    "name": str(block.get("name") or ""),
-                    "arguments": json.dumps(block.get("input") or {}, ensure_ascii=False),
-                })
+                items.append(
+                    {
+                        "type": "function_call",
+                        "call_id": str(block.get("id") or ""),
+                        "name": str(block.get("name") or ""),
+                        "arguments": json.dumps(block.get("input") or {}, ensure_ascii=False),
+                    }
+                )
             elif kind == "tool_result":
                 flush()
-                items.append({
-                    "type": "function_call_output",
-                    "call_id": str(block.get("tool_use_id") or ""),
-                    "output": _result_output(block.get("content")),
-                })
+                items.append(
+                    {
+                        "type": "function_call_output",
+                        "call_id": str(block.get("tool_use_id") or ""),
+                        "output": _result_output(block.get("content")),
+                    }
+                )
         flush()
     return items
 
@@ -139,16 +160,16 @@ def to_tools(tools: Optional[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
     for tool in tools or []:
         if not tool.get("name"):
             continue
-        out.append({
-            "type": "function",
-            "name": tool["name"],
-            "description": tool.get("description") or "",
-            "parameters": tool.get("input_schema") or {"type": "object", "properties": {}},
-            "strict": False,
-        })
+        out.append(
+            {
+                "type": "function",
+                "name": tool["name"],
+                "description": tool.get("description") or "",
+                "parameters": tool.get("input_schema") or {"type": "object", "properties": {}},
+                "strict": False,
+            }
+        )
     return out
-
-
 
 
 class ResponsesClient(BaseClient):
@@ -181,8 +202,12 @@ class ResponsesClient(BaseClient):
         transport: Any = None,
         **_ignored: Any,
     ) -> None:
-        super().__init__(api_key=api_key, base_url=base_url, default_headers=default_headers,
-                         event_sink=event_sink)
+        super().__init__(
+            api_key=api_key,
+            base_url=base_url,
+            default_headers=default_headers,
+            event_sink=event_sink,
+        )
         self._account_id = account_id
         self._account_label = account_label
         self._effort = effort if effort in EFFORTS else None
@@ -235,7 +260,9 @@ class ResponsesClient(BaseClient):
         return headers
 
     def _body(self, request: APIRequest) -> dict[str, Any]:
-        instructions = system_text(strip_cache_markers(request.system)) or "You are a helpful assistant."
+        instructions = (
+            system_text(strip_cache_markers(request.system)) or "You are a helpful assistant."
+        )
         tools = to_tools(request.tools)
         body: dict[str, Any] = {
             "model": request.model,
@@ -244,8 +271,7 @@ class ResponsesClient(BaseClient):
             "store": False,
             "stream": True,
             "include": ["reasoning.encrypted_content"],
-            "prompt_cache_key": "geny_" + _sha256(
-                self._session_id + "\0" + instructions),
+            "prompt_cache_key": "geny_" + _sha256(self._session_id + "\0" + instructions),
         }
         if tools:
             body.update(tools=tools, tool_choice="auto", parallel_tool_calls=True)
@@ -267,24 +293,35 @@ class ResponsesClient(BaseClient):
             return "medium"
         return None
 
-
     async def _send(self, request: APIRequest, *, purpose: str = "") -> APIResponse:
         response = None
         async for chunk in self._stream(request):
             if chunk.get("type") == "message_complete":
                 response = chunk["response"]
         if response is None:
-            raise APIError(f"{self.label} stream ended without a response",
-                           category=ErrorCategory.NETWORK)
+            raise APIError(
+                f"{self.label} stream ended without a response", category=ErrorCategory.NETWORK
+            )
         return response
 
     async def create_message_stream(
-        self, *, model_config: Any, messages: List[Dict[str, Any]], system: Any = "",
-        tools: Optional[List[Dict[str, Any]]] = None, tool_choice: Optional[Dict[str, Any]] = None,
+        self,
+        *,
+        model_config: Any,
+        messages: List[Dict[str, Any]],
+        system: Any = "",
+        tools: Optional[List[Dict[str, Any]]] = None,
+        tool_choice: Optional[Dict[str, Any]] = None,
         purpose: str = "",
     ) -> AsyncIterator[Dict[str, Any]]:
-        request = self._build_request(model_config=model_config, messages=messages, system=system,
-                                      tools=tools, tool_choice=tool_choice, stream=True)
+        request = self._build_request(
+            model_config=model_config,
+            messages=messages,
+            system=system,
+            tools=tools,
+            tool_choice=tool_choice,
+            stream=True,
+        )
         async for chunk in self._stream(request):
             yield chunk
 
@@ -298,17 +335,22 @@ class ResponsesClient(BaseClient):
         except APIError:
             raise
         except httpx.TimeoutException as exc:
-            raise APIError(f"{self.label} timed out: {exc}",
-                           category=ErrorCategory.TIMEOUT, cause=exc) from exc
+            raise APIError(
+                f"{self.label} timed out: {exc}", category=ErrorCategory.TIMEOUT, cause=exc
+            ) from exc
         except httpx.TransportError as exc:
-            raise APIError(f"{self.label} connection failed: {exc}",
-                           category=ErrorCategory.NETWORK, cause=exc) from exc
+            raise APIError(
+                f"{self.label} connection failed: {exc}", category=ErrorCategory.NETWORK, cause=exc
+            ) from exc
 
-    async def _stream_once(self, body: Dict[str, Any], started: float) -> AsyncIterator[Dict[str, Any]]:
+    async def _stream_once(
+        self, body: Dict[str, Any], started: float
+    ) -> AsyncIterator[Dict[str, Any]]:
         for attempt in (0, 1):
             async with self._client() as client:
-                async with client.stream("POST", f"{self._base}/responses",
-                                         headers=self._headers(), json=body) as resp:
+                async with client.stream(
+                    "POST", f"{self._base}/responses", headers=self._headers(), json=body
+                ) as resp:
                     # One renewal attempt, before anything has been yielded —
                     # after the first token a retry would replay half an answer.
                     if resp.status_code == 401 and attempt == 0 and await self._renew():
@@ -337,8 +379,11 @@ class ResponsesClient(BaseClient):
         category = classify_text(detail, status)
         if status == 400 and "usage" in detail.lower() and "limit" in detail.lower():
             category = ErrorCategory.RATE_LIMITED
-        return APIError(f"{self.label}{label} HTTP {status}: {detail[:600]}",
-                        category=category, status_code=status)
+        return APIError(
+            f"{self.label}{label} HTTP {status}: {detail[:600]}",
+            category=category,
+            status_code=status,
+        )
 
     async def _consume(self, resp: httpx.Response, started: float) -> AsyncIterator[Dict[str, Any]]:
         text_parts: list[str] = []
@@ -386,8 +431,11 @@ class ResponsesClient(BaseClient):
                 item = ev.get("item") or {}
                 if item.get("type") == "function_call":
                     key = str(item.get("id") or item.get("call_id"))
-                    calls[key] = {"call_id": item.get("call_id"), "name": item.get("name"),
-                                  "arguments": item.get("arguments") or ""}
+                    calls[key] = {
+                        "call_id": item.get("call_id"),
+                        "name": item.get("name"),
+                        "arguments": item.get("arguments") or "",
+                    }
                     order.append(key)
             elif kind == "response.function_call_arguments.delta":
                 key = str(ev.get("item_id"))
@@ -399,8 +447,12 @@ class ResponsesClient(BaseClient):
                     key = str(item.get("id") or item.get("call_id"))
                     if key not in calls:
                         order.append(key)
-                    calls[key] = {"call_id": item.get("call_id"), "name": item.get("name"),
-                                  "arguments": item.get("arguments") or calls.get(key, {}).get("arguments", "")}
+                    calls[key] = {
+                        "call_id": item.get("call_id"),
+                        "name": item.get("name"),
+                        "arguments": item.get("arguments")
+                        or calls.get(key, {}).get("arguments", ""),
+                    }
                 elif item.get("type") == "message" and not text_parts:
                     for part in item.get("content") or []:
                         if part.get("type") == "output_text" and part.get("text"):
@@ -447,13 +499,26 @@ class ResponsesClient(BaseClient):
             except json.JSONDecodeError:
                 args = {"_raw": call.get("arguments")}
             call_id = str(call.get("call_id") or f"call_{uuid.uuid4().hex[:16]}")
-            blocks.append(ContentBlock(type="tool_use", tool_use_id=call_id, tool_name=call["name"],
-                                       tool_input=args,
-                                       raw={"type": "tool_use", "id": call_id, "name": call["name"], "input": args}))
+            blocks.append(
+                ContentBlock(
+                    type="tool_use",
+                    tool_use_id=call_id,
+                    tool_name=call["name"],
+                    tool_input=args,
+                    raw={"type": "tool_use", "id": call_id, "name": call["name"], "input": args},
+                )
+            )
         if any(b.type == "tool_use" for b in blocks):
             stop = "tool_use"
         if not blocks:
             blocks.append(ContentBlock(type="text", text="", raw={"type": "text", "text": ""}))
-        yield {"type": "message_complete",
-               "response": APIResponse(content=blocks, stop_reason=stop, usage=usage, model=model,
-                                       raw={"provider": self.provider, "account": self._account_id})}
+        yield {
+            "type": "message_complete",
+            "response": APIResponse(
+                content=blocks,
+                stop_reason=stop,
+                usage=usage,
+                model=model,
+                raw={"provider": self.provider, "account": self._account_id},
+            ),
+        }

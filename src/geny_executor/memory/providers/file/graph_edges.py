@@ -33,10 +33,30 @@ from typing import Any, Dict, List, Optional
 
 # Meta tags on (nearly) every archived note — never form tag edges.
 META_TAG_DENYLIST = {
-    "conversation", "user_chat", "assistant_chat", "agent_dm", "dm", "dms",
-    "compaction", "system-artifact", "system", "auto", "automated",
-    "log", "logs", "chat", "session", "archive", "execution", "execution-summary",
-    "insight", "insights", "memory", "note", "daily", "digest",
+    "conversation",
+    "user_chat",
+    "assistant_chat",
+    "agent_dm",
+    "dm",
+    "dms",
+    "compaction",
+    "system-artifact",
+    "system",
+    "auto",
+    "automated",
+    "log",
+    "logs",
+    "chat",
+    "session",
+    "archive",
+    "execution",
+    "execution-summary",
+    "insight",
+    "insights",
+    "memory",
+    "note",
+    "daily",
+    "digest",
 }
 TAG_DF_RATIO_MAX = 0.33
 TAG_DF_ABS_FLOOR = 12
@@ -52,22 +72,106 @@ TERM_DF_ABS_FLOOR = 20
 
 _TOKEN_RE = re.compile(r"[A-Za-z][A-Za-z0-9_]{1,}")
 _STOPWORDS = {
-    "the", "a", "an", "and", "or", "but", "if", "then", "else", "of", "to",
-    "in", "on", "at", "by", "for", "with", "as", "is", "are", "was", "were",
-    "be", "been", "being", "this", "that", "these", "those", "it", "its",
-    "i", "you", "he", "she", "we", "they", "them", "his", "her", "their",
-    "from", "into", "out", "up", "down", "over", "under", "no", "not", "do",
-    "does", "did", "done", "have", "has", "had", "will", "would", "can",
-    "could", "should", "may", "might", "must", "so", "than", "too", "very",
-    "just", "about", "there", "here", "what", "which", "who", "when", "where",
-    "how", "all", "any", "each", "more", "most", "some", "such", "only", "own",
-    "same", "also", "via", "per", "etc",
+    "the",
+    "a",
+    "an",
+    "and",
+    "or",
+    "but",
+    "if",
+    "then",
+    "else",
+    "of",
+    "to",
+    "in",
+    "on",
+    "at",
+    "by",
+    "for",
+    "with",
+    "as",
+    "is",
+    "are",
+    "was",
+    "were",
+    "be",
+    "been",
+    "being",
+    "this",
+    "that",
+    "these",
+    "those",
+    "it",
+    "its",
+    "i",
+    "you",
+    "he",
+    "she",
+    "we",
+    "they",
+    "them",
+    "his",
+    "her",
+    "their",
+    "from",
+    "into",
+    "out",
+    "up",
+    "down",
+    "over",
+    "under",
+    "no",
+    "not",
+    "do",
+    "does",
+    "did",
+    "done",
+    "have",
+    "has",
+    "had",
+    "will",
+    "would",
+    "can",
+    "could",
+    "should",
+    "may",
+    "might",
+    "must",
+    "so",
+    "than",
+    "too",
+    "very",
+    "just",
+    "about",
+    "there",
+    "here",
+    "what",
+    "which",
+    "who",
+    "when",
+    "where",
+    "how",
+    "all",
+    "any",
+    "each",
+    "more",
+    "most",
+    "some",
+    "such",
+    "only",
+    "own",
+    "same",
+    "also",
+    "via",
+    "per",
+    "etc",
 }
 
 
 def _tokenize(text: str) -> List[str]:
     return [
-        t for t in (m.group(0).lower() for m in _TOKEN_RE.finditer(text or ""))
+        t
+        for t in (m.group(0).lower() for m in _TOKEN_RE.finditer(text or ""))
         if t not in _STOPWORDS
     ]
 
@@ -85,9 +189,7 @@ def _semantic_edges(items: List[Dict[str, Any]], *, top_k: int, min_sim: float):
             df[term] += 1
     term_df_cut = max(TERM_DF_ABS_FLOOR, int(TERM_DF_RATIO_MAX * n_docs))
     idf = {
-        term: math.log(n_docs / (1 + d)) + 1.0
-        for term, d in df.items()
-        if 2 <= d <= term_df_cut
+        term: math.log(n_docs / (1 + d)) + 1.0 for term, d in df.items() if 2 <= d <= term_df_cut
     }
 
     vecs: List[Dict[str, float]] = []
@@ -134,13 +236,15 @@ def derive_graph_edges(
     """
     items: List[Dict[str, Any]] = []
     for n in notes:
-        items.append({
-            "fn": n.ref.filename,
-            "title": n.title or "",
-            "body": n.body or "",
-            "tags": [str(t) for t in (getattr(n, "tags", None) or [])],
-            "links_out": [str(t) for t in (getattr(n, "links_out", None) or [])],
-        })
+        items.append(
+            {
+                "fn": n.ref.filename,
+                "title": n.title or "",
+                "body": n.body or "",
+                "tags": [str(t) for t in (getattr(n, "tags", None) or [])],
+                "links_out": [str(t) for t in (getattr(n, "links_out", None) or [])],
+            }
+        )
     files = {it["fn"] for it in items}
     n_docs = max(1, len(items))
     edges: List[Dict[str, Any]] = []
@@ -156,7 +260,12 @@ def derive_graph_edges(
         if k in seen:
             return
         seen.add(k)
-        edge: Dict[str, Any] = {"source": a, "target": b, "type": etype, "weight": round(float(weight), 3)}
+        edge: Dict[str, Any] = {
+            "source": a,
+            "target": b,
+            "type": etype,
+            "weight": round(float(weight), 3),
+        }
         if label is not None:
             edge["label"] = label
         edges.append(edge)

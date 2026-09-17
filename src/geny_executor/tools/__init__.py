@@ -23,6 +23,7 @@ from geny_executor.tools.composer import ToolComposer, ToolInfo, ToolPreset
 from geny_executor.tools.providers import AdhocToolProvider
 from geny_executor.tools.scope import ToolScope, ToolScopeRule, ToolScopeManager
 from geny_executor.tools.sandbox import ToolSandbox, SandboxConfig, SandboxPolicy
+
 # Container-exec primitives (``docker exec`` into a SandboxHandle) — public so
 # hosts can build sandboxed tools. ``_sandbox`` only depends on stdlib, so this
 # import is cycle-safe (unlike importing the built_in package here).

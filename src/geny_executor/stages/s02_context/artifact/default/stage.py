@@ -394,15 +394,19 @@ class ContextStage(Stage[Any, Any]):
         task = asyncio.create_task(_run())
         # Surface failures in the log instead of "exception never retrieved".
         task.add_done_callback(
-            lambda t: t.cancelled()
-            or t.exception() is None
-            or logger.warning("background compaction failed: %s", t.exception())
+            lambda t: (
+                t.cancelled()
+                or t.exception() is None
+                or logger.warning("background compaction failed: %s", t.exception())
+            )
         )
         self._bg_compaction = {"task": task, "len": snapshot_len, "tail_id": tail_id}
         state.add_event(
             "context.compaction_scheduled",
             {
-                "compactor": str(getattr(self._compactor, "name", "") or type(self._compactor).__name__),
+                "compactor": str(
+                    getattr(self._compactor, "name", "") or type(self._compactor).__name__
+                ),
                 "snapshot_messages": snapshot_len,
             },
         )
@@ -438,9 +442,7 @@ class ContextStage(Stage[Any, Any]):
         reconcile_recorded_index(before_list, list(state.messages), state.metadata)
         for event_type, data in shadow.events:
             state.add_event(event_type, data)
-        compactor_name = str(
-            getattr(self._compactor, "name", "") or type(self._compactor).__name__
-        )
+        compactor_name = str(getattr(self._compactor, "name", "") or type(self._compactor).__name__)
         state.add_event(
             "context.compacted",
             {

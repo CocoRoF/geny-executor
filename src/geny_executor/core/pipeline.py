@@ -743,7 +743,8 @@ def _gate_unconfigured_tools(
             registry.unregister(name)
             logger.info(
                 "tool '%s' gated out — unsatisfied config %s (progressive disclosure)",
-                name, [t for t in required if t not in satisfied_config],
+                name,
+                [t for t in required if t not in satisfied_config],
             )
             if report is not None:
                 report.gated_unconfigured.append(name)
@@ -873,7 +874,9 @@ class Pipeline:
             False  # flips once run()/run_stream() begins; gates attach_runtime
         )
         self._attached_llm_client: Any = None  # set by attach_runtime; propagated in _init_state
-        self._attached_sandbox: Any = None  # SandboxHandle; wraps a resolved claude_code_cli client in a container runner
+        self._attached_sandbox: Any = (
+            None  # SandboxHandle; wraps a resolved claude_code_cli client in a container runner
+        )
         # When False, an attached sandbox is used for TOOL execution (ctx.sandbox)
         # only — the claude_code_cli client is NOT wrapped in a ContainerCLIRunner,
         # so the CLI keeps running on the host (OAuth-safe). Tools still run in the
@@ -3386,9 +3389,7 @@ class Pipeline:
                 build_container_cli_client,
             )
 
-            return build_container_cli_client(
-                sandbox=self._attached_sandbox, **kwargs
-            )
+            return build_container_cli_client(sandbox=self._attached_sandbox, **kwargs)
         return client_cls(**kwargs)
 
     async def _try_run_stage(self, order: int, current: Any, state: PipelineState) -> Any:

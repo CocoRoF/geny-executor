@@ -61,9 +61,7 @@ class DocumentChunk:
 
 
 def _point_id(collection: str, filename: str, chunk_index: int) -> str:
-    return str(
-        uuid.uuid5(_POINT_NAMESPACE, f"{collection}:{filename}#{chunk_index}")
-    )
+    return str(uuid.uuid5(_POINT_NAMESPACE, f"{collection}:{filename}#{chunk_index}"))
 
 
 class QdrantVectorStore:
@@ -118,11 +116,12 @@ class QdrantVectorStore:
                 from qdrant_client import AsyncQdrantClient
             except ImportError as exc:  # pragma: no cover - env-specific
                 raise RuntimeError(
-                    "qdrant-client is not installed — "
-                    "`pip install geny-executor[qdrant]`"
+                    "qdrant-client is not installed — `pip install geny-executor[qdrant]`"
                 ) from exc
             self._qdrant = AsyncQdrantClient(
-                url=self._url, api_key=self._api_key, timeout=self._timeout,
+                url=self._url,
+                api_key=self._api_key,
+                timeout=self._timeout,
             )
         return self._qdrant
 
@@ -147,7 +146,8 @@ class QdrantVectorStore:
             await qdrant.create_collection(
                 collection_name=self._collection,
                 vectors_config=models.VectorParams(
-                    size=dim, distance=models.Distance.COSINE,
+                    size=dim,
+                    distance=models.Distance.COSINE,
                 ),
             )
         self._collection_ready = True
@@ -159,7 +159,8 @@ class QdrantVectorStore:
         return models.Filter(
             must=[
                 models.FieldCondition(
-                    key="filename", match=models.MatchValue(value=filename),
+                    key="filename",
+                    match=models.MatchValue(value=filename),
                 )
             ]
         )
@@ -223,7 +224,9 @@ class QdrantVectorStore:
         return total
 
     async def index_document(
-        self, ref: NoteRef, chunks: Sequence[DocumentChunk],
+        self,
+        ref: NoteRef,
+        chunks: Sequence[DocumentChunk],
     ) -> int:
         """Replace *ref*'s points with one point per chunk. Returns the
         number of chunks indexed (0 on failure — never raises transport)."""
@@ -235,7 +238,9 @@ class QdrantVectorStore:
             vectors = await self._client.embed([c.text for c in rows])
         except Exception:  # noqa: BLE001 — embedding/transport is best-effort
             logger.warning(
-                "qdrant: embed failed for %s", ref.filename, exc_info=True,
+                "qdrant: embed failed for %s",
+                ref.filename,
+                exc_info=True,
             )
             return 0
         if len(vectors) != len(rows):
@@ -258,9 +263,7 @@ class QdrantVectorStore:
                 # that carry only ``preview``).
                 "text": chunk.text,
                 "preview": chunk.text[: self._preview_chars],
-                "content_sha1": hashlib.sha1(
-                    chunk.text.encode("utf-8")
-                ).hexdigest(),
+                "content_sha1": hashlib.sha1(chunk.text.encode("utf-8")).hexdigest(),
             }
             for key, value in (chunk.metadata or {}).items():
                 if key not in payload:
@@ -283,7 +286,9 @@ class QdrantVectorStore:
             await qdrant.upsert(collection_name=self._collection, points=points)
         except Exception:  # noqa: BLE001
             logger.warning(
-                "qdrant: upsert failed for %s", ref.filename, exc_info=True,
+                "qdrant: upsert failed for %s",
+                ref.filename,
+                exc_info=True,
             )
             return 0
         return len(points)
@@ -291,7 +296,11 @@ class QdrantVectorStore:
     # ── VectorHandle: search / remove / reindex ──────────────────────
 
     async def search(
-        self, text: str, *, top_k: int = 5, threshold: float = 0.0,
+        self,
+        text: str,
+        *,
+        top_k: int = 5,
+        threshold: float = 0.0,
     ) -> List[MemoryChunk]:
         query = (text or "").strip()
         if not query:
@@ -333,7 +342,10 @@ class QdrantVectorStore:
         return chunks
 
     async def fetch_document(
-        self, ref: NoteRef, *, max_chunks: int = 5000,
+        self,
+        ref: NoteRef,
+        *,
+        max_chunks: int = 5000,
     ) -> List[MemoryChunk]:
         """Return ALL of *ref*'s chunks, ordered by ``chunk_index``.
 
@@ -353,7 +365,8 @@ class QdrantVectorStore:
         except Exception:  # noqa: BLE001
             logger.warning(
                 "qdrant: fetch_document existence check failed for %s",
-                ref.filename, exc_info=True,
+                ref.filename,
+                exc_info=True,
             )
             return []
 
@@ -375,7 +388,8 @@ class QdrantVectorStore:
         except Exception:  # noqa: BLE001
             logger.warning(
                 "qdrant: fetch_document scroll failed for %s",
-                ref.filename, exc_info=True,
+                ref.filename,
+                exc_info=True,
             )
             return []
 

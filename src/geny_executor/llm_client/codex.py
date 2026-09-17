@@ -12,6 +12,7 @@ mid-session, and reports the rotated tokens back through `notify` so the
 host persists them — a refresh token is single-use, so losing the new one
 would log the account out.
 """
+
 from __future__ import annotations
 
 import base64
@@ -35,8 +36,17 @@ CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 ORIGINATOR = "geny_executor"
 USER_AGENT = "geny-executor (+https://github.com/CocoRoF/geny-executor)"
 
-__all__ = ["CodexResponsesClient", "jwt_claims", "account_id_from", "expires_at",
-           "to_input", "to_tools", "DEFAULT_BASE_URL", "TOKEN_URL", "CLIENT_ID"]
+__all__ = [
+    "CodexResponsesClient",
+    "jwt_claims",
+    "account_id_from",
+    "expires_at",
+    "to_input",
+    "to_tools",
+    "DEFAULT_BASE_URL",
+    "TOKEN_URL",
+    "CLIENT_ID",
+]
 
 
 def jwt_claims(token: str) -> dict[str, Any]:
@@ -88,10 +98,19 @@ class CodexResponsesClient(ResponsesClient):
         transport: Any = None,
         **_ignored: Any,
     ) -> None:
-        super().__init__(api_key=api_key, base_url=base_url, default_headers=default_headers,
-                         account_id=account_id, account_label=account_label, effort=effort,
-                         timeout_s=timeout_s, notify=notify, session_id=session_id,
-                         event_sink=event_sink, transport=transport)
+        super().__init__(
+            api_key=api_key,
+            base_url=base_url,
+            default_headers=default_headers,
+            account_id=account_id,
+            account_label=account_label,
+            effort=effort,
+            timeout_s=timeout_s,
+            notify=notify,
+            session_id=session_id,
+            event_sink=event_sink,
+            transport=transport,
+        )
         self._tokens = dict(tokens or {})
         if api_key and not self._tokens.get("access_token"):
             self._tokens["access_token"] = api_key
@@ -112,8 +131,10 @@ class CodexResponsesClient(ResponsesClient):
 
     async def _prepare(self) -> None:
         if not self._tokens.get("access_token"):
-            raise APIError("This Codex account has no access token — sign in again.",
-                           category=ErrorCategory.AUTH)
+            raise APIError(
+                "This Codex account has no access token — sign in again.",
+                category=ErrorCategory.AUTH,
+            )
         exp = expires_at(str(self._tokens.get("access_token")))
         if exp and exp - time.time() < 120:
             await self._renew()
@@ -126,7 +147,11 @@ class CodexResponsesClient(ResponsesClient):
             async with self._client() as client:
                 resp = await client.post(
                     TOKEN_URL,
-                    data={"grant_type": "refresh_token", "refresh_token": refresh, "client_id": CLIENT_ID},
+                    data={
+                        "grant_type": "refresh_token",
+                        "refresh_token": refresh,
+                        "client_id": CLIENT_ID,
+                    },
                     headers={"Accept": "application/json", "User-Agent": USER_AGENT},
                 )
         except httpx.HTTPError:

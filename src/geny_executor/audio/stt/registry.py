@@ -59,8 +59,7 @@ def register_stt_provider(
     with _CUSTOM_LOCK:
         if key in _CUSTOM_BUILDERS and not replace:
             raise ValueError(
-                f"stt provider {name!r} is already registered "
-                "(pass replace=True to overwrite)"
+                f"stt provider {name!r} is already registered (pass replace=True to overwrite)"
             )
         _CUSTOM_BUILDERS[key] = builder
 
@@ -99,6 +98,4 @@ def create_stt_client(provider: str, **config: Any) -> STTProvider:
 
     with _CUSTOM_LOCK:
         available = sorted(set(_BUILTIN_ALIASES) | set(_CUSTOM_BUILDERS))
-    raise ValueError(
-        f"unknown stt provider {provider!r}; available: {available}"
-    )
+    raise ValueError(f"unknown stt provider {provider!r}; available: {available}")

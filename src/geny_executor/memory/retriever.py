@@ -594,9 +594,7 @@ class MemoryAwareRetriever(MemoryRetriever):
         if room <= 0:
             return total
         if len(body) > room:
-            logger.debug(
-                "memory_aware: pinned facts truncated %d → %d chars", len(body), room
-            )
+            logger.debug("memory_aware: pinned facts truncated %d → %d chars", len(body), room)
             body = body[: max(0, room - 12)].rstrip() + "\n…(truncated)"
         chunks.append(
             MemoryChunk(
@@ -933,22 +931,26 @@ class MemoryAwareRetriever(MemoryRetriever):
                     try:
                         hits.extend(
                             await curated_vector.search(
-                                query, top_k=hooks.max_results,
+                                query,
+                                top_k=hooks.max_results,
                             )
                         )
                     except Exception:  # noqa: BLE001
                         logger.debug(
-                            "memory_aware: curated vector failed", exc_info=True,
+                            "memory_aware: curated vector failed",
+                            exc_info=True,
                         )
                 try:
                     hits.extend(
                         await curated.notes().search(
-                            query, limit=hooks.max_results,
+                            query,
+                            limit=hooks.max_results,
                         )
                     )
                 except Exception:  # noqa: BLE001
                     logger.debug(
-                        "memory_aware: curated keyword failed", exc_info=True,
+                        "memory_aware: curated keyword failed",
+                        exc_info=True,
                     )
             except Exception:  # noqa: BLE001
                 logger.debug("memory_aware: curated search failed", exc_info=True)

@@ -39,8 +39,7 @@ class SSHConfigError(ValueError):
 
 
 _INSTALL_HINT = (
-    "SSH tools require the `asyncssh` package. Install it via "
-    "`pip install geny-executor[ssh]`."
+    "SSH tools require the `asyncssh` package. Install it via `pip install geny-executor[ssh]`."
 )
 
 
@@ -52,7 +51,9 @@ def _require_asyncssh():
     return asyncssh
 
 
-def _connect_kwargs(server: Dict[str, Any], *, connect_timeout: float) -> Tuple[str, Dict[str, Any]]:
+def _connect_kwargs(
+    server: Dict[str, Any], *, connect_timeout: float
+) -> Tuple[str, Dict[str, Any]]:
     """Build ``(host, asyncssh.connect kwargs)`` from a server record.
 
     Host-key verification is DISABLED by default (``known_hosts=None``) so a
@@ -105,7 +106,9 @@ async def _open(server: Dict[str, Any], *, connect_timeout: float):
     return await asyncssh.connect(host, **kwargs)
 
 
-def _remote_command(command: str, *, cwd: Optional[str], sudo: bool, password: Optional[str]) -> Tuple[str, Optional[str]]:
+def _remote_command(
+    command: str, *, cwd: Optional[str], sudo: bool, password: Optional[str]
+) -> Tuple[str, Optional[str]]:
     """Compose the remote command string + optional stdin (sudo password)."""
     inner = command
     if cwd:

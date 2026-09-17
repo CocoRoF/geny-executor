@@ -55,6 +55,7 @@ logger = logging.getLogger(__name__)
 #: showing a blank title in the catalogue while the reconciled ones had it.
 VectorIndexer = Callable[..., Awaitable[int]]
 
+
 def _indexer_takes_note(indexer: Any) -> bool:
     """Whether *indexer* has room for the note as a third argument.
 
@@ -73,11 +74,12 @@ def _indexer_takes_note(indexer: Any) -> bool:
         return False
     if any(p.kind is inspect.Parameter.VAR_POSITIONAL for p in params.values()):
         return True
-    positional = [p for p in params.values()
-                  if p.kind in (inspect.Parameter.POSITIONAL_ONLY,
-                                inspect.Parameter.POSITIONAL_OR_KEYWORD)]
+    positional = [
+        p
+        for p in params.values()
+        if p.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+    ]
     return len(positional) >= 3
-
 
 
 _WIKILINK = re.compile(r"\[\[([^\]\|]+)(?:\|([^\]]+))?\]\]")
@@ -224,8 +226,7 @@ class _FilesystemNotesStore(NotesHandle):
         # Run auto-vector outside the write lock — embedding the body
         # is an HTTP round-trip and must never block other note ops.
         if indexer is not None and body_for_index:
-            await self._safe_index(indexer, ref_for_index, body_for_index,
-                                   note_for_index)
+            await self._safe_index(indexer, ref_for_index, body_for_index, note_for_index)
         await self._refresh_index_for(note.category)
         await _fire_hook(
             self._hooks.after_note_write,
@@ -267,8 +268,7 @@ class _FilesystemNotesStore(NotesHandle):
             note_for_index = current
             note_meta = current.as_meta()
         if indexer is not None and body_for_index:
-            await self._safe_index(indexer, ref_for_index, body_for_index,
-                                   note_for_index)
+            await self._safe_index(indexer, ref_for_index, body_for_index, note_for_index)
         await self._refresh_index_for(current.category)
         await _fire_hook(
             self._hooks.after_note_update,
@@ -293,8 +293,9 @@ class _FilesystemNotesStore(NotesHandle):
             logger.debug("index refresh callback failed for category=%r", category, exc_info=True)
 
     @staticmethod
-    async def _safe_index(indexer: VectorIndexer, ref: NoteRef, body: str,
-                          note: Any = None) -> None:
+    async def _safe_index(
+        indexer: VectorIndexer, ref: NoteRef, body: str, note: Any = None
+    ) -> None:
         """Best-effort indexer call — markdown writes win on any
         embedding failure.
 
@@ -376,7 +377,8 @@ class _FilesystemNotesStore(NotesHandle):
                 # reconciliation will clean up, not a reason to fail here.
                 logger.warning(
                     "notes.delete: vector removal failed for %s",
-                    filename, exc_info=True,
+                    filename,
+                    exc_info=True,
                 )
         await self._refresh_index_for(deleted_category)
         return True

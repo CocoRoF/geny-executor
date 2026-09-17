@@ -54,12 +54,12 @@ FACTS_CATEGORY = "critical"
 #: Closed vocabulary for fact classification. The model picks; the schema
 #: enforces. Extend deliberately — every kind renders as its own section.
 FACT_KINDS = (
-    "identity",      # names, how to address the user / the agent, roles
-    "preference",    # stated likes/dislikes, style, standing instructions
+    "identity",  # names, how to address the user / the agent, roles
+    "preference",  # stated likes/dislikes, style, standing instructions
     "relationship",  # people/orgs around the user and their relation
-    "commitment",    # promises, deadlines, recurring events
-    "context",       # long-running projects/threads/situations
-    "knowledge",     # other durable facts worth carrying across sessions
+    "commitment",  # promises, deadlines, recurring events
+    "context",  # long-running projects/threads/situations
+    "knowledge",  # other durable facts worth carrying across sessions
 )
 
 _IMPORTANCE_LEVELS = ("critical", "high", "medium", "low")
@@ -116,9 +116,7 @@ FACT_EXTRACTION_SCHEMA: Dict[str, Any] = {
 }
 
 
-def build_fact_extraction_instruction(
-    *, active_facts: str, new_turns: str
-) -> str:
+def build_fact_extraction_instruction(*, active_facts: str, new_turns: str) -> str:
     """Instruction for one extraction pass over new conversation turns.
 
     Content judgment belongs to the model; the output contract belongs to
@@ -140,7 +138,7 @@ def build_fact_extraction_instruction(
         "Rules:\n"
         "- Reuse an existing id to UPDATE a fact; add its old id to "
         "`supersedes` only when the old statement is now wrong.\n"
-        "- A correction (\"not X, call me Y\") is an upsert of the same id "
+        '- A correction ("not X, call me Y") is an upsert of the same id '
         "with the corrected statement.\n"
         "- Prefer the user's own wording where wording matters (names, "
         "titles, honorifics), and write statements in the user's "
@@ -256,9 +254,7 @@ def render_identity_card(facts: Sequence[Fact], *, max_chars: int = 600) -> str:
         return ""
     active = [f for f in facts if f.status == "active"]
     picked: List[Fact] = [
-        f
-        for f in active
-        if f.kind in IDENTITY_CARD_KINDS or f.importance == "critical"
+        f for f in active if f.kind in IDENTITY_CARD_KINDS or f.importance == "critical"
     ]
     if not picked:
         return ""
@@ -525,12 +521,11 @@ class FactExtraction:
 
         active = [f for f in state.facts if f.status == "active"]
         active_lines = "\n".join(f"- {f.id}: {f.statement}" for f in active)
-        turn_lines = "\n".join(
-            r for r in (_flatten_turn(t) for t in fresh) if r
-        )
+        turn_lines = "\n".join(r for r in (_flatten_turn(t) for t in fresh) if r)
 
         instruction = build_fact_extraction_instruction(
-            active_facts=active_lines, new_turns=turn_lines,
+            active_facts=active_lines,
+            new_turns=turn_lines,
         )
         try:
             data = await self._complete(instruction, FACT_EXTRACTION_SCHEMA)
@@ -554,7 +549,10 @@ class FactExtraction:
 
         now_iso = datetime.now(timezone.utc).isoformat()
         report.changes = FactLedger.apply_diff(
-            state, upserts=upserts, supersedes=supersedes, now_iso=now_iso,
+            state,
+            upserts=upserts,
+            supersedes=supersedes,
+            now_iso=now_iso,
         )
         state.cursor = latest_iso
         report.ran = True

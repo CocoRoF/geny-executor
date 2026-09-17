@@ -86,9 +86,7 @@ class ReadTool(Tool):
                 try:
                     text = raw.decode("latin-1")
                 except Exception:
-                    return ToolResult(
-                        content=f"[Binary file: {file_path}, {len(raw)} bytes]"
-                    )
+                    return ToolResult(content=f"[Binary file: {file_path}, {len(raw)} bytes]")
             lines = text.splitlines(keepends=True)
             total = len(lines)
             selected = lines[offset : offset + limit]
@@ -98,8 +96,7 @@ class ReadTool(Tool):
                     is_error=True,
                 )
             numbered = [
-                f"{i}\t{line.rstrip()}"
-                for i, line in enumerate(selected, start=offset + 1)
+                f"{i}\t{line.rstrip()}" for i, line in enumerate(selected, start=offset + 1)
             ]
             output = "\n".join(numbered)
             if offset + limit < total:

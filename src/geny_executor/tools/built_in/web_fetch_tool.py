@@ -412,9 +412,7 @@ class WebFetchTool(Tool):
             },
         )
 
-    async def _fetch_rendered(
-        self, url: str, *, timeout: float, max_chars: int
-    ) -> ToolResult:
+    async def _fetch_rendered(self, url: str, *, timeout: float, max_chars: int) -> ToolResult:
         """render_js=true path — one-shot JS-rendered fetch via an-web.
 
         Uses an ephemeral engine session (WebFetch stays stateless; the

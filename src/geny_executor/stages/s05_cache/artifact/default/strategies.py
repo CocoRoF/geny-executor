@@ -102,8 +102,7 @@ def _cache_system(state: PipelineState) -> None:
             idx = system.rfind(volatile)
         if idx > 0:
             state.system = [
-                {"type": "text", "text": system[:idx],
-                 "cache_control": EPHEMERAL_CACHE},
+                {"type": "text", "text": system[:idx], "cache_control": EPHEMERAL_CACHE},
                 {"type": "text", "text": system[idx:]},
             ]
         else:

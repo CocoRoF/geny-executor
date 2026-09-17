@@ -157,9 +157,7 @@ class EnvTool(Tool):
 
         call_kwargs = {n: args[n] for n in arg_names if n in args}
         try:
-            result = (
-                await method(**call_kwargs) if is_async else method(**call_kwargs)
-            )
+            result = await method(**call_kwargs) if is_async else method(**call_kwargs)
         except Exception as exc:  # noqa: BLE001
             return ToolResult(content=f"env {action} failed: {exc}", is_error=True)
 

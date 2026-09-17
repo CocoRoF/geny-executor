@@ -608,9 +608,14 @@ _PRESET_CATALOG: List[PresetDescriptor] = [
 #: Catalog keys that existed before the harness was collapsed (2.66.0). They
 #: resolve to the canonical entry so a stored environment or a bookmarked URL
 #: keeps working; they are not offered as choices.
-_LEGACY_CATALOG_KEYS = frozenset({
-    _WORKER_ADAPTIVE, _VTUBER, "claude_code_worker", "claude_code_vtuber",
-})
+_LEGACY_CATALOG_KEYS = frozenset(
+    {
+        _WORKER_ADAPTIVE,
+        _VTUBER,
+        "claude_code_worker",
+        "claude_code_vtuber",
+    }
+)
 
 
 def preset_catalog() -> List[PresetDescriptor]:

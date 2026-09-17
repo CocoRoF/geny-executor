@@ -72,8 +72,14 @@ class WorkspaceInfoTool(Tool):
         return {
             "type": "object",
             "properties": {
-                "path": {"type": "string", "description": "Subdirectory to list (default: top-level summary)"},
-                "max_entries": {"type": "integer", "description": "Cap on listed files (default 100)"},
+                "path": {
+                    "type": "string",
+                    "description": "Subdirectory to list (default: top-level summary)",
+                },
+                "max_entries": {
+                    "type": "integer",
+                    "description": "Cap on listed files (default 100)",
+                },
             },
         }
 
@@ -113,12 +119,14 @@ class WorkspaceInfoTool(Tool):
                     dirs.append({"dir": entry.name + "/", "files": count, "bytes": size})
                 elif entry.is_file():
                     files.append({"file": entry.name, "bytes": entry.stat().st_size})
-            return ToolResult(content={
-                "root": str(root),
-                "directories": dirs,
-                "files": files[:cap],
-                "hint": "Pass path='<dir>' for a subtree listing.",
-            })
+            return ToolResult(
+                content={
+                    "root": str(root),
+                    "directories": dirs,
+                    "files": files[:cap],
+                    "hint": "Pass path='<dir>' for a subtree listing.",
+                }
+            )
 
         listing: List[Dict[str, Any]] = []
         truncated = False
@@ -129,15 +137,22 @@ class WorkspaceInfoTool(Tool):
                 truncated = True
                 break
             try:
-                listing.append({
-                    "path": f.relative_to(root).as_posix(),
-                    "bytes": f.stat().st_size,
-                })
+                listing.append(
+                    {
+                        "path": f.relative_to(root).as_posix(),
+                        "bytes": f.stat().st_size,
+                    }
+                )
             except OSError:
                 continue
-        return ToolResult(content={
-            "root": str(root), "path": sub, "files": listing, "truncated": truncated,
-        })
+        return ToolResult(
+            content={
+                "root": str(root),
+                "path": sub,
+                "files": listing,
+                "truncated": truncated,
+            }
+        )
 
 
 class SandboxInfoTool(Tool):
@@ -160,7 +175,10 @@ class SandboxInfoTool(Tool):
         return {
             "type": "object",
             "properties": {
-                "workdir": {"type": "string", "description": f"Sandbox workdir (default {DEFAULT_SANDBOX_WORKDIR})"},
+                "workdir": {
+                    "type": "string",
+                    "description": f"Sandbox workdir (default {DEFAULT_SANDBOX_WORKDIR})",
+                },
             },
         }
 
@@ -170,27 +188,35 @@ class SandboxInfoTool(Tool):
     async def execute(self, input, context):
         sandbox = getattr(context, "sandbox", None)
         if sandbox is None:
-            return ToolResult(content={
-                "attached": False,
-                "note": "No sandbox is bound to this session — only the files "
-                        "workspace is available (see WorkspaceInfo).",
-            })
+            return ToolResult(
+                content={
+                    "attached": False,
+                    "note": "No sandbox is bound to this session — only the files "
+                    "workspace is available (see WorkspaceInfo).",
+                }
+            )
         workdir = (input.get("workdir") or DEFAULT_SANDBOX_WORKDIR).strip()
         from geny_executor.tools._sandbox import sb_run
 
         try:
             rc, out, err = await sb_run(sandbox, "ls -la", workdir=workdir, timeout_s=20)
         except Exception as exc:  # noqa: BLE001
-            return ToolResult(content={
-                "attached": True, "workdir": workdir, "reachable": False,
-                "error": str(exc)[:300],
-            })
-        return ToolResult(content={
-            "attached": True,
-            "workdir": workdir,
-            "reachable": rc == 0,
-            "listing": (out if rc == 0 else err)[:2000],
-        })
+            return ToolResult(
+                content={
+                    "attached": True,
+                    "workdir": workdir,
+                    "reachable": False,
+                    "error": str(exc)[:300],
+                }
+            )
+        return ToolResult(
+            content={
+                "attached": True,
+                "workdir": workdir,
+                "reachable": rc == 0,
+                "listing": (out if rc == 0 else err)[:2000],
+            }
+        )
 
 
 class SandboxPutTool(Tool):
@@ -215,8 +241,14 @@ class SandboxPutTool(Tool):
             "type": "object",
             "properties": {
                 "source": {"type": "string", "description": "File path in the files workspace"},
-                "dest": {"type": "string", "description": "Target path inside the sandbox (optional)"},
-                "workdir": {"type": "string", "description": f"Sandbox workdir (default {DEFAULT_SANDBOX_WORKDIR})"},
+                "dest": {
+                    "type": "string",
+                    "description": "Target path inside the sandbox (optional)",
+                },
+                "workdir": {
+                    "type": "string",
+                    "description": f"Sandbox workdir (default {DEFAULT_SANDBOX_WORKDIR})",
+                },
             },
             "required": ["source"],
         }
@@ -239,7 +271,9 @@ class SandboxPutTool(Tool):
             return _err("NOT_FOUND", f"source not found: {input['source']}")
         size = src.stat().st_size
         if size > MAX_TRANSFER_BYTES:
-            return _err("TOO_LARGE", f"{size} bytes exceeds the {MAX_TRANSFER_BYTES}-byte transfer cap.")
+            return _err(
+                "TOO_LARGE", f"{size} bytes exceeds the {MAX_TRANSFER_BYTES}-byte transfer cap."
+            )
 
         workdir = (input.get("workdir") or DEFAULT_SANDBOX_WORKDIR).strip()
         dest = (input.get("dest") or src.name).strip()
@@ -249,12 +283,14 @@ class SandboxPutTool(Tool):
             written = await sb_write_bytes(sandbox, dest, src.read_bytes(), workdir=workdir)
         except Exception as exc:  # noqa: BLE001
             return _err("TRANSFER_FAILED", str(exc)[:300])
-        return ToolResult(content={
-            "copied": True,
-            "source": src.relative_to(root).as_posix(),
-            "sandbox_path": container_path(dest, workdir),
-            "bytes": written,
-        })
+        return ToolResult(
+            content={
+                "copied": True,
+                "source": src.relative_to(root).as_posix(),
+                "sandbox_path": container_path(dest, workdir),
+                "bytes": written,
+            }
+        )
 
 
 class SandboxFetchTool(Tool):
@@ -280,8 +316,14 @@ class SandboxFetchTool(Tool):
             "type": "object",
             "properties": {
                 "source": {"type": "string", "description": "File path inside the sandbox"},
-                "dest": {"type": "string", "description": "Target path in the files workspace (optional)"},
-                "workdir": {"type": "string", "description": f"Sandbox workdir (default {DEFAULT_SANDBOX_WORKDIR})"},
+                "dest": {
+                    "type": "string",
+                    "description": "Target path in the files workspace (optional)",
+                },
+                "workdir": {
+                    "type": "string",
+                    "description": f"Sandbox workdir (default {DEFAULT_SANDBOX_WORKDIR})",
+                },
             },
             "required": ["source"],
         }
@@ -308,7 +350,10 @@ class SandboxFetchTool(Tool):
         except Exception as exc:  # noqa: BLE001
             return _err("TRANSFER_FAILED", str(exc)[:300])
         if len(data) > MAX_TRANSFER_BYTES:
-            return _err("TOO_LARGE", f"{len(data)} bytes exceeds the {MAX_TRANSFER_BYTES}-byte transfer cap.")
+            return _err(
+                "TOO_LARGE",
+                f"{len(data)} bytes exceeds the {MAX_TRANSFER_BYTES}-byte transfer cap.",
+            )
 
         basename = Path(source).name or "fetched"
         dest_rel = (input.get("dest") or f"workspace/outputs/{basename}").strip()
@@ -318,12 +363,14 @@ class SandboxFetchTool(Tool):
             return _err("PATH_ESCAPE", f"dest escapes the session storage: {dest_rel}")
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_bytes(data)
-        return ToolResult(content={
-            "copied": True,
-            "source": source,
-            "workspace_path": dest.relative_to(root).as_posix(),
-            "bytes": len(data),
-        })
+        return ToolResult(
+            content={
+                "copied": True,
+                "source": source,
+                "workspace_path": dest.relative_to(root).as_posix(),
+                "bytes": len(data),
+            }
+        )
 
 
 __all__ = [

@@ -196,8 +196,7 @@ class _FileIndexStore:
         """
         notes = await self._notes.all()
         sig = tuple(
-            (n.ref.filename, n.updated_at.isoformat() if n.updated_at else "")
-            for n in notes
+            (n.ref.filename, n.updated_at.isoformat() if n.updated_at else "") for n in notes
         )
         if sig == self._edges_sig and self._edges_cache is not None:
             return self._edges_cache

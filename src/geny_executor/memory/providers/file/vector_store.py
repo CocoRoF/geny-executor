@@ -141,9 +141,7 @@ class _FileVectorStore:
             # 30-min idle-evict cycle). Rows persist a content sha, so only
             # new/changed notes reach the embedder.
             existing_sha = {
-                row.get("filename"): row.get("sha")
-                for row in self._rows
-                if row.get("sha")
+                row.get("filename"): row.get("sha") for row in self._rows if row.get("sha")
             }
             todo = [
                 (ref, text)
@@ -382,7 +380,10 @@ class _FileVectorStore:
                             "vector index bin/meta size mismatch (%d bytes vs "
                             "%d expected for %d rows × %d dims) — vectors not "
                             "loaded; reindex from notes to rebuild.",
-                            len(raw), expected, count, dim,
+                            len(raw),
+                            expected,
+                            count,
+                            dim,
                         )
         self._loaded = True
 
@@ -413,9 +414,7 @@ class _FileVectorStore:
             "rows": list(self._rows),
         }
         tmp_meta = meta_path.with_suffix(meta_path.suffix + ".tmp")
-        tmp_meta.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
+        tmp_meta.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         os.replace(tmp_meta, meta_path)
 
     def _remove_by_filename(self, filename: str) -> int:

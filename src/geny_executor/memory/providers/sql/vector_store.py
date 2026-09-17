@@ -148,9 +148,7 @@ class _SQLVectorStore:
                     self._validate_dim(vec)
                     upserts.append(self._upsert_statement(ref, text, vec))
                     total += 1
-        await self._conn.transaction(
-            [("DELETE FROM vector_rows", ()), *upserts]
-        )
+        await self._conn.transaction([("DELETE FROM vector_rows", ()), *upserts])
         reason = plan.reason if plan is not None else "manual reindex"
         metadata = dict(plan.metadata) if plan is not None else {}
         metadata["descriptor"] = {

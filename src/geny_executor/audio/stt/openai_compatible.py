@@ -126,11 +126,13 @@ class OpenAICompatibleSTT:
                 if not isinstance(seg, dict):
                     continue  # null / string entries from lax servers
                 try:
-                    segments.append(STTSegment(
-                        start=float(seg.get("start", 0.0)),
-                        end=float(seg.get("end", 0.0)),
-                        text=str(seg.get("text", "")).strip(),
-                    ))
+                    segments.append(
+                        STTSegment(
+                            start=float(seg.get("start", 0.0)),
+                            end=float(seg.get("end", 0.0)),
+                            text=str(seg.get("text", "")).strip(),
+                        )
+                    )
                 except (TypeError, ValueError):
                     continue
 

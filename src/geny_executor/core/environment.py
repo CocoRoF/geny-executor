@@ -117,9 +117,7 @@ class ToolsSnapshot:
             mcp_servers=data.get("mcp_servers", []),
             external=data.get("external", []),
             scope=data.get("scope", {}),
-            core_overrides={
-                str(k): bool(v) for k, v in (data.get("core_overrides") or {}).items()
-            },
+            core_overrides={str(k): bool(v) for k, v in (data.get("core_overrides") or {}).items()},
         )
 
 

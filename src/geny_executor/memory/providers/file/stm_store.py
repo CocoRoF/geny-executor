@@ -61,8 +61,7 @@ def _bound_record_line(line: str) -> str:
             overshoot = len(line.encode("utf-8", "ignore")) - MAX_RECORD_BYTES
             keep = max(4096, len(content) - overshoot - 256)
             dropped = len(content) - keep
-            rec["content"] = (content[:keep]
-                              + f"\n… [{dropped} chars truncated at record cap]")
+            rec["content"] = content[:keep] + f"\n… [{dropped} chars truncated at record cap]"
             return json.dumps(rec, ensure_ascii=False)
     except Exception:  # noqa: BLE001 — malformed record: hard-cut the line
         pass
@@ -158,8 +157,10 @@ class _JSONLSTMStore:
             # Event payloads (observation frames, giant tool results) were the
             # production 270 MB transcript's fat lines. Keep the envelope,
             # drop the payload with an explicit marker.
-            rec["data"] = {"truncated": True,
-                           "reason": f"event payload over {MAX_RECORD_BYTES} bytes"}
+            rec["data"] = {
+                "truncated": True,
+                "reason": f"event payload over {MAX_RECORD_BYTES} bytes",
+            }
             rec.pop("metadata", None)
             line = json.dumps(rec, ensure_ascii=False)
         async with self._lock:
@@ -197,8 +198,7 @@ class _JSONLSTMStore:
         readers (recent/search/transcripts UI) usable."""
         async with self._lock:
             try:
-                if (not self._path.exists()
-                        or self._path.stat().st_size <= MAX_STM_BYTES):
+                if not self._path.exists() or self._path.stat().st_size <= MAX_STM_BYTES:
                     return 0
             except OSError:
                 return 0

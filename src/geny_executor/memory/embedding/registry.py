@@ -125,8 +125,7 @@ def create_embedding_client(
         registered = registered_embedding_providers()
         hint = f"; host-registered: {list(registered)}" if registered else ""
         raise ValueError(
-            f"unknown embedding provider {provider!r} "
-            f"(supported: {sorted(_SUPPORTED)}{hint})"
+            f"unknown embedding provider {provider!r} (supported: {sorted(_SUPPORTED)}{hint})"
         )
     opts = dict(options or {})
     if p == "local":

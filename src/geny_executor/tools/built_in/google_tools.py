@@ -84,9 +84,7 @@ class _GoogleClient:
             )
         self._access_token: str = str(creds.get("access_token") or "").strip()
         if not self._access_token:
-            raise GoogleNotConnectedError(
-                "Google account is not connected (no access token)."
-            )
+            raise GoogleNotConnectedError("Google account is not connected (no access token).")
         self._refresh_token: Optional[str] = creds.get("refresh_token") or None
         self._client_id: Optional[str] = creds.get("client_id") or None
         self._client_secret: Optional[str] = creds.get("client_secret") or None
@@ -273,7 +271,9 @@ class _GoogleTool(Tool):
         except httpx.TimeoutException:
             return ToolResult(content=f"{self.name}: request to Google timed out.", is_error=True)
         except httpx.HTTPError as exc:
-            return ToolResult(content=f"{self.name}: network error talking to Google: {exc}", is_error=True)
+            return ToolResult(
+                content=f"{self.name}: network error talking to Google: {exc}", is_error=True
+            )
         except Exception as exc:  # noqa: BLE001 — never let execute raise
             logger.exception("%s failed", self.name)
             return ToolResult(content=f"{self.name} failed: {exc}", is_error=True)
@@ -890,10 +890,7 @@ class TasksListTool(_GoogleTool):
 
         lines = [f"Tasks in {list_id!r} ({len(tasks)}):", ""]
         for t in tasks:
-            line = (
-                f"- {t.get('title') or '(untitled)'}\n"
-                f"  status: {t.get('status', 'unknown')}"
-            )
+            line = f"- {t.get('title') or '(untitled)'}\n  status: {t.get('status', 'unknown')}"
             if t.get("due"):
                 line += f"\n  due: {t['due']}"
             if t.get("id"):

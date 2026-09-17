@@ -25,6 +25,7 @@ Multiple accounts are separate `CLAUDE_CONFIG_DIR`s (the CLI keys both its
 credential file and, on macOS, its Keychain item on that directory), so any
 number of Claude logins coexist without touching the user's own ~/.claude.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -147,8 +148,13 @@ async def kill_tree(proc: Any) -> None:
     if sys.platform == "win32":
         with contextlib.suppress(Exception):
             killer = await asyncio.create_subprocess_exec(
-                "taskkill", "/PID", str(proc.pid), "/T", "/F",
-                stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+                "taskkill",
+                "/PID",
+                str(proc.pid),
+                "/T",
+                "/F",
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
             )
             await asyncio.wait_for(killer.wait(), timeout=5)
     else:
@@ -199,7 +205,7 @@ class ClaudeCodeTokenClient(BaseClient):
         supports_structured_output=False,
         supports_token_usage=True,
         supports_cost_usage=True,
-        is_subprocess=False,   # the HOST executes tools — that is the point
+        is_subprocess=False,  # the HOST executes tools — that is the point
         requires_workspace=False,
         streaming_granularity="token",
         drops=("temperature", "top_p", "top_k", "stop_sequences", "tool_choice"),
@@ -225,8 +231,12 @@ class ClaudeCodeTokenClient(BaseClient):
         event_sink: Any = None,
         **_ignored: Any,
     ) -> None:
-        super().__init__(api_key=api_key, base_url=base_url, default_headers=default_headers,
-                         event_sink=event_sink)
+        super().__init__(
+            api_key=api_key,
+            base_url=base_url,
+            default_headers=default_headers,
+            event_sink=event_sink,
+        )
         self._binary = binary_path or shutil.which("claude") or "claude"
         self._account_id = account_id
         self._account_label = account_label
@@ -253,7 +263,11 @@ class ClaudeCodeTokenClient(BaseClient):
     def _cwd(self) -> str:
         # an empty directory: no project CLAUDE.md, no .claude/ settings or
         # MCP config gets discovered from wherever the sidecar happens to run
-        root = Path(self._scratch) if self._scratch else Path(tempfile.gettempdir()) / "geny-claude-scratch"
+        root = (
+            Path(self._scratch)
+            if self._scratch
+            else Path(tempfile.gettempdir()) / "geny-claude-scratch"
+        )
         root.mkdir(parents=True, exist_ok=True)
         return str(root)
 
@@ -261,7 +275,14 @@ class ClaudeCodeTokenClient(BaseClient):
         """Everything that makes the call token-only. Optional flags a given
         CLI turned out not to know are dropped (see `_UNSUPPORTED`)."""
         skip = _UNSUPPORTED.get(self._binary, set())
-        argv = ["-p", "--verbose", "--input-format", "stream-json", "--output-format", "stream-json"]
+        argv = [
+            "-p",
+            "--verbose",
+            "--input-format",
+            "stream-json",
+            "--output-format",
+            "stream-json",
+        ]
 
         def opt(flag: str, *values: str) -> None:
             if flag not in skip:
@@ -320,8 +341,12 @@ class ClaudeCodeTokenClient(BaseClient):
         purpose: str = "",
     ) -> AsyncIterator[Dict[str, Any]]:
         request = self._build_request(
-            model_config=model_config, messages=messages, system=system,
-            tools=tools, tool_choice=tool_choice, stream=True,
+            model_config=model_config,
+            messages=messages,
+            system=system,
+            tools=tools,
+            tool_choice=tool_choice,
+            stream=True,
         )
         async for chunk in self._stream(request):
             yield chunk
@@ -341,15 +366,18 @@ class ClaudeCodeTokenClient(BaseClient):
             for _attempt in range(8):
                 argv = self._argv(request, prompt_file)
                 try:
-                    async for chunk in self._run(argv, env, cwd, envelope, tp.tool_names(request.tools),
-                                                 bool(request.tools)):
+                    async for chunk in self._run(
+                        argv, env, cwd, envelope, tp.tool_names(request.tools), bool(request.tools)
+                    ):
                         yield chunk
                     return
                 except _FlagRejected as rejected:
                     # an older CLI: forget that flag for this binary, retry
                     _UNSUPPORTED.setdefault(self._binary, set()).add(rejected.flag)
-            raise APIError("claude rejected too many flags — update Claude Code",
-                           category=ErrorCategory.BAD_REQUEST)
+            raise APIError(
+                "claude rejected too many flags — update Claude Code",
+                category=ErrorCategory.BAD_REQUEST,
+            )
         finally:
             with contextlib.suppress(OSError):
                 os.unlink(prompt_file)
@@ -377,10 +405,13 @@ class ClaudeCodeTokenClient(BaseClient):
         except FileNotFoundError as exc:
             raise APIError(
                 f"claude CLI not found ({self._binary}) — install Claude Code and retry.",
-                category=ErrorCategory.CLI_NOT_FOUND, cause=exc,
+                category=ErrorCategory.CLI_NOT_FOUND,
+                cause=exc,
             ) from exc
         except OSError as exc:  # E2BIG, EACCES, …
-            raise APIError(f"claude failed to start: {exc}", category=ErrorCategory.CLI_NOT_FOUND, cause=exc) from exc
+            raise APIError(
+                f"claude failed to start: {exc}", category=ErrorCategory.CLI_NOT_FOUND, cause=exc
+            ) from exc
 
         assert proc.stdin and proc.stdout and proc.stderr
         stderr_chunks: list[bytes] = []
@@ -417,16 +448,22 @@ class ClaudeCodeTokenClient(BaseClient):
             while True:
                 remaining = self._timeout_s - (time.monotonic() - started)
                 if remaining <= 0:
-                    raise APIError(f"claude timed out after {self._timeout_s:.0f}s",
-                                   category=ErrorCategory.CLI_TIMEOUT)
+                    raise APIError(
+                        f"claude timed out after {self._timeout_s:.0f}s",
+                        category=ErrorCategory.CLI_TIMEOUT,
+                    )
                 try:
                     line = await asyncio.wait_for(proc.stdout.readline(), timeout=remaining)
                 except asyncio.TimeoutError as exc:
-                    raise APIError(f"claude timed out after {self._timeout_s:.0f}s",
-                                   category=ErrorCategory.CLI_TIMEOUT) from exc
+                    raise APIError(
+                        f"claude timed out after {self._timeout_s:.0f}s",
+                        category=ErrorCategory.CLI_TIMEOUT,
+                    ) from exc
                 except ValueError as exc:  # a line over the reader limit
-                    raise APIError(f"claude output line too large: {exc}",
-                                   category=ErrorCategory.CLI_PROTOCOL_ERROR) from exc
+                    raise APIError(
+                        f"claude output line too large: {exc}",
+                        category=ErrorCategory.CLI_PROTOCOL_ERROR,
+                    ) from exc
                 if not line:
                     break
                 try:
@@ -443,7 +480,9 @@ class ClaudeCodeTokenClient(BaseClient):
                         delta = event.get("delta") or {}
                         if delta.get("type") == "text_delta" and delta.get("text"):
                             streamed_text = True
-                            visible = splitter.feed(delta["text"]) if tools_enabled else delta["text"]
+                            visible = (
+                                splitter.feed(delta["text"]) if tools_enabled else delta["text"]
+                            )
                             if not tools_enabled:
                                 splitter.visible.append(visible)
                             if visible:
@@ -454,8 +493,10 @@ class ClaudeCodeTokenClient(BaseClient):
                         elif delta.get("type") == "thinking_delta" and delta.get("thinking"):
                             thinking_parts.append(delta["thinking"])
                             yield {"type": "thinking_delta", "text": delta["thinking"]}
-                    elif event.get("type") == "content_block_start" and \
-                            ((event.get("content_block") or {}).get("type") in ("tool_use", "server_tool_use")):
+                    elif event.get("type") == "content_block_start" and (
+                        (event.get("content_block") or {}).get("type")
+                        in ("tool_use", "server_tool_use")
+                    ):
                         # a native tool reached the model despite --tools "":
                         # stop before the CLI can execute anything itself
                         native_tool = str((event.get("content_block") or {}).get("name") or "?")
@@ -466,7 +507,8 @@ class ClaudeCodeTokenClient(BaseClient):
                 elif kind == "assistant":
                     content = ((msg.get("message") or {}).get("content")) or []
                     text = "".join(
-                        str(b.get("text") or "") for b in content
+                        str(b.get("text") or "")
+                        for b in content
                         if isinstance(b, dict) and b.get("type") == "text"
                     )
                     if text:
@@ -474,21 +516,37 @@ class ClaudeCodeTokenClient(BaseClient):
                     model_used = str((msg.get("message") or {}).get("model") or model_used)
                 elif kind == "result":
                     result = msg
-                    if msg.get("is_error") or (msg.get("subtype") not in (None, "success")
-                                               and msg.get("subtype") != "error_max_turns"):
-                        error_text = str(msg.get("result") or msg.get("error") or msg.get("subtype"))
+                    if msg.get("is_error") or (
+                        msg.get("subtype") not in (None, "success")
+                        and msg.get("subtype") != "error_max_turns"
+                    ):
+                        error_text = str(
+                            msg.get("result") or msg.get("error") or msg.get("subtype")
+                        )
                     break
                 elif kind == "rate_limit_event":
-                    self._notify_host({"kind": "rate_limit", "info": msg.get("rate_limit_info") or msg})
+                    self._notify_host(
+                        {"kind": "rate_limit", "info": msg.get("rate_limit_info") or msg}
+                    )
                 elif kind == "system" and msg.get("subtype") == "init":
                     model_used = str(msg.get("model") or model_used)
                     exposed = [t for t in (msg.get("tools") or []) if isinstance(t, str)]
                     if exposed:
-                        self._notify_host({"kind": "notice", "level": "warn",
-                                    "message": f"Claude Code exposed {len(exposed)} built-in tool(s) "
-                                               f"({', '.join(exposed[:4])}…) — the call aborts if one is used."})
-                    self._notify_host({"kind": "init", "model": msg.get("model"),
-                                "apiKeySource": msg.get("apiKeySource")})
+                        self._notify_host(
+                            {
+                                "kind": "notice",
+                                "level": "warn",
+                                "message": f"Claude Code exposed {len(exposed)} built-in tool(s) "
+                                f"({', '.join(exposed[:4])}…) — the call aborts if one is used.",
+                            }
+                        )
+                    self._notify_host(
+                        {
+                            "kind": "init",
+                            "model": msg.get("model"),
+                            "apiKeySource": msg.get("apiKeySource"),
+                        }
+                    )
                 elif kind == "auth_status" and msg.get("error"):
                     error_text = str(msg.get("error"))
         finally:
@@ -522,7 +580,11 @@ class ClaudeCodeTokenClient(BaseClient):
             if category == ErrorCategory.UNKNOWN:
                 # a result the CLI reported (prompt too long, bad model…) is
                 # not fixed by retrying; only a missing result is transient
-                category = ErrorCategory.BAD_REQUEST if result is not None else ErrorCategory.CLI_PROTOCOL_ERROR
+                category = (
+                    ErrorCategory.BAD_REQUEST
+                    if result is not None
+                    else ErrorCategory.CLI_PROTOCOL_ERROR
+                )
             label = f" [{self._account_label}]" if self._account_label else ""
             raise APIError(f"Claude Code{label}: {error_text[:600]}", category=category)
 
@@ -549,10 +611,20 @@ class ClaudeCodeTokenClient(BaseClient):
         if text:
             blocks.append(ContentBlock(type="text", text=text, raw={"type": "text", "text": text}))
         for call in splitter.calls:
-            blocks.append(ContentBlock(
-                type="tool_use", tool_use_id=call.id, tool_name=call.name, tool_input=call.arguments,
-                raw={"type": "tool_use", "id": call.id, "name": call.name, "input": call.arguments},
-            ))
+            blocks.append(
+                ContentBlock(
+                    type="tool_use",
+                    tool_use_id=call.id,
+                    tool_name=call.name,
+                    tool_input=call.arguments,
+                    raw={
+                        "type": "tool_use",
+                        "id": call.id,
+                        "name": call.name,
+                        "input": call.arguments,
+                    },
+                )
+            )
         if not blocks:
             blocks.append(ContentBlock(type="text", text="", raw={"type": "text", "text": ""}))
 
@@ -566,8 +638,13 @@ class ClaudeCodeTokenClient(BaseClient):
             duration_ms=int((time.monotonic() - started) * 1000),
         )
         if splitter.malformed and not splitter.calls:
-            self._notify_host({"kind": "notice", "level": "warn",
-                        "message": "The model emitted a malformed tool call — it was ignored."})
+            self._notify_host(
+                {
+                    "kind": "notice",
+                    "level": "warn",
+                    "message": "The model emitted a malformed tool call — it was ignored.",
+                }
+            )
         yield {
             "type": "message_complete",
             "response": APIResponse(

@@ -158,13 +158,15 @@ class _TranscriptCollector:
     def _open_tool(self, tid: str, name: str, tool_input: Any, ts: str) -> None:
         if not name:
             return
-        step = self._append({
-            "type": "tool",
-            "id": tid,
-            "name": name,
-            "input": _clip_input(tool_input),
-            "ts": ts,
-        })
+        step = self._append(
+            {
+                "type": "tool",
+                "id": tid,
+                "name": name,
+                "input": _clip_input(tool_input),
+                "ts": ts,
+            }
+        )
         if step is not None and tid:
             self._by_id[tid] = step
 
@@ -527,8 +529,7 @@ class SubAgentManager:
             return False
         prefix = f"{sub_agent_id}:"
         to_cancel = [
-            t for aid, t in list(self._tasks.items())
-            if aid.startswith(prefix) and not t.done()
+            t for aid, t in list(self._tasks.items()) if aid.startswith(prefix) and not t.done()
         ]
         for t in to_cancel:
             t.cancel()

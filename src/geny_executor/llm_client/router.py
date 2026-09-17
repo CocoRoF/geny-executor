@@ -14,6 +14,7 @@ outage, missing CLI). A bad request is the request's fault and goes to the
 user. An account that failed is cooled down process-wide so sibling agents
 skip it too.
 """
+
 from __future__ import annotations
 
 from dataclasses import replace
@@ -60,8 +61,12 @@ class RouterClient(BaseClient):
         client_factory: Any = None,
         **_ignored: Any,
     ) -> None:
-        super().__init__(api_key=api_key, base_url=base_url, default_headers=default_headers,
-                         event_sink=event_sink)
+        super().__init__(
+            api_key=api_key,
+            base_url=base_url,
+            default_headers=default_headers,
+            event_sink=event_sink,
+        )
         self._targets = [t for t in (targets or []) if t.get("engineProvider") and t.get("model")]
         if not self._targets:
             raise APIError(
@@ -126,8 +131,9 @@ class RouterClient(BaseClient):
         if self._factory is not None:
             client = self._factory(target)
         else:
-            client = build_client(target, notify=self._notify, session_id=self._session_id,
-                                  timeout_s=self._timeout_s)
+            client = build_client(
+                target, notify=self._notify, session_id=self._session_id, timeout_s=self._timeout_s
+            )
         self._children[index] = client
         return client
 
@@ -138,12 +144,22 @@ class RouterClient(BaseClient):
             (cooling if failover.cooling(str(target.get("accountId") or "")) else ready).append(i)
         # everything cooling: still try, earliest recovery first — refusing
         # outright would turn a stale cooldown into an outage
-        cooling.sort(key=lambda i: (failover.cooling(str(self._targets[i].get("accountId") or "")) or (0, ""))[0])
+        cooling.sort(
+            key=lambda i: (
+                failover.cooling(str(self._targets[i].get("accountId") or "")) or (0, "")
+            )[0]
+        )
         return ready + cooling
 
-    def _prepare(self, index: int, model_config: Any, messages: Any, system: Any, tools: Any) -> tuple:
+    def _prepare(
+        self, index: int, model_config: Any, messages: Any, system: Any, tools: Any
+    ) -> tuple:
         target = self._targets[index]
-        cfg = replace(model_config, model=str(target["model"])) if model_config is not None else model_config
+        cfg = (
+            replace(model_config, model=str(target["model"]))
+            if model_config is not None
+            else model_config
+        )
         if target.get("engineProvider") != "anthropic":
             messages = failover.strip_cache_markers(messages)
             system = failover.strip_cache_markers(system)
@@ -159,27 +175,31 @@ class RouterClient(BaseClient):
         category = failover.category_of(exc)
         account = str(target.get("accountId") or "")
         failover.cool_down(account, failover.cooldown_for(category), str(exc)[:200])
-        self._notify_host({
-            "kind": "failover",
-            "accountId": account,
-            "from": _label(target),
-            "category": category.value,
-            "error": str(exc)[:400],
-            "remaining": remaining,
-        })
+        self._notify_host(
+            {
+                "kind": "failover",
+                "accountId": account,
+                "from": _label(target),
+                "category": category.value,
+                "error": str(exc)[:400],
+                "remaining": remaining,
+            }
+        )
 
     def _chosen(self, index: int) -> None:
         target = self._targets[index]
         self.last_target = target
         failover.clear_cooldown(str(target.get("accountId") or ""))
-        self._notify_host({
-            "kind": "route",
-            "accountId": target.get("accountId"),
-            "label": target.get("label"),
-            "accountKind": target.get("kind"),
-            "model": target.get("model"),
-            "index": index,
-        })
+        self._notify_host(
+            {
+                "kind": "route",
+                "accountId": target.get("accountId"),
+                "label": target.get("label"),
+                "accountKind": target.get("kind"),
+                "model": target.get("model"),
+                "index": index,
+            }
+        )
 
     async def create_message_stream(
         self,
@@ -199,8 +219,12 @@ class RouterClient(BaseClient):
             try:
                 child = self._child(index)
                 stream = child.create_message_stream(
-                    model_config=cfg, messages=msgs, system=sys_, tools=tls,
-                    tool_choice=tool_choice, purpose=purpose,
+                    model_config=cfg,
+                    messages=msgs,
+                    system=sys_,
+                    tools=tls,
+                    tool_choice=tool_choice,
+                    purpose=purpose,
                 )
                 async for chunk in stream:
                     if not started and chunk.get("type") in _CONTENT | {"message_complete"}:
@@ -218,7 +242,9 @@ class RouterClient(BaseClient):
                     if not started and remaining == 0 and category in failover.EXHAUSTED_TERMINAL:
                         # every hop is out of quota / logged out: Stage 6's
                         # backoff would only replay the whole route 3 more times
-                        raise APIError(str(exc), category=ErrorCategory.TERMINAL, cause=exc) from exc
+                        raise APIError(
+                            str(exc), category=ErrorCategory.TERMINAL, cause=exc
+                        ) from exc
                     raise
                 self._failed(index, exc, remaining)
         if last_exc is not None:
@@ -240,8 +266,13 @@ class RouterClient(BaseClient):
             cfg, msgs, sys_, tls = self._prepare(index, model_config, messages, system, tools)
             try:
                 response = await self._child(index).create_message(
-                    model_config=cfg, messages=msgs, system=sys_, tools=tls,
-                    tool_choice=tool_choice, purpose=purpose, response_format=response_format,
+                    model_config=cfg,
+                    messages=msgs,
+                    system=sys_,
+                    tools=tls,
+                    tool_choice=tool_choice,
+                    purpose=purpose,
+                    response_format=response_format,
                 )
                 self._chosen(index)
                 return response
@@ -250,7 +281,9 @@ class RouterClient(BaseClient):
                 remaining = len(order) - position - 1
                 if category not in failover.FAILOVER or remaining == 0:
                     if remaining == 0 and category in failover.EXHAUSTED_TERMINAL:
-                        raise APIError(str(exc), category=ErrorCategory.TERMINAL, cause=exc) from exc
+                        raise APIError(
+                            str(exc), category=ErrorCategory.TERMINAL, cause=exc
+                        ) from exc
                     raise
                 self._failed(index, exc, remaining)
         raise APIError("no route", category=ErrorCategory.UNKNOWN)

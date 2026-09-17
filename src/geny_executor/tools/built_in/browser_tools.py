@@ -161,7 +161,7 @@ def _parse_target(target: Any) -> Any:
     if _REF_PATTERN.match(t):
         return {"by": "node_id", "node_id": t}
     if t.startswith(_TEXT_PREFIX):
-        return {"by": "text", "text": t[len(_TEXT_PREFIX):]}
+        return {"by": "text", "text": t[len(_TEXT_PREFIX) :]}
     return t
 
 
@@ -220,9 +220,7 @@ async def _snapshot_text(
     out.append("```yaml")
     out.append(tree)
     out.append("```")
-    out.append(
-        "\nInteract via BrowserAct using a [ref=...] handle, text=..., or a CSS selector."
-    )
+    out.append("\nInteract via BrowserAct using a [ref=...] handle, text=..., or a CSS selector.")
     return "\n".join(out)
 
 
@@ -285,9 +283,7 @@ def _effects_summary(result: Dict[str, Any]) -> str:
         return f"### Error\nstatus: {status}\n{result.get('error', 'unknown error')}"
     effects = result.get("effects") or {}
     scalars = {
-        k: v
-        for k, v in effects.items()
-        if not isinstance(v, (list, dict)) and k not in ("body",)
+        k: v for k, v in effects.items() if not isinstance(v, (list, dict)) and k not in ("body",)
     }
     lines = [f"status: {status}"]
     for k, v in scalars.items():
@@ -395,9 +391,7 @@ class BrowserNavigateTool(_BrowserToolBase):
         if status != "ok":
             return ToolResult(content=_effects_summary(result), is_error=True)
         budget = int(input.get("max_nodes") or _SNAPSHOT_NODE_BUDGET)
-        text = await _snapshot_text(
-            session, header=_effects_summary(result), node_budget=budget
-        )
+        text = await _snapshot_text(session, header=_effects_summary(result), node_budget=budget)
         return ToolResult(
             content=text,
             metadata={"url": session.current_url, "effects": result.get("effects", {})},
@@ -549,8 +543,17 @@ class BrowserActTool(_BrowserToolBase):
         call: Dict[str, Any] = {"tool": action}
         if input.get("target") is not None:
             call["target"] = _parse_target(input["target"])
-        for key in ("text", "append", "value", "by_text", "delta_x", "delta_y",
-                    "condition", "selector", "timeout_ms"):
+        for key in (
+            "text",
+            "append",
+            "value",
+            "by_text",
+            "delta_x",
+            "delta_y",
+            "condition",
+            "selector",
+            "timeout_ms",
+        ):
             if input.get(key) is not None:
                 call[key] = input[key]
 
@@ -635,7 +638,10 @@ class BrowserExtractTool(_BrowserToolBase):
         payload = effects.get("results", effects)
         return ToolResult(
             content=json.dumps(payload, ensure_ascii=False, indent=1, default=str),
-            metadata={"url": session.current_url, "count": len(payload) if isinstance(payload, list) else None},
+            metadata={
+                "url": session.current_url,
+                "count": len(payload) if isinstance(payload, list) else None,
+            },
         )
 
 

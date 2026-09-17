@@ -67,16 +67,14 @@ def _result_text_parts(block: Dict[str, Any]) -> List[Dict[str, Any]]:
     content = block.get("content")
     if not isinstance(content, list):
         return []
-    return [b for b in content
-            if isinstance(b, dict) and b.get("type") == "text"]
+    return [b for b in content if isinstance(b, dict) and b.get("type") == "text"]
 
 
 def _content_hash(block: Dict[str, Any]) -> str:
     """Stable digest of a tool_result's content (str or block list)."""
     content = block.get("content")
     try:
-        payload = json.dumps(content, ensure_ascii=False, sort_keys=True,
-                             default=str)
+        payload = json.dumps(content, ensure_ascii=False, sort_keys=True, default=str)
     except Exception:  # noqa: BLE001 — unhashable exotic content: skip dedup
         return ""
     return hashlib.sha1(payload.encode("utf-8", "replace")).hexdigest()
@@ -87,8 +85,11 @@ def _content_size(block: Dict[str, Any]) -> int:
     if isinstance(content, str):
         return len(content)
     if isinstance(content, list):
-        return sum(len(b.get("text", "")) for b in content
-                   if isinstance(b, dict) and b.get("type") == "text")
+        return sum(
+            len(b.get("text", ""))
+            for b in content
+            if isinstance(b, dict) and b.get("type") == "text"
+        )
     return 0
 
 
@@ -99,9 +100,11 @@ def _strip_images_in(blocks: List[Any]) -> int:
     for i, b in enumerate(blocks):
         if not isinstance(b, dict):
             continue
-        if (b.get("type") == "image"
-                and isinstance(b.get("source"), dict)
-                and b["source"].get("type") == "base64"):
+        if (
+            b.get("type") == "image"
+            and isinstance(b.get("source"), dict)
+            and b["source"].get("type") == "base64"
+        ):
             blocks[i] = {"type": "text", "text": _IMAGE_NOTE}
             removed += 1
         elif b.get("type") == "tool_result" and isinstance(b.get("content"), list):
@@ -115,8 +118,9 @@ def _trim_result(block: Dict[str, Any], keep: int) -> int:
     content = block.get("content")
     if isinstance(content, str):
         dropped = len(content) - keep
-        block["content"] = (content[:keep]
-                            + f"\n… [{dropped} chars trimmed during context compaction]")
+        block["content"] = (
+            content[:keep] + f"\n… [{dropped} chars trimmed during context compaction]"
+        )
         return dropped
     if isinstance(content, list):
         dropped = 0
@@ -135,8 +139,7 @@ def _trim_result(block: Dict[str, Any], keep: int) -> int:
         if dropped > 0:
             parts = _result_text_parts(block)
             if parts:
-                parts[-1]["text"] += (
-                    f"\n… [{dropped} chars trimmed during context compaction]")
+                parts[-1]["text"] += f"\n… [{dropped} chars trimmed during context compaction]"
         return dropped
     return 0
 
@@ -155,8 +158,7 @@ def prune_messages(
     ``trimmed`` (oversized results shortened), ``chars_saved`` (text chars
     removed, images excluded).
     """
-    metrics = PruneMetrics(deduped=0, images_stripped=0, trimmed=0,
-                           chars_saved=0)
+    metrics = PruneMetrics(deduped=0, images_stripped=0, trimmed=0, chars_saved=0)
     if not messages:
         return metrics
     cutoff = max(0, len(messages) - max(0, protect_last))

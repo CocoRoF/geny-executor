@@ -9,9 +9,7 @@ from geny_executor.core.state import TokenUsage
 from geny_executor.stages.s07_token.interface import CostCalculator
 
 
-def _lookup_prices(
-    pricing: Dict[str, Dict[str, float]], model: str
-) -> Optional[Dict[str, float]]:
+def _lookup_prices(pricing: Dict[str, Dict[str, float]], model: str) -> Optional[Dict[str, float]]:
     """Resolve a model id to its price row: exact match → longest key prefix.
 
     2.51.0 (audit C4): the old ``model.startswith(key.rsplit("-",1)[0])``
@@ -64,9 +62,7 @@ def _price_usage(usage: TokenUsage, prices: Dict[str, float]) -> float:
             * prices.get("cache_write", input_rate * 1.25)
         )
         cost += (
-            usage.cache_read_input_tokens
-            / 1_000_000
-            * prices.get("cache_read", input_rate * 0.1)
+            usage.cache_read_input_tokens / 1_000_000 * prices.get("cache_read", input_rate * 0.1)
         )
     else:  # OpenAI / Google semantics: input_tokens already includes cache reads
         cache_read_rate = prices.get("cache_read")

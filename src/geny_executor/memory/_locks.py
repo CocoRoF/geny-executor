@@ -101,7 +101,7 @@ class LoopAgnosticLock:
             self._lock.acquire()
             with handoff:
                 if state["cancelled"]:
-                    self._lock.release()   # nobody is waiting for it now
+                    self._lock.release()  # nobody is waiting for it now
                     return False
                 state["held"] = True
                 return True

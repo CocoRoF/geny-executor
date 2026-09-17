@@ -290,9 +290,7 @@ def _image_blocks_of(content: Any) -> List[Dict[str, Any]]:
     """Anthropic-style image blocks contained in one message's content."""
     if not isinstance(content, list):
         return []
-    return [
-        b for b in content if isinstance(b, dict) and b.get("type") == "image"
-    ]
+    return [b for b in content if isinstance(b, dict) and b.get("type") == "image"]
 
 
 def _render_block_for_history(block: Any) -> str:
@@ -388,11 +386,7 @@ def flatten_messages_to_prompt(messages: List[Dict[str, Any]]) -> str:
     current_input = parts[-1] if parts else ""
     preamble = ""
     if len(parts) > 1:
-        preamble = (
-            "## Conversation so far\n\n"
-            + "\n\n".join(parts[:-1])
-            + "\n\n## Current input\n"
-        )
+        preamble = "## Conversation so far\n\n" + "\n\n".join(parts[:-1]) + "\n\n## Current input\n"
     return (preamble + current_input).strip()
 
 
@@ -480,9 +474,7 @@ def build_stream_json_stdin(messages: List[Dict[str, Any]]) -> bytes:
     # Older turns keep the text placeholder (replaying stale frames would
     # bloat every request for no recall value).
     current_images = (
-        _image_blocks_of(messages[last_user_idx].get("content"))
-        if last_user_idx >= 0
-        else []
+        _image_blocks_of(messages[last_user_idx].get("content")) if last_user_idx >= 0 else []
     )
     content: Any
     if current_images:

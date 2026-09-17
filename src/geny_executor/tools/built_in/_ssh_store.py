@@ -132,7 +132,9 @@ class SSHServerStore:
             sdir.mkdir(parents=True, exist_ok=True)
             path = sdir / "servers.json"
             tmp = sdir / "servers.json.tmp"
-            tmp.write_text(json.dumps(list(servers), ensure_ascii=False, indent=2), encoding="utf-8")
+            tmp.write_text(
+                json.dumps(list(servers), ensure_ascii=False, indent=2), encoding="utf-8"
+            )
             # Credentials on disk — keep them owner-only.
             try:
                 os.chmod(tmp, 0o600)

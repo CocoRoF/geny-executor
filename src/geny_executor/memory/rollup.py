@@ -169,9 +169,7 @@ def _flatten_turn(turn: object) -> Optional[str]:
     return f"[{role}] {text}"
 
 
-def build_segment_instruction(
-    *, prior_digest: str, raw_turns: str, max_chars: int
-) -> str:
+def build_segment_instruction(*, prior_digest: str, raw_turns: str, max_chars: int) -> str:
     """The proper, preservation-focused rolling-digest instruction.
 
     Folds ``prior_digest`` + ``raw_turns`` into an updated digest. Structured (so it is
@@ -233,9 +231,7 @@ EVERGREEN_FILENAME = "__evergreen__.md"
 EVERGREEN_CATEGORY = "critical"
 
 
-def build_evergreen_instruction(
-    *, current: str, recent_digest: str, max_chars: int
-) -> str:
+def build_evergreen_instruction(*, current: str, recent_digest: str, max_chars: int) -> str:
     """Instruction for the L3 EVERGREEN merge — the durable, always-loaded core.
 
     Merges the latest rolling digest into the current evergreen, keeping only
@@ -366,9 +362,7 @@ class MemoryRollup:
                 max_chars=self._digest_max_chars,
             )
             try:
-                data = await self._complete_structured(
-                    instruction, SEGMENT_DIGEST_SCHEMA
-                )
+                data = await self._complete_structured(instruction, SEGMENT_DIGEST_SCHEMA)
             except Exception:  # noqa: BLE001 — host LLM; never fatal
                 logger.warning("rollup: structured segment failed", exc_info=True)
                 data = None
@@ -423,7 +417,8 @@ class MemoryRollup:
 
         if self._complete_structured is not None:
             instruction = build_evergreen_instruction_structured(
-                current=current or "", recent_digest=recent or "",
+                current=current or "",
+                recent_digest=recent or "",
                 max_chars=self._evergreen_max_chars,
             )
             try:
@@ -439,7 +434,8 @@ class MemoryRollup:
                 return None
         else:
             instruction = build_evergreen_instruction(
-                current=current or "", recent_digest=recent or "",
+                current=current or "",
+                recent_digest=recent or "",
                 max_chars=self._evergreen_max_chars,
             )
             try:

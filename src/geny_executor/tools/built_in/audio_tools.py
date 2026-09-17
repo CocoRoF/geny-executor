@@ -162,11 +162,13 @@ def _sanitize_sidecar(raw: Any) -> Optional[dict]:
             if not isinstance(seg, dict):
                 continue
             try:
-                clean.append({
-                    "start": float(seg.get("start", 0.0)),
-                    "end": float(seg.get("end", 0.0)),
-                    "text": str(seg.get("text", "")),
-                })
+                clean.append(
+                    {
+                        "start": float(seg.get("start", 0.0)),
+                        "end": float(seg.get("end", 0.0)),
+                        "text": str(seg.get("text", "")),
+                    }
+                )
             except (TypeError, ValueError):
                 continue
         out["segments"] = clean
@@ -192,7 +194,11 @@ def _load_sidecar(audio: Path, source_sha: str) -> Optional[dict]:
 
 
 def _write_sidecar(
-    audio: Path, source_sha: str, result: STTResult, *, timestamps: bool,
+    audio: Path,
+    source_sha: str,
+    result: STTResult,
+    *,
+    timestamps: bool,
 ) -> dict:
     data = result.to_dict()
     data["source_sha256"] = source_sha
@@ -306,8 +312,8 @@ class AudioTranscribeTool(_AudioToolBase):
         if size > _MAX_AUDIO_BYTES:
             return _err(
                 "TOO_LARGE",
-                f"'{target.name}' is {size // (1024*1024)}MB (max "
-                f"{_MAX_AUDIO_BYTES // (1024*1024)}MB). Split the audio first.",
+                f"'{target.name}' is {size // (1024 * 1024)}MB (max "
+                f"{_MAX_AUDIO_BYTES // (1024 * 1024)}MB). Split the audio first.",
             )
 
         include_segments = bool(input.get("timestamps"))
@@ -325,8 +331,8 @@ class AudioTranscribeTool(_AudioToolBase):
             if len(audio_bytes) > _MAX_AUDIO_BYTES:
                 return _err(
                     "TOO_LARGE",
-                    f"'{target.name}' is {len(audio_bytes) // (1024*1024)}MB (max "
-                    f"{_MAX_AUDIO_BYTES // (1024*1024)}MB). Split the audio first.",
+                    f"'{target.name}' is {len(audio_bytes) // (1024 * 1024)}MB (max "
+                    f"{_MAX_AUDIO_BYTES // (1024 * 1024)}MB). Split the audio first.",
                 )
             source_sha = hashlib.sha256(audio_bytes).hexdigest()
 
@@ -335,9 +341,13 @@ class AudioTranscribeTool(_AudioToolBase):
                 # Hit on the recorded timestamps FLAG, not segment count —
                 # silent audio / no-segment servers must still cache.
                 if cached is not None and (not include_segments or cached.get("timestamps")):
-                    return ToolResult(content=_format_transcript(
-                        cached, cached=True, include_segments=include_segments,
-                    ))
+                    return ToolResult(
+                        content=_format_transcript(
+                            cached,
+                            cached=True,
+                            include_segments=include_segments,
+                        )
+                    )
 
             try:
                 provider = _build_provider(cfg)
@@ -364,7 +374,10 @@ class AudioTranscribeTool(_AudioToolBase):
             # the paid transcript — return it with a warning instead.
             try:
                 data = await asyncio.to_thread(
-                    _write_sidecar, target, source_sha, result,
+                    _write_sidecar,
+                    target,
+                    source_sha,
+                    result,
                     timestamps=include_segments,
                 )
                 warning = ""
@@ -372,9 +385,14 @@ class AudioTranscribeTool(_AudioToolBase):
                 data = result.to_dict()
                 data["source_file"] = target.name
                 warning = f"\n(warning: transcript cache could not be saved: {exc})"
-            return ToolResult(content=_format_transcript(
-                data, cached=False, include_segments=include_segments,
-            ) + warning)
+            return ToolResult(
+                content=_format_transcript(
+                    data,
+                    cached=False,
+                    include_segments=include_segments,
+                )
+                + warning
+            )
 
 
 class AudioListFilesTool(_AudioToolBase):
@@ -424,8 +442,16 @@ class AudioListFilesTool(_AudioToolBase):
             out: List[dict] = []
             truncated = False
             wd = Path(working_dir).resolve() if working_dir else root
-            skip_dirs = {"node_modules", ".git", ".venv", "venv", "__pycache__",
-                         ".canvas-preview", ".geny-sync", ".geny-sync-tmp"}
+            skip_dirs = {
+                "node_modules",
+                ".git",
+                ".venv",
+                "venv",
+                "__pycache__",
+                ".canvas-preview",
+                ".geny-sync",
+                ".geny-sync-tmp",
+            }
             for droot, dirs, files in _os.walk(root, followlinks=False):
                 # prune heavy trees BEFORE descending — the old rglob walked
                 # multi-GB node_modules just to find nothing
@@ -447,11 +473,13 @@ class AudioListFilesTool(_AudioToolBase):
                         size = fp.stat().st_size
                     except OSError:
                         continue
-                    out.append({
-                        "path": rel,
-                        "size_bytes": size,
-                        "transcribed": _sidecar_path(fp).exists(),
-                    })
+                    out.append(
+                        {
+                            "path": rel,
+                            "size_bytes": size,
+                            "transcribed": _sidecar_path(fp).exists(),
+                        }
+                    )
             return out, truncated
 
         files, truncated = await asyncio.to_thread(_scan)

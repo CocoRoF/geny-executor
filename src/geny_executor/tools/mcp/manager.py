@@ -114,6 +114,7 @@ def _streamable_factory(client: Any, url: str, headers: Optional[Dict[str, str]]
     2.x: ``streamable_http_client(url, http_client=...)`` — headers ride a
     pre-configured httpx client built by the SDK's own helper."""
     if getattr(client, "__name__", "") == "streamable_http_client":
+
         def _factory():
             http_client = None
             if headers:
@@ -121,8 +122,11 @@ def _streamable_factory(client: Any, url: str, headers: Optional[Dict[str, str]]
 
                 http_client = create_mcp_http_client(headers=dict(headers))
             return client(url, http_client=http_client)
+
         return _factory
     return lambda: client(url, headers=headers)
+
+
 _HTTP_TRANSPORTS = _SSE_TRANSPORTS | _STREAMABLE_HTTP_TRANSPORTS
 
 
@@ -263,7 +267,11 @@ class MCPServerConnection:
             if not allowed:
                 return
             names = {n.strip() for n in allowed.split(",") if n.strip()}
-            cmd = os.path.basename(str(self.config.command or "").split()[0]) if self.config.command else ""
+            cmd = (
+                os.path.basename(str(self.config.command or "").split()[0])
+                if self.config.command
+                else ""
+            )
             if cmd not in names:
                 raise MCPConnectionError(
                     self.config.name,
@@ -365,11 +373,11 @@ class MCPServerConnection:
 
         headers = self.config.headers or None
         if use_sse:
+
             def transport_factory():
                 return remote_client(self.config.url, headers=headers)
         else:
-            transport_factory = _streamable_factory(
-                remote_client, self.config.url, headers)
+            transport_factory = _streamable_factory(remote_client, self.config.url, headers)
         await self._attach_session(
             transport_factory,
             client_session_cls=ClientSession,
