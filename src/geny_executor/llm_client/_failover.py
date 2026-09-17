@@ -55,9 +55,21 @@ def snapshot() -> dict[str, dict[str, Any]]:
 
 
 # ── error classification ──────────────────────────────────────────────
+#: "This account cannot answer right now, and another one might."
+#:
+#: Rate limits and spend caps are the same thing to a router: the account is
+#: alive, the request is fine, and the next hop should take it. Keeping them
+#: apart cost a production turn — a Claude subscription answered
+#: ``You've hit your monthly spend limit``, which matched none of the
+#: rate-limit wording, was classified as a bad request, and failed the turn
+#: outright while a working OpenAI account sat next in the route.
 _RATE_HINTS = re.compile(
     r"rate.?limit|usage limit|limit reached|quota|too many requests|429|"
-    r"resets? (at|in)|out of (extra )?usage|overloaded|capacity",
+    r"resets? (at|in)|out of (extra )?usage|overloaded|capacity|"
+    # spend caps, credit exhaustion, billing stops — an empty wallet is a
+    # limit, and the fallback exists for exactly this
+    r"spend limit|spending limit|credit balance|insufficient[_ ]quota|"
+    r"billing|payment required|402",
     re.I,
 )
 _AUTH_HINTS = re.compile(

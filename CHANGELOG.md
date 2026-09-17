@@ -1,5 +1,22 @@
 # Changelog
 
+## [2.66.2] — 2026-09-17
+
+### Fixed (a spend cap failed the turn instead of falling back)
+
+A production Claude subscription answered:
+
+    You've hit your monthly spend limit · raise it at claude.ai/settings/usage
+
+That wording matched none of the rate-limit patterns, so it was classified as
+a bad request — which does not fail over — and the turn died with a working
+OpenAI account sitting next in the route.
+
+To a router a spend cap and a rate limit are the same thing: the account is
+alive, the request is fine, and the next hop should take it. Spend limits,
+credit exhaustion, `insufficient_quota`, billing stops and HTTP 402 now
+classify as rate-limited.
+
 ## [2.66.1] — 2026-09-17
 
 ### Fixed (a reasoning model could not answer a single turn)
