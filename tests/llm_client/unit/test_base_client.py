@@ -305,10 +305,14 @@ def test_openai_declared_drops_emit() -> None:
     request = _build(
         client, ModelConfig(model="gpt-4o", thinking_enabled=True, top_k=3)
     )
-    assert request.thinking is None
+    # Thinking is no longer dropped at the client boundary: OpenAI's
+    # reasoning families do think, and the budget has to survive far enough
+    # to pick the wire. gpt-4o's lack of a reasoning mode is handled where
+    # the model is known — see test_openai_client.
+    assert request.thinking == {"type": "enabled", "budget_tokens": 10000}
     assert request.top_k is None
     dropped = _dropped(events)
-    assert dropped["thinking_enabled"]["value"] is True
+    assert "thinking_enabled" not in dropped
     assert dropped["top_k"]["value"] == 3
 
 

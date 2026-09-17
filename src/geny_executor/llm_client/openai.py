@@ -15,6 +15,7 @@ from typing import Any, AsyncIterator, Dict, List, Optional
 from geny_executor.core.errors import APIError, ErrorCategory
 from geny_executor.core.state import TokenUsage
 from geny_executor.llm_client.base import BaseClient, ClientCapabilities
+from geny_executor.llm_client.responses_wire import ResponsesClient
 from geny_executor.llm_client.translators import (
     canonical_messages_to_openai,
     canonical_thinking_to_openai,
@@ -82,6 +83,27 @@ def _model_rejects_sampling_controls(model: str) -> bool:
     return any(model.startswith(prefix) for prefix in _MAX_COMPLETION_TOKENS_PREFIXES)
 
 
+class OpenAIResponsesClient(ResponsesClient):
+    """The Responses wire under an OpenAI API key.
+
+    Same wire the Codex subscription uses; the only difference is the host
+    and a plain ``Authorization: Bearer <api key>``. It exists because
+    Chat Completions will not carry tools and reasoning together (see
+    ``_prefers_responses`` below), and an agent needs both.
+    """
+
+    provider = "openai"
+    label = "OpenAI"
+    base_url_default = "https://api.openai.com/v1"
+
+    def _effort_for(self, request: APIRequest) -> Optional[str]:
+        """Use the canonical translator rather than the wire's default, so a
+        Stage 8 thinking budget means the same thing on both OpenAI wires."""
+        if self._effort:
+            return self._effort
+        return canonical_thinking_to_openai(request.thinking)
+
+
 class OpenAIClient(BaseClient):
     """OpenAI Chat Completions API client.
 
@@ -90,8 +112,14 @@ class OpenAIClient(BaseClient):
 
     provider = "openai"
     _sdk_module = "openai"
+    # ``supports_thinking`` is True because the reasoning families do: a
+    # thinking budget becomes a ``reasoning_effort``. It read False here for
+    # as long as this client existed, which quietly threw every Stage 8
+    # budget away before it reached either wire — including the one branch
+    # below that was written to honour it. Models that have no reasoning
+    # mode are filtered per-request, not per-client.
     capabilities = ClientCapabilities(
-        supports_thinking=False,
+        supports_thinking=True,
         supports_tools=True,
         supports_streaming=True,
         supports_tool_choice=True,
@@ -107,7 +135,7 @@ class OpenAIClient(BaseClient):
         is_subprocess=False,
         requires_workspace=False,
         streaming_granularity="token",
-        drops=("thinking_enabled", "top_k"),
+        drops=("top_k",),
     )
 
     def __init__(
@@ -124,10 +152,14 @@ class OpenAIClient(BaseClient):
             event_sink=event_sink,
         )
         self._client: Optional[Any] = None
+        self._responses: Optional[OpenAIResponsesClient] = None
 
     def configure(self, **kwargs: Any) -> None:
         super().configure(**kwargs)
         self._client = None
+        # New credentials or a new endpoint — the Responses delegate holds
+        # the old ones and must be rebuilt, not reused.
+        self._responses = None
 
     def _get_client(self) -> Any:
         if self._client is None:
@@ -190,7 +222,53 @@ class OpenAIClient(BaseClient):
         retry["max_completion_tokens"] = retry.pop("max_tokens")
         return retry
 
+    # ── the two wires ────────────────────────────────────────────────
+    #
+    # OpenAI serves the same models over Chat Completions and over Responses,
+    # and they are not interchangeable: Chat Completions refuses function
+    # tools on a reasoning model unless reasoning is switched off outright.
+    #
+    #   Function tools with reasoning_effort are not supported for
+    #   gpt-5.6-terra in /v1/chat/completions. To use function tools, use
+    #   /v1/responses or set reasoning_effort to 'none'.
+    #
+    # An agent always carries tools, so on a reasoning model this client
+    # would have had to give up reasoning on every turn. It sends those
+    # turns to Responses instead, where both fit. Everything else — every
+    # non-reasoning model, and every compatible server that does not
+    # implement ``/responses`` — stays on Chat Completions.
+
+    #: Set False by subclasses pointed at servers that only speak
+    #: Chat Completions (vLLM, Ollama, LM Studio).
+    speaks_responses = True
+
+    def _prefers_responses(self, request: APIRequest) -> bool:
+        if not self.speaks_responses or not request.tools:
+            return False
+        if not _model_rejects_sampling_controls(request.model):
+            return False
+        # A base_url override points somewhere that is not OpenAI; assume it
+        # speaks the wire it was configured for.
+        if self._base_url and "openai.com" not in self._base_url:
+            return False
+        return True
+
+    def _responses_client(self) -> OpenAIResponsesClient:
+        client = self._responses
+        if client is None:
+            client = OpenAIResponsesClient(
+                api_key=self._api_key,
+                base_url=self._base_url or None,
+                default_headers=self._default_headers,
+                event_sink=self._event_sink,
+            )
+            client.provider = self.provider
+            self._responses = client
+        return client
+
     async def _send(self, request: APIRequest, *, purpose: str = "") -> APIResponse:
+        if self._prefers_responses(request):
+            return await self._responses_client()._send(request, purpose=purpose)
         client = self._get_client()
         kwargs = self._build_kwargs(request)
         raw = await self._invoke_with_heal(
@@ -218,6 +296,10 @@ class OpenAIClient(BaseClient):
             tool_choice=tool_choice,
             stream=True,
         )
+        if self._prefers_responses(request):
+            async for chunk in self._responses_client()._stream(request):
+                yield chunk
+            return
         client = self._get_client()
         kwargs = self._build_kwargs(request)
         kwargs["stream"] = True
@@ -359,7 +441,9 @@ class OpenAIClient(BaseClient):
         if request.tool_choice:
             kwargs["tool_choice"] = canonical_tool_choice_to_openai(request.tool_choice)
 
-        if request.thinking:
+        if request.thinking and _model_rejects_sampling_controls(request.model):
+            # Only the reasoning families take this kwarg; on gpt-4o and the
+            # rest it is a 400.
             effort = canonical_thinking_to_openai(request.thinking)
             # Chat Completions refuses the combination outright:
             #

@@ -90,7 +90,10 @@ class TestOpenAIConformance(ConformanceTestSuite):
 
     def test_openai_capabilities(self) -> None:
         client = self.make_client()
-        assert client.supports("thinking") is False
+        # The reasoning families think, and a thinking budget reaches them as
+        # a reasoning_effort. Models without a reasoning mode are filtered
+        # per-request (see test_openai_responses_routing), not by this flag.
+        assert client.supports("thinking") is True
         assert client.supports("top_k") is False
         assert client.supports("tools") is True
         assert client.supports("tool_choice") is True

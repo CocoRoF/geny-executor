@@ -23,6 +23,8 @@ class VLLMClient(OpenAIClient):
     """vLLM client. Reuses the OpenAI SDK against a local ``base_url``."""
 
     provider = "vllm"
+    #: A vLLM server implements Chat Completions only.
+    speaks_responses = False
     capabilities = ClientCapabilities(
         supports_thinking=False,
         supports_tools=False,

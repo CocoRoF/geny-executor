@@ -1,5 +1,41 @@
 # Changelog
 
+## [2.67.0] — 2026-09-17
+
+### Fixed (the gpt-5 fix in 2.66.3 was not a fix)
+
+2.66.3 dropped the reasoning effort so that the tools could go through. It
+did not work: the refusal is about the model's reasoning, not about our
+kwarg, and OpenAI refuses function tools on a reasoning model unless
+reasoning is explicitly turned *off*. There was no version of this where
+Chat Completions carried both.
+
+Worse, the effort had never reached that wire at all — `OpenAIClient`
+declared `supports_thinking=False`, so every Stage 8 thinking budget was
+discarded at the client boundary before any of that code ran.
+
+Reasoning turns that carry tools now go to the Responses API, where tools
+and reasoning both fit:
+
+  · `llm_client/responses_wire.py` (new) — the Responses wire, extracted
+    whole from the Codex client: the input translation, the tool shape, the
+    SSE consumption, the reasoning block, the usage accounting. Subclasses
+    supply only the endpoint and who they are.
+  · `CodexResponsesClient` is now that wire plus its OAuth refresh and its
+    ChatGPT headers — 470 lines down to 145.
+  · `OpenAIResponsesClient` (new) is the same wire under an API key.
+  · `OpenAIClient` routes to it for reasoning-family models when the request
+    carries tools, and stays on Chat Completions for everything else.
+    Compatible servers that implement no `/responses` — vLLM, Ollama, LM
+    Studio — never route (`speaks_responses = False`).
+  · `supports_thinking` is now True for OpenAI, and `reasoning_effort` is
+    gated per-model rather than per-client, so it is never sent to gpt-4o.
+
+The extraction is the point. The Chat Completions client and the Codex
+client had each been taught separately which model family rejects which
+parameter, and the third time that knowledge was applied to only one of
+them, a correctly configured production account could not answer.
+
 ## [2.66.3] — 2026-09-17
 
 ### Fixed (an agent on a gpt-5 model could not take a single turn)

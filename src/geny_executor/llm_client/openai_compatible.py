@@ -97,6 +97,9 @@ class OpenAICompatibleClient(OpenAIClient):
     #: registered/instantiated directly.
     _profile: ProviderProfile
 
+    #: Ollama, LM Studio and friends implement Chat Completions only.
+    speaks_responses = False
+
     def __init__(
         self,
         api_key: str = "",
