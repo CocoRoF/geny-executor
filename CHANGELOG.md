@@ -1,5 +1,63 @@
 # Changelog
 
+## [2.66.0] — 2026-09-17
+
+### Fixed (a turn ended on the iteration its tools ran — every API backend)
+
+Stage 10 executes the pending tool calls and then empties
+`state.pending_tool_calls`. Every stage after it — the adaptive classifier, the
+signal evaluator, the loop controllers — asked "did this iteration use tools?"
+by reading that list, and got "no" on precisely the iteration that did.
+
+So a first turn that called a tool was classified `easy` and completed: the
+tool ran, its result was appended to the history, and the model never saw it.
+What reached the user was whatever the model had written *before* dispatching
+the call — a guess, delivered as an answer. The `claude_code_cli` backend hid
+this because the CLI runs its own loop internally; every API backend sat on it.
+
+`PipelineState.has_fresh_tool_results` is the missing evidence — results exist
+AND Stage 10 stamped this iteration — and Stages 14 and 16 now read it.
+
+### Added (one conversation, many accounts)
+
+Three providers, registered like any other:
+
+| Provider | What it is |
+|---|---|
+| `geny_router` | An ordered route of accounts. Picks who answers this call, fails over when one cannot, cools a failed account down process-wide so sibling agents skip it. |
+| `geny_claude_code` | Claude Code as a **token generator** — tools off, one generation, text out. The harness keeps the tool loop, so a Claude subscription is a model behind this pipeline rather than a second agent beside it. |
+| `geny_codex` | A ChatGPT/Codex plan over the Responses API. Native `function_call` items become canonical `tool_use` blocks; no `codex` binary, nothing written to `~/.codex`. |
+
+History stays canonical, so switching model or account mid-conversation
+continues the SAME conversation with the same tools, memory, hooks and
+permission policy. Failover is deliberately narrow: only before the first
+token, and only for failures another account can plausibly fix.
+
+`ProviderCredentials.extras` is the constructor surface for these three
+(`ROUTED_PROVIDERS`) — a host can add an account channel without a library
+release.
+
+Supporting: `llm_client/text_tool_protocol.py` drives the tool loop through a
+model that can only write text, and `llm_client/_failover.py` owns the shared
+cool-down state and failure classification.
+
+### Changed (one harness — breaking for hosts that listed presets)
+
+`build_manifest` materialises a single blueprint. The `vtuber` chain is gone:
+conversation does not need a weaker pipeline — the Stage 14 adaptive classifier
+already answers a chat turn in one pass and only opens the full loop when a
+turn reaches for a tool — and two chains meant every improvement had to be
+made, and tested, twice.
+
+- `known_manifest_presets()` → `["default"]`; `preset_catalog()` → one entry.
+- `worker_adaptive`, `vtuber`, `claude_code_worker`, `claude_code_vtuber` still
+  *resolve*, so an environment stored before this release keeps loading. They
+  build the canonical blueprint.
+- Stage 6 routes `passthrough`, not `adaptive`. The model is the one the
+  account route names; a stage substituting a "better" one overrides the user's
+  choice invisibly, and did — a substitution to a model id that did not exist
+  left the CLI backend hanging with no error.
+
 ## [2.65.6] — 2026-08-29
 
 ### Reverted (2.65.5's evergreen identity rule)

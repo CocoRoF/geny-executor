@@ -17,6 +17,8 @@ from geny_executor.llm_client.claude_code import (
     ClaudeCodeCLIClient,
     build_container_cli_client,
 )
+from geny_executor.llm_client.claude_code_tokens import ClaudeCodeTokenClient
+from geny_executor.llm_client.codex import CodexResponsesClient
 from geny_executor.llm_client.credentials import (
     ConfigError,
     CredentialBundle,
@@ -36,7 +38,8 @@ from geny_executor.llm_client.profiles import (
     ProviderProfile,
     builtin_profiles,
 )
-from geny_executor.llm_client.registry import ClientRegistry
+from geny_executor.llm_client.registry import ROUTED_PROVIDERS, ClientRegistry
+from geny_executor.llm_client.router import RouterClient
 from geny_executor.llm_client.types import APIRequest, APIResponse, ContentBlock
 
 __all__ = [
@@ -47,14 +50,18 @@ __all__ = [
     "BUILTIN_PROFILES",
     "CLIProcessRunner",
     "ClaudeCodeCLIClient",
+    "ClaudeCodeTokenClient",
     "ClientCapabilities",
     "ClientRegistry",
     "ConfigError",
     "ContainerCLIRunner",
+    "CodexResponsesClient",
     "ContentBlock",
     "CredentialBundle",
     "ProviderCredentials",
     "ProviderProfile",
+    "ROUTED_PROVIDERS",
+    "RouterClient",
     "SandboxHandle",
     "build_container_cli_client",
     "builtin_profiles",

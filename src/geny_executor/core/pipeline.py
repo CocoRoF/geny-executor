@@ -122,9 +122,24 @@ def _creds_to_client_kwargs(provider: str, creds: ProviderCredentials) -> Dict[s
         is_profiled_provider,
         profiled_client_kwargs,
     )
+    from geny_executor.llm_client.registry import ROUTED_PROVIDERS
 
     if is_profiled_provider(provider):
         return profiled_client_kwargs(provider, creds)
+
+    # Account-routed providers (2.66.0). Everything these clients need —
+    # the route itself, an account id, a Claude config dir, Codex tokens —
+    # is host state with no vendor equivalent, so ``extras`` IS the
+    # constructor surface. Passing it through is what lets a host add an
+    # account channel without a library release.
+    if provider in ROUTED_PROVIDERS:
+        kwargs = dict(creds.extras or {})
+        kwargs.setdefault("api_key", creds.api_key or "")
+        if creds.base_url is not None:
+            kwargs.setdefault("base_url", creds.base_url)
+        if creds.default_headers is not None:
+            kwargs.setdefault("default_headers", dict(creds.default_headers))
+        return kwargs
 
     if provider == "vllm":
         kwargs: Dict[str, Any] = {}

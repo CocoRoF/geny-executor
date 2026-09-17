@@ -87,7 +87,7 @@ class StandardLoopController(LoopController):
         if signal == "error":
             return LoopDecision.ERROR
 
-        if not state.pending_tool_calls:
+        if not state.pending_tool_calls and not state.has_fresh_tool_results:
             return LoopDecision.COMPLETE
 
         max_t = self._max_turns or state.max_iterations
@@ -207,7 +207,7 @@ class BudgetAwareLoopController(LoopController):
         if signal == "blocked":
             return LoopDecision.ESCALATE
 
-        if not state.pending_tool_calls:
+        if not state.pending_tool_calls and not state.has_fresh_tool_results:
             return LoopDecision.COMPLETE
 
         return LoopDecision.CONTINUE
@@ -745,7 +745,7 @@ class MultiDimensionalBudgetController(LoopController):
         if signal == "error":
             return LoopDecision.ERROR
 
-        if not state.pending_tool_calls:
+        if not state.pending_tool_calls and not state.has_fresh_tool_results:
             return LoopDecision.COMPLETE
 
         return LoopDecision.CONTINUE

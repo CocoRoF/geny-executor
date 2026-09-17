@@ -207,6 +207,13 @@ class PipelineState:
     pending_tool_calls: List[Dict[str, Any]] = field(default_factory=list)
     tool_results: List[Dict[str, Any]] = field(default_factory=list)
 
+    #: Loop iteration whose tool calls Stage 10 last executed (0 = none this
+    #: turn). Stage 10 empties ``pending_tool_calls`` as it runs them, so every
+    #: stage AFTER it that asked "did this iteration use tools?" by looking at
+    #: that list got "no" — and ended the turn with results the model had not
+    #: read yet. This is the honest answer; see ``has_fresh_tool_results``.
+    tool_iteration: int = 0
+
     # ── Tool dispatch handle (2.3.0) ──
     # Installed by ``Pipeline._init_state`` whenever a Tool stage is
     # registered: a :class:`~geny_executor.stages.s10_tool.dispatcher.
@@ -364,6 +371,7 @@ class PipelineState:
         # side-effectful tools.
         self.pending_tool_calls = []
         self.tool_results = []
+        self.tool_iteration = 0
         self.delegate_requests = []
         self.agent_results = []
         # Per-turn judgments
@@ -479,6 +487,17 @@ class PipelineState:
         if self.cost_budget_usd is None:
             return False
         return self.total_cost_usd >= self.cost_budget_usd
+
+    @property
+    def has_fresh_tool_results(self) -> bool:
+        """Tools ran in THIS loop iteration and the model has not seen them.
+
+        The turn cannot end here: whatever the model wrote alongside those
+        calls was written blind. Stages 14 and 16 use this together with
+        ``pending_tool_calls`` — the first covers calls already executed, the
+        second calls not yet dispatched.
+        """
+        return bool(self.tool_results) and self.tool_iteration == self.iteration
 
     @property
     def is_over_iterations(self) -> bool:

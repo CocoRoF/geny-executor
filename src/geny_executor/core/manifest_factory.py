@@ -69,21 +69,29 @@ from geny_executor.core.environment import (
 
 # ── Preset names ─────────────────────────────────────────────────────
 
+#: The one harness. Every agent — worker, conversational persona, sub-worker —
+#: runs this stage blueprint; nothing else is built, so improving it improves
+#: every agent at once and no agent quietly runs a weaker pipeline (2.66.0).
+CANONICAL_PRESET = "default"
+
+#: Historical preset names. They still resolve — an environment stored before
+#: 2.66.0 must keep loading — but they all materialise the canonical blueprint
+#: and ``known_manifest_presets()`` no longer offers them as choices.
 _VTUBER = "vtuber"
 _WORKER_ADAPTIVE = "worker_adaptive"
-_DEFAULT_ALIAS = "default"  # maps to worker_adaptive (AgentSession convention)
+_DEFAULT_ALIAS = CANONICAL_PRESET
 
 MANIFEST_PRESETS = frozenset({_VTUBER, _WORKER_ADAPTIVE, _DEFAULT_ALIAS})
 
 
-# Defaults the adaptive evaluator consumes. Mirror
-# ``geny_executor.memory.presets.GenyPresets.worker_adaptive`` directly.
-_WORKER_ADAPTIVE_EASY_MAX_TURNS = 1
-_WORKER_ADAPTIVE_NOT_EASY_MAX_TURNS = 30
+# What the Stage 14 adaptive classifier spends. A turn it reads as a plain
+# answer costs one pass — which is why conversation needs no lighter chain of
+# its own — and a turn that reaches for a tool gets the full budget.
+_EASY_MAX_TURNS = 1
+_NOT_EASY_MAX_TURNS = 30
 
-# Loop max_turns defaults per preset. Mirror GenyPresets.* directly.
-_WORKER_ADAPTIVE_MAX_TURNS = 30
-_VTUBER_MAX_TURNS = 10
+#: Stage 16 turn cap.
+_MAX_TURNS = 30
 
 
 # ── Sub-phase 9a scaffold entries ────────────────────────────────────
@@ -142,94 +150,59 @@ _SCAFFOLD_ENTRIES_SPEC: List[Dict[str, Any]] = [
 ]
 
 
-# Per-preset opt-in for scaffold stages — a partial override merged
-# onto the matching spec entry. The rationale comments are inherited
-# from the Geny integration sprints (G2.x) that proved each choice in
-# prod; they live here now because the layout does.
-_PRESET_SCAFFOLD_OVERRIDES: Dict[str, Dict[str, Dict[str, Any]]] = {
-    _WORKER_ADAPTIVE: {
-        # Tool Review chain on. Default reviewer order (schema →
-        # sensitive → destructive → network → size) comes from the
-        # scaffold spec; flags land at state.shared['tool_review_flags'].
-        "tool_review": {
-            "active": True,
-        },
-        # HITL gate on with the safe ``null`` requester placeholder.
-        # The real resume-capable requester needs a Pipeline ref the
-        # manifest cannot serialise — hosts swap it at runtime.
-        # ``should_bypass`` returns True when nothing wrote to
-        # state.shared['hitl_request'] this turn, so the active flag is
-        # a free no-op until something opts in.
-        "hitl": {
-            "active": True,
-            "strategies": {
-                "requester": "null",  # swapped at runtime
-                "timeout": "indefinite",  # rely on UI to resolve
-            },
-        },
-        # Turn-summary writer + heuristic importance grader. Forwards
-        # to the session's memory provider when one is attached.
-        "summarize": {
-            "active": True,
-            "strategies": {
-                "summarizer": "rule_based",
-                "importance": "heuristic",
-            },
-        },
-        # Declarative persist on. The persister slot stays ``no_persist``
-        # in the manifest; a real persister (e.g. FilePersister) is
-        # session-scoped and wired at runtime. ``on_significant``
-        # keeps IO bounded — checkpoints land only on noteworthy events.
-        "persist": {
-            "active": True,
-            "strategies": {
-                "persister": "no_persist",  # swapped at runtime
-                "frequency": "on_significant",
-            },
-        },
-        # Task Registry on: in-memory backend + fire_and_forget policy
-        # so sub-worker delegations acquire a per-pipeline lifecycle
-        # handle without blocking the agent loop.
-        "task_registry": {
-            "active": True,
-            "strategies": {
-                "registry": "in_memory",
-                "policy": "fire_and_forget",
-            },
+#: Scaffold stages (tool_review / hitl / task_registry / summarize /
+#: persist) are inert placeholders in the spec; these are the ones the
+#: canonical harness turns on, and why. The rationale comments are inherited
+#: from the integration sprints that proved each choice in production.
+_SCAFFOLD_OVERRIDES: Dict[str, Dict[str, Any]] = {
+    # Tool Review chain on. Default reviewer order (schema →
+    # sensitive → destructive → network → size) comes from the
+    # scaffold spec; flags land at state.shared['tool_review_flags'].
+    "tool_review": {
+        "active": True,
+    },
+    # HITL gate on with the safe ``null`` requester placeholder.
+    # The real resume-capable requester needs a Pipeline ref the
+    # manifest cannot serialise — hosts swap it at runtime.
+    # ``should_bypass`` returns True when nothing wrote to
+    # state.shared['hitl_request'] this turn, so the active flag is
+    # a free no-op until something opts in.
+    "hitl": {
+        "active": True,
+        "strategies": {
+            "requester": "null",  # swapped at runtime
+            "timeout": "indefinite",  # rely on UI to resolve
         },
     },
-    _VTUBER: {
-        # Light tool-review chain: the conversational persona's tool
-        # surface is small, so keep schema (arg validation) + sensitive
-        # (PII / secret leak detection) and drop the rest as noise.
-        # NOTE: a narrowed ordering is host-population territory — see
-        # the module docstring's chain_order limitation.
-        "tool_review": {
-            "active": True,
-            "chain_order": {"reviewers": ["schema", "sensitive"]},
+    # Turn-summary writer + heuristic importance grader. Forwards
+    # to the session's memory provider when one is attached.
+    "summarize": {
+        "active": True,
+        "strategies": {
+            "summarizer": "rule_based",
+            "importance": "heuristic",
         },
-        # Turn-summary writer + heuristic importance — keeps
-        # long-conversation context coherent without the full
-        # binary_classify evaluator.
-        "summarize": {
-            "active": True,
-            "strategies": {
-                "summarizer": "rule_based",
-                "importance": "heuristic",
-            },
+    },
+    # Declarative persist on. The persister slot stays ``no_persist``
+    # in the manifest; a real persister (e.g. FilePersister) is
+    # session-scoped and wired at runtime. ``on_significant``
+    # keeps IO bounded — checkpoints land only on noteworthy events.
+    "persist": {
+        "active": True,
+        "strategies": {
+            "persister": "no_persist",  # swapped at runtime
+            "frequency": "on_significant",
         },
-        # on_significant checkpointing with the no_persist placeholder;
-        # real persister swapped at runtime, preset-agnostic.
-        "persist": {
-            "active": True,
-            "strategies": {
-                "persister": "no_persist",  # swapped at runtime
-                "frequency": "on_significant",
-            },
+    },
+    # Task Registry on: in-memory backend + fire_and_forget policy
+    # so sub-worker delegations acquire a per-pipeline lifecycle
+    # handle without blocking the agent loop.
+    "task_registry": {
+        "active": True,
+        "strategies": {
+            "registry": "in_memory",
+            "policy": "fire_and_forget",
         },
-        # task_registry / hitl stay off — the VTuber is a single-agent
-        # autonomous persona: no delegation registry to track, no
-        # human-approval surface to gate.
     },
 }
 
@@ -276,8 +249,15 @@ def _merge_sorted(*entry_lists: List[StageManifestEntry]) -> List[StageManifestE
     return merged
 
 
-def _worker_adaptive_stage_entries(*, provider: str) -> List[StageManifestEntry]:
-    """The adaptive worker stage chain (mirrors ``GenyPresets.worker_adaptive``)."""
+def _canonical_stage_entries(*, provider: str) -> List[StageManifestEntry]:
+    """The one stage chain every agent runs.
+
+    Formerly the ``worker_adaptive`` preset; the lighter ``vtuber`` chain is
+    gone. Conversation does not need a weaker pipeline — the Stage 14
+    adaptive classifier already answers a chat turn in one pass and only
+    opens the full loop when a turn actually needs tools — and running two
+    chains meant every improvement had to be made, and tested, twice.
+    """
     return [
         StageManifestEntry(
             order=1,
@@ -327,10 +307,13 @@ def _worker_adaptive_stage_entries(*, provider: str) -> List[StageManifestEntry]
             config={"provider": provider},
             strategies={
                 "retry": "exponential_backoff",
-                # Capability-aware adaptive router. Strict superset of
-                # passthrough — without strategy_configs the router falls
-                # back to the session's bound model.
-                "router": "adaptive",
+                # Passthrough: the model is whatever the session is bound to,
+                # verbatim. Model choice belongs to the account route the user
+                # picked — a stage that silently substitutes a "better" model
+                # would override that choice invisibly, and has: an adaptive
+                # substitution to a model id that did not exist left the CLI
+                # backend hanging with no error.
+                "router": "passthrough",
             },
         ),
         StageManifestEntry(
@@ -386,8 +369,8 @@ def _worker_adaptive_stage_entries(*, provider: str) -> List[StageManifestEntry]
             strategy_configs={
                 "strategy": {
                     "evaluators": ["binary_classify", "signal_based"],
-                    "easy_max_turns": _WORKER_ADAPTIVE_EASY_MAX_TURNS,
-                    "not_easy_max_turns": _WORKER_ADAPTIVE_NOT_EASY_MAX_TURNS,
+                    "easy_max_turns": _EASY_MAX_TURNS,
+                    "not_easy_max_turns": _NOT_EASY_MAX_TURNS,
                 },
             },
         ),
@@ -399,7 +382,7 @@ def _worker_adaptive_stage_entries(*, provider: str) -> List[StageManifestEntry]
             # dimensions later is a strategy_configs edit — and since
             # Wave 1 that edit actually lands (configure is real).
             strategies={"controller": "multi_dim_budget"},
-            config={"max_turns": _WORKER_ADAPTIVE_MAX_TURNS},
+            config={"max_turns": _MAX_TURNS},
             strategy_configs={
                 "controller": {
                     "dimensions": ["iterations"],
@@ -431,145 +414,21 @@ def _worker_adaptive_stage_entries(*, provider: str) -> List[StageManifestEntry]
     ]
 
 
-def _vtuber_stage_entries(*, provider: str) -> List[StageManifestEntry]:
-    """The conversational persona stage chain (mirrors ``GenyPresets.vtuber``).
-
-    Diff vs worker_adaptive: Stage 8 (think) ships ``active=False`` (the
-    persona's turns are conversational, not deep-planning), evaluator is
-    ``signal_based`` (not the evaluation chain), router is
-    ``passthrough`` (the session's bound model is honoured verbatim),
-    tool executor is ``sequential``, and loop ``max_turns`` is 10.
-
-    Cache is ``aggressive_cache`` since 2.50.2 (TTFT program follow-up):
-    persona sessions accumulate the LONGEST conversations, so the
-    history breakpoint matters most exactly here — ``system_cache`` left
-    the whole transcript re-prefilling every turn on SDK providers.
-    (CLI-provider vtuber envs are unaffected either way — the cache gate
-    bypasses claude_code, which does its own caching.)
-
-    Stage 8 is declared inactive rather than omitted so environment
-    editors render the order-8 slot like every other inactive stage —
-    omitting it entirely made the slot a "missing" error in the canvas
-    (incident inherited from the Geny builder this module absorbs).
-    """
-    return [
-        StageManifestEntry(
-            order=1,
-            name="input",
-            strategies={"validator": "default", "normalizer": "default"},
-        ),
-        StageManifestEntry(
-            order=2,
-            name="context",
-            strategies={
-                "strategy": "simple_load",
-                "compactor": "truncate",
-                "retriever": "null",  # swapped by attach_runtime
-            },
-        ),
-        StageManifestEntry(
-            order=3,
-            name="system",
-            strategies={"builder": "composable"},
-        ),
-        StageManifestEntry(
-            order=4,
-            name="guard",
-        ),
-        StageManifestEntry(
-            order=5,
-            name="cache",
-            strategies={"strategy": "aggressive_cache"},
-        ),
-        StageManifestEntry(
-            order=6,
-            name="api",
-            # Provider lives at config['provider'] (single source).
-            config={"provider": provider},
-            strategies={
-                "retry": "exponential_backoff",
-                "router": "passthrough",
-            },
-        ),
-        StageManifestEntry(
-            order=7,
-            name="token",
-            strategies={
-                "tracker": "default",
-                "calculator": "anthropic_pricing",
-            },
-        ),
-        StageManifestEntry(
-            order=8,
-            name="think",
-            active=False,
-            strategies={
-                "processor": "extract_and_store",
-                "budget_planner": "adaptive",
-            },
-        ),
-        StageManifestEntry(
-            order=9,
-            name="parse",
-            strategies={"parser": "default", "signal_detector": "regex"},
-        ),
-        StageManifestEntry(
-            order=10,
-            name="tool",
-            strategies={"executor": "sequential", "router": "registry"},
-        ),
-        StageManifestEntry(
-            order=12,
-            name="agent",
-            strategies={"orchestrator": "subagent_type"},
-            config={"max_delegations": 4},
-        ),
-        StageManifestEntry(
-            order=14,
-            name="evaluate",
-            strategies={"strategy": "signal_based", "scorer": "no_scorer"},
-        ),
-        StageManifestEntry(
-            order=16,
-            name="loop",
-            strategies={"controller": "standard"},
-            config={"max_turns": _VTUBER_MAX_TURNS},
-        ),
-        StageManifestEntry(
-            order=17,
-            name="emit",
-            strategies={},
-            chain_order={"emitters": []},
-        ),
-        StageManifestEntry(
-            order=18,
-            name="memory",
-            strategies={
-                "strategy": "append_only",  # swapped by attach_runtime
-                "persistence": "null",  # swapped by attach_runtime
-            },
-        ),
-        StageManifestEntry(
-            order=21,
-            name="yield",
-            strategies={"formatter": "default"},
-        ),
-    ]
-
-
-def _build_stage_entries(preset: str, *, provider: str) -> List[StageManifestEntry]:
-    """Emit the full 21-entry :class:`StageManifestEntry` list for *preset*."""
-    if preset == _VTUBER:
-        base = _vtuber_stage_entries(provider=provider)
-    else:
-        base = _worker_adaptive_stage_entries(provider=provider)
-    overrides = _PRESET_SCAFFOLD_OVERRIDES.get(preset, {})
-    return _merge_sorted(base, _make_scaffold_entries(overrides=overrides))
+def _build_stage_entries(*, provider: str) -> List[StageManifestEntry]:
+    """Emit the full 21-entry :class:`StageManifestEntry` list."""
+    return _merge_sorted(
+        _canonical_stage_entries(provider=provider),
+        _make_scaffold_entries(overrides=_SCAFFOLD_OVERRIDES),
+    )
 
 
 def known_manifest_presets() -> List[str]:
-    """Supported preset names for :func:`build_manifest` — UI/validation hook."""
-    return sorted(MANIFEST_PRESETS)
+    """The preset names a host may offer — one, since 2.66.0.
+
+    :data:`MANIFEST_PRESETS` still *accepts* the historical names so stored
+    environments keep loading; this is what a UI should list.
+    """
+    return [CANONICAL_PRESET]
 
 
 def build_manifest(
@@ -658,9 +517,9 @@ def build_manifest(
                 "silently at connect time."
             )
 
-    # Alias: the agent-session layer uses "default" for the adaptive
-    # worker flow. Collapse it so downstream code sees one canonical name.
-    effective = _WORKER_ADAPTIVE if preset == _DEFAULT_ALIAS else preset
+    # Every accepted name — including the historical ``vtuber`` and
+    # ``worker_adaptive`` — materialises the one canonical blueprint.
+    effective = CANONICAL_PRESET
 
     now = datetime.now(timezone.utc).isoformat()
     metadata = EnvironmentMetadata(
@@ -678,7 +537,7 @@ def build_manifest(
         mcp_servers=[dict(s) for s in (mcp_servers or [])],
     )
 
-    entries = _build_stage_entries(effective, provider=provider)
+    entries = _build_stage_entries(provider=provider)
 
     return EnvironmentManifest(
         metadata=metadata,
@@ -733,38 +592,25 @@ class PresetDescriptor:
 
 _PRESET_CATALOG: List[PresetDescriptor] = [
     PresetDescriptor(
-        key=_WORKER_ADAPTIVE,
-        name="Worker (Adaptive)",
-        description="Autonomous tool-using worker — the full 21-stage agentic loop with an adaptive turn budget.",
-        base_preset=_WORKER_ADAPTIVE,
+        key=CANONICAL_PRESET,
+        name="Geny Harness",
+        description=(
+            "The one agent pipeline — the full 21-stage loop, an adaptive turn "
+            "budget that answers a chat turn in a single pass, and the model "
+            "chosen by the account route rather than by a stage."
+        ),
+        base_preset=CANONICAL_PRESET,
         provider=None,
-        tags=("worker", "agent"),
-    ),
-    PresetDescriptor(
-        key=_VTUBER,
-        name="VTuber",
-        description="Conversational persona — a lighter loop with a narrowed tool roster, tuned for TTS replies.",
-        base_preset=_VTUBER,
-        provider=None,
-        tags=("vtuber", "chat"),
-    ),
-    PresetDescriptor(
-        key="claude_code_worker",
-        name="Claude Code · Worker",
-        description="Worker agentic loop backed by the Claude Code CLI provider (subscription auth, native CLI tool loop).",
-        base_preset=_WORKER_ADAPTIVE,
-        provider="claude_code_cli",
-        tags=("worker", "agent", "claude_code"),
-    ),
-    PresetDescriptor(
-        key="claude_code_vtuber",
-        name="Claude Code · VTuber",
-        description="Conversational VTuber persona backed by the Claude Code CLI provider.",
-        base_preset=_VTUBER,
-        provider="claude_code_cli",
-        tags=("vtuber", "chat", "claude_code"),
+        tags=("agent",),
     ),
 ]
+
+#: Catalog keys that existed before the harness was collapsed (2.66.0). They
+#: resolve to the canonical entry so a stored environment or a bookmarked URL
+#: keeps working; they are not offered as choices.
+_LEGACY_CATALOG_KEYS = frozenset({
+    _WORKER_ADAPTIVE, _VTUBER, "claude_code_worker", "claude_code_vtuber",
+})
 
 
 def preset_catalog() -> List[PresetDescriptor]:
@@ -773,10 +619,16 @@ def preset_catalog() -> List[PresetDescriptor]:
 
 
 def get_preset_descriptor(key: str) -> Optional[PresetDescriptor]:
-    """Look up a catalog entry by its ``key`` (``None`` if absent)."""
+    """Look up a catalog entry by its ``key`` (``None`` if absent).
+
+    Pre-2.66.0 keys resolve to the canonical entry — collapsing the harness
+    must not orphan an environment someone already stored.
+    """
     for d in _PRESET_CATALOG:
         if d.key == key:
             return d
+    if key in _LEGACY_CATALOG_KEYS:
+        return _PRESET_CATALOG[0]
     return None
 
 

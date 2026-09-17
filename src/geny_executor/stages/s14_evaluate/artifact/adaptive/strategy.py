@@ -144,7 +144,11 @@ class BinaryClassifyEvaluation(EvaluationStrategy):
 
     def _classify_first_turn(self, state: PipelineState) -> EvaluationResult:
         """Classify on first turn based on response pattern."""
-        has_tool_calls = bool(state.pending_tool_calls)
+        # Stage 10 already ran and emptied ``pending_tool_calls``, so that
+        # list alone said "no tools" on the very turn that used them — and a
+        # tool-using first turn got classified easy and completed before the
+        # model ever saw a result.
+        has_tool_calls = bool(state.pending_tool_calls) or state.has_fresh_tool_results
         signal = state.completion_signal
 
         if has_tool_calls:
@@ -193,12 +197,15 @@ class BinaryClassifyEvaluation(EvaluationStrategy):
         """Signal-based evaluation for subsequent turns."""
         signal = state.completion_signal
 
-        # Tool calls always continue
-        if state.pending_tool_calls:
+        # Tool work always continues — whether the calls are still queued or
+        # Stage 10 has already executed them this iteration. In the second
+        # case the model wrote its text before seeing any result, so
+        # "text-only response → complete" below would be reading a guess.
+        if state.pending_tool_calls or state.has_fresh_tool_results:
             return EvaluationResult(
                 passed=True,
                 decision="continue",
-                feedback="Tool calls pending.",
+                feedback="Tool results pending review by the model.",
             )
 
         if signal == "complete":
@@ -234,7 +241,7 @@ class BinaryClassifyEvaluation(EvaluationStrategy):
 
         if signal == "continue" or signal is None:
             # No explicit signal but text present and no tools → might be done
-            if state.final_text and not state.pending_tool_calls:
+            if state.final_text and not state.pending_tool_calls:  # tool work handled above
                 return EvaluationResult(
                     passed=True,
                     score=0.8,

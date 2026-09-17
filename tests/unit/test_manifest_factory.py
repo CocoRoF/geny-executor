@@ -5,7 +5,9 @@ The factory absorbs Geny's host-side manifest builder
 hand-mirrored layout — audit §1-3 host-compensation table). Contract
 under test:
 
-  - presets ``worker_adaptive`` / ``vtuber`` / ``default`` (alias);
+  - ONE preset, ``default`` — the historical ``worker_adaptive`` and
+    ``vtuber`` names still resolve so stored environments keep loading,
+    but they materialise the same blueprint;
   - loud validation of preset / provider / mcp_servers inputs;
   - provider lands at ``stages[6].config['provider']`` (single home);
   - model lands in the top-level ``model`` block (single home);
@@ -50,8 +52,8 @@ class TestInputValidation:
         with pytest.raises(ValueError, match="unknown preset"):
             build_manifest("workr_adaptive", provider="anthropic")
 
-    def test_known_presets_accessor(self):
-        assert known_manifest_presets() == ["default", "vtuber", "worker_adaptive"]
+    def test_only_one_preset_is_offered(self):
+        assert known_manifest_presets() == ["default"]
 
     def test_unknown_provider_raises_listing_registered(self):
         with pytest.raises(ValueError, match="unknown provider 'antrhopic'"):
@@ -106,19 +108,22 @@ class TestDeclarationHomes:
         assert m.tools.external == ["alpha", {"name": "beta", "required": True}]
         assert m.tools.mcp_servers == [{"name": "fs", "command": "npx", "args": ["server-fs"]}]
 
-    def test_default_alias_collapses_to_worker_adaptive(self):
-        alias = build_manifest("default", provider="anthropic")
-        canonical = build_manifest("worker_adaptive", provider="anthropic")
-        assert alias.metadata.base_preset == "worker_adaptive"
+    @pytest.mark.parametrize("legacy", ["worker_adaptive", "vtuber"])
+    def test_a_legacy_preset_name_materialises_the_one_harness(self, legacy):
+        """A stored environment must keep loading — and must not keep running
+        a different pipeline than every other agent."""
+        alias = build_manifest(legacy, provider="anthropic")
+        canonical = build_manifest("default", provider="anthropic")
+        assert alias.metadata.base_preset == "default"
         assert alias.stages == canonical.stages
 
     def test_metadata_defaults_and_overrides(self):
-        m = build_manifest("vtuber", provider="anthropic")
-        assert m.metadata.name == "preset:vtuber"
-        assert m.metadata.base_preset == "vtuber"
+        m = build_manifest("default", provider="anthropic")
+        assert m.metadata.name == "preset:default"
+        assert m.metadata.base_preset == "default"
         assert m.metadata.id.startswith("env_")
         named = build_manifest(
-            "vtuber", provider="anthropic", name="Mio", description="persona env"
+            "default", provider="anthropic", name="Mio", description="persona env"
         )
         assert named.metadata.name == "Mio"
         assert named.metadata.description == "persona env"
@@ -128,7 +133,7 @@ class TestDeclarationHomes:
 
 
 class TestRoundTrip:
-    @pytest.mark.parametrize("preset", ["worker_adaptive", "vtuber", "default"])
+    @pytest.mark.parametrize("preset", ["default", "worker_adaptive", "vtuber"])
     def test_factory_to_dict_from_dict_builds_strict(self, preset):
         m = build_manifest(preset, provider="anthropic", model="claude-sonnet-4-5")
         reloaded = EnvironmentManifest.from_dict(m.to_dict())
@@ -141,8 +146,7 @@ class TestRoundTrip:
         assert pipeline.get_stage(1) is not None
         assert pipeline.get_stage(21) is not None
 
-    @pytest.mark.parametrize("preset", ["worker_adaptive", "vtuber"])
-    def test_factory_output_validates_clean(self, preset):
+    def test_factory_output_validates_clean(self, preset="default"):
         issues = validate_manifest(build_manifest(preset, provider="anthropic"))
         errors = [i for i in issues if i.severity == "error"]
         assert errors == []
@@ -150,20 +154,25 @@ class TestRoundTrip:
         # ones (restore can only reorder, never populate — module docstring).
         assert {i.code for i in issues} <= {"chain.order_unappliable"}
 
-    def test_vtuber_thinking_stage_declared_inactive(self):
-        """Stage 8 is declared with active=False rather than omitted, so
-        env editors render the slot like every other inactive stage."""
-        m = build_manifest("vtuber", provider="anthropic")
-        s8 = _stage(m, 8)
-        assert s8["active"] is False
-        assert s8["strategies"]["processor"] == "extract_and_store"
+    def test_every_one_of_the_21_slots_is_declared(self):
+        """Declared, not omitted — an env editor renders an inactive slot
+        like any other; a missing one reads as a broken canvas."""
+        orders = [e["order"] for e in build_manifest("default", provider="anthropic").to_dict()["stages"]]
+        assert orders == list(range(1, 22))
 
-    def test_worker_strategy_configs_actually_land(self):
+    def test_the_model_is_never_substituted_by_a_stage(self):
+        """Stage 6 routes passthrough: the account route the user picked
+        names the model. An adaptive substitution once pointed the CLI at a
+        model id that did not exist, and the turn hung with no error."""
+        s6 = _stage(build_manifest("default", provider="anthropic"), 6)
+        assert s6["strategies"]["router"] == "passthrough"
+
+    def test_strategy_configs_actually_land(self):
         """The audit §2.1 regression at factory level: the s14/s16
         strategy_configs must configure the live strategies after a
         strict build (Wave 1 made configure real; the factory must
         declare shapes that exercise it)."""
-        m = build_manifest("worker_adaptive", provider="anthropic")
+        m = build_manifest("default", provider="anthropic")
         p = Pipeline.from_manifest(m, credentials=CredentialBundle(), strict=True)
         chain = p.get_stage(14).get_strategy_slots()["strategy"].strategy
         assert [type(ev).__name__ for ev in chain.evaluators] == [
@@ -191,15 +200,12 @@ class TestGenyLayoutCompatibility:
     def snapshot(self):
         return json.loads(_SNAPSHOT_PATH.read_text())
 
-    @pytest.mark.parametrize("preset", ["worker_adaptive", "vtuber"])
-    def test_stage_layout_identical_to_geny_builder(self, snapshot, preset):
-        ours = build_manifest(preset, provider=snapshot["provider"]).to_dict()["stages"]
-        theirs = snapshot["presets"][preset]
-        assert ours == theirs
+    def test_stage_layout_matches_the_snapshot(self, snapshot):
+        ours = build_manifest("default", provider=snapshot["provider"]).to_dict()["stages"]
+        assert ours == snapshot["presets"]["default"]
 
-    @pytest.mark.parametrize("preset", ["worker_adaptive", "vtuber"])
-    def test_full_21_slot_layout(self, snapshot, preset):
-        ours = build_manifest(preset, provider="anthropic").to_dict()["stages"]
+    def test_full_21_slot_layout(self, snapshot):
+        ours = build_manifest("default", provider="anthropic").to_dict()["stages"]
         assert [e["order"] for e in ours] == list(range(1, 22))
 
 
@@ -207,60 +213,58 @@ class TestGenyLayoutCompatibility:
 
 
 class TestPresetCatalog:
-    def test_catalog_keys(self):
-        from geny_executor import preset_catalog
-        keys = [d.key for d in preset_catalog()]
-        assert keys == ["worker_adaptive", "vtuber", "claude_code_worker", "claude_code_vtuber"]
+    """One selectable entry — and no orphaned environments behind it."""
 
-    def test_catalog_entries_have_display_metadata(self):
+    def test_the_catalog_offers_exactly_one_harness(self):
         from geny_executor import preset_catalog
-        for d in preset_catalog():
-            assert d.name and d.description
-            assert d.base_preset in ("worker_adaptive", "vtuber")
-            assert isinstance(d.tags, tuple)
+        catalog = preset_catalog()
+        assert [d.key for d in catalog] == ["default"]
+        assert catalog[0].name and catalog[0].description
+        assert catalog[0].base_preset == "default"
+        assert isinstance(catalog[0].tags, tuple)
 
-    def test_get_preset_descriptor(self):
+    @pytest.mark.parametrize(
+        "legacy", ["worker_adaptive", "vtuber", "claude_code_worker", "claude_code_vtuber"]
+    )
+    def test_a_pre_collapse_catalog_key_still_resolves(self, legacy):
         from geny_executor import get_preset_descriptor
-        d = get_preset_descriptor("claude_code_worker")
-        assert d is not None
-        assert d.base_preset == "worker_adaptive"
-        assert d.provider == "claude_code_cli"
+        d = get_preset_descriptor(legacy)
+        assert d is not None and d.base_preset == "default"
+
+    def test_an_unknown_key_is_still_unknown(self):
+        from geny_executor import get_preset_descriptor
         assert get_preset_descriptor("nope") is None
 
     def test_descriptor_to_dict(self):
         from geny_executor import get_preset_descriptor
-        d = get_preset_descriptor("vtuber").to_dict()
-        assert d["key"] == "vtuber" and d["provider"] is None and isinstance(d["tags"], list)
+        d = get_preset_descriptor("default").to_dict()
+        assert d["key"] == "default" and d["provider"] is None and isinstance(d["tags"], list)
 
-    def test_build_manifest_for_claude_code_worker(self):
+    def test_build_manifest_for_a_legacy_key_builds_the_one_harness(self):
         from geny_executor import build_manifest_for
-        m = build_manifest_for("claude_code_worker")
+        m = build_manifest_for("claude_code_worker", provider="claude_code_cli")
         assert m.stages[5]["config"]["provider"] == "claude_code_cli"
-        assert m.metadata.base_preset == "worker_adaptive"
+        assert m.metadata.base_preset == "default"
         assert [e["order"] for e in m.to_dict()["stages"]] == list(range(1, 22))
 
     def test_build_manifest_for_provider_override(self):
         from geny_executor import build_manifest_for
-        m = build_manifest_for("worker_adaptive", provider="anthropic")
+        m = build_manifest_for("default", provider="anthropic")
         assert m.stages[5]["config"]["provider"] == "anthropic"
 
     def test_build_manifest_for_requires_provider_when_none(self):
         from geny_executor import build_manifest_for
         with pytest.raises(ValueError):
-            build_manifest_for("worker_adaptive")  # catalog provider is None → must pass one
-
-    def test_build_manifest_for_accepts_bare_preset_name(self):
-        from geny_executor import build_manifest_for
-        m = build_manifest_for("vtuber", provider="anthropic")
-        assert m.metadata.base_preset == "vtuber"
+            build_manifest_for("default")  # catalog provider is None → must pass one
 
     def test_build_manifest_for_unknown_key_raises(self):
         from geny_executor import build_manifest_for
         with pytest.raises(ValueError):
             build_manifest_for("does-not-exist", provider="anthropic")
 
-    def test_claude_code_manifest_builds_strict(self):
+    def test_a_routed_provider_manifest_builds_strict(self):
+        """``geny_router`` is the provider every environment names now, so it
+        must survive the strict path like any vendor provider."""
         from geny_executor import Pipeline, build_manifest_for
-        m = build_manifest_for("claude_code_worker")
-        # Round-trips and builds strict like any other manifest.
+        m = build_manifest_for("default", provider="geny_router")
         Pipeline.from_manifest(EnvironmentManifest.from_dict(m.to_dict()), strict=True)

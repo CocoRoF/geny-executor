@@ -302,6 +302,10 @@ class ToolStage(Stage[Any, Any]):
             state.shared.get("executor.tool_calls_total", 0)
         ) + len(results)
         state.pending_tool_calls = []
+        # Stamp the iteration so later stages can tell "no tools this turn"
+        # apart from "tools already executed" — clearing the list above
+        # destroys the only other evidence.
+        state.tool_iteration = state.iteration
         state.loop_decision = "continue"
 
         state.add_event(

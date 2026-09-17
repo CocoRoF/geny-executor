@@ -74,6 +74,31 @@ def _claude_code_cli_factory() -> Type[BaseClient]:
     return ClaudeCodeCLIClient
 
 
+#: Providers whose constructor surface IS ``ProviderCredentials.extras``.
+#: They carry host state (a route, an account id, a Claude config dir, Codex
+#: tokens) that has no vendor-shaped equivalent, so ``_creds_to_client_kwargs``
+#: forwards extras verbatim instead of mapping known keys.
+ROUTED_PROVIDERS = frozenset({"geny_router", "geny_claude_code", "geny_codex"})
+
+
+def _router_factory() -> Type[BaseClient]:
+    from geny_executor.llm_client.router import RouterClient
+
+    return RouterClient
+
+
+def _claude_code_tokens_factory() -> Type[BaseClient]:
+    from geny_executor.llm_client.claude_code_tokens import ClaudeCodeTokenClient
+
+    return ClaudeCodeTokenClient
+
+
+def _codex_factory() -> Type[BaseClient]:
+    from geny_executor.llm_client.codex import CodexResponsesClient
+
+    return CodexResponsesClient
+
+
 def _profile_factory(provider_name: str) -> Callable[[], Type[BaseClient]]:
     """Factory for a profile-driven OpenAI-compatible local client.
 
@@ -96,6 +121,16 @@ ClientRegistry.register("openai", _openai_factory)
 ClientRegistry.register("google", _google_factory)
 ClientRegistry.register("vllm", _vllm_factory)
 ClientRegistry.register("claude_code_cli", _claude_code_cli_factory)
+
+# Account-routed providers (2.66.0). ``geny_router`` is the provider every
+# manifest names: it holds an ordered route of accounts and picks the one
+# that answers. ``geny_claude_code`` / ``geny_codex`` are the subscription
+# backends a route hop can point at — Claude Code driven as a pure token
+# generator (the harness keeps the tool loop) and a ChatGPT/Codex plan
+# spoken to over the Responses API.
+ClientRegistry.register("geny_router", _router_factory)
+ClientRegistry.register("geny_claude_code", _claude_code_tokens_factory)
+ClientRegistry.register("geny_codex", _codex_factory)
 
 
 # Branded local (OpenAI-compatible) providers, generated from profiles.

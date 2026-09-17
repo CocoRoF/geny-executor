@@ -25,9 +25,11 @@ class SignalBasedEvaluation(EvaluationStrategy):
         signal = state.completion_signal
 
         if signal is None or signal == "continue":
-            if state.pending_tool_calls:
+            if state.pending_tool_calls or state.has_fresh_tool_results:
                 return EvaluationResult(
-                    passed=True, decision="continue", feedback="Tool calls pending."
+                    passed=True,
+                    decision="continue",
+                    feedback="Tool results pending review by the model.",
                 )
             return EvaluationResult(
                 passed=True, decision="continue", feedback="No completion signal detected."
