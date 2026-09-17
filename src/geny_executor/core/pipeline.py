@@ -3317,6 +3317,28 @@ class Pipeline:
         except ConfigError:
             return None
 
+    def set_provider_credentials(self, provider: str, creds: ProviderCredentials) -> None:
+        """Replace one provider's credentials on a LIVE pipeline.
+
+        Built for the account route: a session changing which model answers
+        should not have to rebuild its pipeline, because rebuilding is what
+        would cost it the conversation — the history, the tools, the memory,
+        the hooks and the permission policy all live here.
+
+        Call it between turns. The prewarmed client is dropped unconditionally
+        — it cannot be asked which provider it speaks for (the router reports
+        its primary's provider so the prompt-cache stage places Anthropic
+        markers correctly), and a warm connection to the account the user just
+        switched away from would answer the very next turn. A dropped prewarm
+        costs a connection setup; a stale one costs the user the switch.
+
+        The attached client is left alone: a host that injected one owns it.
+        """
+        self._credentials = CredentialBundle(
+            by_provider={**dict(self._credentials.by_provider), provider: creds}
+        )
+        self._warm_llm_client = None
+
     def _build_client_for(self, provider: str) -> Any:
         """Build a fresh :class:`BaseClient` for *provider* using the
         bundle stored on this pipeline. Raises :class:`ConfigError` when

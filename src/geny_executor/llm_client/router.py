@@ -75,6 +75,35 @@ class RouterClient(BaseClient):
         self._factory = client_factory
         self.last_target: Optional[dict[str, Any]] = None
 
+    @property
+    def targets(self) -> List[dict[str, Any]]:
+        """The route as it stands, in order."""
+        return list(self._targets)
+
+    def set_route(self, targets: List[dict[str, Any]]) -> None:
+        """Point this client at a different route, between turns.
+
+        This is what makes switching model mid-conversation cheap: the
+        pipeline is not rebuilt, so the conversation keeps its history, tools,
+        memory, hooks and permission policy, and the very next turn simply
+        goes somewhere else. Children built for the old route are closed on
+        the next ``aclose``; their handles are dropped here so a stale client
+        cannot answer for a hop that is no longer in the route.
+
+        An empty (or entirely unusable) route is refused rather than applied:
+        leaving the session with no way to reach a model is worse than
+        keeping the route it already had.
+        """
+        usable = [t for t in (targets or []) if t.get("engineProvider") and t.get("model")]
+        if not usable:
+            raise APIError(
+                "That route has no usable account — the current one is kept.",
+                category=ErrorCategory.BAD_REQUEST,
+            )
+        self._targets = usable
+        self._children = {}
+        self.last_target = None
+
     # the prompt-cache stage only places Anthropic markers when the client
     # says it IS anthropic; the router forwards that truth for the primary
     @property  # type: ignore[override]

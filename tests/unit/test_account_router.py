@@ -235,3 +235,98 @@ class TestCacheMarkers:
         assert _router({"a": _Scripted("a")}, [_target("a")]).provider == "anthropic"
         assert _router({"a": _Scripted("a")},
                        [_target("a", provider="geny_codex")]).provider == "geny_router"
+
+
+class TestSwitchingMidConversation:
+    """The point of the router: changing model does not change anything else.
+
+    The pipeline is not rebuilt, so the conversation keeps its history, tools,
+    memory, hooks and permission policy — the next turn simply goes elsewhere.
+    """
+
+    @pytest.mark.asyncio
+    async def test_the_next_turn_goes_to_the_new_route(self) -> None:
+        children = {"a": _Scripted("a", text="from a"), "b": _Scripted("b", text="from b")}
+        router = _router(children, [_target("a")])
+        assert await _drain(router) == "from a"
+
+        router.set_route([_target("b")])
+        assert await _drain(router) == "from b"
+        assert children["a"].calls == 1
+
+    @pytest.mark.asyncio
+    async def test_a_client_for_a_dropped_hop_cannot_answer_again(self) -> None:
+        children = {"a": _Scripted("a", text="from a"), "b": _Scripted("b", text="from b")}
+        router = _router(children, [_target("a"), _target("b")])
+        await _drain(router)
+        router.set_route([_target("b")])
+        await _drain(router)
+        assert children["a"].calls == 1
+
+    def test_an_unusable_route_is_refused_and_the_old_one_kept(self) -> None:
+        """Leaving the session with no way to reach a model is worse than
+        keeping the route it had."""
+        router = _router({"a": _Scripted("a")}, [_target("a")])
+        with pytest.raises(APIError):
+            router.set_route([{"accountId": "b"}])   # no provider / model
+        assert [t["accountId"] for t in router.targets] == ["a"]
+
+    def test_the_route_is_readable(self) -> None:
+        router = _router({"a": _Scripted("a")}, [_target("a"), _target("b")])
+        assert [t["accountId"] for t in router.targets] == ["a", "b"]
+
+
+class TestPipelineRouteSwap:
+    """Changing which model answers must not cost the conversation.
+
+    A live pipeline holds the history, the tools, the memory, the hooks and
+    the permission policy. Rebuilding it to change model would throw all of
+    that away — so the route is swapped on the pipeline instead.
+    """
+
+    def _pipeline(self, targets):
+        from geny_executor import Pipeline, build_manifest
+        from geny_executor.llm_client.credentials import CredentialBundle, ProviderCredentials
+
+        manifest = build_manifest("default", provider="geny_router", model="m")
+        bundle = CredentialBundle(by_provider={
+            "geny_router": ProviderCredentials(extras={"targets": targets}),
+        })
+        return Pipeline.from_manifest(manifest, credentials=bundle, strict=True)
+
+    def test_the_next_client_is_built_from_the_new_route(self) -> None:
+        from geny_executor.llm_client.credentials import ProviderCredentials
+
+        pipeline = self._pipeline([_target("a")])
+        assert pipeline._resolve_llm_client().targets[0]["accountId"] == "a"
+
+        pipeline.set_provider_credentials(
+            "geny_router", ProviderCredentials(extras={"targets": [_target("b")]})
+        )
+        assert pipeline._resolve_llm_client().targets[0]["accountId"] == "b"
+
+    def test_a_warm_client_for_the_old_route_is_dropped(self) -> None:
+        """Otherwise the prewarmed connection answers the next turn from the
+        account the user just switched away from."""
+        from geny_executor.llm_client.credentials import ProviderCredentials
+
+        pipeline = self._pipeline([_target("a")])
+        pipeline._warm_llm_client = pipeline._resolve_llm_client()
+        pipeline.set_provider_credentials(
+            "geny_router", ProviderCredentials(extras={"targets": [_target("b")]})
+        )
+        assert pipeline._warm_llm_client is None
+        assert pipeline._resolve_llm_client().targets[0]["accountId"] == "b"
+
+    def test_other_providers_are_untouched(self) -> None:
+        from geny_executor.llm_client.credentials import ProviderCredentials
+
+        pipeline = self._pipeline([_target("a")])
+        pipeline._credentials = type(pipeline._credentials)(by_provider={
+            **dict(pipeline._credentials.by_provider),
+            "anthropic": ProviderCredentials(api_key="sk-keep"),
+        })
+        pipeline.set_provider_credentials(
+            "geny_router", ProviderCredentials(extras={"targets": [_target("b")]})
+        )
+        assert pipeline._credentials.get("anthropic").api_key == "sk-keep"
