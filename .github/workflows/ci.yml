@@ -8,6 +8,13 @@ on:
       - "src/**"
       - "tests/**"
       - "pyproject.toml"
+      # The type-check job also gates docs/events.md freshness. Without
+      # these two here, a commit that regenerates it triggers NO run — so
+      # the one commit that fixes the stale-docs failure can never turn
+      # CI green, and every later push inherits the red (it did, from
+      # 2026-09-17 to 2026-09-19).
+      - "docs/events.md"
+      - "scripts/gen_event_docs.py"
   pull_request:
     branches: [main]
 
