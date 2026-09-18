@@ -274,14 +274,16 @@ def test_flagless_drops_still_apply_on_upgraded_client() -> None:
 # ── Per-shipped-provider: the declarations actually bite ──────────────
 
 
-def test_claude_code_cli_strips_manifest_pinned_temperature() -> None:
-    """The audit's headline decoy (§3.5): CLI backend declared it drops
+def test_geny_claude_code_strips_manifest_pinned_temperature() -> None:
+    """The audit's headline decoy (§3.5): a backend declared it drops
     temperature/max_tokens and nothing consumed the declaration. Now the
-    pinned values produce observable events instead of silence."""
-    from geny_executor.llm_client.claude_code import ClaudeCodeCLIClient
+    pinned values produce observable events instead of silence — and
+    ``claude -p`` really does take neither, so an undeclared drop here
+    would be a setting that silently does nothing."""
+    from geny_executor.llm_client.claude_code_tokens import ClaudeCodeTokenClient
 
     events: List[Dict[str, Any]] = []
-    client = ClaudeCodeCLIClient(
+    client = ClaudeCodeTokenClient(
         binary_path="/nonexistent/claude",  # _build_request never spawns
         event_sink=events.append,
     )
@@ -292,7 +294,7 @@ def test_claude_code_cli_strips_manifest_pinned_temperature() -> None:
     assert request.max_tokens is None
     dropped = _dropped(events)
     assert dropped["temperature"]["value"] == 0.3
-    assert dropped["temperature"]["provider"] == "claude_code_cli"
+    assert dropped["temperature"]["provider"] == "geny_claude_code"
     assert dropped["max_tokens"]["value"] == 4096
 
 

@@ -55,8 +55,8 @@ async def test_google_filters_to_generatecontent_and_strips_prefix():
 
 
 @pytest.mark.asyncio
-async def test_claude_code_cli_unavailable():
-    out = await discover_models("claude_code_cli")
+async def test_geny_claude_code_unavailable():
+    out = await discover_models("geny_claude_code")
     assert out.source == "unavailable" and out.error
 
 

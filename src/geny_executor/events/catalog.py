@@ -146,7 +146,6 @@ class EventTypes(str, Enum):
     TEXT_DELTA = "text.delta"
     THINKING_DELTA = "thinking.delta"
     API_TOOL_USE = "api.tool_use"
-    API_CLI_TOOL_CALL = "api.cli_tool_call"
     API_INPUT_JSON_DELTA = "api.input_json_delta"
     API_CONTENT_BLOCK_STOP = "api.content_block_stop"
     API_TOOL_RESULT = "api.tool_result"
@@ -478,16 +477,9 @@ PAYLOADS: Dict[EventTypes, Dict[str, str]] = {
         "name": "str|None — tool name",
         "input": "dict — tool input (may be partial until input_json_delta completes)",
         "source": (
-            "str — 'cli' (executed inside a CLI backend) | 'api' (Stage 10 "
-            "will dispatch) | 'internal' (the Stage 6 internal loop is about "
-            "to dispatch it)"
+            "str — 'api' (Stage 10 will dispatch) | 'internal' (the Stage 6 "
+            "internal loop is about to dispatch it)"
         ),
-    },
-    EventTypes.API_CLI_TOOL_CALL: {
-        "id": "str|None",
-        "name": "str|None",
-        "input": "dict",
-        "source": "str — always 'cli'; companion to api.tool_use for narrow subscriptions",
     },
     EventTypes.API_INPUT_JSON_DELTA: {
         "delta": "str — partial JSON fragment of the pending tool input",
@@ -497,7 +489,7 @@ PAYLOADS: Dict[EventTypes, Dict[str, str]] = {
         "tool_use_id": "str — id of the tool_use this result answers",
         "content": "Any — tool result content as the backend reported it",
         "is_error": "bool",
-        "source": "str — 'cli' | 'api' | 'internal' (Stage 6 internal loop dispatched it)",
+        "source": "str — 'api' | 'internal' (the Stage 6 internal loop dispatched it)",
     },
     EventTypes.API_INTERNAL_LOOP_CAPPED: {
         "turns": "int — inner tool turns the loop completed before stopping",

@@ -146,7 +146,8 @@ class CredentialBundle:
             # past it would send a sub-agent to a different account than its
             # parent — the misrouting class this function exists to close.
             "geny_router",
-            "claude_code_cli",
+            "geny_claude_code",
+            "geny_codex",
             "anthropic",
             "openai",
             "google",
@@ -160,7 +161,7 @@ class CredentialBundle:
         heuristic (Geny's ``backend_resolver``, GAPT's equivalent) on top
         of ``has()`` — and re-implementations drift: the question belongs
         next to the data it inspects. The default order encodes the
-        executor's preference for the agentic CLI backend when its
+        executor's preference for a subscription-backed account when its
         credentials exist, then the vendor APIs by capability breadth.
         Hosts with different priorities pass their own ``order``; an
         empty bundle (or one whose providers are all outside ``order``)

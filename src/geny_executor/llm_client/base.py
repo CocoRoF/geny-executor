@@ -94,9 +94,6 @@ class ClientCapabilities:
     #: Vendor-side session id resume (e.g. claude --session-id / --resume).
     supports_session_continuity: bool = False
 
-    #: Vendor accepts MCP server configuration passthrough.
-    supports_mcp_passthrough: bool = False
-
     #: Vendor enforces a USD budget cap on the call (e.g. --max-budget-usd).
     supports_budget_limit: bool = False
 
@@ -105,9 +102,6 @@ class ClientCapabilities:
 
     #: Cost (usage.cost_usd) is populated on the response.
     supports_cost_usage: bool = False
-
-    #: Implementation strategy hint — client spawns a subprocess.
-    is_subprocess: bool = False
 
     #: Client requires a working directory / workspace path.
     requires_workspace: bool = False

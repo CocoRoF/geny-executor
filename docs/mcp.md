@@ -1,15 +1,14 @@
 # MCP Integration
 
-> Status: current for geny-executor 2.1.0.
+> Status: current for geny-executor 2.68.0.
 
-geny-executor supports the [Model Context Protocol](https://modelcontextprotocol.io/) at **two distinct boundaries**, and it's important to know which one you want:
+geny-executor supports the [Model Context Protocol](https://modelcontextprotocol.io/) at **one boundary**: the host connects the server, the pipeline registers its tools, and Stage 10 dispatches them like any other tool.
 
-| Boundary | Where the MCP server lives | Who serves it | Who consumes it | Use when |
-|---|---|---|---|---|
-| **Host-attached MCP** (`MCPManager`) | Process spawned + managed by the executor host | Filesystem / GitHub / Slack / any external MCP server | The pipeline's `ToolRegistry` (so Anthropic SDK / OpenAI / Google / vLLM all see the tools natively) | You want to expose third-party MCP tools to a host-managed LLM call. |
-| **Per-session CLI MCP wrap** (`APIRequest.mcp_config`) | Process spawned by the spawned `claude_code_cli` subprocess via `--mcp-config` | Your host's tool bridge | The spawned CLI's LLM | You're running `claude_code_cli` and want **your host's** tool registry available to the CLI's internal agentic loop. See [claude_code_cli.md](claude_code_cli.md). |
+| Boundary | Where the MCP server lives | Who serves it | Who consumes it |
+|---|---|---|---|
+| **Host-attached MCP** (`MCPManager`) | Process spawned + managed by the executor host | Filesystem / GitHub / Slack / any external MCP server | The pipeline's `ToolRegistry` — so every provider sees the tools, identically |
 
-These two are independent. A single session can use both.
+There used to be a second boundary: a CLI MCP wrap that handed servers to the `claude_code_cli` subprocess through `--mcp-config`, because that backend ran its own agentic loop and host-side connections were invisible to it. That provider was removed in 2.68.0 and the wrap with it. No backend owns the loop now, so there is exactly one place an MCP server connects and exactly one place its tools are dispatched.
 
 ## Host-attached MCP servers
 
@@ -74,48 +73,9 @@ A manifest can declare MCP servers under `tools.mcp_servers[]`:
 
 `Pipeline.from_manifest_async` instantiates `MCPManager`, connects each declared server, and registers the discovered tools before the pipeline starts.
 
-## CLI-side MCP wrap (claude_code_cli only)
+## One place, every provider
 
-This is the **inverse direction**: you give the spawned `claude` subprocess an MCP server that talks back to **your** tool registry. The CLI's LLM then sees your tools as `mcp__<server>__<tool>` and can call them natively inside its own agentic loop.
-
-```python
-mcp_config = {
-    "mcpServers": {
-        "geny": {
-            "type": "stdio",
-            "command": "/usr/bin/python3",
-            "args": ["/app/scripts/geny_mcp_bridge.py"],
-            "env": {
-                "GENY_MCP_URL": "http://127.0.0.1:8000",
-                "GENY_MCP_TOKEN": session_bearer_token,
-                "GENY_MCP_SESSION_ID": session_id,
-            },
-        },
-    },
-}
-
-# Attach as request-level config (per-session, dynamic):
-request.mcp_config = mcp_config
-
-# OR as client-level config (static):
-extras = {"mcp_config": mcp_config}
-```
-
-The argv builder emits `--mcp-config <json>` and `--strict-mcp-config`. The strict flag scopes the CLI's MCP surface to **only** what you provide — no user-level or project-level MCP servers leak in.
-
-The bridge script (`geny_mcp_bridge.py` in the example above) is just an MCP-spec stdio loop that forwards JSON-RPC to your tool dispatcher. The pattern is fully decoupled from any specific transport library — Geny's reference implementation is ~130 lines, stdlib only.
-
-Full integration details + a bridge skeleton: [claude_code_cli.md](claude_code_cli.md).
-
-## Choosing between the two
-
-| You want… | Use |
-|---|---|
-| Host LLM (any provider) calling a 3rd-party MCP server (FS, GitHub, …) | Host-attached `MCPManager` |
-| `claude_code_cli` spawned CLI's LLM calling **your** tools | Per-session CLI MCP wrap |
-| Both at once for a single session | Both — they don't conflict |
-
-The host-attached path is the standard MCP client story. The CLI wrap is geny-executor-specific machinery that makes the `claude_code_cli` provider useful as a Stage 6 backend in an agentic pipeline.
+A manifest's `tools.mcp_servers` are connected host-side by `MCPManager` at `from_manifest_async` time and registered into the `ToolRegistry` — whichever provider Stage 6 names. `APIRequest.mcp_config` survives on the request type for third-party clients that take MCP servers on their own channel; no shipped client does.
 
 ## Error handling
 

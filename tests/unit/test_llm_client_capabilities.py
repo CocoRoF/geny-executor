@@ -35,11 +35,9 @@ def test_capabilities_has_expected_fields() -> None:
         # extended 9
         "supports_structured_output",
         "supports_session_continuity",
-        "supports_mcp_passthrough",
         "supports_budget_limit",
         "supports_token_usage",
         "supports_cost_usage",
-        "is_subprocess",
         "requires_workspace",
         "streaming_granularity",
         # plus drops
@@ -63,11 +61,9 @@ def test_capabilities_defaults_are_backward_compatible() -> None:
     # New fields: conservative defaults that don't change existing behaviour
     assert cap.supports_structured_output is False
     assert cap.supports_session_continuity is False
-    assert cap.supports_mcp_passthrough is False
     assert cap.supports_budget_limit is False
     assert cap.supports_token_usage is True
     assert cap.supports_cost_usage is False
-    assert cap.is_subprocess is False
     assert cap.requires_workspace is False
     assert cap.streaming_granularity == "token"
 
@@ -107,14 +103,12 @@ def test_supports_helper_all_extended_flags() -> None:
     cap = ClientCapabilities(
         supports_structured_output=True,
         supports_session_continuity=True,
-        supports_mcp_passthrough=True,
         supports_budget_limit=True,
         supports_cost_usage=True,
     )
     for feature in (
         "structured_output",
         "session_continuity",
-        "mcp_passthrough",
         "budget_limit",
         "cost_usage",
     ):

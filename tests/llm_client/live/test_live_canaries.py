@@ -11,9 +11,11 @@ wave-1 fixes restored:
   * anthropic — alias model ids resolve at the boundary; opus +
     thinking + temperature self-heals instead of 400ing; streaming
     produces real per-token deltas.
-  * claude_code_cli — the local binary still speaks a wire shape the
-    translator fully recognises (``unknown_line_count == 0`` is THE
-    drift canary), and the version handshake answers.
+  * geny_claude_code — the local ``claude`` binary still answers in
+    token mode (``-p --tools ""``) with a shape the token client reads:
+    a terminal ``result`` line carrying the text, and a ``<tool_call>``
+    block when THIS harness offers it a tool. Those two are the whole
+    contract now that the binary is used as a pure LLM.
   * openai — streamed usage is non-zero (the wave-1 $0-cost fix).
 
 Gating: every test is skipped unless ``RUN_LIVE`` is set AND the
@@ -26,13 +28,14 @@ Suggested nightly invocation::
     RUN_LIVE=1 ANTHROPIC_API_KEY=... OPENAI_API_KEY=... \\
         .venv/bin/python -m pytest tests/llm_client/live/ -v -rs
 
-(The claude_code_cli canaries additionally need a logged-in ``claude``
+(The geny_claude_code canaries additionally need a logged-in ``claude``
 binary on PATH or CLAUDE_CODE_BINARY pointing at one.)
 """
 
 from __future__ import annotations
 
 import os
+import shutil
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "..", "src"))
@@ -40,7 +43,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "..", "sr
 import pytest
 
 from geny_executor.core.config import ModelConfig
-from geny_executor.llm_client._cli_runtime import detect_binary
 
 
 def _live_enabled(provider: str) -> bool:
@@ -58,7 +60,8 @@ def _anthropic_ready() -> bool:
 
 def _cli_ready() -> bool:
     override = os.environ.get("CLAUDE_CODE_BINARY", "") or None
-    return _live_enabled("claude_code_cli") and bool(detect_binary("claude", override))
+    binary = override if override and os.path.exists(override) else shutil.which("claude")
+    return _live_enabled("geny_claude_code") and bool(binary)
 
 
 def _openai_ready() -> bool:
@@ -71,7 +74,7 @@ anthropic_only = pytest.mark.skipif(
 )
 cli_only = pytest.mark.skipif(
     not _cli_ready(),
-    reason="live canary: RUN_LIVE with claude_code_cli + local claude binary required",
+    reason="live canary: RUN_LIVE with geny_claude_code + local claude binary required",
 )
 openai_only = pytest.mark.skipif(
     not _openai_ready(),
@@ -150,58 +153,71 @@ async def test_anthropic_streaming_yields_multiple_text_deltas() -> None:
 
 
 # ---------------------------------------------------------------------------
-# claude_code_cli — wire-drift canary against the real local binary
+# geny_claude_code — wire-drift canary against the real local binary
 # ---------------------------------------------------------------------------
 
 
-def _cli_client(tmp_path) -> "object":  # noqa: ANN001
-    from geny_executor.llm_client.claude_code import ClaudeCodeCLIClient
+def _token_client(tmp_path) -> "object":  # noqa: ANN001
+    from geny_executor.llm_client.claude_code_tokens import ClaudeCodeTokenClient
 
-    return ClaudeCodeCLIClient(
-        workspace_dir=str(tmp_path),
+    return ClaudeCodeTokenClient(
+        binary_path=os.environ.get("CLAUDE_CODE_BINARY", "") or "claude",
         timeout_s=180.0,
     )
 
 
 @cli_only
 @pytest.mark.asyncio
-async def test_cli_streams_with_zero_unknown_lines(tmp_path) -> None:
-    """THE drift canary: the local CLI's stream-json must be fully
-    recognised by the translator. ``unknown_line_count > 0`` is the
-    first observable symptom of the next 2.1.x-style wire change —
-    catch it here, not in a host's masked-text incident."""
-    client = _cli_client(tmp_path)
-    deltas = 0
+async def test_token_mode_streams_text(tmp_path) -> None:
+    """THE drift canary: ``claude -p --tools ""`` must still answer with a
+    terminal ``result`` line the token client can read. A shape change
+    here is the first observable symptom of the next 2.1.x-style wire
+    change — catch it nightly, not in a host's masked-text incident."""
+    client = _token_client(tmp_path)
     completes = []
     async for event in client.create_message_stream(
         model_config=ModelConfig(model="haiku", max_tokens=64),
         messages=[{"role": "user", "content": "Reply with exactly: ok"}],
     ):
-        if event.get("type") == "text_delta":
-            deltas += 1
-        elif event.get("type") == "message_complete":
+        if event.get("type") == "message_complete":
             completes.append(event["response"])
 
     assert completes, "stream ended without message_complete"
-    response = completes[-1]
-    assert response.text.strip()
-    assert deltas >= 1, "CLI produced no streamed text deltas (stream_event form)"
-    raw = response.raw if isinstance(response.raw, dict) else {}
-    assert int(raw.get("unknown_line_count", 0) or 0) == 0, (
-        f"CLI emitted {raw.get('unknown_line_count')} unrecognised wire lines "
-        f"(first: {raw.get('first_unknown_type')!r}) — translator drift"
-    )
-    assert int(raw.get("malformed_line_count", 0) or 0) == 0
+    assert completes[-1].text.strip(), "the binary answered with no text"
 
 
 @cli_only
 @pytest.mark.asyncio
-async def test_cli_version_probe_answers(tmp_path) -> None:
-    client = _cli_client(tmp_path)
-    version = await client._ensure_cli_version()
-    assert version and version != "unknown", (
-        "claude --version handshake failed — every 2.1.x incident was "
-        "version skew, so an unanswerable probe is itself a finding"
+async def test_token_mode_asks_for_our_tool(tmp_path) -> None:
+    """The other half of the contract: the binary is a pure LLM here, so
+    it must REQUEST a tool in this harness's ``<tool_call>`` text
+    protocol rather than executing one of its own. A native tool_use
+    block instead would mean the ``--tools ""`` isolation regressed."""
+    client = _token_client(tmp_path)
+    completes = []
+    async for event in client.create_message_stream(
+        model_config=ModelConfig(model="haiku", max_tokens=256),
+        messages=[{"role": "user", "content": "List the files in /tmp."}],
+        tools=[
+            {
+                "name": "ListDir",
+                "description": "List the entries of a directory.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {"path": {"type": "string"}},
+                    "required": ["path"],
+                },
+            }
+        ],
+    ):
+        if event.get("type") == "message_complete":
+            completes.append(event["response"])
+
+    assert completes, "stream ended without message_complete"
+    blocks = completes[-1].content or []
+    assert any(getattr(b, "type", "") == "tool_use" for b in blocks), (
+        "the model did not request our tool — either the <tool_call> "
+        "protocol drifted or the binary fell back to its own tools"
     )
 
 

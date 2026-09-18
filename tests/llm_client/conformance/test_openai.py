@@ -100,6 +100,5 @@ class TestOpenAIConformance(ConformanceTestSuite):
         # OpenAI does support JSON schema response_format.
         assert client.supports("structured_output") is True
 
-    def test_openai_not_subprocess(self) -> None:
-        client = self.make_client()
-        assert client.capabilities.is_subprocess is False
+    def test_needs_no_workspace(self) -> None:
+        assert self.make_client().capabilities.requires_workspace is False

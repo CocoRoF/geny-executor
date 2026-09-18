@@ -1,13 +1,13 @@
 """Claude Code as a *token generator* — the harness owns the loop.
 
-The stock `claude_code_cli` client hands the whole agentic loop to
-the CLI: the CLI runs its own Read/Write/Bash, keeps its own permission
-model, and Geny's 21 stages see only an announcement of what already
-happened. That makes Claude Code a different agent rather than a model
-behind Geny's pipeline, and it cannot share a conversation with any other
-provider.
+Claude Code ships its own agentic loop: run it the usual way and the
+CLI runs its own Read/Write/Bash, keeps its own permission model, and
+these 21 stages see only an announcement of what already happened. That
+makes Claude Code a different agent rather than a model behind this
+pipeline, and it cannot share a conversation with any other provider.
+Until 2.68.0 a ``claude_code_cli`` provider did exactly that; it is gone.
 
-This client inverts that:
+This client inverts it:
 
     claude -p --tools ""            no built-in tools at all
            --strict-mcp-config --mcp-config {"mcpServers":{}}
@@ -31,6 +31,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import logging
 import os
 import re
 import shutil
@@ -47,6 +48,8 @@ from geny_executor.llm_client.types import APIRequest, APIResponse, ContentBlock
 
 from geny_executor.llm_client import text_tool_protocol as tp
 from geny_executor.llm_client._failover import Notify, classify_text
+
+logger = logging.getLogger(__name__)
 
 #: auth channels the CLI honours from the environment — stripped from the
 #: inherited env so an unrelated exported key can never pick the account
@@ -70,9 +73,28 @@ AUTH_ENV = (
 )
 SESSION_ENV = AUTH_ENV[-5:]
 
+
 #: flags a given binary rejected with "unknown option" — learned at runtime,
 #: because `--help` hides some accepted flags (`--system-prompt-file`,
 #: `--max-turns`) and so cannot be the source of truth
+# ── stdout stream limit ────────────────────────────────────────────────
+# The CLI emits one stream-json event per line, and the model's own text
+# rides INSIDE those lines — a long answer, a base64 image, or a big
+# forged-tool payload easily exceeds asyncio's default StreamReader limit
+# (64 KiB), and readline() then kills the whole turn with "Separator is
+# found, but chunk is longer than limit" (the buffer is discarded, so the
+# line is unrecoverable — the 2026-07-14 delegated-PPTX failure). The
+# default is deliberately generous: 32 MiB, a cap rather than an
+# allocation (memory is used only per actual line).
+def _stream_limit() -> int:
+    raw = os.environ.get("GENY_CLI_STREAM_LIMIT", "").strip()
+    try:
+        v = int(raw) if raw else 0
+    except ValueError:
+        v = 0
+    return v if v >= 2**16 else 32 * 1024 * 1024
+
+
 _UNSUPPORTED: dict[str, set[str]] = {}
 _UNKNOWN_OPTION = re.compile(r"unknown option '?(--[a-zA-Z-]+)'?", re.I)
 
@@ -205,10 +227,21 @@ class ClaudeCodeTokenClient(BaseClient):
         supports_structured_output=False,
         supports_token_usage=True,
         supports_cost_usage=True,
-        is_subprocess=False,  # the HOST executes tools — that is the point
         requires_workspace=False,
         streaming_granularity="token",
-        drops=("temperature", "top_p", "top_k", "stop_sequences", "tool_choice"),
+        # ``claude -p`` takes none of these, and an undeclared drop is a
+        # silent one — the whole point of the declaration is that the
+        # host sees an ``llm_client.field_dropped`` event instead of a
+        # setting that quietly does nothing. Parity with geny_codex,
+        # which drops the same list.
+        drops=(
+            "temperature",
+            "top_p",
+            "top_k",
+            "stop_sequences",
+            "max_tokens",
+            "tool_choice",
+        ),
     )
 
     def __init__(
@@ -400,7 +433,7 @@ class ClaudeCodeTokenClient(BaseClient):
                 stderr=asyncio.subprocess.PIPE,
                 cwd=cwd,
                 env=env,
-                limit=16 * 1024 * 1024,
+                limit=_stream_limit(),
             )
         except FileNotFoundError as exc:
             raise APIError(
@@ -459,11 +492,20 @@ class ClaudeCodeTokenClient(BaseClient):
                         f"claude timed out after {self._timeout_s:.0f}s",
                         category=ErrorCategory.CLI_TIMEOUT,
                     ) from exc
-                except ValueError as exc:  # a line over the reader limit
-                    raise APIError(
-                        f"claude output line too large: {exc}",
-                        category=ErrorCategory.CLI_PROTOCOL_ERROR,
-                    ) from exc
+                except ValueError as exc:
+                    # asyncio raises ValueError("Separator is found, but chunk
+                    # is longer than limit") when ONE line exceeds the reader
+                    # limit — and discards the buffered bytes, so that line is
+                    # unrecoverable. With the 32 MiB default this is near
+                    # impossible; if it happens anyway, losing ONE event beats
+                    # killing the turn. Log loudly and keep reading.
+                    logger.warning(
+                        "claude stdout line exceeded the %d-byte limit — "
+                        "skipping one event and continuing (%s)",
+                        _stream_limit(),
+                        exc,
+                    )
+                    continue
                 if not line:
                     break
                 try:

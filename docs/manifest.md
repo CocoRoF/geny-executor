@@ -55,7 +55,7 @@ result = await pipeline.run("Find the latest Python release version")
       "active": true,
       "artifact": "default",
       "config": {
-        "provider": "claude_code_cli",
+        "provider": "geny_router",
         "model": "sonnet",
         "max_tokens": 4096
       },

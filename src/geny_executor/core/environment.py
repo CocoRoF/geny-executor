@@ -1110,7 +1110,7 @@ def validate_manifest(
             )
         if (
             sub_provider
-            and str(sub_provider) not in ("anthropic", "claude_code_cli")
+            and str(sub_provider) not in ("anthropic", "geny_claude_code", "geny_router")
             and not raw_sub.get("model_override")
             and not has_sub_source
         ):

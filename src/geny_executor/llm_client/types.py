@@ -42,11 +42,11 @@ class APIRequest:
     #:   {"session_id": "...", "resume": bool}
     session_hint: Optional[Dict[str, Any]] = None
 
-    #: Per-request MCP server configuration. CLI-based backends
-    #: (claude_code_cli) serialize this to ``--mcp-config <json>``;
-    #: SDK-based backends ignore it. Hosts use this to surface their
-    #: tool registry to the CLI's LLM without going through the
-    #: cumbersome per-client static ``mcp_config_path``. Shape::
+    #: Per-request MCP server configuration, for a backend that takes
+    #: MCP servers on its own channel. No shipped client does any more —
+    #: MCP servers are connected host-side by :class:`MCPManager` and
+    #: their tools dispatched by Stage 10 like any other, so this field
+    #: is carried for third-party clients only. Shape::
     #:
     #:     {"mcpServers": {"<name>": {"type": "stdio",
     #:                                "command": "...",

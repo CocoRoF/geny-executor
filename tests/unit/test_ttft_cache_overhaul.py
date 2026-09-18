@@ -82,7 +82,7 @@ class TestProviderGate:
     def test_cli_backend_is_bypassed(self):
         state = PipelineState()
         state.model = "opus"
-        state.llm_client = _StubClient("claude_code_cli")
+        state.llm_client = _StubClient("geny_claude_code")
         assert _supports_cache_control(state) is False
 
     def test_no_client_falls_back_to_model_heuristic_alias_aware(self):

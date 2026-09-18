@@ -1,5 +1,69 @@
 # Changelog
 
+## [2.68.0] — 2026-09-19
+
+### Removed — the backend that owned the loop
+
+A provider may be a model. It may not be an agent.
+
+`claude_code_cli` was the one registered path that handed the whole
+agentic loop to a subprocess: the CLI ran its own Read/Write/Bash, kept
+its own permission model, and these 21 stages saw an announcement of what
+had already happened rather than a request they could answer. That made
+Claude Code a *different agent* sitting behind the pipeline instead of a
+model inside it — it could not share a conversation with another
+provider, could not be sandboxed by this library's rules, and could not
+be held to its permission ladder.
+
+`geny_claude_code` (2.66.0) already replaced it: `claude -p --tools ""`
+with the tool protocol in the system prompt, tool calls coming back as
+text and dispatched by Stage 10 like every other provider's. With that
+shipped, the old path was a second way to run an agent, and the second
+way is the one that drifts.
+
+Gone with it, because nothing else could reach them:
+
+  · `llm_client/claude_code.py` (859 lines) and its registry factory.
+  · `llm_client/_cli_runtime.py` (714) — the CLI process runner and the
+    `ContainerCLIRunner` that spawned it inside a sandbox. The
+    `SandboxHandle` Protocol outlived the runner and moved to
+    `llm_client/_sandbox_handle.py`; `geny_executor.SandboxHandle` and
+    `geny_executor.llm_client.SandboxHandle` are unchanged.
+  · `llm_client/translators/_cli.py` (1302) — the stream-json translator.
+  · CLI MCP passthrough in `core/pipeline.py`: manifest-declared MCP
+    servers were routed to the subprocess's `--mcp-config` instead of
+    being connected host-side. There is no subprocess to route to; MCP
+    servers now always connect host-side and dispatch through Stage 10.
+  · `attach_runtime(containerize_cli=)` — it chose whether the sandbox
+    also ran the CLI. An attached sandbox is now a tool-execution surface
+    and nothing else. **Breaking for hosts that passed it.**
+  · `ClientCapabilities.is_subprocess` / `.supports_mcp_passthrough` —
+    both were False on every remaining client, and the branches that read
+    them (Stage 6's internal-loop guard, the `source: "cli"` marking) can
+    never fire again. **Breaking for hosts that set or read them.**
+  · The `api.cli_tool_call` event, which existed only to announce a tool
+    the subprocess had already executed. `api.tool_use` now always carries
+    `source: "api"`: the model is asking, and this pipeline answers.
+
+### Fixed — a tool that says where it wrote
+
+`Write` and `Edit` echoed the path they were *given* back into the tool
+result. Under a sandbox the session speaks `/workspace/...` while the
+host jail resolves to `/data/agent-sessions/<id>/workspace/...`, so the
+model asked for one address and was told it had written to another — then
+read back from the address it was told. `tools/_sandbox.spoken_path()`
+answers in the vocabulary the session uses, and both tools now use it.
+
+### Fixed — `claude -p` drops that were never declared
+
+`ClaudeCodeTokenClient` ignored `max_tokens` without declaring it in
+`capabilities.drops`, so a host could pin a token budget and get silence
+instead of an `llm_client.field_dropped` event. It is declared now, at
+parity with `geny_codex`. The stdout reader also regained the
+`GENY_CLI_STREAM_LIMIT` knob (32 MiB default) and, with it, the lesson
+from the 2026-07-14 delegated-PPTX failure: one oversized line loses one
+event, it does not kill the turn.
+
 ## [2.67.0] — 2026-09-17
 
 ### Fixed (the gpt-5 fix in 2.66.3 was not a fix)

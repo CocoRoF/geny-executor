@@ -78,9 +78,9 @@ class ToolLoopStrategy(Strategy):
       review, evaluation) at the cost of re-running every stage per
       tool round-trip.
     - **internal** — the strategy resolves tool calls *inside* Stage 6
-      (call → dispatch → call …) and returns only the final response,
-      mirroring how the ``claude_code_cli`` backend's subprocess loop
-      already behaves (see ``StreamJsonAccumulator.finalize``).
+      (call → dispatch → call …) and returns only the final response:
+      the tight loop a coding-agent CLI runs in its own subprocess,
+      except it runs here, on this pipeline's dispatcher.
 
     The strategy never talks to the client directly — it drives the
     stage-built :data:`ToolLoopCall` closure so every call shares the

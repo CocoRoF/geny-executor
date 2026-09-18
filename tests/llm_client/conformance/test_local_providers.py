@@ -79,5 +79,5 @@ class TestCustomConformance(ConformanceTestSuite):
         with pytest.raises(ValueError):
             CustomOpenAIClient()
 
-    def test_not_subprocess(self) -> None:
-        assert self.make_client().capabilities.is_subprocess is False
+    def test_needs_no_workspace(self) -> None:
+        assert self.make_client().capabilities.requires_workspace is False

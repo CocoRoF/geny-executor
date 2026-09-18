@@ -1,7 +1,7 @@
 """attach_runtime(llm_client=) provider-mismatch guard (2.2.0, audit §2.7).
 
 Incident #866: a host attached an Anthropic client onto a pipeline
-whose manifest declared ``claude_code_cli`` — the attached client beats
+whose manifest declared ``geny_claude_code`` — the attached client beats
 the manifest unconditionally in ``_resolve_llm_client``, so every run
 silently used the wrong backend. The only prior defence was a comment
 inside Geny. These tests pin the structural guard:
@@ -45,7 +45,7 @@ class _FakeClient:
         self.provider = provider
 
 
-def _manifest(provider: str = "claude_code_cli") -> EnvironmentManifest:
+def _manifest(provider: str = "geny_claude_code") -> EnvironmentManifest:
     m = EnvironmentManifest(
         metadata=EnvironmentMetadata(id="env_866", name="guard"),
         model={},
@@ -70,7 +70,7 @@ def _manifest(provider: str = "claude_code_cli") -> EnvironmentManifest:
     return m
 
 
-def _manifest_pipeline(provider: str = "claude_code_cli") -> Pipeline:
+def _manifest_pipeline(provider: str = "geny_claude_code") -> Pipeline:
     return Pipeline.from_manifest(
         _manifest(provider), credentials=CredentialBundle(), strict=True
     )
@@ -92,12 +92,12 @@ def _fixture_pipeline() -> Pipeline:
 
 
 def test_mismatched_client_raises_naming_both_providers():
-    pipeline = _manifest_pipeline("claude_code_cli")
+    pipeline = _manifest_pipeline("geny_claude_code")
     with pytest.raises(ConfigError) as excinfo:
         pipeline.attach_runtime(llm_client=_FakeClient("anthropic"))
     message = str(excinfo.value)
     assert "anthropic" in message
-    assert "claude_code_cli" in message
+    assert "geny_claude_code" in message
     assert "#866" in message
     # And nothing got attached — the pipeline is unchanged.
     assert pipeline._attached_llm_client is None
@@ -105,7 +105,7 @@ def test_mismatched_client_raises_naming_both_providers():
 
 def test_mismatch_raises_via_refresh_runtime_too():
     """refresh_runtime shares the wiring, so it shares the guard."""
-    pipeline = _manifest_pipeline("claude_code_cli")
+    pipeline = _manifest_pipeline("geny_claude_code")
     with pytest.raises(ConfigError, match="#866"):
         pipeline.refresh_runtime(llm_client=_FakeClient("openai"))
 
@@ -132,7 +132,7 @@ def test_fixture_pipeline_unaffected():
 def test_client_without_provider_attr_is_allowed():
     """Clients that don't report a provider can't be checked — the
     guard refuses only provable mismatches."""
-    pipeline = _manifest_pipeline("claude_code_cli")
+    pipeline = _manifest_pipeline("geny_claude_code")
 
     class _Opaque:
         pass
@@ -146,7 +146,7 @@ def test_client_without_provider_attr_is_allowed():
 
 
 def test_override_manifest_allows_mismatch():
-    pipeline = _manifest_pipeline("claude_code_cli")
+    pipeline = _manifest_pipeline("geny_claude_code")
     client = _FakeClient("anthropic")
     pipeline.attach_runtime(llm_client=client, override_manifest=True)
     assert pipeline._attached_llm_client is client
@@ -156,7 +156,7 @@ def test_override_manifest_allows_mismatch():
 async def test_override_emits_event_at_next_run_start():
     """The acknowledged override must be visible in the event stream —
     a silent override is the original foot-gun with extra steps."""
-    pipeline = _manifest_pipeline("claude_code_cli")
+    pipeline = _manifest_pipeline("geny_claude_code")
     # The fake client is not callable as a real backend; replace the API
     # stage with a Mock-backed one AFTER attaching so the run completes.
     pipeline.attach_runtime(
@@ -172,7 +172,7 @@ async def test_override_emits_event_at_next_run_start():
     ]
     assert len(override_events) == 1
     assert override_events[0]["data"] == {
-        "manifest_provider": "claude_code_cli",
+        "manifest_provider": "geny_claude_code",
         "client_provider": "anthropic",
     }
 

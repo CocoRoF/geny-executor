@@ -111,7 +111,7 @@ from geny_executor import build_manifest
 
 manifest = build_manifest(
     "worker_adaptive",                  # or "vtuber" / "default"
-    provider="claude_code_cli",
+    provider="geny_claude_code",
     model="claude-sonnet-4-6",
     built_in_tools=["*"],
     mcp_servers=[{"name": "geny-bridge", "url": bridge_url}],

@@ -68,12 +68,6 @@ def _vllm_factory() -> Type[BaseClient]:
     return VLLMClient
 
 
-def _claude_code_cli_factory() -> Type[BaseClient]:
-    from geny_executor.llm_client.claude_code import ClaudeCodeCLIClient
-
-    return ClaudeCodeCLIClient
-
-
 #: Providers whose constructor surface IS ``ProviderCredentials.extras``.
 #: They carry host state (a route, an account id, a Claude config dir, Codex
 #: tokens) that has no vendor-shaped equivalent, so ``_creds_to_client_kwargs``
@@ -120,7 +114,6 @@ ClientRegistry.register("anthropic", _anthropic_factory)
 ClientRegistry.register("openai", _openai_factory)
 ClientRegistry.register("google", _google_factory)
 ClientRegistry.register("vllm", _vllm_factory)
-ClientRegistry.register("claude_code_cli", _claude_code_cli_factory)
 
 # Account-routed providers (2.66.0). ``geny_router`` is the provider every
 # manifest names: it holds an ordered route of accounts and picks the one

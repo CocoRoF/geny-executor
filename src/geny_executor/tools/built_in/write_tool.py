@@ -48,14 +48,15 @@ class WriteTool(Tool):
 
         # Sandbox: write the file inside the container (docker exec).
         if context.sandbox is not None:
-            from geny_executor.tools._sandbox import sb_write_bytes
+            from geny_executor.tools._sandbox import sb_write_bytes, spoken_path
 
             wd = context.working_dir or "/workspace"
             try:
                 n = await sb_write_bytes(
                     context.sandbox, file_path, content.encode("utf-8"), workdir=wd
                 )
-                return ToolResult(content=f"Successfully wrote {n} bytes to {file_path}")
+                where = spoken_path(context.sandbox, file_path, wd)
+                return ToolResult(content=f"Successfully wrote {n} bytes to {where}")
             except PermissionError as e:
                 return ToolResult(content=str(e), is_error=True)
             except Exception as e:  # noqa: BLE001

@@ -1,6 +1,6 @@
 """Claude Code driven as a token generator, not as a second agent.
 
-The stock ``claude_code_cli`` client hands the whole loop to the CLI: it runs
+The retired ``claude_code_cli`` client handed the whole loop to the CLI: it ran
 its own Read/Write/Bash under its own permission model, and the pipeline sees
 an announcement of what already happened. That makes Claude Code a different
 agent rather than a model behind this harness, and it cannot share a

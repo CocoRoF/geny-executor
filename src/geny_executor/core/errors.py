@@ -75,7 +75,7 @@ class ExecutorErrorCode(str, Enum):
     EXEC_API_STREAM_INCOMPLETE = "exec.api.stream_incomplete"
     EXEC_API_RETRY_EXHAUSTED = "exec.api.retry_exhausted"
 
-    # ── exec.cli.* — CLI-driven backends (claude_code_cli) ──
+    # ── exec.cli.* — backends that spawn a CLI (geny_claude_code) ──
     EXEC_CLI_BINARY_NOT_FOUND = "exec.cli.binary_not_found"
     EXEC_CLI_AUTH_FAILED = "exec.cli.auth_failed"
     EXEC_CLI_TIMEOUT = "exec.cli.timeout"

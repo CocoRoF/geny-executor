@@ -48,18 +48,9 @@ class _ChunkClient(BaseClient):
         supports_streaming=True,
     )
 
-    def __init__(self, chunks: List[Dict[str, Any]], *, subprocess_backed: bool = False):
+    def __init__(self, chunks: List[Dict[str, Any]]):
         super().__init__(api_key="k")
         self._chunks = chunks
-        if subprocess_backed:
-            # Per-instance capability override mirroring claude_code's
-            # class-level flag.
-            self.capabilities = ClientCapabilities(
-                supports_thinking=True,
-                supports_tools=True,
-                supports_streaming=True,
-                is_subprocess=True,
-            )
 
     async def _send(self, request: APIRequest, *, purpose: str = "") -> APIResponse:
         return _response()
@@ -131,23 +122,22 @@ class TestChunkForwarding:
         assert results[0]["data"]["tool_use_id"] == "tu_1"
         assert results[0]["data"]["is_error"] is False
         assert results[0]["data"]["source"] == "api"
-        # API-backed client: tool_use is a Stage-10 dispatch request,
-        # NOT a CLI-side execution — no companion event.
-        assert _events_of(state, "api.cli_tool_call") == []
 
     @pytest.mark.asyncio
-    async def test_subprocess_client_tool_use_marked_cli_with_companion_event(self):
-        client = _ChunkClient(list(FULL_CHUNK_SCRIPT), subprocess_backed=True)
+    async def test_tool_use_source_is_always_api(self):
+        """No backend runs its own tool loop (2.68.0), so a tool_use block
+        is ALWAYS this pipeline being asked to dispatch — never an
+        announcement that a subprocess already did. ``source`` reflects
+        that unconditionally, and the ``api.cli_tool_call`` companion
+        event that existed for the announcement case is gone."""
+        client = _ChunkClient(list(FULL_CHUNK_SCRIPT))
         state = _stage_state(client)
 
         await APIStage().execute(None, state)
 
-        tool_uses = _events_of(state, "api.tool_use")
-        assert tool_uses[0]["data"]["source"] == "cli"
-        cli_calls = _events_of(state, "api.cli_tool_call")
-        assert len(cli_calls) == 1
-        assert cli_calls[0]["data"] == tool_uses[0]["data"]
-        assert _events_of(state, "api.tool_result")[0]["data"]["source"] == "cli"
+        assert _events_of(state, "api.tool_use")[0]["data"]["source"] == "api"
+        assert _events_of(state, "api.tool_result")[0]["data"]["source"] == "api"
+        assert _events_of(state, "api.cli_tool_call") == []
 
     @pytest.mark.asyncio
     async def test_empty_text_and_thinking_deltas_not_forwarded(self):
@@ -198,7 +188,7 @@ class TestApiErrorEnvelope:
     @pytest.mark.asyncio
     async def test_api_error_event_emitted_before_exception_propagates(self):
         class _FailingClient(_ChunkClient):
-            provider = "claude_code_cli"
+            provider = "geny_claude_code"
 
             async def create_message_stream(self, **kwargs):  # type: ignore[override]
                 raise APIError(
@@ -219,7 +209,7 @@ class TestApiErrorEnvelope:
         data = errors[0]["data"]
         assert data["code"] == ExecutorErrorCode.EXEC_CLI_AUTH_FAILED.value
         assert data["category"] == ErrorCategory.CLI_AUTH_FAILED.value
-        assert data["provider"] == "claude_code_cli"
+        assert data["provider"] == "geny_claude_code"
         assert data["cli_version"] == "2.1.149"
         assert "auth failed" in data["message"]
 
@@ -251,7 +241,7 @@ class TestApiErrorEnvelope:
         it must arrive before the terminal pipeline.error."""
 
         class _FailingClient(_ChunkClient):
-            provider = "claude_code_cli"
+            provider = "geny_claude_code"
 
             async def create_message_stream(self, **kwargs):  # type: ignore[override]
                 raise APIError(

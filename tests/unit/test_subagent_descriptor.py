@@ -188,7 +188,7 @@ async def test_result_metadata_carries_provider_and_parallel_flags() -> None:
 
     desc = SubagentTypeDescriptor(
         agent_type="r", factory=lambda ctx: _FakePipeline(),
-        provider="claude_code_cli", parallel=True, max_concurrent=3,
+        provider="geny_claude_code", parallel=True, max_concurrent=3,
         model_override="opus",
     )
     reg = SubagentTypeRegistry().register(desc)
@@ -199,7 +199,7 @@ async def test_result_metadata_carries_provider_and_parallel_flags() -> None:
     state.delegate_requests = [{"agent_type": "r", "task": "go"}]
     result = await orch.orchestrate(state)
     meta = result.sub_results[0]["subagent_metadata"]
-    assert meta["provider"] == "claude_code_cli"
+    assert meta["provider"] == "geny_claude_code"
     assert meta["model_override"] == "opus"
     assert meta["parallel"] is True
     assert meta["max_concurrent"] == 3

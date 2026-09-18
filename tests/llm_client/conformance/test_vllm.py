@@ -47,6 +47,5 @@ class TestVLLMConformance(ConformanceTestSuite):
         with pytest.raises(ValueError):
             V(base_url=None)
 
-    def test_vllm_not_subprocess(self) -> None:
-        client = self.make_client()
-        assert client.capabilities.is_subprocess is False
+    def test_needs_no_workspace(self) -> None:
+        assert self.make_client().capabilities.requires_workspace is False

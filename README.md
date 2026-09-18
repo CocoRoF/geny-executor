@@ -9,7 +9,7 @@
 
 geny-executor implements a **21-stage pipeline** with **dual-abstraction architecture** (stage slots × strategy slots). Inspired by Claude Code's agent loop and Anthropic's harness design principles. No LangChain. No LangGraph. Just an explicit, modular pipeline where every step is observable, mutatable, and swappable.
 
-[한국어 README](README_ko.md) · [Architecture](docs/architecture.md) · [Providers](docs/providers.md) · [Error codes](docs/error_codes.md) · [Claude Code CLI host](docs/claude_code_cli.md)
+[한국어 README](README_ko.md) · [Architecture](docs/architecture.md) · [Providers](docs/providers.md) · [Error codes](docs/error_codes.md)
 
 ---
 
@@ -53,7 +53,7 @@ These projects are built to work together. **Geny** is the product at the top of
 |---|---|
 | Frameworks hide too much behind abstractions | Every one of the 21 stages is explicit, inspectable, and individually swappable. |
 | Hard to customize one part without rewriting everything | **Dual abstraction**: swap a whole stage *or* swap a strategy inside a stage. Manifest-driven so config = artifact. |
-| Vendor lock-in across LLM providers | One contract, five providers wired in (`anthropic` / `openai` / `google` / `vllm` / `claude_code_cli`). Switch by editing one config field. |
+| Vendor lock-in across LLM providers | One contract, seven providers wired in (`geny_router` / `geny_claude_code` / `geny_codex` / `anthropic` / `openai` / `google` / `vllm`). Switch by editing one config field. |
 | Agent loops are opaque black boxes | Event-bus + stable structured error codes ([`exec.cli.auth_failed`, …](docs/error_codes.md)) — every failure groups cleanly in your logs / Sentry / i18n layer. |
 | MCP integration is a side concern | First-class. Host-attached MCP servers + per-session MCP wraps for CLI backends (e.g. Claude Code CLI) ship out of the box. |
 | Cost tracking is an afterthought | Built into Stage 7 (Token). Per-call cost, per-session ledger, budget guards. |
@@ -116,7 +116,7 @@ pip install geny-executor[all]      # everything
 pip install geny-executor[dev]      # dev/test tooling
 ```
 
-**Requirements**: Python 3.11+. At least one provider's credentials (Anthropic API key, OpenAI API key, …) or a local CLI binary (`claude` for `claude_code_cli`).
+**Requirements**: Python 3.11+. At least one provider's credentials (Anthropic API key, OpenAI API key, …) or a logged-in `claude` binary for `geny_claude_code`.
 
 ---
 
@@ -233,7 +233,9 @@ See [`docs/manifest.md`](docs/manifest.md) for the full schema.
 | `openai` | GPT-4.1 / o-series. Streaming, tools, JSON-schema structured output. |
 | `google` | Gemini 3.x / 2.5. Streaming, tools, thinking blocks. |
 | `vllm` | Any model on a local vLLM endpoint. OpenAI-compatible. Tools opt-in via `configure_capabilities()`. |
-| `claude_code_cli` | Subprocess-driven Claude Code CLI. **Hosts attach a per-session MCP bridge** to surface their own tool registry to the spawned CLI's LLM. See [`docs/claude_code_cli.md`](docs/claude_code_cli.md). |
+| `geny_router` | A route of accounts. Decides per call which backend answers, so one conversation can move between a Claude subscription, a second Claude login and a ChatGPT plan without losing its tools, memory or permission policy. Fails over only **before the first token**, and only for failures another account can fix. |
+| `geny_claude_code` | The `claude` binary as a **token generator**: `-p --tools "" --max-turns 1`, MCP locked out, `<tool_call>` text parsed back into canonical `tool_use` blocks that Stage 10 executes. Each account owns a `CLAUDE_CONFIG_DIR`, so any number of logins coexist. |
+| `geny_codex` | A ChatGPT plan over the Responses API — no `codex` binary. Native `function_call` → `tool_use`. |
 
 A session picks its provider via `stages[6].config["provider"]` in the manifest. Credentials flow through a single `CredentialBundle` channel — see [`docs/providers.md`](docs/providers.md).
 
@@ -352,8 +354,6 @@ for tool in mcp.list_tools():
     registry.register(tool)
 ```
 
-For the **CLI-side** MCP wrap (your tool registry exposed *into* a spawned Claude Code CLI's LLM), see [`docs/claude_code_cli.md`](docs/claude_code_cli.md).
-
 ---
 
 ## Pipeline presets
@@ -454,6 +454,7 @@ ruff format src/ tests/
 
 | Version | Highlights |
 |---|---|
+| **2.68.0** | Removed the `claude_code_cli` provider and every path that let a backend own the agentic loop (CLI runner, stream-json translator, CLI MCP passthrough, `containerize_cli`, `is_subprocess`). A provider may be a model; it may not be an agent. |
 | **2.1.0** | `ExecutorErrorCode` taxonomy + structured `pipeline.error` / `stage.error` / `api.retry` payloads. `docs/error_codes.md`. |
 | **2.0.6** | Removed `copilot_cli` provider (text-only, can't host tool round-trip). Upstreamed Geny's claude_code_cli compat patches (`--verbose` injection, `--bare` strip, drop auto-`--tools ""`, `tool_use` strip from finalize). |
 | **2.0.5** | `APIRequest.mcp_config` per-request override + auto-emit `--strict-mcp-config`. Foundational support for the host MCP wrap. |
@@ -481,5 +482,5 @@ See [CHANGELOG](https://github.com/CocoRoF/geny-executor/releases) for the full 
 - [OpenAI SDK](https://github.com/openai/openai-python)
 - [Google GenAI SDK](https://github.com/googleapis/python-genai)
 - [vLLM](https://github.com/vllm-project/vllm)
-- [Claude Code CLI](https://docs.anthropic.com/claude/code/) — geny-executor hosts it via the `claude_code_cli` provider
-- [MCP](https://modelcontextprotocol.io/) — Model Context Protocol; both host-attached servers and per-session CLI wraps are first-class
+- [Claude Code CLI](https://docs.anthropic.com/claude/code/) — geny-executor drives it as a pure LLM via the `geny_claude_code` provider
+- [MCP](https://modelcontextprotocol.io/) — Model Context Protocol; host-attached servers, dispatched by Stage 10 like any other tool

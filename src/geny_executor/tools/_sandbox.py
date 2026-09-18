@@ -1,9 +1,9 @@
 """Run a tool's fs/shell primitive inside a sandbox container (``docker exec``).
 
-Shared by the built-in fs/shell tools so an SDK-provider agent
-(anthropic/openai/google/vllm) gets the same container isolation the
-``claude_code_cli`` path already has: when ``ToolContext.sandbox`` is set, the
-tool routes its I/O here instead of touching the host filesystem.
+Shared by the built-in fs/shell tools so every agent gets the same
+container isolation whichever provider answers: when ``ToolContext.sandbox``
+is set, the tool routes its I/O here instead of touching the host
+filesystem.
 
 The ``sandbox`` is any object with ``container_name: str`` + async
 ``ensure()`` (the executor's ``SandboxHandle`` Protocol; GAPT's
@@ -74,6 +74,25 @@ def map_into_container(sandbox: Any, file_path: str, workdir: Optional[str]) -> 
         if mapped:
             return str(mapped)
     return container_path(p, resolve_container_workdir(sandbox, workdir))
+
+
+def spoken_path(sandbox: Any, file_path: str, workdir: Optional[str]) -> str:
+    """The address to SAY a file is at, in the vocabulary the session uses.
+
+    A model that sends a host path into a sandboxed session gets the file
+    written in the right place — the mapper handles it — and then reads its
+    own path back in the result, so it keeps using it and teaches the rest of
+    the conversation to. Two providers on one session drifted into two
+    vocabularies that way. The tools answer in the container's address, which
+    is the one the prompt names and the only one every tool accepts.
+
+    Never raises: a path that cannot be mapped is echoed as given, because a
+    result that says nothing is worse than one that says something odd.
+    """
+    try:
+        return map_into_container(sandbox, file_path, workdir)
+    except Exception:  # noqa: BLE001
+        return file_path
 
 
 def container_path(file_path: str, workdir: str) -> str:

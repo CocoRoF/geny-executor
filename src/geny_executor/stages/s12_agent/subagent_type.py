@@ -113,7 +113,7 @@ class SubagentTypeDescriptor:
             host is responsible for applying this in the factory; the
             registry just records intent.
         provider: Override the sub-pipeline's Stage 6 provider
-            (e.g. ``"openai"``, ``"claude_code_cli"``). ``None`` means
+            (e.g. ``"openai"``, ``"geny_codex"``). ``None`` means
             "inherit parent" (factory may copy parent provider).
         provider_credentials_extras: Free-form bag merged into the
             parent's :class:`ProviderCredentials.extras` for *this*
@@ -201,7 +201,7 @@ def resolve_subagent_provider(ctx: SubAgentBuildContext) -> Optional[str]:
     (``parent_state_shared['primary_provider']``) shipped a full release
     with no producer, so ``descriptor.provider=None`` always fell
     through to host-global heuristics and a parent pinned to
-    ``claude_code_cli`` could spawn sub-agents on a different backend
+    ``geny_claude_code`` could spawn sub-agents on a different backend
     (the #866 misrouting class, one level down). Wave 2 made the
     producer real (``Pipeline._init_state`` writes
     ``SharedKeys.PRIMARY_PROVIDER`` every run); this function encodes

@@ -66,7 +66,7 @@ behavior; the code is the stable identifier consumers branch on.
 | `exec.api.stream_incomplete` | ❌ no | Stage 6 streaming | The stream ended without a `message_complete` event. Usually a vendor SDK bug or an interrupted upstream connection. |
 | `exec.api.retry_exhausted` | ❌ no | Stage 6 retry loop | Hit `max_retries` after a recoverable error category. Look at the chained cause for the original failure. |
 
-### `exec.cli.*` — CLI-driven backends (currently `claude_code_cli`)
+### `exec.cli.*` — backends that spawn a CLI (currently `geny_claude_code`)
 
 | Code | Recoverable? | Source | Description |
 |------|---|---|---|

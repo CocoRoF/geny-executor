@@ -159,9 +159,9 @@ def test_explicit_auth_mode_counts_as_credential_material() -> None:
     c = ProviderCredentials(auth_mode="oauth")
     assert c.is_empty() is False
 
-    b = CredentialBundle(by_provider={"claude_code_cli": c})
-    assert b.has("claude_code_cli") is True
-    assert b.require("claude_code_cli") is c
+    b = CredentialBundle(by_provider={"geny_claude_code": c})
+    assert b.has("geny_claude_code") is True
+    assert b.require("geny_claude_code") is c
 
 
 def test_auto_auth_mode_alone_is_still_empty() -> None:
@@ -184,14 +184,14 @@ def test_auth_mode_visible_in_repr_without_leaking_key() -> None:
 def test_preferred_provider_default_order_prefers_cli() -> None:
     b = CredentialBundle(by_provider={
         "anthropic": ProviderCredentials(api_key="sk-a"),
-        "claude_code_cli": ProviderCredentials(binary_path="/usr/bin/claude"),
+        "geny_claude_code": ProviderCredentials(binary_path="/usr/bin/claude"),
     })
-    assert b.preferred_provider() == "claude_code_cli"
+    assert b.preferred_provider() == "geny_claude_code"
 
 
 def test_preferred_provider_falls_through_empty_entries() -> None:
     b = CredentialBundle(by_provider={
-        "claude_code_cli": ProviderCredentials(),  # empty → skipped
+        "geny_claude_code": ProviderCredentials(),  # empty → skipped
         "anthropic": ProviderCredentials(),        # empty → skipped
         "openai": ProviderCredentials(api_key="sk-o"),
     })
@@ -215,9 +215,9 @@ def test_preferred_provider_oauth_cli_counts() -> None:
     """The Geny backend_resolver case this method absorbs: a
     subscription-authenticated CLI with no API key anywhere."""
     b = CredentialBundle(by_provider={
-        "claude_code_cli": ProviderCredentials(auth_mode="oauth"),
+        "geny_claude_code": ProviderCredentials(auth_mode="oauth"),
     })
-    assert b.preferred_provider() == "claude_code_cli"
+    assert b.preferred_provider() == "geny_claude_code"
 
 
 def test_preferred_provider_puts_a_configured_route_first() -> None:
@@ -227,7 +227,7 @@ def test_preferred_provider_puts_a_configured_route_first() -> None:
     b = CredentialBundle(by_provider={
         "geny_router": ProviderCredentials(extras={"targets": [{"engineProvider": "anthropic", "model": "m"}]}),
         "anthropic": ProviderCredentials(api_key="sk-x"),
-        "claude_code_cli": ProviderCredentials(binary_path="/usr/bin/claude"),
+        "geny_claude_code": ProviderCredentials(binary_path="/usr/bin/claude"),
     })
     assert b.preferred_provider() == "geny_router"
 
@@ -235,6 +235,6 @@ def test_preferred_provider_puts_a_configured_route_first() -> None:
 def test_an_unrouted_bundle_still_prefers_the_cli() -> None:
     b = CredentialBundle(by_provider={
         "anthropic": ProviderCredentials(api_key="sk-x"),
-        "claude_code_cli": ProviderCredentials(binary_path="/usr/bin/claude"),
+        "geny_claude_code": ProviderCredentials(binary_path="/usr/bin/claude"),
     })
-    assert b.preferred_provider() == "claude_code_cli"
+    assert b.preferred_provider() == "geny_claude_code"

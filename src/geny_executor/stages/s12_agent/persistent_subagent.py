@@ -116,9 +116,10 @@ class _TranscriptCollector:
         {"type": "error", "message", "ts"}
         {"type": "truncated", "note"}     # appended once when a bound is hit
 
-    Covers BOTH provider paths so the trail is complete regardless of backend:
+    Covers both dispatch surfaces so the trail is complete regardless of
+    where the call was resolved:
       * Stage-10 dispatch — ``tool.call_start`` / ``tool.call_complete``
-      * CLI provider      — ``api.cli_tool_call`` / ``api.tool_result``
+      * Stage-6 inner loop — ``api.tool_use`` / ``api.tool_result``
 
     ``session_id`` scopes the feed: ``pipeline.on("*")`` is a complete bus feed,
     so on a pipeline shared across runs (e.g. a host factory that reuses the
@@ -187,10 +188,6 @@ class _TranscriptCollector:
                     data.get("input"),
                     ts,
                 )
-            elif et == "api.cli_tool_call":
-                name = str(data.get("name") or "")
-                if name and not name.startswith("mcp__"):
-                    self._open_tool(str(data.get("id") or ""), name, data.get("input"), ts)
             elif et == "tool.call_complete":
                 step = self._by_id.get(str(data.get("tool_use_id") or ""))
                 if step is not None:

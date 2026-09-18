@@ -65,7 +65,7 @@ class EditTool(Tool):
 
         # Sandbox: read-modify-write the file inside the container.
         if context.sandbox is not None:
-            from geny_executor.tools._sandbox import sb_read_bytes, sb_write_bytes
+            from geny_executor.tools._sandbox import sb_read_bytes, sb_write_bytes, spoken_path
 
             wd = context.working_dir or "/workspace"
             try:
@@ -73,7 +73,10 @@ class EditTool(Tool):
                     "utf-8"
                 )
             except FileNotFoundError:
-                return ToolResult(content=f"File not found: {file_path}", is_error=True)
+                return ToolResult(
+                    content=f"File not found: {spoken_path(context.sandbox, file_path, wd)}",
+                    is_error=True,
+                )
             except PermissionError as e:
                 return ToolResult(content=str(e), is_error=True)
             except Exception as e:  # noqa: BLE001
@@ -96,8 +99,9 @@ class EditTool(Tool):
                 )
             except Exception as e:  # noqa: BLE001
                 return ToolResult(content=f"Write error: {e}", is_error=True)
+            where = spoken_path(context.sandbox, file_path, wd)
             return ToolResult(
-                content=f"Successfully edited {file_path} ({count} replacement{'s' if count > 1 else ''})"
+                content=f"Successfully edited {where} ({count} replacement{'s' if count > 1 else ''})"
             )
 
         try:

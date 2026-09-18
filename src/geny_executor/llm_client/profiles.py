@@ -1,7 +1,8 @@
 """Declarative provider profiles for OpenAI-compatible (local) LLM backends.
 
-Where the five built-in clients (``anthropic`` / ``openai`` / ``google`` /
-``vllm`` / ``claude_code_cli``) are each a hand-written class, this module
+Where the built-in clients (``anthropic`` / ``openai`` / ``google`` /
+``vllm`` / ``geny_claude_code`` / ``geny_codex``) are each a hand-written
+class, this module
 adds a *data-driven* layer: a :class:`ProviderProfile` describes an
 OpenAI-compatible backend declaratively (display name, default endpoint,
 quirks) and the client class is generated from it. Adding a new local
@@ -49,11 +50,9 @@ _LOCAL_CAPABILITIES = ClientCapabilities(
     supports_system_prompt=True,
     supports_structured_output=True,
     supports_session_continuity=False,
-    supports_mcp_passthrough=False,
     supports_budget_limit=False,
     supports_token_usage=True,
     supports_cost_usage=False,
-    is_subprocess=False,
     requires_workspace=False,
     streaming_granularity="token",
     # Same OpenAI-compatible surface as OpenAIClient: the classic

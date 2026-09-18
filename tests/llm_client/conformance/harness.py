@@ -97,9 +97,9 @@ class ConformanceTestSuite:
             "supports_thinking", "supports_tools", "supports_streaming",
             "supports_tool_choice", "supports_stop_sequences", "supports_top_k",
             "supports_system_prompt", "supports_structured_output",
-            "supports_session_continuity", "supports_mcp_passthrough",
+            "supports_session_continuity",
             "supports_budget_limit", "supports_token_usage",
-            "supports_cost_usage", "is_subprocess", "requires_workspace",
+            "supports_cost_usage", "requires_workspace",
             "streaming_granularity",
         ):
             assert hasattr(caps, attr), attr

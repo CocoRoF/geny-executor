@@ -461,8 +461,9 @@ def build_manifest(
             truth ``Pipeline._resolve_llm_client`` reads. Must be a
             provider registered in
             :class:`~geny_executor.llm_client.registry.ClientRegistry`
-            (``anthropic`` / ``openai`` / ``google`` / ``vllm`` /
-            ``claude_code_cli``); unknown names raise ``ValueError``
+            (``geny_router`` / ``geny_claude_code`` / ``geny_codex`` /
+            ``anthropic`` / ``openai`` / ``google`` / ``vllm``);
+            unknown names raise ``ValueError``
             at *factory* time instead of failing at the first run.
         model: Optional LLM model id for the top-level ``model`` block
             (the single manifest home for model selection). When
@@ -568,8 +569,8 @@ class PresetDescriptor:
     :data:`MANIFEST_PRESETS`). ``provider`` is the recommended/locked
     Stage-6 backend (``None`` → the host chooses at build time). ``key``
     is the stable catalog id a host stores; it may differ from
-    ``base_preset`` (e.g. ``claude_code_worker`` → base ``worker_adaptive``
-    + provider ``claude_code_cli``).
+    ``base_preset`` (e.g. the retired ``claude_code_worker`` key → base
+    ``worker_adaptive``).
     """
 
     key: str

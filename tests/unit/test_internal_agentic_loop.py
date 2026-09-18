@@ -1,6 +1,6 @@
 """Stage 6 ``tool_loop`` slot — the internal agentic loop (2.3.0).
 
-The feature gives every backend the ``claude_code_cli`` execution shape
+The feature gives every backend the tight CLI-style execution shape
 as a manifest-selectable choice: ``tool_loop="internal"`` resolves tool
 calls inside Stage 6 and returns only the final response, so Stage 9/10
 naturally no-op (the CLI accumulator's finalize contract, generalized).
@@ -326,33 +326,6 @@ async def test_parallel_tools_dispatch_concurrently():
 
 
 # ─────────────────────────────────── capability guards ─
-
-
-@pytest.mark.asyncio
-async def test_subprocess_client_degrades_to_single_call():
-    """The CLI already loops internally — internal mode must not
-    double-loop. The strategy degrades to one call, warning once."""
-
-    class FakeCLIClient(ScriptedClient):
-        # provider stays "anthropic" so the #866 attach guard (provider
-        # mismatch vs manifest) passes — the capability guard under test
-        # keys on is_subprocess, not the provider name.
-        capabilities = ClientCapabilities(
-            supports_tools=True, supports_streaming=False, is_subprocess=True
-        )
-
-    client = FakeCLIClient(tool_rounds=1)
-    pipeline = await _build(_manifest("internal"), client)
-    try:
-        await pipeline.run("go")
-        # Degraded: exactly one client call per pipeline iteration —
-        # the first iteration returned tool_use which went to s10, then
-        # s16 looped and the second call produced the final.
-        assert client.calls == 2
-        # And the internal-loop event never fired.
-        # (run again to confirm warn-once doesn't spam — behavioural no-op)
-    finally:
-        await pipeline.aclose()
 
 
 @pytest.mark.asyncio

@@ -81,9 +81,9 @@ class TestInputValidation:
 
 class TestDeclarationHomes:
     def test_provider_lands_in_stage6_config(self):
-        m = build_manifest("worker_adaptive", provider="claude_code_cli")
+        m = build_manifest("worker_adaptive", provider="geny_claude_code")
         s6 = _stage(m, 6)
-        assert s6["config"]["provider"] == "claude_code_cli"
+        assert s6["config"]["provider"] == "geny_claude_code"
         # Never in the legacy strategies slot.
         assert "provider" not in s6["strategies"]
 
@@ -242,8 +242,8 @@ class TestPresetCatalog:
 
     def test_build_manifest_for_a_legacy_key_builds_the_one_harness(self):
         from geny_executor import build_manifest_for
-        m = build_manifest_for("claude_code_worker", provider="claude_code_cli")
-        assert m.stages[5]["config"]["provider"] == "claude_code_cli"
+        m = build_manifest_for("claude_code_worker", provider="geny_claude_code")
+        assert m.stages[5]["config"]["provider"] == "geny_claude_code"
         assert m.metadata.base_preset == "default"
         assert [e["order"] for e in m.to_dict()["stages"]] == list(range(1, 22))
 

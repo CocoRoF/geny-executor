@@ -6,17 +6,9 @@ credentials via :class:`CredentialBundle` (built from
 :class:`ProviderCredentials` entries).
 """
 
-from geny_executor.llm_client._cli_runtime import (
-    CLIProcessRunner,
-    ContainerCLIRunner,
-    SandboxHandle,
-)
+from geny_executor.llm_client._sandbox_handle import SandboxHandle
 from geny_executor.llm_client.anthropic import AnthropicClient
 from geny_executor.llm_client.base import BaseClient, ClientCapabilities
-from geny_executor.llm_client.claude_code import (
-    ClaudeCodeCLIClient,
-    build_container_cli_client,
-)
 from geny_executor.llm_client.claude_code_tokens import ClaudeCodeTokenClient
 from geny_executor.llm_client.codex import CodexResponsesClient
 from geny_executor.llm_client.credentials import (
@@ -48,13 +40,10 @@ __all__ = [
     "AnthropicClient",
     "BaseClient",
     "BUILTIN_PROFILES",
-    "CLIProcessRunner",
-    "ClaudeCodeCLIClient",
     "ClaudeCodeTokenClient",
     "ClientCapabilities",
     "ClientRegistry",
     "ConfigError",
-    "ContainerCLIRunner",
     "CodexResponsesClient",
     "ContentBlock",
     "CredentialBundle",
@@ -63,7 +52,6 @@ __all__ = [
     "ROUTED_PROVIDERS",
     "RouterClient",
     "SandboxHandle",
-    "build_container_cli_client",
     "builtin_profiles",
     "probe_ollama_num_ctx",
     "resolve_local_context_window",

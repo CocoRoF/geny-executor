@@ -79,7 +79,6 @@ class TestAnthropicConformance(ConformanceTestSuite):
         assert client.supports("tools") is True
         assert client.supports("tool_choice") is True
 
-    def test_anthropic_not_subprocess(self) -> None:
+    def test_needs_no_workspace(self) -> None:
         client = self.make_client()
-        assert client.capabilities.is_subprocess is False
         assert client.capabilities.requires_workspace is False

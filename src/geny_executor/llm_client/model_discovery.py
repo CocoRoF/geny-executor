@@ -18,7 +18,7 @@ Coverage:
   * ``lmstudio`` / ``vllm`` / ``custom`` / ``local`` → GET ``<base>/v1/models``
   * ``anthropic``                      → GET ``/v1/models`` (x-api-key)
   * ``google``                         → GET ``/v1beta/models`` (?key=)
-  * ``claude_code_cli``                → ``unavailable`` (the CLI exposes no
+  * ``geny_claude_code``               → ``unavailable`` (the CLI exposes no
                                          model-list command; the host uses its
                                          version-robust aliases instead)
 """
@@ -187,7 +187,7 @@ async def discover_models(
 
     # The Claude Code CLI exposes no model-list command — version-robust
     # aliases (sonnet/opus/haiku) are the host's correct fallback.
-    if p == "claude_code_cli":
+    if p == "geny_claude_code":
         return ModelDiscovery(
             provider=p, source="unavailable", error="cli has no model-list command"
         )

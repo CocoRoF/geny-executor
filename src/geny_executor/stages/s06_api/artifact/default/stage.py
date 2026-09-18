@@ -784,24 +784,19 @@ class APIStage(Stage[Any, APIResponse]):
         ============================  =================================
         ``text_delta``                ``text.delta``
         ``thinking_delta``            ``thinking.delta``
-        ``tool_use``                  ``api.tool_use`` (+
-                                      ``api.cli_tool_call`` when the
-                                      backend executes it itself)
+        ``tool_use``                  ``api.tool_use``
         ``input_json_delta``          ``api.input_json_delta``
         ``content_block_stop``        ``api.content_block_stop``
         ``tool_result``               ``api.tool_result``
         ``message_complete``          (terminal — builds the response)
         ============================  =================================
 
-        ``source`` payload field: ``"cli"`` when the client is
-        subprocess-backed (``capabilities.is_subprocess`` — e.g.
-        ``claude_code_cli``, whose internal agent loop executes tools
-        itself and whose tool_use blocks will NEVER reach Stage 10) vs
-        ``"api"`` (the model is *requesting* a tool; Stage 10 dispatch
-        + ``tool.execute_*`` events follow). ``api.cli_tool_call`` is
-        a deliberate companion duplicate of the CLI case so hosts that
-        only care about CLI-side dispatch (Geny's tool timeline) can
-        subscribe narrowly without filtering ``api.tool_use``.
+        ``source`` payload field is always ``"api"``: a tool_use block
+        is the model *requesting* a tool, and THIS pipeline dispatches
+        it (Stage 10 + ``tool.execute_*`` events follow). No backend
+        runs its own tool loop any more — every provider, Claude Code
+        and Codex included, is used as a pure LLM behind the one
+        harness, so a tool_use block never means "already executed".
 
         Bookkeeping chunk types (``result``, ``cli_unknown``,
         ``cli_malformed``) are intentionally NOT forwarded — wire
@@ -811,14 +806,6 @@ class APIStage(Stage[Any, APIResponse]):
         response: Optional[APIResponse] = None
         kwargs = self._call_kwargs(cfg, state, extra_messages=extra_messages)
         self._apply_timeout_kwarg(kwargs, client, state, "create_message_stream")
-
-        # CLI/subprocess backends run their own tool loop — a tool_use
-        # chunk from them is an *execution announcement*, not a request.
-        source = (
-            "cli"
-            if bool(getattr(getattr(client, "capabilities", None), "is_subprocess", False))
-            else "api"
-        )
 
         # TTFT stamp — first content chunk of THIS attempt, measured from
         # the ``call_once`` anchor when available (covers request build +
@@ -858,11 +845,9 @@ class APIStage(Stage[Any, APIResponse]):
                     "id": chunk.get("id"),
                     "name": chunk.get("name"),
                     "input": chunk.get("input") or {},
-                    "source": source,
+                    "source": "api",
                 }
                 state.add_event("api.tool_use", payload)
-                if source == "cli":
-                    state.add_event("api.cli_tool_call", dict(payload))
             elif chunk_type == "input_json_delta":
                 state.add_event("api.input_json_delta", {"delta": chunk.get("delta", "")})
             elif chunk_type == "content_block_stop":
@@ -874,7 +859,7 @@ class APIStage(Stage[Any, APIResponse]):
                         "tool_use_id": chunk.get("tool_use_id", ""),
                         "content": chunk.get("content"),
                         "is_error": bool(chunk.get("is_error", False)),
-                        "source": source,
+                        "source": "api",
                     },
                 )
 

@@ -156,7 +156,7 @@ class TestValidateSubagents:
         assert issue.severity == "warning"
         assert "model_override" in issue.message
 
-    @pytest.mark.parametrize("provider", ["anthropic", "claude_code_cli"])
+    @pytest.mark.parametrize("provider", ["anthropic", "geny_claude_code"])
     def test_claude_family_provider_without_model_is_clean(self, provider):
         entry = {"agent_type": "worker", "provider": provider}
         issues = validate_manifest(_manifest(subagents=[entry]))

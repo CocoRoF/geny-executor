@@ -9,7 +9,7 @@
 
 geny-executor는 **21단계 파이프라인**과 **이중 추상화 (Dual Abstraction)** 아키텍처(stage slot × strategy slot)를 구현합니다. Claude Code의 agent loop과 Anthropic의 하네스 설계 원칙에서 영감을 받았습니다. LangChain 없음. LangGraph 없음. 모든 단계가 명시적이며 관찰 가능하고, 변경/교체 가능한 파이프라인입니다.
 
-[English README](README.md) · [아키텍처](docs/architecture.md) · [Providers](docs/providers.md) · [Error codes](docs/error_codes.md) · [Claude Code CLI 호스트](docs/claude_code_cli.md)
+[English README](README.md) · [아키텍처](docs/architecture.md) · [Providers](docs/providers.md) · [Error codes](docs/error_codes.md)
 
 ---
 
@@ -53,7 +53,7 @@ geny-executor는 **21단계 파이프라인**과 **이중 추상화 (Dual Abstra
 |---|---|
 | 프레임워크가 너무 많이 숨김 | 21단계 stage 하나하나가 명시적이고 introspectable, 각각 swap 가능. |
 | 한 부분만 바꾸려면 전체 다시 써야 함 | **이중 추상화**: stage 통째로 교체하거나 stage 내부의 strategy만 교체. manifest-driven으로 config = artifact. |
-| LLM provider vendor lock-in | 하나의 contract, 5개 provider 즉시 사용 가능 (`anthropic` / `openai` / `google` / `vllm` / `claude_code_cli`). config field 하나 바꾸면 끝. |
+| LLM provider vendor lock-in | 하나의 contract, 7개 provider 즉시 사용 가능 (`geny_router` / `geny_claude_code` / `geny_codex` / `anthropic` / `openai` / `google` / `vllm`). config field 하나 바꾸면 끝. |
 | Agent loop이 불투명한 블랙박스 | event-bus + stable structured error codes (예: [`exec.cli.auth_failed`](docs/error_codes.md)) — 모든 실패가 로그/Sentry/i18n 레이어에서 깔끔하게 그룹핑됨. |
 | MCP 통합이 사이드 컨선 | first-class. 호스트가 attach한 MCP 서버 + CLI backend용 per-session MCP wrap 둘 다 기본 지원. |
 | Cost tracking이 후순위 | Stage 7 (Token)에 내장. per-call 비용, per-session 원장, budget guard. |
@@ -116,7 +116,7 @@ pip install geny-executor[all]      # 전체
 pip install geny-executor[dev]      # 개발/테스트 도구
 ```
 
-**요구사항**: Python 3.11+. 최소 1개 provider의 자격증명 (Anthropic API key, OpenAI API key, …) 또는 로컬 CLI binary (`claude_code_cli` provider용 `claude`).
+**요구사항**: Python 3.11+. 최소 1개 provider의 자격증명 (Anthropic API key, OpenAI API key, …) 또는 `geny_claude_code` 용으로 로그인된 `claude` 바이너리.
 
 ---
 
@@ -233,7 +233,9 @@ result = await pipeline.run("안녕!")
 | `openai` | GPT-4.1 / o-series. Streaming, tools, JSON-schema structured output. |
 | `google` | Gemini 3.x / 2.5. Streaming, tools, thinking blocks. |
 | `vllm` | 로컬 vLLM endpoint의 어떤 모델이든. OpenAI 호환. Tools는 `configure_capabilities()` 로 opt-in. |
-| `claude_code_cli` | Subprocess 기반 Claude Code CLI. **호스트가 per-session MCP bridge** 를 attach해서 자신의 tool registry를 spawned CLI의 LLM에게 노출시킴. 자세히는 [`docs/claude_code_cli.md`](docs/claude_code_cli.md). |
+| `geny_router` | 계정들의 경로(route). 호출마다 어느 백엔드가 답할지 정하므로, 하나의 대화가 Claude 구독 → 두 번째 Claude 로그인 → ChatGPT 플랜으로 옮겨가도 도구·기억·권한 정책을 잃지 않는다. **첫 토큰 이전에만**, 그리고 다른 계정이 해결할 수 있는 실패에 대해서만 failover. |
+| `geny_claude_code` | `claude` 바이너리를 **토큰 생성기**로: `-p --tools "" --max-turns 1`, MCP 차단, `<tool_call>` 텍스트를 canonical `tool_use` 블록으로 되돌려 Stage 10이 실행. 계정마다 `CLAUDE_CONFIG_DIR` 이 따로라 로그인 몇 개든 공존. |
+| `geny_codex` | Responses API 위의 ChatGPT 플랜 — `codex` 바이너리 없음. 네이티브 `function_call` → `tool_use`. |
 
 세션은 manifest의 `stages[6].config["provider"]` 로 provider 선택. 자격증명은 하나의 `CredentialBundle` 채널로 흐름 — [`docs/providers.md`](docs/providers.md) 참조.
 
@@ -352,8 +354,6 @@ for tool in mcp.list_tools():
     registry.register(tool)
 ```
 
-**CLI 측** MCP wrap (호스트의 tool registry를 spawned Claude Code CLI의 LLM 안으로 노출)은 [`docs/claude_code_cli.md`](docs/claude_code_cli.md) 참조.
-
 ---
 
 ## Pipeline presets
@@ -454,6 +454,7 @@ ruff format src/ tests/
 
 | 버전 | 주요 변경 |
 |---|---|
+| **2.68.0** | `claude_code_cli` provider 및 백엔드가 agentic loop 을 소유하던 모든 경로 제거 (CLI runner, stream-json translator, CLI MCP passthrough, `containerize_cli`, `is_subprocess`). provider 는 모델일 수는 있어도 agent 일 수는 없다. |
 | **2.1.0** | `ExecutorErrorCode` taxonomy + 구조화된 `pipeline.error` / `stage.error` / `api.retry` payload. `docs/error_codes.md`. |
 | **2.0.6** | `copilot_cli` provider 제거 (text-only, tool round-trip 불가). Geny 측 claude_code_cli 호환 patch 4종 upstream (`--verbose` 주입, `--bare` strip, auto-`--tools ""` drop, finalize에서 `tool_use` strip). |
 | **2.0.5** | `APIRequest.mcp_config` per-request override + `--strict-mcp-config` 자동 emit. 호스트 MCP wrap 토대. |
@@ -481,5 +482,5 @@ ruff format src/ tests/
 - [OpenAI SDK](https://github.com/openai/openai-python)
 - [Google GenAI SDK](https://github.com/googleapis/python-genai)
 - [vLLM](https://github.com/vllm-project/vllm)
-- [Claude Code CLI](https://docs.anthropic.com/claude/code/) — geny-executor가 `claude_code_cli` provider로 host
+- [Claude Code CLI](https://docs.anthropic.com/claude/code/) — geny-executor 가 `geny_claude_code` provider 로 순수 LLM 처럼 구동
 - [MCP](https://modelcontextprotocol.io/) — Model Context Protocol; 호스트-attached 서버 + per-session CLI wrap 둘 다 first-class

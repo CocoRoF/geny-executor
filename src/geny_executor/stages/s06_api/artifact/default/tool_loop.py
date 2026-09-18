@@ -1,14 +1,14 @@
 """Tool-loop strategies — where the agentic loop runs (2.3.0).
 
-Why this slot exists: the ``claude_code_cli`` backend runs its agentic
-loop INSIDE the subprocess — Stage 6 streams the events, the terminal
-:class:`APIResponse` carries only final text (tool_use blocks consumed;
-see ``StreamJsonAccumulator.finalize`` in
-``llm_client/translators/_cli.py`` for the contract rationale), Stage 9
-finds no pending tool calls and Stage 10 naturally no-ops. SDK
-providers, by contrast, paid a full pipeline iteration per tool
-round-trip: every Stage 2-5/7/14 re-run, per call. This slot makes the
-CLI execution shape a manifest-selectable choice for EVERY backend:
+Why this slot exists: a pipeline that dispatches every tool through
+Stage 10 pays a full iteration per tool round-trip — every Stage
+2-5/7/14 re-run, per call. Coding-agent CLIs avoided that by running
+the loop inside their own subprocess, which is exactly the arrangement
+this library refuses (a backend that owns the loop is a different agent,
+not a model behind these stages). This slot keeps the cheap shape
+without giving up the loop: the tight call → dispatch → call cycle
+happens INSIDE Stage 6, on this pipeline's dispatcher, for EVERY
+backend:
 
 - :class:`PipelineToolLoop` (default ``"pipeline"``) — exactly the
   pre-2.3.0 behaviour: one client call, tool_use blocks returned
@@ -157,9 +157,6 @@ class InternalAgenticLoop(ToolLoopStrategy):
 
     Capability guard (one-time warning, then pipeline behaviour):
 
-    - subprocess backends (``capabilities.is_subprocess`` — the CLI
-      already loops internally; looping again would re-dispatch tools
-      the subprocess already executed);
     - clients without ``supports_tools`` (nothing to loop);
     - no ``state.tool_dispatcher`` (the pipeline has no Tool stage to
       share a dispatch path with).
@@ -240,13 +237,6 @@ class InternalAgenticLoop(ToolLoopStrategy):
         return downgrades this execution to pipeline behaviour.
         """
         caps = getattr(client, "capabilities", None)
-        if bool(getattr(caps, "is_subprocess", False)):
-            return (
-                "the client is a subprocess backend that runs its own "
-                "agentic loop (e.g. claude_code_cli) — looping again in "
-                "Stage 6 would re-dispatch tools the subprocess already "
-                "executed"
-            )
         if not bool(getattr(caps, "supports_tools", False)):
             return "the client's capabilities lack supports_tools — nothing to loop"
         if getattr(state, "tool_dispatcher", None) is None:

@@ -9,7 +9,7 @@ the iteration that did. So a first turn that called a tool was classified
 history, and the model never saw it. The reply was whatever the model had
 written *before* dispatching the call — a guess, delivered as an answer.
 
-The stock ``claude_code_cli`` backend hid this for a long time because the
+The retired ``claude_code_cli`` backend hid this for a long time because the
 CLI runs its own loop internally; every API backend (and the token-only
 Claude Code client) sat on it.
 
