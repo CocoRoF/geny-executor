@@ -232,6 +232,18 @@ class ToolStage(Stage[Any, Any]):
             # so the built-in ``env`` tool reaches it through real dispatch
             # (not just direct calls). Without this it would see ``None``.
             environment=getattr(self._context, "environment", None),
+            # The session's sandbox container. This context is built field
+            # by field, so anything missing here is silently dropped — and
+            # ``sandbox`` was missing. ``attach_runtime(sandbox=...)``
+            # stamped it onto the stage context, every dispatch then built
+            # a fresh context without it, and every built-in fs/shell tool
+            # took its host branch: SandboxInfo answered
+            # ``{"attached": false}`` on a session that had a container
+            # bound to it, and Write/Read/Bash touched the host while the
+            # prompt said ``/workspace``. It went unseen because the only
+            # sandboxed path anyone exercised was the old claude_code_cli
+            # provider, which ran its tools in-container itself.
+            sandbox=getattr(self._context, "sandbox", None),
         )
 
         # 2.2.0 (audit §1-5 — policy via config): the permission posture

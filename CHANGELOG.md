@@ -1,5 +1,38 @@
 # Changelog
 
+## [2.68.1] — 2026-09-19
+
+### Fixed — the sandbox never reached the tools
+
+`attach_runtime(sandbox=...)` stamped the handle onto the Tool stage's
+context. Stage 10 then built a **fresh** `ToolContext` for every dispatch,
+field by field, from that context — and `sandbox` was not one of the
+fields it copied. So `ctx.sandbox` was `None` at every dispatch, and all
+six built-in fs/shell tools (`Bash`, `Read`, `Write`, `Edit`, `Grep`,
+`Glob`) silently took their HOST branch on a session that had a container
+bound to it.
+
+Found on a live session (2026-09-19). The host had provisioned a
+workspace, logged "tools sandboxed", and told the agent its files were at
+`/workspace`. The agent's first tool call:
+
+    Write /workspace/verify.txt
+    → Access denied: /workspace/verify.txt is outside allowed directories
+      (/data/geny_agent_sessions/_cloud/.../agents/<sid>)
+
+`SandboxInfo` agreed: `{"attached": false}`. The agent recovered by
+reading the host path out of the error, so every sandboxed session was
+spending a turn discovering that its own prompt was wrong.
+
+It went unseen because the only sandboxed path anyone exercised was the
+`claude_code_cli` provider, which ran its tools inside the container
+itself and never asked Stage 10 for a context. Removing that provider in
+2.68.0 is what made the gap visible.
+
+`build_dispatch_context` now carries `sandbox`, and a test asserts every
+host-settable field survives the copy — the next field added should fail
+it until it is carried too.
+
 ## [2.68.0] — 2026-09-19
 
 ### Removed — the backend that owned the loop
