@@ -3,8 +3,8 @@
 <!-- AUTO-GENERATED — do not edit by hand. -->
 <!-- Regenerate: python scripts/gen_event_docs.py -->
 
-> Generated from `geny_executor.events.catalog` on 2026-09-17.
-> Catalogue version: **4** · events: **121**
+> Generated from `geny_executor.events.catalog` on 2026-09-19.
+> Catalogue version: **4** · events: **120**
 
 Every event name the engine emits, value == wire string. The enum
 is a *names registry*, not a rename — consumers matching raw strings
@@ -458,18 +458,7 @@ Enum member: `EventTypes.API_TOOL_USE`
 | `id` | str\|None — tool_use block id |
 | `name` | str\|None — tool name |
 | `input` | dict — tool input (may be partial until input_json_delta completes) |
-| `source` | str — 'cli' (executed inside a CLI backend) \| 'api' (Stage 10 will dispatch) \| 'internal' (the Stage 6 internal loop is about to dispatch it) |
-
-### `api.cli_tool_call`
-
-Enum member: `EventTypes.API_CLI_TOOL_CALL`
-
-| Field | Description |
-|---|---|
-| `id` | str\|None |
-| `name` | str\|None |
-| `input` | dict |
-| `source` | str — always 'cli'; companion to api.tool_use for narrow subscriptions |
+| `source` | str — 'api' (Stage 10 will dispatch) \| 'internal' (the Stage 6 internal loop is about to dispatch it) |
 
 ### `api.input_json_delta`
 
@@ -495,7 +484,7 @@ Enum member: `EventTypes.API_TOOL_RESULT`
 | `tool_use_id` | str — id of the tool_use this result answers |
 | `content` | Any — tool result content as the backend reported it |
 | `is_error` | bool |
-| `source` | str — 'cli' \| 'api' \| 'internal' (Stage 6 internal loop dispatched it) |
+| `source` | str — 'api' \| 'internal' (the Stage 6 internal loop dispatched it) |
 
 ### `api.internal_loop_capped`
 
