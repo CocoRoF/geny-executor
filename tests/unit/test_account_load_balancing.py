@@ -151,3 +151,41 @@ class TestPoolsNotTheWholeRoute:
         finally:
             failover.clear_cooldown("claude1")
             failover.clear_cooldown("claude2")
+
+
+class TestTheFlagReachesTheClient:
+    """A host sets ``balance`` in the route's credential extras; the
+    pipeline turns extras into constructor kwargs. If that chain breaks,
+    balancing is silently off and nothing fails — the first account just
+    quietly absorbs every turn again."""
+
+    def test_extras_become_the_constructor_kwarg(self) -> None:
+        from geny_executor.core.pipeline import _creds_to_client_kwargs
+        from geny_executor.llm_client import ProviderCredentials
+
+        creds = ProviderCredentials(
+            extras={"targets": _targets("a", "b"), "balance": True}
+        )
+        kwargs = _creds_to_client_kwargs("geny_router", creds)
+        assert kwargs["balance"] is True
+
+        client = RouterClient(**kwargs)
+        try:
+            client._chosen(0)
+            assert _order(client)[0] == "b", "balancing did not take effect"
+        finally:
+            for acct in ("a", "b"):
+                failover._LAST_USED.pop(acct, None)
+
+    def test_a_route_without_the_flag_keeps_its_order(self) -> None:
+        from geny_executor.core.pipeline import _creds_to_client_kwargs
+        from geny_executor.llm_client import ProviderCredentials
+
+        creds = ProviderCredentials(extras={"targets": _targets("a", "b")})
+        client = RouterClient(**_creds_to_client_kwargs("geny_router", creds))
+        try:
+            client._chosen(0)
+            assert _order(client) == ["a", "b"]
+        finally:
+            for acct in ("a", "b"):
+                failover._LAST_USED.pop(acct, None)
