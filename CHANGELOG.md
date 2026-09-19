@@ -1,5 +1,51 @@
 # Changelog
 
+## [2.70.0] — 2026-09-19
+
+An agent session outlives the model answering it. A route fails over to a
+second account, a user swaps the model mid-thread, a sub-agent runs
+cheaper than its parent — and the SAME canonical history is handed to a
+DIFFERENT translator. Three properties make that survivable, and this
+release audits all three and fixes what was broken.
+
+### Fixed — a session could die when its model changed
+
+Thinking blocks are bound to the model that produced them: replaying one
+to a different model is ignored at best and a 400 at worst. Every
+translator dropped them — except `canonical_messages_to_anthropic`, which
+passed them through with their signatures. So a thinking block written by
+one account's model was replayed verbatim to the next account's.
+
+`_sanitize_anthropic_block` now drops `thinking` / `redacted_thinking`
+like everywhere else. The cost is thinking continuity within one model;
+the cost of keeping it was a session that dies the moment its model
+changes.
+
+`tests/unit/test_conversation_is_portable.py` now asserts all three
+properties across all five translators: no vendor session handle (nothing
+carries `previous_response_id`, so a conversation can leave Codex and come
+back), no cross-model thinking, and our own tool ids still pairing after
+the conversation moves to a provider that never issued them.
+
+### Added — accounts share the work instead of taking turns being exhausted
+
+`RouterClient._order()` was failover only: hop 0 answered every turn until
+it 429'd, and a second healthy account sat idle until then. For
+subscription plans that is backwards — the reason to hold two logins is
+that neither should reach its cap.
+
+With `balance=True`, hops that are **interchangeable** (same provider AND
+same model) take turns least-recently-used. The record lives in
+`_failover` alongside cooldowns, so it is process-wide: sibling agents
+share the accounts, and a per-client counter would let each of them
+"balance" onto the same one.
+
+Balancing deliberately does not reach across providers or models. A route
+is a preference — a primary and its fallbacks — so spreading turns over
+the whole of it would make one conversation answer as Claude, then as
+GPT, then as Claude again. Equivalent hops are a pool; the route between
+pools is still an order.
+
 ## [2.69.0] — 2026-09-19
 
 ### Changed — Claude Code is driven through the official Agent SDK

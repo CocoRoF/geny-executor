@@ -59,6 +59,7 @@ class RouterClient(BaseClient):
         timeout_s: Optional[float] = None,
         event_sink: Any = None,
         client_factory: Any = None,
+        balance: bool = False,
         **_ignored: Any,
     ) -> None:
         super().__init__(
@@ -78,6 +79,12 @@ class RouterClient(BaseClient):
         self._timeout_s = timeout_s
         self._children: dict[int, BaseClient] = {}
         self._factory = client_factory
+        # Spread turns across healthy hops instead of always asking the
+        # first one. Off by default: a route's order is a choice the user
+        # made, and silently round-robining it would be a different
+        # product. Geny turns it on for a route of interchangeable
+        # subscription accounts.
+        self._balance = bool(balance)
         self.last_target: Optional[dict[str, Any]] = None
 
     @property
@@ -138,10 +145,44 @@ class RouterClient(BaseClient):
         return client
 
     def _order(self) -> list[int]:
+        """Who to ask, in order: healthy hops first, cooling ones last.
+
+        With ``balance`` on, hops that are INTERCHANGEABLE — same provider
+        and same model, i.e. two logins to the same thing — take turns
+        least-recently-used instead of the first one answering until it
+        hits its cap. That is the difference between failover and load
+        balancing: failover only reacts once an account is already
+        exhausted, which for subscription plans is backwards, since the
+        reason to hold two logins is that neither should reach its limit.
+
+        Balancing deliberately does NOT reach across different providers
+        or models. A route is a preference — a primary and its fallbacks —
+        so spreading turns over it would make one conversation answer as
+        Claude, then as GPT, then as Claude again. Equivalent hops are a
+        pool; the route between pools is still an order.
+        """
         ready: list[int] = []
         cooling: list[int] = []
         for i, target in enumerate(self._targets):
             (cooling if failover.cooling(str(target.get("accountId") or "")) else ready).append(i)
+        if self._balance:
+
+            def group(i: int) -> tuple[str, str]:
+                t = self._targets[i]
+                return (str(t.get("engineProvider") or ""), str(t.get("model") or ""))
+
+            # the pool's place in the route is its best member's place, so
+            # a primary pool stays ahead of a fallback pool
+            rank = {}
+            for i in ready:
+                rank.setdefault(group(i), i)
+            ready.sort(
+                key=lambda i: (
+                    rank[group(i)],
+                    failover.last_used(str(self._targets[i].get("accountId") or "")),
+                    i,
+                )
+            )
         # everything cooling: still try, earliest recovery first — refusing
         # outright would turn a stale cooldown into an outage
         cooling.sort(
@@ -189,7 +230,11 @@ class RouterClient(BaseClient):
     def _chosen(self, index: int) -> None:
         target = self._targets[index]
         self.last_target = target
-        failover.clear_cooldown(str(target.get("accountId") or ""))
+        account = str(target.get("accountId") or "")
+        failover.clear_cooldown(account)
+        # Only the hop that actually answered counts as used — a hop that
+        # was tried and failed over is not "its turn taken".
+        failover.mark_used(account)
         self._notify_host(
             {
                 "kind": "route",

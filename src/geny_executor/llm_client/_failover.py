@@ -46,6 +46,29 @@ def clear_cooldown(account_id: str) -> None:
     _COOLDOWN.pop(account_id, None)
 
 
+# ── load (process-wide, keyed by account) ─────────────────────────────
+# Cooldowns answer "who is broken". This answers "whose turn is it".
+# A route of several healthy accounts used to send EVERY turn to the
+# first one until it hit its cap — failover, which only reacts once an
+# account is already exhausted. For subscription plans that is backwards:
+# the point of holding two logins is that neither reaches its limit.
+#
+# Process-wide for the same reason cooldowns are: sibling agents share
+# the accounts, so a per-client counter would let three agents each
+# "balance" onto the same first account.
+_LAST_USED: dict[str, float] = {}
+
+
+def mark_used(account_id: str) -> None:
+    if account_id:
+        _LAST_USED[account_id] = time.time()
+
+
+def last_used(account_id: str) -> float:
+    """When this account last answered; 0.0 if never (so it goes first)."""
+    return _LAST_USED.get(account_id, 0.0)
+
+
 def snapshot() -> dict[str, dict[str, Any]]:
     now = time.time()
     return {

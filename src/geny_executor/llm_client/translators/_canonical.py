@@ -295,6 +295,20 @@ _ANTHROPIC_INTERNAL_KEYS = ("_meta",)
 def _sanitize_anthropic_block(block: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Strip executor-internal keys and lower unsupported block types."""
     btype = block.get("type")
+    if btype in ("thinking", "redacted_thinking"):
+        # A thinking block belongs to the model that produced it: its
+        # signature is bound to that model, and replaying it to a
+        # different one is at best ignored and at worst a 400. In THIS
+        # library the model can change between any two turns — a route
+        # failing over to another account, a user swapping the model
+        # mid-conversation, a sub-agent on a cheaper model reading its
+        # parent's history — so a thinking block is never portable and
+        # is dropped, exactly as every other translator here drops it.
+        #
+        # The cost is thinking continuity within one model; the cost of
+        # keeping it is a session that dies the moment its model changes.
+        return None
+
     if btype == "file":
         # TODO: Anthropic ``document`` block 으로 매핑 (PDF/text 직접 지원).
         # 지금은 metadata 텍스트로 fallback.
