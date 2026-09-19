@@ -6,14 +6,13 @@ adapter is identical; the differences are:
 - ``provider = "vllm"``
 - a required ``base_url`` (no public SaaS endpoint)
 - conservative default capabilities (tool-calling depends on the
-  serving model; override via :meth:`VLLMClient.configure_capabilities`
-  if the deployed model supports it)
+  serving model, so the deployment declares it: ``capabilities=`` at
+  construction, or :meth:`BaseClient.configure_capabilities` later)
 """
 
 from __future__ import annotations
 
-from dataclasses import replace
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Mapping, Optional
 
 from geny_executor.llm_client.base import ClientCapabilities
 from geny_executor.llm_client.openai import OpenAIClient
@@ -49,6 +48,7 @@ class VLLMClient(OpenAIClient):
         base_url: Optional[str] = None,
         default_headers: Optional[Dict[str, str]] = None,
         event_sink: Optional[Any] = None,
+        capabilities: Optional[Mapping[str, Any]] = None,
     ) -> None:
         if not base_url:
             raise ValueError(
@@ -61,23 +61,8 @@ class VLLMClient(OpenAIClient):
             default_headers=default_headers,
             event_sink=event_sink,
         )
-
-    def configure_capabilities(self, **overrides: bool) -> None:
-        """Upgrade the client's capability flags when the deployed model supports them.
-
-        Example: a vLLM instance running a tool-call-capable model can opt in::
-
-            client = VLLMClient(base_url=...)
-            client.configure_capabilities(supports_tools=True, supports_tool_choice=True)
-
-        The declared ``drops`` tuple is interpreted against the upgraded
-        flags: the drop application skips any field whose matching
-        ``supports_*`` flag is True on the instance (see
-        ``BaseClient._apply_declared_drops``), so the opt-in above
-        really does let ``tools`` / ``tool_choice`` reach the server —
-        no need to rewrite ``drops`` here.
-        """
-        # type-ignore: dataclasses.replace stubs can't type heterogeneous
-        # **kwargs against the per-field types; values are validated by
-        # the dataclass itself at construction.
-        self.capabilities = replace(self.capabilities, **overrides)  # type: ignore[arg-type]
+        # What a vLLM server can do is a property of the model it loaded,
+        # not of vLLM: the same endpoint class serves a tool-calling
+        # Qwen-Coder and a plain text completion model. The defaults above
+        # are the safe floor; the deployment that knows better says so.
+        self.apply_capability_overrides(capabilities)

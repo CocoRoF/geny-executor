@@ -32,6 +32,24 @@ from geny_executor.llm_client.types import APIRequest, APIResponse
 _CONTENT = {"text_delta", "thinking_delta", "tool_use", "input_json_delta"}
 
 
+def _retry_fields(exc: BaseException) -> dict[str, Any]:
+    """What the provider said about coming back, off the exception.
+
+    Clients that get a machine-readable answer — Codex's
+    ``resets_in_seconds``, a ``Retry-After`` header — attach it here rather
+    than only wording it into the message, so re-wording the message cannot
+    quietly turn the hint back into a guess.
+    """
+    fields: dict[str, Any] = {}
+    retry_after = getattr(exc, "retry_after", None)
+    if retry_after is not None:
+        fields["retry_after"] = retry_after
+    reset_at = getattr(exc, "reset_at", None)
+    if reset_at is not None:
+        fields["reset_at"] = reset_at
+    return fields
+
+
 def _label(target: dict[str, Any]) -> str:
     return f"{target.get('label') or target.get('kind')}·{target.get('model')}"
 
@@ -241,7 +259,7 @@ class RouterClient(BaseClient):
         # When the provider says when to come back, believe it. A flat bench
         # is a guess in both directions: too short and the next turn walks
         # into the same wall, too long and a recovered account sits idle.
-        until = failover.reset_at_from(detail, fields=getattr(exc, "fields", None))
+        until = failover.reset_at_from(detail, fields=_retry_fields(exc))
 
         provider = str(target.get("engineProvider") or "")
         if (

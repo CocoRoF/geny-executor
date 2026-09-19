@@ -11,7 +11,7 @@ geny-executor abstracts the LLM call site behind a single contract: `BaseClient`
 | `anthropic` | `AnthropicClient` | Anthropic Messages API | streaming, `tool_use`, thinking blocks, prompt caching, cost telemetry | Default for Claude family. Hard dependency. |
 | `openai` | `OpenAIClient` | OpenAI Responses / Chat Completions | streaming, tools, JSON-schema structured output, reasoning models | |
 | `google` | `GoogleClient` | Google GenAI (Gemini) | streaming, function calling, thinking blocks | |
-| `vllm` | `VLLMClient` | OpenAI-compatible local endpoint | streaming, free-form model id | Inherits `OpenAIClient`; tool support is opt-in via `configure_capabilities()`. |
+| `vllm` | `VLLMClient` | OpenAI-compatible local endpoint | streaming, free-form model id | Inherits `OpenAIClient`; tools and vision are opt-in — `capabilities={...}` at construction, or `configure_capabilities()` later. |
 
 ## The routed providers (2.66.0)
 
@@ -115,7 +115,23 @@ Tool calls also accumulate at `message_complete` (per OpenAI's protocol). Set `r
 Function calls map to/from Anthropic-shaped `tool_use` / `tool_result` blocks via the canonical translator (`translators/_canonical.py`). Thinking blocks supported.
 
 ### `vllm`
-Inherits `OpenAIClient`. Set `base_url` to your local vLLM `/v1` endpoint. Most vLLM deployments default to `supports_tools=False`; flip via `configure_capabilities()` if your model handles them.
+Inherits `OpenAIClient`. Set `base_url` to your local vLLM `/v1` endpoint. The class declares `supports_tools=False` because a vLLM server is whatever model it loaded; a deployment running a tool-calling model says so with `capabilities={"supports_tools": True, "supports_tool_choice": True}` at construction (or `configure_capabilities()` later). See *Declaring what an endpoint serves* below.
+
+### Declaring what an endpoint serves
+
+`custom` / `local` / `ollama` / `lmstudio` / `vllm` each serve endpoints that have nothing in common but the wire format: the same `custom` class reaches a cloud aggregator in front of Claude and a keyless llama.cpp on a laptop. A class can only declare the weakest of them, so the **host** amends its instance:
+
+```python
+client = ClientRegistry.get("custom")(
+    base_url="https://openrouter.ai/api/v1",
+    api_key=key,
+    capabilities={"supports_vision": True},
+)
+```
+
+Through the pipeline the same declaration rides on the credentials — `extras["capabilities"]` — and `_creds_to_client_kwargs` threads it to the constructor. Unknown keys are logged and ignored rather than raised (the value comes from config), and each instance is independent, so two accounts on one class never inherit each other's declaration.
+
+`supports_vision` is the one that matters most: it is the only capability whose absence is **silent**. An image a client cannot see is replaced with a note saying one was there (both on the message and nested inside a `tool_result`), so an undeclared endpoint answers confidently about a picture it never received.
 
 ### `geny_claude_code`
 The `claude` binary as a pure token generator, driven through the official **Claude Agent SDK** (`claude-agent-sdk`): `tools=[]` (no built-in tools), `max_turns=1` (one generation, never an agent loop), `strict_mcp_config` + `mcp_servers={}` (no MCP), `setting_sources=[]` (no host `settings.json`). Tool calls come back as `<tool_call>` text (`llm_client/text_tool_protocol.py`), become canonical `tool_use` blocks, and Stage 10 executes them under this pipeline's jail, permissions and hooks. `temperature`, `top_p`, `top_k`, `stop_sequences`, `max_tokens` and `tool_choice` are declared drops — the CLI takes none of them.

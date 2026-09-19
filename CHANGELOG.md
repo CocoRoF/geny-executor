@@ -1,5 +1,62 @@
 # Changelog
 
+## [2.72.0] — 2026-09-19
+
+A review pass over 2.69–2.71, and the breadth question those releases left
+open: one client class, endpoints with nothing in common behind it.
+
+### Fixed — an image a tool returned was never lowered
+
+2.71.0 replaces an image a backend cannot see with a note saying one was
+there. It scanned the message's top-level blocks — and an image a TOOL
+returns lives one level down, inside the `tool_result`'s own content list.
+So the branch guarding `supports_vision_tool_results` could not fire on the
+one case it exists for: a screenshot. The raw image went to a model that
+cannot see, which is the 400 the whole mechanism was added to prevent.
+Lowering now recurses into `tool_result.content`, keeping the result's text
+and its `tool_use_id` — an orphaned tool_result is its own 400.
+
+The test that missed it built a tool result with the image beside the
+block rather than inside it. A fixture kinder than the real shape tests
+nothing; it now uses the shape `_canonical` actually reads.
+
+### Fixed — declaring vision per class broke the aggregators
+
+`supports_vision` defaults to False, which is right for a local server and
+wrong for the same class serving OpenRouter. Endpoints are now declared by
+whoever configured them:
+
+  · `BaseClient.configure_capabilities()` — one implementation, on the base
+    class. `VLLMClient` and the OpenAI-compatible family each carried their
+    own copy of it, which is how the two drifted on who could call it.
+  · `BaseClient.apply_capability_overrides(mapping)` — the same thing for a
+    declaration that arrived from *config*: unknown keys are logged and
+    dropped rather than raised, and values are coerced against the field's
+    own type, because a database row spells yes as `1` and `"true"`.
+  · `capabilities=` at construction on `VLLMClient` and every profiled
+    client, threaded from `extras["capabilities"]` by
+    `_creds_to_client_kwargs`. A flag stored on an account that no path
+    carried to the client is a setting that does nothing.
+
+vLLM gains the most: its class says `supports_tools=False` because a vLLM
+server is whatever model it loaded, and until now nothing could say
+otherwise through the pipeline.
+
+### Added — a retry window the provider actually stated
+
+`ResponsesClient._http_error` keeps `resets_in_seconds` and the
+`Retry-After` header on the error as `retry_after`, and the router reads it
+when sizing a bench. 2.71.0 read a `fields` attribute that `APIError` does
+not have, so the "the provider usually says" path it advertised was
+reachable only through the error text.
+
+### Fixed — a single-use refresh set nothing consulted
+
+`SINGLE_USE_REFRESH_KINDS` documented which credential kinds rotate on use.
+`resolve_hop` chose the guarded path by naming Codex directly, so the set
+was decoration and the next rotating kind would have been a silent
+data-loss bug.
+
 ## [2.71.0] — 2026-09-19
 
 Read against Hermes (`NousResearch/hermes-agent`), whose credential pool

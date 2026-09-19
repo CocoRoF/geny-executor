@@ -22,6 +22,7 @@ a reasoning agent is not a trade worth making.
 from __future__ import annotations
 
 import hashlib
+import contextlib
 import json
 import time
 import uuid
@@ -358,13 +359,14 @@ class ResponsesClient(BaseClient):
                         continue
                     if resp.status_code != 200:
                         raw = (await resp.aread()).decode("utf-8", "replace")
-                        raise self._http_error(resp.status_code, raw)
+                        raise self._http_error(resp.status_code, raw, resp.headers)
                     async for chunk in self._consume(resp, started):
                         yield chunk
                     return
 
-    def _http_error(self, status: int, raw: str) -> APIError:
+    def _http_error(self, status: int, raw: str, headers: Any = None) -> APIError:
         detail = raw
+        retry_after: Optional[float] = None
         try:
             data = json.loads(raw)
             err = data.get("error") if isinstance(data, dict) else None
@@ -372,6 +374,11 @@ class ResponsesClient(BaseClient):
                 detail = str(err.get("message") or err.get("code") or raw)
                 if err.get("resets_in_seconds"):
                     self._notify_host({"kind": "rate_limit", "info": err})
+                    # …and keep it: this is the provider saying exactly when
+                    # the account is usable again, which beats benching it
+                    # for a flat fifteen minutes in both directions.
+                    with contextlib.suppress(TypeError, ValueError):
+                        retry_after = float(err["resets_in_seconds"])
             elif isinstance(data, dict) and data.get("detail"):
                 detail = str(data["detail"])
         except Exception:  # noqa: BLE001 — a non-JSON body is the message
@@ -380,11 +387,21 @@ class ResponsesClient(BaseClient):
         category = classify_text(detail, status)
         if status == 400 and "usage" in detail.lower() and "limit" in detail.lower():
             category = ErrorCategory.RATE_LIMITED
-        return APIError(
+        if retry_after is None and headers is not None:
+            with contextlib.suppress(AttributeError, TypeError, ValueError):
+                header = headers.get("retry-after")
+                if header is not None:
+                    retry_after = float(header)
+        error = APIError(
             f"{self.label}{label} HTTP {status}: {detail[:600]}",
             category=category,
             status_code=status,
         )
+        if retry_after is not None and retry_after > 0:
+            # Read by the router to size the bench. Carried on the error
+            # rather than only in the text so it survives re-wording.
+            error.retry_after = retry_after  # type: ignore[attr-defined]
+        return error
 
     async def _consume(self, resp: httpx.Response, started: float) -> AsyncIterator[Dict[str, Any]]:
         text_parts: list[str] = []

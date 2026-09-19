@@ -196,3 +196,63 @@ class TestSubscriptionsMeterTheWholeAccount:
         client._failed(0, RuntimeError("429 rate limit exceeded"), remaining=1)
         assert failover.cooling("a") is None
         assert failover.model_cooling("a", "opus") is not None
+
+
+class TestTheHintSurvivesRewording:
+    """A machine-readable answer — Codex's ``resets_in_seconds``, a
+    ``Retry-After`` header — rides on the exception, not only in the message.
+    Carrying it only in the text means the next person who rewords an error
+    string quietly turns the hint back into a guess."""
+
+    def test_an_attached_retry_after_is_used(self) -> None:
+        from geny_executor.llm_client.router import _retry_fields
+
+        exc = RuntimeError("HTTP 429: the usage limit has been reached")
+        exc.retry_after = 90  # type: ignore[attr-defined]
+        at = failover.reset_at_from(str(exc), fields=_retry_fields(exc))
+        assert at is not None and abs((at - time.time()) - 90) < 2
+
+    def test_it_wins_over_a_number_in_the_text(self) -> None:
+        from geny_executor.llm_client.router import _retry_fields
+
+        exc = RuntimeError("try again in 5 seconds")
+        exc.retry_after = 300  # type: ignore[attr-defined]
+        at = failover.reset_at_from(str(exc), fields=_retry_fields(exc))
+        assert abs((at or 0) - time.time() - 300) < 2
+
+    def test_an_error_carrying_nothing_falls_back_to_the_text(self) -> None:
+        from geny_executor.llm_client.router import _retry_fields
+
+        exc = RuntimeError("please retry in 7 seconds")
+        at = failover.reset_at_from(str(exc), fields=_retry_fields(exc))
+        assert at is not None and abs((at - time.time()) - 7) < 2
+
+
+class TestTheCodexWireKeepsWhatItWasTold:
+    def test_resets_in_seconds_reaches_the_error(self) -> None:
+        """It was already read for a notification and then dropped — the one
+        number that says exactly when the account is usable again."""
+        import json
+
+        from geny_executor.llm_client.codex import CodexResponsesClient
+
+        client = CodexResponsesClient(api_key="k")
+        body = json.dumps(
+            {"error": {"message": "usage limit reached", "resets_in_seconds": 120}}
+        )
+        error = client._http_error(429, body)
+        assert getattr(error, "retry_after", None) == 120
+
+    def test_a_retry_after_header_reaches_the_error(self) -> None:
+        from geny_executor.llm_client.codex import CodexResponsesClient
+
+        client = CodexResponsesClient(api_key="k")
+        error = client._http_error(429, "too many requests", {"retry-after": "45"})
+        assert getattr(error, "retry_after", None) == 45
+
+    def test_no_hint_attaches_nothing(self) -> None:
+        from geny_executor.llm_client.codex import CodexResponsesClient
+
+        client = CodexResponsesClient(api_key="k")
+        error = client._http_error(429, "too many requests", {})
+        assert getattr(error, "retry_after", None) is None

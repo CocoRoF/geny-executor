@@ -24,8 +24,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from dataclasses import replace
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Mapping, Optional
 
 from geny_executor.llm_client.openai import OpenAIClient
 from geny_executor.llm_client.profiles import (
@@ -108,6 +107,7 @@ class OpenAICompatibleClient(OpenAIClient):
         event_sink: Optional[Any] = None,
         num_ctx: Optional[int] = None,
         think: Optional[bool] = None,
+        capabilities: Optional[Mapping[str, Any]] = None,
     ) -> None:
         profile = self._profile
         resolved_base_url = base_url or profile.default_base_url
@@ -126,23 +126,13 @@ class OpenAICompatibleClient(OpenAIClient):
         )
         self._num_ctx = num_ctx
         self._think = think
-
-    def configure_capabilities(self, **overrides: bool) -> None:
-        """Upgrade/downgrade capability flags for the deployed model.
-
-        A local endpoint serving a model without tool support opts out::
-
-            client.configure_capabilities(supports_tools=False,
-                                           supports_tool_choice=False)
-
-        ``capabilities.drops`` is interpreted against the upgraded flags
-        (see ``BaseClient._apply_declared_drops``), so toggling
-        ``supports_tools`` really does gate whether ``tools`` reach the
-        server — no need to rewrite the drops tuple here.
-        """
-        # type-ignore: dataclasses.replace stubs can't type heterogeneous
-        # **kwargs; the dataclass validates values at construction.
-        self.capabilities = replace(self.capabilities, **overrides)  # type: ignore[arg-type]
+        # What one OpenAI-compatible endpoint can do is not what another can:
+        # this class serves a keyless llama.cpp on a laptop AND a cloud
+        # aggregator routing to frontier models. Vision, tools and structured
+        # output are properties of the SERVED MODEL, so the account that knows
+        # which endpoint this is gets to say (see
+        # ``BaseClient.apply_capability_overrides``).
+        self.apply_capability_overrides(capabilities)
 
     def _parse_tool_arguments(self, raw: Any) -> Any:
         """Strict parse, then repair the malformed JSON local servers emit.

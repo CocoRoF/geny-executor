@@ -205,6 +205,9 @@ def profiled_client_kwargs(name: str, creds: Any) -> Dict[str, Any]:
       the requested context window.
     * ``think`` — from ``extras["think"]``; becomes ``extra_body.think``
       (Ollama's native reasoning toggle).
+    * ``capabilities`` — from ``extras["capabilities"]``; capability flags
+      the ACCOUNT declares about its endpoint (vision above all), because
+      one class serves both a laptop's llama.cpp and a cloud aggregator.
 
     Pure: imports nothing from the SDK path. ``creds`` is a
     ``ProviderCredentials`` (typed ``Any`` to avoid a circular import).
@@ -224,6 +227,13 @@ def profiled_client_kwargs(name: str, creds: Any) -> Dict[str, Any]:
     think = extras.get("think")
     if think is not None:
         kwargs["think"] = bool(think)
+    overrides = extras.get("capabilities")
+    if isinstance(overrides, Mapping):
+        # The account's own declaration of what its endpoint serves. An
+        # aggregator routing to frontier models can see images; the
+        # llama.cpp build on a laptop usually cannot, and only the account
+        # knows which one this is.
+        kwargs["capabilities"] = dict(overrides)
     return kwargs
 
 

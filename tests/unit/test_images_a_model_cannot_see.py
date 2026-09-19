@@ -34,15 +34,38 @@ def _messages() -> List[Dict[str, Any]]:
 
 
 def _tool_result_messages() -> List[Dict[str, Any]]:
+    """The shape a tool actually returns an image in.
+
+    Canonical history nests it INSIDE the tool_result's own content list
+    (``_canonical._tool_result_text_and_images`` reads it from there), not
+    beside the tool_result. A scan that only walks the message's top-level
+    blocks therefore finds nothing to lower on exactly the turn that needs
+    it — a screenshot — and the raw image goes to a model that cannot see.
+    """
     return [
         {
             "role": "user",
             "content": [
-                {"type": "tool_result", "tool_use_id": "t1", "content": "captured"},
-                IMAGE,
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "t1",
+                    "content": [{"type": "text", "text": "captured"}, IMAGE],
+                }
             ],
         }
     ]
+
+
+def _tool_result_images(request) -> List[Dict[str, Any]]:
+    """Every image block still nested in a tool_result of *request*."""
+    found: List[Dict[str, Any]] = []
+    for message in request.messages:
+        for block in message.get("content") or []:
+            if isinstance(block, dict) and block.get("type") == "tool_result":
+                for inner in block.get("content") or []:
+                    if isinstance(inner, dict) and inner.get("type") == "image":
+                        found.append(inner)
+    return found
 
 
 class _Client(BaseClient):
@@ -117,7 +140,34 @@ class TestSeeingAUserImageButNotAToolOne:
         caps = ClientCapabilities(supports_vision=True, supports_vision_tool_results=False)
         client = _Client(caps, [])
         assert _blocks(client.build(_messages()))[0]["type"] == "image"
-        assert all(b.get("type") != "image" for b in _blocks(client.build(_tool_result_messages())))
+        assert _tool_result_images(client.build(_tool_result_messages())) == []
+
+    def test_the_tool_result_keeps_its_text_and_its_identity(self) -> None:
+        """Lowering the picture must not lose what the tool SAID, nor the
+        id that pairs the result with its call — an orphaned tool_result is
+        a 400 on every backend."""
+        caps = ClientCapabilities(supports_vision=True, supports_vision_tool_results=False)
+        request = _Client(caps, []).build(_tool_result_messages())
+        block = request.messages[0]["content"][0]
+        assert block["tool_use_id"] == "t1"
+        assert any(b.get("text") == "captured" for b in block["content"])
+        assert any("cannot see" in (b.get("text") or "") for b in block["content"])
+
+    def test_a_blind_model_loses_the_tool_image_too(self) -> None:
+        """supports_vision=False is the stronger statement: it covers both
+        places an image can sit, not only the one the user attached."""
+        request = _Client(ClientCapabilities(supports_vision=False), []).build(
+            _tool_result_messages()
+        )
+        assert _tool_result_images(request) == []
+
+    def test_the_conversations_tool_image_survives_for_the_next_hop(self) -> None:
+        history = _tool_result_messages()
+        caps = ClientCapabilities(supports_vision=True, supports_vision_tool_results=False)
+        _Client(caps, []).build(history)
+        assert history[0]["content"][0]["content"][1]["type"] == "image", (
+            "a hop that cannot see tool images destroyed it in the conversation"
+        )
 
 
 class TestWhatTheShippedClientsDeclare:
@@ -144,3 +194,44 @@ class TestWhatTheShippedClientsDeclare:
         from geny_executor.llm_client.vllm import VLLMClient
 
         assert VLLMClient.capabilities.supports_vision is False
+
+
+class TestTheDegradationEndsWithThisRequest:
+    """The bug this guards: ``request.messages`` is a SHALLOW copy of the
+    caller's list, so replacing a block in place edits the pipeline's
+    canonical history. One turn on a text-only hop would then destroy the
+    image for every LATER turn — including the ones on a model that could
+    have seen it. Exactly backwards for a conversation meant to outlive the
+    model answering it."""
+
+    def test_the_callers_history_still_holds_the_image(self) -> None:
+        history = [{"role": "user", "content": [IMAGE, {"type": "text", "text": "hi"}]}]
+        client = _Client(ClientCapabilities(supports_vision=False), [])
+        client.build(history)
+        assert history[0]["content"][0]["type"] == "image", (
+            "a text-only hop destroyed the image in the conversation"
+        )
+
+    def test_the_request_still_carries_the_placeholder(self) -> None:
+        history = [{"role": "user", "content": [IMAGE, {"type": "text", "text": "hi"}]}]
+        client = _Client(ClientCapabilities(supports_vision=False), [])
+        request = client.build(history)
+        assert request.messages[0]["content"][0]["type"] == "text"
+
+    def test_a_vision_hop_on_the_next_turn_still_sees_it(self) -> None:
+        """The whole point: degrading for one hop must not degrade the
+        conversation."""
+        history = [{"role": "user", "content": [IMAGE, {"type": "text", "text": "hi"}]}]
+        _Client(ClientCapabilities(supports_vision=False), []).build(history)
+        seeing = _Client(
+            ClientCapabilities(supports_vision=True, supports_vision_tool_results=True), []
+        ).build(history)
+        assert seeing.messages[0]["content"][0]["source"]["data"] == IMAGE["source"]["data"]
+
+    def test_untouched_messages_are_not_copied(self) -> None:
+        """Copy only what changes — a deep copy of every turn would be paid
+        on every request by every provider."""
+        plain = {"role": "user", "content": [{"type": "text", "text": "no image here"}]}
+        history = [plain, {"role": "user", "content": [IMAGE]}]
+        request = _Client(ClientCapabilities(supports_vision=False), []).build(history)
+        assert request.messages[0] is plain

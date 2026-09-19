@@ -148,6 +148,12 @@ def _creds_to_client_kwargs(provider: str, creds: ProviderCredentials) -> Dict[s
             kwargs["base_url"] = creds.base_url
         if creds.default_headers is not None:
             kwargs["default_headers"] = dict(creds.default_headers)
+        # vLLM's defaults are the safe floor (no tools, no vision) because
+        # those depend on the model the server loaded, which only the
+        # deployment knows. ``extras["capabilities"]`` is how it says.
+        overrides = (creds.extras or {}).get("capabilities")
+        if isinstance(overrides, Mapping):
+            kwargs["capabilities"] = dict(overrides)
         return kwargs
 
     # API providers (anthropic / openai / google)

@@ -25,8 +25,17 @@ from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
-from typing import Any, AsyncIterator, Awaitable, Callable, Dict, List, Optional
+from dataclasses import dataclass, field, replace as _dc_replace
+from typing import (
+    Any,
+    AsyncIterator,
+    Awaitable,
+    Callable,
+    Dict,
+    List,
+    Mapping,
+    Optional,
+)
 
 from geny_executor.core.config import ModelConfig
 from geny_executor.core.errors import APIError, ErrorCategory
@@ -155,6 +164,62 @@ class BaseClient(ABC):
         self._base_url = base_url
         self._default_headers = default_headers
         self._event_sink = event_sink
+
+    # ── Capability negotiation ──────────────────────────────────────────
+
+    def configure_capabilities(self, **overrides: Any) -> None:
+        """Amend this INSTANCE's capability flags for the model it reaches.
+
+        A class declares what its *wire format* can express; only the
+        deployment knows what the *served model* actually does. One vLLM
+        endpoint runs a tool-calling model and the next one does not; one
+        OpenAI-compatible base_url is a laptop's llama.cpp and the next is
+        an aggregator fronting frontier models. So the flags are settable
+        per instance rather than per class::
+
+            client.configure_capabilities(supports_tools=True,
+                                          supports_tool_choice=True)
+
+        ``capabilities.drops`` is read against these upgraded flags (see
+        :meth:`_apply_declared_drops`), so an upgrade really does let the
+        field reach the server — the drops tuple needs no rewriting.
+        """
+        # type-ignore: dataclasses.replace stubs cannot type heterogeneous
+        # **kwargs against the per-field types; the dataclass validates at
+        # construction.
+        self.capabilities = _dc_replace(self.capabilities, **overrides)  # type: ignore[arg-type]
+
+    def apply_capability_overrides(self, overrides: Optional[Mapping[str, Any]]) -> None:
+        """Apply a HOST-supplied capability declaration, ignoring unknowns.
+
+        Separate from :meth:`configure_capabilities` because the input is
+        untrusted: it arrives from an account row or a manifest, where a
+        typo or a flag from a newer library version must not take down the
+        turn. Unknown keys are dropped with a log line instead of raising.
+        """
+        if not overrides:
+            return
+        known: Dict[str, Any] = {}
+        unknown: List[str] = []
+        for key, value in overrides.items():
+            if not hasattr(self.capabilities, key):
+                unknown.append(str(key))
+                continue
+            # Coerce against the CURRENT value's type, not a hard-coded
+            # field list: the flags are overwhelmingly booleans (and a JSON
+            # account row spells one "true"/1), while ``streaming_granularity``
+            # and ``drops`` are not — and a new non-bool field must not start
+            # silently arriving as ``True``.
+            current = getattr(self.capabilities, key)
+            known[key] = bool(value) if isinstance(current, bool) else value
+        if unknown:
+            logger.warning(
+                "%s: ignoring unknown capability override(s): %s",
+                self.provider or type(self).__name__,
+                ", ".join(sorted(unknown)),
+            )
+        if known:
+            self.configure_capabilities(**known)
 
     # ── High-level surface used by stages ───────────────────────────────
 
@@ -290,6 +355,12 @@ class BaseClient(ABC):
         return request
 
     # ── images a backend cannot see ──────────────────────────────────
+
+    #: What a lowered image leaves behind. A sentence, not an empty slot:
+    #: the model has to be able to tell "there was a picture I cannot see"
+    #: from "there was nothing here".
+    _IMAGE_PLACEHOLDER = "[an image was attached here; this model cannot see images]"
+
     def _lower_unseeable_images(self, request: APIRequest) -> None:
         """Replace image blocks this client cannot see with a note saying so.
 
@@ -305,39 +376,67 @@ class BaseClient(ABC):
           * say an image was here and could not be shown, which is what this
             does, alongside a ``llm_client.field_dropped`` event so the host
             can say so too.
+
+        Two places carry images and they are gated separately: a block on
+        the message itself (the user attached it) and a block nested inside
+        a ``tool_result`` (a tool returned it — a screenshot, a rendered
+        chart). Some backends take the first and reject the second, so
+        ``supports_vision_tool_results`` decides the nested ones.
         """
         caps = self.capabilities
         if caps.supports_vision and caps.supports_vision_tool_results:
             return
+        tool_results_ok = caps.supports_vision and caps.supports_vision_tool_results
 
+        # Copy-on-write, all the way down. ``request.messages`` is a SHALLOW
+        # copy of the caller's list, so editing a block in place would edit
+        # the pipeline's canonical history — and one turn on a text-only hop
+        # would destroy the image for every later turn, including the ones on
+        # a model that could have seen it. The degradation ends with this
+        # request.
         lowered = 0
-        for message in request.messages:
+        for position, message in enumerate(request.messages):
             content = message.get("content")
             if not isinstance(content, list):
                 continue
-            in_tool_result = any(
-                isinstance(b, dict) and b.get("type") == "tool_result" for b in content
-            )
-            allowed = (
-                caps.supports_vision and caps.supports_vision_tool_results
-                if in_tool_result
-                else caps.supports_vision
-            )
-            if allowed:
-                continue
-            replaced: list[Any] = []
+            replaced: List[Any] = []
+            changed = False
             for block in content:
-                if isinstance(block, dict) and block.get("type") == "image":
+                if not isinstance(block, dict):
+                    replaced.append(block)
+                    continue
+                btype = block.get("type")
+                if btype == "image" and not caps.supports_vision:
+                    replaced.append({"type": "text", "text": self._IMAGE_PLACEHOLDER})
                     lowered += 1
-                    replaced.append(
-                        {
-                            "type": "text",
-                            "text": "[an image was attached here; this model cannot see images]",
-                        }
-                    )
+                    changed = True
+                elif btype == "tool_result" and not tool_results_ok:
+                    inner = block.get("content")
+                    if not isinstance(inner, list):
+                        replaced.append(block)
+                        continue
+                    # An image a TOOL returned lives one level down, inside
+                    # the tool_result's own content list — which is why the
+                    # top-level scan alone would have found nothing to lower
+                    # on exactly the turn that needed it (a screenshot).
+                    inner_replaced: List[Any] = []
+                    inner_changed = False
+                    for inner_block in inner:
+                        if isinstance(inner_block, dict) and inner_block.get("type") == "image":
+                            inner_replaced.append({"type": "text", "text": self._IMAGE_PLACEHOLDER})
+                            lowered += 1
+                            inner_changed = True
+                        else:
+                            inner_replaced.append(inner_block)
+                    if inner_changed:
+                        replaced.append({**block, "content": inner_replaced})
+                        changed = True
+                    else:
+                        replaced.append(block)
                 else:
                     replaced.append(block)
-            message["content"] = replaced
+            if changed:
+                request.messages[position] = {**message, "content": replaced}
 
         if lowered:
             self._emit_unsupported("image")
