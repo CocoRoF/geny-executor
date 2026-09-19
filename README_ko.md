@@ -234,7 +234,7 @@ result = await pipeline.run("안녕!")
 | `google` | Gemini 3.x / 2.5. Streaming, tools, thinking blocks. |
 | `vllm` | 로컬 vLLM endpoint의 어떤 모델이든. OpenAI 호환. Tools는 `configure_capabilities()` 로 opt-in. |
 | `geny_router` | 계정들의 경로(route). 호출마다 어느 백엔드가 답할지 정하므로, 하나의 대화가 Claude 구독 → 두 번째 Claude 로그인 → ChatGPT 플랜으로 옮겨가도 도구·기억·권한 정책을 잃지 않는다. **첫 토큰 이전에만**, 그리고 다른 계정이 해결할 수 있는 실패에 대해서만 failover. |
-| `geny_claude_code` | `claude` 바이너리를 **토큰 생성기**로: `-p --tools "" --max-turns 1`, MCP 차단, `<tool_call>` 텍스트를 canonical `tool_use` 블록으로 되돌려 Stage 10이 실행. 계정마다 `CLAUDE_CONFIG_DIR` 이 따로라 로그인 몇 개든 공존. |
+| `geny_claude_code` | `claude` 바이너리를 **토큰 생성기**로, 공식 Claude Agent SDK 를 통해: `tools=[] max_turns=1`, MCP·호스트 설정 차단, `<tool_call>` 텍스트를 canonical `tool_use` 블록으로 되돌려 Stage 10이 실행. 계정마다 `CLAUDE_CONFIG_DIR` 이 따로라 로그인 몇 개든 공존. |
 | `geny_codex` | Responses API 위의 ChatGPT 플랜 — `codex` 바이너리 없음. 네이티브 `function_call` → `tool_use`. |
 
 세션은 manifest의 `stages[6].config["provider"]` 로 provider 선택. 자격증명은 하나의 `CredentialBundle` 채널로 흐름 — [`docs/providers.md`](docs/providers.md) 참조.
@@ -455,6 +455,7 @@ ruff format src/ tests/
 | 버전 | 주요 변경 |
 |---|---|
 | **2.68.0** | `claude_code_cli` provider 및 백엔드가 agentic loop 을 소유하던 모든 경로 제거 (CLI runner, stream-json translator, CLI MCP passthrough, `containerize_cli`, `is_subprocess`). provider 는 모델일 수는 있어도 agent 일 수는 없다. |
+| **2.69.0** | `geny_claude_code` 가 손으로 만든 14개 CLI 플래그 대신 공식 **Claude Agent SDK** 로 Claude Code 를 구동 — "unknown option" stderr 에서 런타임에 배우던 플래그 표까지 제거. 구조는 그대로(`tools=[]`, 1턴, 루프는 우리 하네스), 아래만 지원되는 인터페이스로. |
 | **2.1.0** | `ExecutorErrorCode` taxonomy + 구조화된 `pipeline.error` / `stage.error` / `api.retry` payload. `docs/error_codes.md`. |
 | **2.0.6** | `copilot_cli` provider 제거 (text-only, tool round-trip 불가). Geny 측 claude_code_cli 호환 patch 4종 upstream (`--verbose` 주입, `--bare` strip, auto-`--tools ""` drop, finalize에서 `tool_use` strip). |
 | **2.0.5** | `APIRequest.mcp_config` per-request override + `--strict-mcp-config` 자동 emit. 호스트 MCP wrap 토대. |

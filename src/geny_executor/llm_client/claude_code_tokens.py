@@ -7,19 +7,31 @@ makes Claude Code a different agent rather than a model behind this
 pipeline, and it cannot share a conversation with any other provider.
 Until 2.68.0 a ``claude_code_cli`` provider did exactly that; it is gone.
 
-This client inverts it:
+This client inverts it, through the official **Claude Agent SDK**
+(``claude-agent-sdk``)::
 
-    claude -p --tools ""            no built-in tools at all
-           --strict-mcp-config --mcp-config {"mcpServers":{}}
-           --max-turns 1            one generation, never an agent loop
-           --system-prompt-file     Geny's system prompt + tool protocol
-           --output-format stream-json --include-partial-messages
+    ClaudeAgentOptions(
+        tools=[],              # no built-in tools at all
+        max_turns=1,           # one generation, never an agent loop
+        strict_mcp_config=True, mcp_servers={},
+        setting_sources=[],    # and no host settings.json either
+        system_prompt=...,     # Geny's prompt + the tool protocol
+        include_partial_messages=True,
+    )
 
-The CLI authenticates exactly as it does for the user (their login, a
-setup-token, or a Console key), streams tokens, and exits. Tool calls come
-back as `<tool_call>` text (see tool_protocol.py), become canonical
-`tool_use` blocks, and Stage 10 executes them inside the workspace jail with
-the pipeline's permission policy and hooks — the same path as every API provider.
+It used to hand-build that as fourteen ``claude -p`` flags and parse the
+stream-json by hand, which meant owning an interface nobody promised us:
+the module carried a table of flags it had *learned at runtime* a given
+binary rejected, by regexing "unknown option" out of stderr and retrying.
+Every field above is the supported spelling of one of those flags, so
+that table is gone and so is the argv builder.
+
+The CLI still authenticates exactly as it does for the user — their
+login, a setup-token, or a Console key — because the SDK drives that same
+CLI. Tool calls come back as `<tool_call>` text (see text_tool_protocol),
+become canonical `tool_use` blocks, and Stage 10 executes them inside the
+workspace jail with the pipeline's permission policy and hooks — the same
+path as every API provider.
 
 Multiple accounts are separate `CLAUDE_CONFIG_DIR`s (the CLI keys both its
 credential file and, on macOS, its Keychain item on that directory), so any
@@ -28,14 +40,9 @@ number of Claude logins coexist without touching the user's own ~/.claude.
 
 from __future__ import annotations
 
-import asyncio
-import contextlib
-import json
 import logging
 import os
-import re
 import shutil
-import sys
 import tempfile
 import time
 from pathlib import Path
@@ -74,9 +81,6 @@ AUTH_ENV = (
 SESSION_ENV = AUTH_ENV[-5:]
 
 
-#: flags a given binary rejected with "unknown option" — learned at runtime,
-#: because `--help` hides some accepted flags (`--system-prompt-file`,
-#: `--max-turns`) and so cannot be the source of truth
 # ── stdout stream limit ────────────────────────────────────────────────
 # The CLI emits one stream-json event per line, and the model's own text
 # rides INSIDE those lines — a long answer, a base64 image, or a big
@@ -93,10 +97,6 @@ def _stream_limit() -> int:
     except ValueError:
         v = 0
     return v if v >= 2**16 else 32 * 1024 * 1024
-
-
-_UNSUPPORTED: dict[str, set[str]] = {}
-_UNKNOWN_OPTION = re.compile(r"unknown option '?(--[a-zA-Z-]+)'?", re.I)
 
 
 def child_env(
@@ -133,62 +133,6 @@ def child_env(
     return env
 
 
-def _windows_shim_target(binary: str) -> Optional[List[str]]:
-    """npm's `claude.cmd` → `node <…>/@anthropic-ai/claude-code/cli.js`.
-
-    Going through cmd.exe corrupts arguments (it does not honour the `\\"`
-    escapes subprocess produces, and treats `<`, `>` and newlines as syntax)
-    and `terminate()` would only kill the shell, leaving the CLI generating.
-    Running the script directly avoids both."""
-    base = Path(binary).parent
-    for rel in (
-        Path("node_modules") / "@anthropic-ai" / "claude-code" / "cli.js",
-        Path("..") / "node_modules" / "@anthropic-ai" / "claude-code" / "cli.js",
-    ):
-        script = (base / rel).resolve()
-        if script.exists():
-            local_node = base / "node.exe"
-            node = str(local_node) if local_node.exists() else (shutil.which("node") or "node")
-            return [node, str(script)]
-    return None
-
-
-def command_for(binary: str, args: List[str]) -> List[str]:
-    if sys.platform == "win32" and binary.lower().endswith((".cmd", ".bat")):
-        target = _windows_shim_target(binary)
-        if target:
-            return [*target, *args]
-        return [os.environ.get("COMSPEC", "cmd.exe"), "/d", "/s", "/c", binary, *args]
-    return [binary, *args]
-
-
-async def kill_tree(proc: Any) -> None:
-    """Stop the CLI and anything it started (on Windows terminate() does not
-    reach grandchildren)."""
-    if proc.returncode is not None:
-        return
-    if sys.platform == "win32":
-        with contextlib.suppress(Exception):
-            killer = await asyncio.create_subprocess_exec(
-                "taskkill",
-                "/PID",
-                str(proc.pid),
-                "/T",
-                "/F",
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.DEVNULL,
-            )
-            await asyncio.wait_for(killer.wait(), timeout=5)
-    else:
-        with contextlib.suppress(ProcessLookupError):
-            proc.terminate()
-    with contextlib.suppress(Exception):
-        await asyncio.wait_for(proc.wait(), timeout=5)
-    if proc.returncode is None:
-        with contextlib.suppress(ProcessLookupError):
-            proc.kill()
-
-
 _EFFORTS = ("low", "medium", "high", "xhigh", "max")
 
 
@@ -204,12 +148,6 @@ def effort_for(request: APIRequest, fixed: Optional[str]) -> Optional[str]:
     if budget and budget <= 15_000:
         return "medium"
     return "high"
-
-
-class _FlagRejected(Exception):
-    def __init__(self, flag: str) -> None:
-        super().__init__(flag)
-        self.flag = flag
 
 
 class ClaudeCodeTokenClient(BaseClient):
@@ -262,6 +200,7 @@ class ClaudeCodeTokenClient(BaseClient):
         timeout_s: float = 600.0,
         notify: Optional[Notify] = None,
         event_sink: Any = None,
+        transport_factory: Any = None,
         **_ignored: Any,
     ) -> None:
         super().__init__(
@@ -281,6 +220,11 @@ class ClaudeCodeTokenClient(BaseClient):
         self._effort = effort
         self._timeout_s = float(timeout_s or 600.0)
         self._notify = notify
+        # Tests inject an SDK ``Transport`` here instead of a fake binary, so
+        # they exercise THIS module's message→chunk mapping rather than the
+        # CLI's wire protocol. ``None`` (production) lets the SDK spawn the
+        # real ``claude``.
+        self._transport_factory = transport_factory
 
     # ── plumbing ─────────────────────────────────────────────────────
     def _env(self) -> dict[str, str]:
@@ -303,47 +247,6 @@ class ClaudeCodeTokenClient(BaseClient):
         )
         root.mkdir(parents=True, exist_ok=True)
         return str(root)
-
-    def _argv(self, request: APIRequest, prompt_file: str) -> List[str]:
-        """Everything that makes the call token-only. Optional flags a given
-        CLI turned out not to know are dropped (see `_UNSUPPORTED`)."""
-        skip = _UNSUPPORTED.get(self._binary, set())
-        argv = [
-            "-p",
-            "--verbose",
-            "--input-format",
-            "stream-json",
-            "--output-format",
-            "stream-json",
-        ]
-
-        def opt(flag: str, *values: str) -> None:
-            if flag not in skip:
-                argv.extend([flag, *values])
-
-        opt("--include-partial-messages")
-        if request.model:
-            argv += ["--model", str(request.model)]
-        argv += ["--system-prompt-file", prompt_file]
-        # no built-in tools — the reason this client exists. Every variadic
-        # flag is followed by another option, never by a bare value.
-        if "--tools" not in skip:
-            argv += ["--tools", ""]
-        else:
-            argv += ["--disallowedTools", "*"]
-        opt("--strict-mcp-config")
-        opt("--mcp-config", '{"mcpServers":{}}')
-        # the browser integration injects its MCP tools even with an empty
-        # --mcp-config (observed on 2.1.274)
-        opt("--no-chrome")
-        argv += ["--max-turns", "1"]
-        opt("--no-session-persistence")
-        opt("--disable-slash-commands")
-        opt("--safe-mode")
-        effort = effort_for(request, self._effort)
-        if effort:
-            opt("--effort", effort)
-        return argv
 
     def _notify_host(self, payload: dict[str, Any]) -> None:
         if self._notify is None:
@@ -384,141 +287,88 @@ class ClaudeCodeTokenClient(BaseClient):
         async for chunk in self._stream(request):
             yield chunk
 
+    # ── the one call ─────────────────────────────────────────────────
     async def _stream(self, request: APIRequest) -> AsyncIterator[Dict[str, Any]]:
-        env = self._env()
-        cwd = self._cwd()
-        system_prompt = tp.render_system_prompt(request.system, request.tools)
-        fd, prompt_file = tempfile.mkstemp(prefix="geny-sys-", suffix=".md", dir=cwd)
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            fh.write(system_prompt or "You are a helpful assistant.")
-        try:
-            envelope = {
-                "type": "user",
-                "message": {"role": "user", "content": tp.render_transcript(request.messages)},
-            }
-            for _attempt in range(8):
-                argv = self._argv(request, prompt_file)
-                try:
-                    async for chunk in self._run(
-                        argv, env, cwd, envelope, tp.tool_names(request.tools), bool(request.tools)
-                    ):
-                        yield chunk
-                    return
-                except _FlagRejected as rejected:
-                    # an older CLI: forget that flag for this binary, retry
-                    _UNSUPPORTED.setdefault(self._binary, set()).add(rejected.flag)
-            raise APIError(
-                "claude rejected too many flags — update Claude Code",
-                category=ErrorCategory.BAD_REQUEST,
-            )
-        finally:
-            with contextlib.suppress(OSError):
-                os.unlink(prompt_file)
+        """One generation through the Agent SDK, yielding canonical chunks.
 
-    async def _run(
-        self,
-        argv: List[str],
-        env: dict[str, str],
-        cwd: str,
-        envelope: dict[str, Any],
-        known: set[str],
-        tools_enabled: bool,
-    ) -> AsyncIterator[Dict[str, Any]]:
+        ``tools=[]`` is the whole point: the model gets NONE of Claude
+        Code's built-ins, so it cannot act — it can only write. Our tool
+        catalogue rides in the system prompt as ``<tool_call>`` text,
+        comes back as text, and Stage 10 executes it under this
+        pipeline's jail, permissions and hooks.
+        """
+        from claude_agent_sdk import ClaudeAgentOptions, query
+        from claude_agent_sdk.types import (
+            AssistantMessage,
+            ResultMessage,
+            StreamEvent,
+            SystemMessage,
+            TextBlock,
+            ThinkingBlock,
+            ToolUseBlock,
+        )
+
         started = time.monotonic()
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                *command_for(self._binary, argv),
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=cwd,
-                env=env,
-                limit=_stream_limit(),
-            )
-        except FileNotFoundError as exc:
-            raise APIError(
-                f"claude CLI not found ({self._binary}) — install Claude Code and retry.",
-                category=ErrorCategory.CLI_NOT_FOUND,
-                cause=exc,
-            ) from exc
-        except OSError as exc:  # E2BIG, EACCES, …
-            raise APIError(
-                f"claude failed to start: {exc}", category=ErrorCategory.CLI_NOT_FOUND, cause=exc
-            ) from exc
+        tools_enabled = bool(request.tools)
+        splitter = tp.StreamSplitter(known=tp.tool_names(request.tools) or None)
 
-        assert proc.stdin and proc.stdout and proc.stderr
-        stderr_chunks: list[bytes] = []
+        envelope = {
+            "type": "user",
+            "message": {"role": "user", "content": tp.render_transcript(request.messages)},
+            "parent_tool_use_id": None,
+            "session_id": "default",
+        }
 
-        async def drain_stderr() -> None:
-            assert proc.stderr
-            while True:
-                data = await proc.stderr.read(4096)
-                if not data:
-                    return
-                if sum(len(c) for c in stderr_chunks) < 64_000:
-                    stderr_chunks.append(data)
+        async def _prompt() -> AsyncIterator[dict[str, Any]]:
+            yield envelope
 
-        stderr_task = asyncio.create_task(drain_stderr())
-        try:
-            proc.stdin.write((json.dumps(envelope, ensure_ascii=False) + "\n").encode("utf-8"))
-            await proc.stdin.drain()
-        except (BrokenPipeError, ConnectionResetError):
-            pass
-        with contextlib.suppress(Exception):
-            proc.stdin.close()
+        env = self._env()
+        # The SDK's own request timeout, so a stalled vendor call ends
+        # inside the CLI rather than leaving us to kill a process group.
+        env.setdefault("API_TIMEOUT_MS", str(int(self._timeout_s * 1000)))
 
-        splitter = tp.StreamSplitter(known=known or None)
+        stderr_lines: list[str] = []
+        options = ClaudeAgentOptions(
+            # No built-in tools at all — the supported form of the
+            # `--tools ""` flag this client used to hand-build.
+            tools=[],
+            max_turns=1,
+            model=str(request.model) if request.model else None,
+            system_prompt=tp.render_system_prompt(request.system, request.tools)
+            or "You are a helpful assistant.",
+            # Nothing but what we pass: no project .mcp.json, no user or
+            # plugin servers.
+            strict_mcp_config=True,
+            mcp_servers={},
+            # …and no settings.json either. The hand-spawned CLI had no
+            # equivalent, so the HOST's ~/.claude/settings.json was being
+            # read into every agent turn.
+            setting_sources=[],
+            permission_mode="dontAsk",
+            include_partial_messages=True,
+            cwd=self._cwd(),
+            env=env,
+            cli_path=self._binary,
+            max_buffer_size=_stream_limit(),
+            effort=effort_for(request, self._effort),
+            stderr=stderr_lines.append,
+        )
+
         streamed_text = False
         thinking_parts: list[str] = []
         final_text: Optional[str] = None
-        result: Optional[dict[str, Any]] = None
-        error_text: Optional[str] = None
-        stopped_early = False
         native_tool: Optional[str] = None
-        model_used = ""
+        model_used = str(request.model or "")
+        result: Optional[ResultMessage] = None
+        error_text: Optional[str] = None
 
         try:
-            while True:
-                remaining = self._timeout_s - (time.monotonic() - started)
-                if remaining <= 0:
-                    raise APIError(
-                        f"claude timed out after {self._timeout_s:.0f}s",
-                        category=ErrorCategory.CLI_TIMEOUT,
-                    )
-                try:
-                    line = await asyncio.wait_for(proc.stdout.readline(), timeout=remaining)
-                except asyncio.TimeoutError as exc:
-                    raise APIError(
-                        f"claude timed out after {self._timeout_s:.0f}s",
-                        category=ErrorCategory.CLI_TIMEOUT,
-                    ) from exc
-                except ValueError as exc:
-                    # asyncio raises ValueError("Separator is found, but chunk
-                    # is longer than limit") when ONE line exceeds the reader
-                    # limit — and discards the buffered bytes, so that line is
-                    # unrecoverable. With the 32 MiB default this is near
-                    # impossible; if it happens anyway, losing ONE event beats
-                    # killing the turn. Log loudly and keep reading.
-                    logger.warning(
-                        "claude stdout line exceeded the %d-byte limit — "
-                        "skipping one event and continuing (%s)",
-                        _stream_limit(),
-                        exc,
-                    )
-                    continue
-                if not line:
-                    break
-                try:
-                    msg = json.loads(line.decode("utf-8", "replace"))
-                except json.JSONDecodeError:
-                    continue
-                if not isinstance(msg, dict):
-                    continue
-                kind = msg.get("type")
-
-                if kind == "stream_event":
-                    event = msg.get("event") or {}
-                    if event.get("type") == "content_block_delta":
+            transport = self._transport_factory() if self._transport_factory else None
+            async for message in query(prompt=_prompt(), options=options, transport=transport):
+                if isinstance(message, StreamEvent):
+                    event = message.event or {}
+                    etype = event.get("type")
+                    if etype == "content_block_delta":
                         delta = event.get("delta") or {}
                         if delta.get("type") == "text_delta" and delta.get("text"):
                             streamed_text = True
@@ -530,79 +380,56 @@ class ClaudeCodeTokenClient(BaseClient):
                             if visible:
                                 yield {"type": "text_delta", "text": visible}
                             if splitter.finished:
-                                stopped_early = True
                                 break
                         elif delta.get("type") == "thinking_delta" and delta.get("thinking"):
                             thinking_parts.append(delta["thinking"])
                             yield {"type": "thinking_delta", "text": delta["thinking"]}
-                    elif event.get("type") == "content_block_start" and (
+                    elif etype == "content_block_start" and (
                         (event.get("content_block") or {}).get("type")
                         in ("tool_use", "server_tool_use")
                     ):
-                        # a native tool reached the model despite --tools "":
-                        # stop before the CLI can execute anything itself
+                        # A native tool reached the model despite tools=[]:
+                        # stop before the CLI can execute anything itself.
                         native_tool = str((event.get("content_block") or {}).get("name") or "?")
-                        stopped_early = True
                         break
-                    elif event.get("type") == "message_start":
+                    elif etype == "message_start":
                         model_used = str(((event.get("message") or {}).get("model")) or model_used)
-                elif kind == "assistant":
-                    content = ((msg.get("message") or {}).get("content")) or []
-                    text = "".join(
-                        str(b.get("text") or "")
-                        for b in content
-                        if isinstance(b, dict) and b.get("type") == "text"
-                    )
-                    if text:
-                        final_text = (final_text or "") + text
-                    model_used = str((msg.get("message") or {}).get("model") or model_used)
-                elif kind == "result":
-                    result = msg
-                    if msg.get("is_error") or (
-                        msg.get("subtype") not in (None, "success")
-                        and msg.get("subtype") != "error_max_turns"
+
+                elif isinstance(message, AssistantMessage):
+                    for block in message.content:
+                        if isinstance(block, TextBlock) and block.text:
+                            final_text = (final_text or "") + block.text
+                        elif isinstance(block, ThinkingBlock) and block.thinking:
+                            if not thinking_parts:
+                                thinking_parts.append(block.thinking)
+                        elif isinstance(block, ToolUseBlock):
+                            native_tool = block.name
+                    model_used = str(message.model or model_used)
+
+                elif isinstance(message, SystemMessage):
+                    if message.subtype == "init":
+                        data = message.data or {}
+                        model_used = str(data.get("model") or model_used)
+                        exposed = [t for t in (data.get("tools") or []) if isinstance(t, str)]
+                        if exposed:
+                            # tools=[] did not hold — say so rather than let
+                            # the model act through a tool we never granted.
+                            native_tool = exposed[0]
+                            break
+
+                elif isinstance(message, ResultMessage):
+                    result = message
+                    if message.is_error or (
+                        message.subtype not in (None, "success")
+                        and message.subtype != "error_max_turns"
                     ):
                         error_text = str(
-                            msg.get("result") or msg.get("error") or msg.get("subtype")
+                            message.result or message.api_error_status or message.subtype
                         )
-                    break
-                elif kind == "rate_limit_event":
-                    self._notify_host(
-                        {"kind": "rate_limit", "info": msg.get("rate_limit_info") or msg}
-                    )
-                elif kind == "system" and msg.get("subtype") == "init":
-                    model_used = str(msg.get("model") or model_used)
-                    exposed = [t for t in (msg.get("tools") or []) if isinstance(t, str)]
-                    if exposed:
-                        self._notify_host(
-                            {
-                                "kind": "notice",
-                                "level": "warn",
-                                "message": f"Claude Code exposed {len(exposed)} built-in tool(s) "
-                                f"({', '.join(exposed[:4])}…) — the call aborts if one is used.",
-                            }
-                        )
-                    self._notify_host(
-                        {
-                            "kind": "init",
-                            "model": msg.get("model"),
-                            "apiKeySource": msg.get("apiKeySource"),
-                        }
-                    )
-                elif kind == "auth_status" and msg.get("error"):
-                    error_text = str(msg.get("error"))
-        finally:
-            if proc.returncode is None and not (stopped_early or result is not None):
-                with contextlib.suppress(Exception):
-                    await asyncio.wait_for(proc.wait(), timeout=5)
-            if proc.returncode is None:
-                await kill_tree(proc)
-            with contextlib.suppress(Exception):
-                await asyncio.wait_for(stderr_task, timeout=2)
-            if not stderr_task.done():
-                stderr_task.cancel()
-
-        stderr = b"".join(stderr_chunks).decode("utf-8", "replace").strip()
+                    if message.subtype == "error_max_turns":
+                        self._notify_host({"kind": "rate_limit", "info": {"subtype": "max_turns"}})
+        except Exception as exc:  # noqa: BLE001 — classified below
+            raise self._as_api_error(exc, stderr_lines) from exc
 
         if native_tool is not None:
             raise APIError(
@@ -610,12 +437,9 @@ class ClaudeCodeTokenClient(BaseClient):
                 "is broken. Update Claude Code, or run this account in CLI-agent mode.",
                 category=ErrorCategory.BAD_REQUEST,
             )
-        rejected = _UNKNOWN_OPTION.search(stderr) or _UNKNOWN_OPTION.search(error_text or "")
-        if rejected and result is None and not streamed_text:
-            raise _FlagRejected(rejected.group(1))
 
-        if error_text is None and result is None and not stopped_early:
-            error_text = stderr or f"claude exited with code {proc.returncode} without a result"
+        if error_text is None and result is None and not streamed_text:
+            error_text = "\n".join(stderr_lines).strip() or "claude returned no result"
 
         if error_text is not None:
             category = classify_text(error_text)
@@ -631,7 +455,7 @@ class ClaudeCodeTokenClient(BaseClient):
             raise APIError(f"Claude Code{label}: {error_text[:600]}", category=category)
 
         # the partial stream is the source of truth when it existed; the
-        # assistant envelope covers CLIs without --include-partial-messages
+        # assistant envelope covers a CLI without partial messages
         if not streamed_text and final_text:
             if tools_enabled:
                 visible = splitter.feed(final_text)
@@ -645,10 +469,6 @@ class ClaudeCodeTokenClient(BaseClient):
             yield {"type": "text_delta", "text": tail}
 
         blocks: list[ContentBlock] = []
-        if thinking_parts:
-            # no signature exists for CLI thinking, so it is surfaced to the
-            # UI above but never replayed into history
-            pass
         text = splitter.text
         if text:
             blocks.append(ContentBlock(type="text", text=text, raw={"type": "text", "text": text}))
@@ -670,13 +490,13 @@ class ClaudeCodeTokenClient(BaseClient):
         if not blocks:
             blocks.append(ContentBlock(type="text", text="", raw={"type": "text", "text": ""}))
 
-        usage_raw = (result or {}).get("usage") or {}
+        usage_raw = (result.usage if result is not None else None) or {}
         usage = TokenUsage(
             input_tokens=int(usage_raw.get("input_tokens") or 0),
             output_tokens=int(usage_raw.get("output_tokens") or 0),
             cache_creation_input_tokens=int(usage_raw.get("cache_creation_input_tokens") or 0),
             cache_read_input_tokens=int(usage_raw.get("cache_read_input_tokens") or 0),
-            cost_usd=(result or {}).get("total_cost_usd"),
+            cost_usd=(result.total_cost_usd if result is not None else None),
             duration_ms=int((time.monotonic() - started) * 1000),
         )
         if splitter.malformed and not splitter.calls:
@@ -694,7 +514,44 @@ class ClaudeCodeTokenClient(BaseClient):
                 stop_reason="tool_use" if splitter.calls else "end_turn",
                 usage=usage,
                 model=model_used,
-                message_id=str((result or {}).get("session_id") or ""),
+                message_id=str((result.session_id if result is not None else "") or ""),
                 raw={"provider": self.provider, "account": self._account_id},
             ),
         }
+
+    def _as_api_error(self, exc: BaseException, stderr_lines: list[str]) -> APIError:
+        """Map an SDK failure onto this library's error vocabulary.
+
+        The SDK raises typed errors, which is the point of using it: a
+        missing binary is a different problem from a dead login, and the
+        router fails over from one of those and not the other.
+        """
+        from claude_agent_sdk import (
+            CLIConnectionError,
+            CLIJSONDecodeError,
+            CLINotFoundError,
+            ProcessError,
+        )
+
+        if isinstance(exc, APIError):
+            return exc
+        detail = str(exc) or exc.__class__.__name__
+        stderr = "\n".join(stderr_lines).strip()
+        label = f" [{self._account_label}]" if self._account_label else ""
+        if isinstance(exc, CLINotFoundError):
+            return APIError(
+                f"Claude Code{label}: the `claude` binary was not found ({self._binary}). "
+                "Install Claude Code or set the binary path.",
+                category=ErrorCategory.CLI_NOT_FOUND,
+                cause=exc,
+            )
+        if isinstance(exc, (ProcessError, CLIConnectionError, CLIJSONDecodeError)):
+            text = f"{detail}\n{stderr}".strip() if stderr else detail
+            category = classify_text(text)
+            if category == ErrorCategory.UNKNOWN:
+                category = ErrorCategory.CLI_PROTOCOL_ERROR
+            return APIError(f"Claude Code{label}: {text[:600]}", category=category, cause=exc)
+        category = classify_text(detail)
+        if category == ErrorCategory.UNKNOWN:
+            category = ErrorCategory.NETWORK
+        return APIError(f"Claude Code{label}: {detail[:600]}", category=category, cause=exc)

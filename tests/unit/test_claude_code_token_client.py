@@ -1,34 +1,37 @@
 """Claude Code driven as a token generator, not as a second agent.
 
 The retired ``claude_code_cli`` client handed the whole loop to the CLI: it ran
-its own Read/Write/Bash under its own permission model, and the pipeline sees
+its own Read/Write/Bash under its own permission model, and the pipeline saw
 an announcement of what already happened. That makes Claude Code a different
 agent rather than a model behind this harness, and it cannot share a
 conversation with any other provider.
 
 This client inverts it — tools off, one generation, text out — so the same
 conversation can move between a Claude login, a second Claude login and a
-ChatGPT plan without losing its tools, memory or permission policy.
+ChatGPT plan without losing its tools, memory or permission policy. Since
+2.69.0 it does that through the official Claude Agent SDK rather than
+hand-built CLI flags.
 
 The invariants that keep it honest:
 
- · The CLI is invoked with its tool palette empty and MCP locked out. If a
-   native tool ever reaches the model anyway, the call aborts rather than
-   letting the CLI act on the user's machine unpoliced.
+ · The model is given NO built-in tools and no MCP. If a native tool ever
+   reaches it anyway, the call aborts rather than letting the CLI act on the
+   user's machine unpoliced.
  · Auth comes from the account, never from the ambient environment: an
    exported ANTHROPIC_API_KEY must not be able to choose which account pays.
- · A CLI too old for an optional flag is retried without it, not failed.
+ · Host settings are not read. A developer's own ~/.claude/settings.json is
+   not part of an agent's turn.
 
-The fake `claude` here is a Python script that speaks the same stream-json
-the real binary does.
+These tests script the SDK's ``Transport`` rather than a fake `claude`
+binary. That is deliberate: what this module owns is the mapping from SDK
+messages to canonical chunks, and a fake binary would test the CLI's wire
+protocol instead — the very thing we adopted the SDK to stop owning.
 """
 
 from __future__ import annotations
 
 import json
-import stat
-from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, AsyncIterator, Dict, List
 
 import pytest
 
@@ -37,49 +40,133 @@ from geny_executor.core.errors import APIError, ErrorCategory
 from geny_executor.llm_client.claude_code_tokens import ClaudeCodeTokenClient, child_env
 
 
-def _fake_claude(tmp_path: Path, body: str, *, name: str = "claude") -> str:
-    """A scripted `claude`: records argv + env, then emits stream-json."""
-    script = tmp_path / name
-    script.write_text(
-        "#!/usr/bin/env python3\n"
-        "import json, os, sys\n"
-        f"RECORD = {str(tmp_path / 'invocation.json')!r}\n"
-        "sys.stdin.read()\n"
-        "with open(RECORD, 'w') as fh:\n"
-        "    json.dump({'argv': sys.argv[1:], 'env': dict(os.environ), 'cwd': os.getcwd()}, fh)\n"
-        "def emit(obj):\n"
-        "    print(json.dumps(obj), flush=True)\n"
-        f"{body}\n",
-        encoding="utf-8",
-    )
-    script.chmod(script.stat().st_mode | stat.S_IEXEC)
-    return str(script)
+class ScriptedTransport:
+    """An SDK transport that replays a fixed list of CLI messages.
+
+    Implements just enough of the control protocol for ``Query.initialize``
+    to complete, then yields the scripted messages.
+    """
+
+    def __init__(self, messages: List[Dict[str, Any]]) -> None:
+        self._scripted = messages
+        self._pending: List[Dict[str, Any]] = []
+        self.written: List[Dict[str, Any]] = []
+        self._ready = False
+
+    async def connect(self) -> None:
+        self._ready = True
+
+    async def write(self, data: str) -> None:
+        for line in data.splitlines():
+            if not line.strip():
+                continue
+            msg = json.loads(line)
+            self.written.append(msg)
+            if msg.get("type") == "control_request":
+                self._pending.append(
+                    {
+                        "type": "control_response",
+                        "response": {
+                            "subtype": "success",
+                            "request_id": msg.get("request_id"),
+                            "response": {"commands": [], "output_style": "default"},
+                        },
+                    }
+                )
+
+    async def read_messages(self) -> AsyncIterator[Dict[str, Any]]:
+        # answer the handshake first, then play the script
+        while self._pending:
+            yield self._pending.pop(0)
+        for msg in self._scripted:
+            yield msg
+
+    def is_ready(self) -> bool:
+        return self._ready
+
+    async def end_input(self) -> None:
+        return None
+
+    async def close(self) -> None:
+        self._ready = False
 
 
-_SAYS_HELLO = """
-emit({'type': 'system', 'subtype': 'init', 'model': 'claude-sonnet-4-5', 'tools': []})
-emit({'type': 'stream_event', 'event': {'type': 'content_block_delta',
-      'delta': {'type': 'text_delta', 'text': 'Hello.'}}})
-emit({'type': 'result', 'subtype': 'success', 'is_error': False, 'result': 'Hello.',
-      'usage': {'input_tokens': 10, 'output_tokens': 2}, 'total_cost_usd': 0.001})
-"""
+def _init(tools: List[str] | None = None) -> Dict[str, Any]:
+    return {
+        "type": "system",
+        "subtype": "init",
+        "model": "claude-sonnet-4-5",
+        "tools": tools or [],
+        "apiKeySource": "none",
+        "session_id": "s1",
+    }
 
-_CALLS_A_TOOL = """
-call = '<tool_call>\\n{"name": "Read", "arguments": {"file_path": "/a.txt"}}\\n</tool_call>'
-emit({'type': 'stream_event', 'event': {'type': 'content_block_delta',
-      'delta': {'type': 'text_delta', 'text': 'Reading it. '}}})
-emit({'type': 'stream_event', 'event': {'type': 'content_block_delta',
-      'delta': {'type': 'text_delta', 'text': call}}})
-emit({'type': 'result', 'subtype': 'success', 'is_error': False, 'result': 'x', 'usage': {}})
-"""
 
-_USES_ITS_OWN_TOOL = """
-emit({'type': 'stream_event', 'event': {'type': 'content_block_start',
-      'content_block': {'type': 'tool_use', 'name': 'Bash'}}})
-emit({'type': 'result', 'subtype': 'success', 'is_error': False, 'result': '', 'usage': {}})
-"""
+def _delta(text: str) -> Dict[str, Any]:
+    return {
+        "type": "stream_event",
+        "uuid": "u1",
+        "session_id": "s1",
+        "event": {
+            "type": "content_block_delta",
+            "delta": {"type": "text_delta", "text": text},
+        },
+    }
+
+
+def _result(**over: Any) -> Dict[str, Any]:
+    base = {
+        "type": "result",
+        "subtype": "success",
+        "is_error": False,
+        "duration_ms": 5,
+        "duration_api_ms": 4,
+        "num_turns": 1,
+        "session_id": "s1",
+        "total_cost_usd": 0.001,
+        "usage": {"input_tokens": 10, "output_tokens": 2},
+        "result": "done",
+    }
+    base.update(over)
+    return base
+
+
+_SAYS_HELLO = [_init(), _delta("Hello."), _result()]
+
+_CALLS_A_TOOL = [
+    _init(),
+    _delta("Reading it. "),
+    _delta('<tool_call>\n{"name": "Read", "arguments": {"file_path": "/a.txt"}}\n</tool_call>'),
+    _result(),
+]
+
+_USES_ITS_OWN_TOOL = [
+    _init(),
+    {
+        "type": "stream_event",
+        "uuid": "u1",
+        "session_id": "s1",
+        "event": {
+            "type": "content_block_start",
+            "content_block": {"type": "tool_use", "name": "Bash"},
+        },
+    },
+    _result(),
+]
 
 _READ_TOOL = {"name": "Read", "description": "read a file", "input_schema": {"type": "object"}}
+
+
+def _client(messages: List[Dict[str, Any]], **kwargs: Any) -> ClaudeCodeTokenClient:
+    holder: Dict[str, Any] = {}
+
+    def factory() -> ScriptedTransport:
+        holder["transport"] = ScriptedTransport(messages)
+        return holder["transport"]
+
+    client = ClaudeCodeTokenClient(transport_factory=factory, **kwargs)
+    client._probe = holder  # type: ignore[attr-defined]
+    return client
 
 
 async def _run(client: ClaudeCodeTokenClient, **kwargs: Any) -> List[Dict[str, Any]]:
@@ -93,157 +180,181 @@ async def _run(client: ClaudeCodeTokenClient, **kwargs: Any) -> List[Dict[str, A
     return chunks
 
 
-def _invocation(tmp_path: Path) -> Dict[str, Any]:
-    return json.loads((tmp_path / "invocation.json").read_text(encoding="utf-8"))
-
-
 class TestTokenOnly:
     @pytest.mark.asyncio
-    async def test_the_cli_is_invoked_with_no_tools_of_its_own(self, tmp_path: Path) -> None:
-        binary = _fake_claude(tmp_path, _SAYS_HELLO)
-        client = ClaudeCodeTokenClient(binary_path=binary, scratch_dir=str(tmp_path / "scratch"))
-        await _run(client, tools=[_READ_TOOL])
-        argv = _invocation(tmp_path)["argv"]
-        assert argv[argv.index("--tools") + 1] == ""
-        assert argv[argv.index("--max-turns") + 1] == "1"
-        assert "--strict-mcp-config" in argv
-        assert argv[argv.index("--mcp-config") + 1] == '{"mcpServers":{}}'
+    async def test_the_model_is_given_no_tools_of_its_own(self) -> None:
+        """The reason this client exists. ``tools=[]`` is the supported form
+        of the old ``--tools ""`` flag; ``strict_mcp_config`` keeps project
+        and user MCP servers out; ``setting_sources=[]`` keeps the host's
+        settings.json out."""
+        from claude_agent_sdk import ClaudeAgentOptions
+
+        seen: Dict[str, Any] = {}
+        real = ClaudeAgentOptions.__init__
+
+        def spy(self: Any, *a: Any, **kw: Any) -> None:
+            seen.update(kw)
+            real(self, *a, **kw)
+
+        ClaudeAgentOptions.__init__ = spy  # type: ignore[method-assign]
+        try:
+            await _run(_client(_SAYS_HELLO))
+        finally:
+            ClaudeAgentOptions.__init__ = real  # type: ignore[method-assign]
+
+        assert seen["tools"] == [], "the model was offered built-in tools"
+        assert seen["max_turns"] == 1, "more than one turn is an agent loop"
+        assert seen["strict_mcp_config"] is True
+        assert seen["mcp_servers"] == {}
+        assert seen["setting_sources"] == [], "host settings.json would leak in"
 
     @pytest.mark.asyncio
-    async def test_text_streams_through(self, tmp_path: Path) -> None:
-        client = ClaudeCodeTokenClient(binary_path=_fake_claude(tmp_path, _SAYS_HELLO),
-                                       scratch_dir=str(tmp_path / "scratch"))
-        chunks = await _run(client)
-        assert "".join(c["text"] for c in chunks if c["type"] == "text_delta") == "Hello."
-        usage = chunks[-1]["response"].usage
-        assert (usage.input_tokens, usage.output_tokens) == (10, 2)
+    async def test_text_streams_through(self) -> None:
+        chunks = await _run(_client(_SAYS_HELLO))
+        assert {"type": "text_delta", "text": "Hello."} in chunks
+        final = chunks[-1]["response"]
+        assert final.stop_reason == "end_turn"
+        assert final.usage.input_tokens == 10
+        assert final.usage.cost_usd == 0.001
 
     @pytest.mark.asyncio
-    async def test_a_written_tool_call_becomes_a_canonical_tool_use(self, tmp_path: Path) -> None:
-        client = ClaudeCodeTokenClient(binary_path=_fake_claude(tmp_path, _CALLS_A_TOOL),
-                                       scratch_dir=str(tmp_path / "scratch"))
-        chunks = await _run(client, tools=[_READ_TOOL])
-        response = chunks[-1]["response"]
-        assert response.stop_reason == "tool_use"
-        use = [b for b in response.content if b.type == "tool_use"][0]
-        assert (use.tool_name, use.tool_input) == ("Read", {"file_path": "/a.txt"})
-        # the prose before the call is the user's, the call itself is not
-        visible = "".join(c["text"] for c in chunks if c["type"] == "text_delta")
-        assert visible.strip() == "Reading it."
+    async def test_a_written_tool_call_becomes_a_canonical_tool_use(self) -> None:
+        """The whole architecture in one assertion: the model WRITES a call,
+        and this harness turns it into the same tool_use block every other
+        provider produces — so Stage 10 dispatches it identically."""
+        chunks = await _run(_client(_CALLS_A_TOOL), tools=[_READ_TOOL])
+        final = chunks[-1]["response"]
+        assert final.stop_reason == "tool_use"
+        calls = [b for b in final.content if b.type == "tool_use"]
+        assert [(c.tool_name, c.tool_input) for c in calls] == [
+            ("Read", {"file_path": "/a.txt"})
+        ]
+        assert "Reading it." in "".join(
+            c.get("text", "") for c in chunks if c.get("type") == "text_delta"
+        )
 
     @pytest.mark.asyncio
-    async def test_the_tool_catalogue_goes_in_the_system_prompt_file(self, tmp_path: Path) -> None:
-        binary = _fake_claude(tmp_path, _SAYS_HELLO)
-        client = ClaudeCodeTokenClient(binary_path=binary, scratch_dir=str(tmp_path / "scratch"))
-        await _run(client, system="You are Geny.", tools=[_READ_TOOL])
-        argv = _invocation(tmp_path)["argv"]
-        assert "--system-prompt-file" in argv
-        # the file is deleted after the call; the CLI read it while it existed
-        assert argv[argv.index("--system-prompt-file") + 1].endswith(".md")
+    async def test_the_tool_catalogue_goes_in_the_system_prompt(self) -> None:
+        from claude_agent_sdk import ClaudeAgentOptions
+
+        seen: Dict[str, Any] = {}
+        real = ClaudeAgentOptions.__init__
+
+        def spy(self: Any, *a: Any, **kw: Any) -> None:
+            seen.update(kw)
+            real(self, *a, **kw)
+
+        ClaudeAgentOptions.__init__ = spy  # type: ignore[method-assign]
+        try:
+            await _run(_client(_SAYS_HELLO), tools=[_READ_TOOL])
+        finally:
+            ClaudeAgentOptions.__init__ = real  # type: ignore[method-assign]
+        assert "Read" in seen["system_prompt"]
+        assert "tool_call" in seen["system_prompt"]
 
     @pytest.mark.asyncio
-    async def test_a_native_tool_reaching_the_model_aborts_the_call(self, tmp_path: Path) -> None:
-        client = ClaudeCodeTokenClient(binary_path=_fake_claude(tmp_path, _USES_ITS_OWN_TOOL),
-                                       scratch_dir=str(tmp_path / "scratch"))
+    async def test_a_native_tool_reaching_the_model_aborts_the_call(self) -> None:
         with pytest.raises(APIError) as caught:
-            await _run(client, tools=[_READ_TOOL])
-        assert "Bash" in str(caught.value)
+            await _run(_client(_USES_ITS_OWN_TOOL))
+        assert "its own tool" in str(caught.value)
+        assert caught.value.category == ErrorCategory.BAD_REQUEST
+
+    @pytest.mark.asyncio
+    async def test_tools_advertised_at_init_abort_the_call(self) -> None:
+        """If ``tools=[]`` ever stops holding, say so — do not let the model
+        act through a tool this pipeline never granted."""
+        with pytest.raises(APIError) as caught:
+            await _run(_client([_init(tools=["Bash"]), _delta("hi"), _result()]))
+        assert "its own tool" in str(caught.value)
 
 
 class TestAccountIsolation:
     def test_a_login_account_gets_its_own_config_dir(self) -> None:
-        env = child_env(auth_method="login", config_dir="/accounts/a/config",
-                        oauth_token=None, api_key=None,
-                        base={"ANTHROPIC_API_KEY": "leaked", "PATH": "/usr/bin"})
+        env = child_env(
+            auth_method="login",
+            config_dir="/accounts/a/config",
+            oauth_token=None,
+            api_key=None,
+            base={"PATH": "/usr/bin"},
+        )
         assert env["CLAUDE_CONFIG_DIR"] == "/accounts/a/config"
-        assert env["CLAUDE_SECURESTORAGE_CONFIG_DIR"] == "/accounts/a/config"
-        assert "ANTHROPIC_API_KEY" not in env
 
     def test_an_exported_key_cannot_choose_the_account(self) -> None:
-        env = child_env(auth_method="token", config_dir=None, oauth_token="oauth-token",
-                        api_key=None, base={"ANTHROPIC_API_KEY": "someone elses key"})
-        assert env["CLAUDE_CODE_OAUTH_TOKEN"] == "oauth-token"
+        env = child_env(
+            auth_method="token",
+            config_dir=None,
+            oauth_token="oauth-token",
+            api_key=None,
+            base={"ANTHROPIC_API_KEY": "sk-someone-elses", "PATH": "/usr/bin"},
+        )
         assert "ANTHROPIC_API_KEY" not in env
+        assert env["CLAUDE_CODE_OAUTH_TOKEN"] == "oauth-token"
 
     def test_system_auth_keeps_the_user_s_own_environment(self) -> None:
-        """'system' means exactly what the user's own `claude` does — only
-        the stamps a parent Claude Code session leaves behind are dropped."""
-        env = child_env(auth_method="system", config_dir=None, oauth_token=None, api_key=None,
-                        base={"ANTHROPIC_API_KEY": "mine", "CLAUDECODE": "1",
-                              "CLAUDE_CODE_ENTRYPOINT": "cli"})
-        assert env["ANTHROPIC_API_KEY"] == "mine"
-        assert "CLAUDECODE" not in env and "CLAUDE_CODE_ENTRYPOINT" not in env
+        env = child_env(
+            auth_method="system",
+            config_dir=None,
+            oauth_token=None,
+            api_key=None,
+            base={"ANTHROPIC_API_KEY": "sk-mine", "PATH": "/usr/bin"},
+        )
+        assert env["ANTHROPIC_API_KEY"] == "sk-mine"
 
     def test_the_autoupdater_is_off(self) -> None:
-        env = child_env(auth_method="system", config_dir=None, oauth_token=None, api_key=None, base={})
+        env = child_env(
+            auth_method="system", config_dir=None, oauth_token=None, api_key=None, base={}
+        )
         assert env["DISABLE_AUTOUPDATER"] == "1"
 
     @pytest.mark.asyncio
-    async def test_the_spawn_runs_in_the_account_scratch_not_the_host_cwd(self, tmp_path: Path) -> None:
-        """Otherwise the CLI discovers whatever CLAUDE.md / .claude settings
-        happen to sit next to the server process."""
+    async def test_the_call_runs_in_the_account_scratch_not_the_host_cwd(self, tmp_path) -> None:
+        """An empty directory: no project CLAUDE.md, no .claude/ settings and
+        no .mcp.json get discovered from wherever the sidecar happens to run."""
+        from claude_agent_sdk import ClaudeAgentOptions
+
         scratch = tmp_path / "scratch"
-        client = ClaudeCodeTokenClient(binary_path=_fake_claude(tmp_path, _SAYS_HELLO),
-                                       scratch_dir=str(scratch))
-        await _run(client)
-        assert Path(_invocation(tmp_path)["cwd"]).resolve() == scratch.resolve()
+        seen: Dict[str, Any] = {}
+        real = ClaudeAgentOptions.__init__
 
+        def spy(self: Any, *a: Any, **kw: Any) -> None:
+            seen.update(kw)
+            real(self, *a, **kw)
 
-class TestOlderBinaries:
-    @pytest.mark.asyncio
-    async def test_an_unknown_flag_is_dropped_and_the_call_retried(self, tmp_path: Path) -> None:
-        body = """
-import os
-STATE = os.path.join(os.path.dirname(RECORD), 'tries')
-tries = 0
-if os.path.exists(STATE):
-    tries = int(open(STATE).read())
-open(STATE, 'w').write(str(tries + 1))
-if '--no-chrome' in sys.argv and tries == 0:
-    sys.stderr.write("error: unknown option '--no-chrome'\\n")
-    sys.exit(1)
-emit({'type': 'stream_event', 'event': {'type': 'content_block_delta',
-      'delta': {'type': 'text_delta', 'text': 'ok'}}})
-emit({'type': 'result', 'subtype': 'success', 'is_error': False, 'result': 'ok', 'usage': {}})
-"""
-        client = ClaudeCodeTokenClient(binary_path=_fake_claude(tmp_path, body),
-                                       scratch_dir=str(tmp_path / "scratch"))
-        chunks = await _run(client)
-        assert "".join(c["text"] for c in chunks if c["type"] == "text_delta") == "ok"
-        assert "--no-chrome" not in _invocation(tmp_path)["argv"]
+        ClaudeAgentOptions.__init__ = spy  # type: ignore[method-assign]
+        try:
+            await _run(_client(_SAYS_HELLO, scratch_dir=str(scratch)))
+        finally:
+            ClaudeAgentOptions.__init__ = real  # type: ignore[method-assign]
+        assert seen["cwd"] == str(scratch)
+        assert list(scratch.iterdir()) == []
 
 
 class TestFailures:
     @pytest.mark.asyncio
-    async def test_a_missing_binary_is_cli_not_found(self, tmp_path: Path) -> None:
-        client = ClaudeCodeTokenClient(binary_path=str(tmp_path / "nope"),
-                                       scratch_dir=str(tmp_path / "scratch"))
+    async def test_a_usage_limit_is_rate_limited_so_the_router_moves_on(self) -> None:
+        """The category is load-bearing: the router fails over from a rate
+        limit and not from a bad request."""
+        script = [_init(), _result(is_error=True, subtype="error",
+                                   result="Claude usage limit reached.")]
+        with pytest.raises(APIError) as caught:
+            await _run(_client(script))
+        assert caught.value.category == ErrorCategory.RATE_LIMITED
+
+    @pytest.mark.asyncio
+    async def test_a_logged_out_account_is_auth(self) -> None:
+        script = [_init(), _result(is_error=True, subtype="error",
+                                   result="Not logged in. Please run /login.")]
+        with pytest.raises(APIError) as caught:
+            await _run(_client(script))
+        assert caught.value.category in (
+            ErrorCategory.AUTH,
+            ErrorCategory.CLI_AUTH_FAILED,
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_missing_binary_is_cli_not_found(self) -> None:
+        """No transport injected → the SDK really looks for the binary."""
+        client = ClaudeCodeTokenClient(binary_path="/nonexistent/claude")
         with pytest.raises(APIError) as caught:
             await _run(client)
         assert caught.value.category == ErrorCategory.CLI_NOT_FOUND
-
-    @pytest.mark.asyncio
-    async def test_a_usage_limit_is_rate_limited_so_the_router_moves_on(self, tmp_path: Path) -> None:
-        body = """
-emit({'type': 'result', 'subtype': 'error', 'is_error': True,
-      'result': 'Claude usage limit reached. Your limit will reset at 5pm.', 'usage': {}})
-"""
-        client = ClaudeCodeTokenClient(binary_path=_fake_claude(tmp_path, body),
-                                       scratch_dir=str(tmp_path / "scratch"),
-                                       account_label="personal")
-        with pytest.raises(APIError) as caught:
-            await _run(client)
-        assert caught.value.category == ErrorCategory.RATE_LIMITED
-        assert "personal" in str(caught.value)
-
-    @pytest.mark.asyncio
-    async def test_a_logged_out_account_is_auth(self, tmp_path: Path) -> None:
-        body = """
-emit({'type': 'result', 'subtype': 'error', 'is_error': True,
-      'result': 'Not logged in. Please run /login.', 'usage': {}})
-"""
-        client = ClaudeCodeTokenClient(binary_path=_fake_claude(tmp_path, body),
-                                       scratch_dir=str(tmp_path / "scratch"))
-        with pytest.raises(APIError) as caught:
-            await _run(client)
-        assert caught.value.category == ErrorCategory.AUTH

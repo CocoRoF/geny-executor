@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "geny-executor"
-version = "2.68.1"
+version = "2.69.0"
 description = "Harness-engineered agent pipeline library — one 21-stage architecture, many model accounts behind one conversation"
 readme = "README.md"
 license = "Apache-2.0"
@@ -50,6 +50,12 @@ dependencies = [
     "websockets>=12.0",
     # Skills system loads SKILL.md frontmatter as YAML.
     "pyyaml>=6.0",
+    # The official way to drive Claude Code. ``geny_claude_code`` uses it
+    # to run the binary as a pure token generator (tools=[], max_turns=1),
+    # replacing fourteen hand-built CLI flags and a table of flags learned
+    # at runtime from "unknown option" stderr. It drives the same `claude`
+    # binary, so subscription/OAuth auth is unchanged.
+    "claude-agent-sdk>=0.2.157,<0.3",
 
     # Memory subsystem
     # numpy: vector arithmetic for VectorHandle helpers + summary

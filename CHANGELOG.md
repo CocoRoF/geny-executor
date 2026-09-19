@@ -1,5 +1,62 @@
 # Changelog
 
+## [2.69.0] — 2026-09-19
+
+### Changed — Claude Code is driven through the official Agent SDK
+
+`geny_claude_code` used to hand-build fourteen `claude -p` flags and parse
+the stream-json by hand. That meant owning an interface nobody promised
+us, and the module said so in code: it carried a table of flags it had
+**learned at runtime** a given binary rejects, by regexing "unknown
+option" out of stderr and retrying the call up to eight times.
+
+It now uses `claude-agent-sdk`. Every flag has a supported spelling:
+
+| hand-built flag | SDK option |
+|---|---|
+| `--tools ""` | `tools=[]` |
+| `--max-turns 1` | `max_turns=1` |
+| `--system-prompt-file` | `system_prompt` |
+| `--strict-mcp-config --mcp-config {}` | `strict_mcp_config` / `mcp_servers` |
+| `--include-partial-messages` | `include_partial_messages` |
+| `--effort` | `effort` |
+| `CLAUDE_CONFIG_DIR` env | `env` |
+| *(none)* | `setting_sources=[]` |
+
+The architecture is unchanged, and that is the point: `tools=[]` is the
+supported form of "no built-in tools", so the model still cannot act — it
+writes `<tool_call>` text that Stage 10 executes under this pipeline's
+jail, permissions and hooks. Subscription/OAuth auth is unchanged too,
+because the SDK drives the same `claude` binary; verified against a live
+subscription with `ANTHROPIC_API_KEY` unset (`apiKeySource: "none"`).
+
+Gone with the argv builder: the `_UNSUPPORTED` / `_UNKNOWN_OPTION` /
+`_FlagRejected` retry ladder, the Windows shim, and the hand-rolled
+subprocess reader.
+
+### Fixed — host settings leaked into every agent turn
+
+The hand-spawned CLI had no equivalent of `setting_sources`, so it read
+the host's `~/.claude/settings.json` on every call. A developer's own
+permissions, hooks and status line were part of an agent's turn. Now
+`setting_sources=[]`.
+
+### Fixed — a failing turn now says which kind of failure it was
+
+The SDK raises typed errors, and that distinction is load-bearing: a
+missing binary (`CLINotFoundError` → `CLI_NOT_FOUND`) is not something
+another account can fix, while a protocol failure (`ProcessError` →
+`CLI_PROTOCOL_ERROR`) is. Previously both arrived as parsed stderr text.
+
+### Changed — the tests no longer fake a CLI
+
+`test_claude_code_token_client.py` scripted a fake `claude` binary
+emitting stream-json. What this module owns is the mapping from SDK
+messages to canonical chunks, so the tests now script the SDK's
+`Transport` instead — testing our code rather than the CLI's wire
+protocol, which is the thing we adopted the SDK to stop owning. The
+client takes a `transport_factory` for that.
+
 ## [2.68.1] — 2026-09-19
 
 ### Fixed — the sandbox never reached the tools

@@ -20,7 +20,7 @@ A route is an ordered list of accounts. `geny_router` is the provider a manifest
 | Provider id | Client class | Backend | Notes |
 |---|---|---|---|
 | `geny_router` | `RouterClient` | the accounts in its route | Fails over only **before the first token** and only for failures another account can fix (rate limit, auth, outage, missing CLI). A bad request is the request's fault and reaches the caller unchanged. A failed account cools down process-wide so sibling agents skip it. |
-| `geny_claude_code` | `ClaudeCodeTokenClient` | `claude` CLI, tools off | Claude Code as a **token generator**: `--tools "" --max-turns 1`, MCP locked out, `<tool_call>` text parsed back into canonical `tool_use` blocks that Stage 10 executes. Each account owns a `CLAUDE_CONFIG_DIR`, so any number of logins coexist. |
+| `geny_claude_code` | `ClaudeCodeTokenClient` | `claude` CLI via the Agent SDK, tools off | Claude Code as a **token generator**: `tools=[] max_turns=1`, MCP and host settings locked out, `<tool_call>` text parsed back into canonical `tool_use` blocks that Stage 10 executes. Each account owns a `CLAUDE_CONFIG_DIR`, so any number of logins coexist. |
 | `geny_codex` | `CodexResponsesClient` | `chatgpt.com/backend-api/codex` | A ChatGPT plan over the Responses API. Native `function_call` → `tool_use`. No `codex` binary; tokens live in the host's store and rotate through `notify` (the refresh token is single-use). |
 
 These three read their whole constructor surface from `ProviderCredentials.extras` (`ROUTED_PROVIDERS`) — the route, an account id, a Claude config dir, Codex tokens are host state with no vendor-shaped equivalent, so a host can add an account channel without a library release.
@@ -118,7 +118,9 @@ Function calls map to/from Anthropic-shaped `tool_use` / `tool_result` blocks vi
 Inherits `OpenAIClient`. Set `base_url` to your local vLLM `/v1` endpoint. Most vLLM deployments default to `supports_tools=False`; flip via `configure_capabilities()` if your model handles them.
 
 ### `geny_claude_code`
-The `claude` binary as a pure token generator. `-p --tools "" --strict-mcp-config --mcp-config {} --max-turns 1 --system-prompt-file`: no built-in tools, no MCP, no agent loop. Tool calls come back as `<tool_call>` text (`llm_client/text_tool_protocol.py`), become canonical `tool_use` blocks, and Stage 10 executes them under this pipeline's jail, permissions and hooks. `temperature`, `top_p`, `top_k`, `stop_sequences`, `max_tokens` and `tool_choice` are declared drops — the CLI takes none of them.
+The `claude` binary as a pure token generator, driven through the official **Claude Agent SDK** (`claude-agent-sdk`): `tools=[]` (no built-in tools), `max_turns=1` (one generation, never an agent loop), `strict_mcp_config` + `mcp_servers={}` (no MCP), `setting_sources=[]` (no host `settings.json`). Tool calls come back as `<tool_call>` text (`llm_client/text_tool_protocol.py`), become canonical `tool_use` blocks, and Stage 10 executes them under this pipeline's jail, permissions and hooks. `temperature`, `top_p`, `top_k`, `stop_sequences`, `max_tokens` and `tool_choice` are declared drops — the CLI takes none of them.
+
+Auth is the CLI's own, because the SDK drives the same binary: a Pro/Max login, a setup-token, or a Console key. Each account owns a `CLAUDE_CONFIG_DIR` (passed via the SDK's `env`), so any number of logins coexist without touching the user's own `~/.claude`.
 
 ### `geny_codex`
 A ChatGPT plan over the Responses API — no `codex` binary. Native `function_call` blocks translate to `tool_use`. Tokens live in the host's store; the refresh token is single-use, so a rotation must be persisted through `notify` or the account is locked out.

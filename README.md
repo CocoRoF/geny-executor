@@ -234,7 +234,7 @@ See [`docs/manifest.md`](docs/manifest.md) for the full schema.
 | `google` | Gemini 3.x / 2.5. Streaming, tools, thinking blocks. |
 | `vllm` | Any model on a local vLLM endpoint. OpenAI-compatible. Tools opt-in via `configure_capabilities()`. |
 | `geny_router` | A route of accounts. Decides per call which backend answers, so one conversation can move between a Claude subscription, a second Claude login and a ChatGPT plan without losing its tools, memory or permission policy. Fails over only **before the first token**, and only for failures another account can fix. |
-| `geny_claude_code` | The `claude` binary as a **token generator**: `-p --tools "" --max-turns 1`, MCP locked out, `<tool_call>` text parsed back into canonical `tool_use` blocks that Stage 10 executes. Each account owns a `CLAUDE_CONFIG_DIR`, so any number of logins coexist. |
+| `geny_claude_code` | The `claude` binary as a **token generator**, driven through the official Claude Agent SDK: `tools=[] max_turns=1`, MCP and host settings locked out, `<tool_call>` text parsed back into canonical `tool_use` blocks that Stage 10 executes. Each account owns a `CLAUDE_CONFIG_DIR`, so any number of logins coexist. |
 | `geny_codex` | A ChatGPT plan over the Responses API — no `codex` binary. Native `function_call` → `tool_use`. |
 
 A session picks its provider via `stages[6].config["provider"]` in the manifest. Credentials flow through a single `CredentialBundle` channel — see [`docs/providers.md`](docs/providers.md).
@@ -455,6 +455,7 @@ ruff format src/ tests/
 | Version | Highlights |
 |---|---|
 | **2.68.0** | Removed the `claude_code_cli` provider and every path that let a backend own the agentic loop (CLI runner, stream-json translator, CLI MCP passthrough, `containerize_cli`, `is_subprocess`). A provider may be a model; it may not be an agent. |
+| **2.69.0** | `geny_claude_code` drives Claude Code through the official **Claude Agent SDK** instead of fourteen hand-built CLI flags — including the table of flags it used to learn at runtime from "unknown option" stderr. Same architecture (`tools=[]`, one turn, our harness keeps the loop), supported interface underneath. |
 | **2.1.0** | `ExecutorErrorCode` taxonomy + structured `pipeline.error` / `stage.error` / `api.retry` payloads. `docs/error_codes.md`. |
 | **2.0.6** | Removed `copilot_cli` provider (text-only, can't host tool round-trip). Upstreamed Geny's claude_code_cli compat patches (`--verbose` injection, `--bare` strip, drop auto-`--tools ""`, `tool_use` strip from finalize). |
 | **2.0.5** | `APIRequest.mcp_config` per-request override + auto-emit `--strict-mcp-config`. Foundational support for the host MCP wrap. |
