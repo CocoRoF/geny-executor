@@ -1,5 +1,20 @@
 # Changelog
 
+## [2.70.1] — 2026-09-19
+
+### Fixed — three type errors CI caught that the tests could not
+
+The mypy beachhead covers `core` + `llm_client`, and 2.70.0 shipped past
+it (the release publishes on its own workflow). All three were real:
+
+  · `effort` was handed to the SDK as a bare `str`; its field is a
+    `Literal`. Narrowed through `_effort_literal`, which **drops** an
+    effort the SDK does not know rather than casting past the checker
+    into a request the wire would reject.
+  · `_as_api_error` took `BaseException` while `APIError(cause=)` wants
+    `Exception` — it is only ever called on the `except Exception` path.
+  · `rank` in the router's balancing needed an annotation.
+
 ## [2.70.0] — 2026-09-19
 
 An agent session outlives the model answering it. A route fails over to a

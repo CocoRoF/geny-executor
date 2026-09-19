@@ -46,7 +46,7 @@ import shutil
 import tempfile
 import time
 from pathlib import Path
-from typing import Any, AsyncIterator, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, AsyncIterator, Dict, List, Optional
 
 from geny_executor.core.errors import APIError, ErrorCategory
 from geny_executor.core.state import TokenUsage
@@ -55,6 +55,9 @@ from geny_executor.llm_client.types import APIRequest, APIResponse, ContentBlock
 
 from geny_executor.llm_client import text_tool_protocol as tp
 from geny_executor.llm_client._failover import Notify, classify_text
+
+if TYPE_CHECKING:  # the SDK is a runtime dep; this keeps import cost off the hot path
+    from claude_agent_sdk.types import EffortLevel
 
 logger = logging.getLogger(__name__)
 
@@ -134,6 +137,15 @@ def child_env(
 
 
 _EFFORTS = ("low", "medium", "high", "xhigh", "max")
+
+
+def _effort_literal(effort: Optional[str]) -> Optional[EffortLevel]:
+    """``effort_for`` answers a plain string; the SDK's field is a Literal.
+
+    Narrow rather than cast: an effort the SDK does not know is dropped,
+    not smuggled past the type checker into a rejected request.
+    """
+    return effort if effort in _EFFORTS else None  # type: ignore[return-value]
 
 
 def effort_for(request: APIRequest, fixed: Optional[str]) -> Optional[str]:
@@ -350,7 +362,7 @@ class ClaudeCodeTokenClient(BaseClient):
             env=env,
             cli_path=self._binary,
             max_buffer_size=_stream_limit(),
-            effort=effort_for(request, self._effort),
+            effort=_effort_literal(effort_for(request, self._effort)),
             stderr=stderr_lines.append,
         )
 
@@ -519,7 +531,7 @@ class ClaudeCodeTokenClient(BaseClient):
             ),
         }
 
-    def _as_api_error(self, exc: BaseException, stderr_lines: list[str]) -> APIError:
+    def _as_api_error(self, exc: Exception, stderr_lines: list[str]) -> APIError:
         """Map an SDK failure onto this library's error vocabulary.
 
         The SDK raises typed errors, which is the point of using it: a

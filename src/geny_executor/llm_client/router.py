@@ -173,7 +173,7 @@ class RouterClient(BaseClient):
 
             # the pool's place in the route is its best member's place, so
             # a primary pool stays ahead of a fallback pool
-            rank = {}
+            rank: dict[tuple[str, str], int] = {}
             for i in ready:
                 rank.setdefault(group(i), i)
             ready.sort(
