@@ -1,5 +1,46 @@
 # Changelog
 
+## [2.73.0] — 2026-09-19
+
+Three numbers a long conversation depends on, and what they were actually
+doing.
+
+### Added — how much context a model has, resolved instead of guessed
+
+`context_window_budget` sizes Stage-2 proactive compaction and Stage-4's
+headroom guard. It ships at 200_000 — right for the frontier vendors and
+wrong by a factor of six for a local server launched at 32k, where it means
+compaction never fires and the request overflows before anything notices.
+
+`llm_client/context_window.py` resolves it in one order and never guesses:
+what the **operator declared**, then what the **endpoint said**, then a short
+table of families whose window is a property of the model rather than of the
+deployment, then **nothing** — because "we don't know" is something a host
+can tell a user and a confident wrong number is not.
+
+The backends whose window cannot be known from a model id turn out to be
+exactly the ones that state it, so `discover_models` now captures it:
+`context_length` (aggregators, with `top_provider`'s lower figure winning
+because that is who will serve the call), `max_model_len` (vLLM — what the
+server was *launched* with, usually below what the weights support), and
+Google's `inputTokenLimit`.
+
+`binding_context_window()` answers for a route: the smallest hop. A route's
+fallbacks exist so the conversation can continue elsewhere, so sizing to the
+primary means the failover — which happens when things are already going
+wrong — walks into an overflow it cannot recover from.
+
+### Fixed — a turn cap replaced the session's instead of narrowing it
+
+Two places name a turn cap: a manifest's Stage 16 (`max_turns`) and the
+session (`state.max_iterations`). Both assigned theirs outright, which breaks
+it in both directions — a host that raises the session cap finds the control
+does nothing, and, worse, a user who asks for a SHORT leash is quietly handed
+the long one. The smaller now binds, in `StandardLoopController`,
+`IterationBudget`, and Stage 14's `binary_classify`, which writes
+`state.max_iterations` on the turn it classifies and had been overwriting the
+session's cap with its own since it was written.
+
 ## [2.72.1] — 2026-09-19
 
 ### Fixed — saying no to tools did nothing

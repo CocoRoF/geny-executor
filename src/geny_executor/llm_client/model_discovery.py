@@ -59,6 +59,18 @@ class ModelInfo:
     id: str
     display_name: Optional[str] = None
 
+    #: Input context window in tokens, when the backend states it.
+    #:
+    #: Worth capturing precisely because the alternative is guessing: the
+    #: pipeline sizes proactive compaction and the Stage-4 headroom guard
+    #: from this number, and a guess that runs high means the request
+    #: overflows the server before compaction ever fires. The vendors that
+    #: state it are, conveniently, exactly the ones whose window we cannot
+    #: know from the model id — aggregators routing to hundreds of models,
+    #: and a self-hosted server whose window is whatever it was launched
+    #: with. ``None`` means the backend did not say.
+    context_window: Optional[int] = None
+
 
 @dataclass(frozen=True)
 class ModelDiscovery:
@@ -105,6 +117,47 @@ async def _get(
     return _HttpResult(status=resp.status_code, json=body)
 
 
+#: Keys an OpenAI-compatible ``/v1/models`` entry may carry its window under.
+#: ``max_model_len`` is vLLM's (the window the server was LAUNCHED with, which
+#: is the one that matters — it is usually below what the weights support);
+#: ``context_length`` is OpenRouter's and most aggregators'; the rest are
+#: spellings seen from Together / DeepInfra / LM Studio.
+_CONTEXT_KEYS = (
+    "max_model_len",
+    "context_length",
+    "context_window",
+    "max_context_length",
+    "max_context_window_tokens",
+)
+
+
+def _context_from_entry(entry: Any) -> Optional[int]:
+    """The stated context window of one ``/v1/models`` entry, or ``None``.
+
+    Looks one level into ``top_provider`` too: OpenRouter states the routed
+    provider's real limit there, which can be lower than the model's own.
+    """
+    if not isinstance(entry, dict):
+        return None
+    sources: List[Any] = [entry]
+    nested = entry.get("top_provider")
+    if isinstance(nested, dict):
+        # The routed provider's limit binds before the model's own.
+        sources.insert(0, nested)
+    for source in sources:
+        for key in _CONTEXT_KEYS:
+            raw = source.get(key)
+            if raw is None:
+                continue
+            try:
+                value = int(raw)
+            except (TypeError, ValueError):
+                continue
+            if value > 0:
+                return value
+    return None
+
+
 def _parse_openai_models(body: Any) -> List[ModelInfo]:
     """``{"data": [{"id": ...}, ...]}`` (OpenAI / LM Studio / vLLM / custom)."""
     out: List[ModelInfo] = []
@@ -112,7 +165,7 @@ def _parse_openai_models(body: Any) -> List[ModelInfo]:
     if isinstance(data, list):
         for m in data:
             if isinstance(m, dict) and m.get("id"):
-                out.append(ModelInfo(id=str(m["id"])))
+                out.append(ModelInfo(id=str(m["id"]), context_window=_context_from_entry(m)))
     return out
 
 
@@ -157,10 +210,17 @@ def _parse_google_models(body: Any) -> List[ModelInfo]:
                 continue
             raw = str(m["name"])
             mid = raw[len("models/") :] if raw.startswith("models/") else raw
+            window = m.get("inputTokenLimit")
+            try:
+                window = int(window) if window is not None else None
+            except (TypeError, ValueError):
+                window = None
             out.append(
                 ModelInfo(
                     id=mid,
                     display_name=(str(m["displayName"]) if m.get("displayName") else None),
+                    # Google is the one vendor API that states it.
+                    context_window=window if window and window > 0 else None,
                 )
             )
     return out

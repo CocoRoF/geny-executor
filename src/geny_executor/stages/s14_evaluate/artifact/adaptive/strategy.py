@@ -40,6 +40,22 @@ class BinaryClassifyConfig:
     not_easy_max_turns: int = 30
 
 
+def _narrow_max_iterations(state: PipelineState, cap: int) -> int:
+    """Lower ``state.max_iterations`` to *cap*, never raise it.
+
+    The classifier's caps are statements about the TASK ("a multi-turn task
+    gets at most N"), and the session's is a statement about the agent ("this
+    one gets at most M"). Assigning the task's outright — which is what this
+    used to do — breaks both directions: a host that set a higher session cap
+    finds it replaced on turn one, and, worse, a user who asked for a SHORT
+    leash is silently handed the longer one. Narrowing keeps both true.
+    """
+    current = getattr(state, "max_iterations", 0) or 0
+    resolved = min(current, cap) if current > 0 else cap
+    state.max_iterations = resolved
+    return resolved
+
+
 class BinaryClassifyEvaluation(EvaluationStrategy):
     """Binary classify + signal-based evaluation.
 
@@ -154,11 +170,8 @@ class BinaryClassifyEvaluation(EvaluationStrategy):
         if has_tool_calls:
             # Tools needed → not_easy
             state.metadata["task_class"] = "not_easy"
-            state.max_iterations = self._config.not_easy_max_turns
-            logger.info(
-                "Binary classify: not_easy (tool calls detected, max_turns=%d)",
-                self._config.not_easy_max_turns,
-            )
+            cap = _narrow_max_iterations(state, self._config.not_easy_max_turns)
+            logger.info("Binary classify: not_easy (tool calls detected, max_turns=%d)", cap)
             return EvaluationResult(
                 passed=True,
                 decision="continue",
@@ -169,11 +182,8 @@ class BinaryClassifyEvaluation(EvaluationStrategy):
         if signal == "continue":
             # Explicit continue → not_easy
             state.metadata["task_class"] = "not_easy"
-            state.max_iterations = self._config.not_easy_max_turns
-            logger.info(
-                "Binary classify: not_easy (continue signal, max_turns=%d)",
-                self._config.not_easy_max_turns,
-            )
+            cap = _narrow_max_iterations(state, self._config.not_easy_max_turns)
+            logger.info("Binary classify: not_easy (continue signal, max_turns=%d)", cap)
             return EvaluationResult(
                 passed=True,
                 decision="continue",
@@ -183,7 +193,7 @@ class BinaryClassifyEvaluation(EvaluationStrategy):
 
         # No tools, no continue → easy (complete immediately)
         state.metadata["task_class"] = "easy"
-        state.max_iterations = self._config.easy_max_turns
+        _narrow_max_iterations(state, self._config.easy_max_turns)
         logger.info("Binary classify: easy (direct answer, 1 turn)")
         return EvaluationResult(
             passed=True,

@@ -37,6 +37,23 @@ def _require_int(strategy: str, key: str, value: Any, *, minimum: int = 0) -> in
     return value
 
 
+def _binding_cap(declared: Optional[int], session: Optional[int]) -> int:
+    """The cap that actually binds when a manifest AND a session both name one.
+
+    Two caps are two different statements — "this environment never runs longer
+    than N" and "this session never runs longer than M" — and the binding one
+    is the smaller. Taking the manifest's unconditionally, which is what this
+    used to do, breaks it in both directions: a host that raises the session
+    cap finds the control does nothing, and a user who asks for a SHORT leash
+    is quietly given the long one.
+
+    ``0``/``None`` from either side means "I am not naming a cap"; both silent
+    returns 0, which each caller interprets the way it always has.
+    """
+    caps = [int(c) for c in (declared, session) if c and int(c) > 0]
+    return min(caps) if caps else 0
+
+
 class StandardLoopController(LoopController):
     """Standard loop controller — tool_use continues, signals decide."""
 
@@ -90,7 +107,7 @@ class StandardLoopController(LoopController):
         if not state.pending_tool_calls and not state.has_fresh_tool_results:
             return LoopDecision.COMPLETE
 
-        max_t = self._max_turns or state.max_iterations
+        max_t = _binding_cap(self._max_turns, state.max_iterations)
         if state.iteration >= max_t:
             return LoopDecision.COMPLETE
 
@@ -254,6 +271,11 @@ class IterationBudget(BudgetDimension):
     uses. This lets a manifest declare the *dimension* ("budget the loop on
     iterations") without duplicating the cap that already lives at the
     pipeline level (Geny prod declares exactly that shape).
+
+    When BOTH are named the smaller binds (2.73.0). Before that the
+    manifest's replaced the session's outright, so a host raising the session
+    cap found the control did nothing and a user asking for a short leash was
+    given the long one.
     """
 
     def __init__(self, max_iterations: Optional[int] = None):
@@ -270,8 +292,8 @@ class IterationBudget(BudgetDimension):
         return f"≤ {self._max} iterations"
 
     def is_exceeded(self, state: PipelineState) -> bool:
-        cap = self._max if self._max is not None else state.max_iterations
-        if not cap or cap <= 0:
+        cap = _binding_cap(self._max, state.max_iterations)
+        if cap <= 0:
             return False
         return state.iteration >= cap
 

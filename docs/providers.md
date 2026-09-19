@@ -103,6 +103,28 @@ The pipeline reads provider only from `stages[6].config["provider"]`. Manifests 
 }
 ```
 
+## How much context a model has
+
+`PipelineConfig.context_window_budget` sizes Stage-2 proactive compaction and Stage-4's headroom guard. It ships at 200_000, which is right for the frontier vendors and wrong by a factor of six for a local server launched at 32k — there it means compaction never fires and the request overflows before anything notices.
+
+`llm_client/context_window.py` resolves the number without guessing:
+
+```python
+from geny_executor.llm_client import resolve_context_window, binding_context_window
+
+window = resolve_context_window(
+    declared=account_setting,      # the operator says
+    discovered=from_v1_models,     # the endpoint says
+    model="anthropic/claude-sonnet-5",
+    provider="custom",
+)
+budget = binding_context_window(w for w in every_hops_window)  # a route holds its smallest hop
+```
+
+`discover_models` captures what the endpoint states — `context_length` (aggregators; `top_provider`'s lower figure wins, because that is who serves the call), `max_model_len` (vLLM: what the server was *launched* with), Google's `inputTokenLimit`. `local_probe.resolve_local_context_window` covers Ollama, which states it on `/api/show` rather than `/v1/models`.
+
+`None` means no source knows. It is deliberately not a fallback guess: a host that knows the number is unknown can say so to its user, and a number cannot.
+
 ## Per-provider tips
 
 ### `anthropic`

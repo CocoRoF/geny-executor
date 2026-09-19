@@ -16,6 +16,12 @@ from geny_executor.llm_client.credentials import (
     CredentialBundle,
     ProviderCredentials,
 )
+from geny_executor.llm_client.context_window import (
+    DEFAULT_CONTEXT_WINDOW,
+    binding_context_window,
+    known_context_window,
+    resolve_context_window,
+)
 from geny_executor.llm_client.local_probe import (
     probe_ollama_num_ctx,
     resolve_local_context_window,
@@ -55,6 +61,10 @@ __all__ = [
     "builtin_profiles",
     "probe_ollama_num_ctx",
     "resolve_local_context_window",
+    "DEFAULT_CONTEXT_WINDOW",
+    "binding_context_window",
+    "known_context_window",
+    "resolve_context_window",
     "discover_models",
     "ModelDiscovery",
     "ModelInfo",
