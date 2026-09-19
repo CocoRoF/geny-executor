@@ -98,6 +98,72 @@ class TestTheDeclarationBeatsTheDropsTuple:
         assert request.tools
 
 
+class TestADeclarationHasToDoSomething:
+    """The bug this guards is the whole reason the declaration exists: a flag
+    that changes ``capabilities`` and nothing on the wire is a settings page
+    that lies. Stripping used to be the ``drops`` tuple's job alone, and every
+    shipped client that says no to tools also lists them there — so the hole
+    was invisible until a DEPLOYMENT said no through ``capabilities=`` on a
+    class whose tuple says nothing about tools."""
+
+    @staticmethod
+    def _request(client, *, tools=True, tool_choice=True):
+        from geny_executor.core.config import ModelConfig
+
+        return client._build_request(
+            model_config=ModelConfig(model="m"),
+            messages=[{"role": "user", "content": "hi"}],
+            system="",
+            tools=[{"name": "Read", "input_schema": {}}] if tools else None,
+            tool_choice={"type": "auto"} if tool_choice else None,
+            stream=False,
+        )
+
+    def test_saying_no_to_tools_stops_sending_them(self) -> None:
+        from geny_executor.llm_client.openai_compatible import CustomOpenAIClient
+
+        client = CustomOpenAIClient(
+            base_url="http://box:8080/v1", capabilities={"supports_tools": False}
+        )
+        assert self._request(client).tools is None
+
+    def test_the_tool_choice_goes_with_them(self) -> None:
+        """A tool_choice with no tools is a 400 on every backend that checks."""
+        from geny_executor.llm_client.openai_compatible import CustomOpenAIClient
+
+        client = CustomOpenAIClient(
+            base_url="http://box:8080/v1", capabilities={"supports_tools": False}
+        )
+        assert self._request(client).tool_choice is None
+
+    def test_saying_no_to_tool_choice_alone_keeps_the_tools(self) -> None:
+        from geny_executor.llm_client.openai_compatible import CustomOpenAIClient
+
+        client = CustomOpenAIClient(
+            base_url="http://box:8080/v1", capabilities={"supports_tool_choice": False}
+        )
+        request = self._request(client)
+        assert request.tools and request.tool_choice is None
+
+    def test_the_host_is_told(self) -> None:
+        from geny_executor.llm_client.openai_compatible import CustomOpenAIClient
+
+        sink: list = []
+        client = CustomOpenAIClient(
+            base_url="http://box:8080/v1",
+            capabilities={"supports_tools": False},
+            event_sink=sink.append,
+        )
+        self._request(client)
+        assert any("tools" in str(event) for event in sink), sink
+
+    def test_an_endpoint_that_says_nothing_still_gets_its_tools(self) -> None:
+        from geny_executor.llm_client.openai_compatible import CustomOpenAIClient
+
+        client = CustomOpenAIClient(base_url="http://box:8080/v1")
+        assert self._request(client).tools
+
+
 class TestVLLM:
     """A vLLM server is whatever model it loaded — which is why the class
     says no tools and why an account has to be able to say otherwise."""

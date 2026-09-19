@@ -1,5 +1,24 @@
 # Changelog
 
+## [2.72.1] — 2026-09-19
+
+### Fixed — saying no to tools did nothing
+
+`supports_tools=False` changed the flag and the request still carried the
+tools. Stripping was left to the `drops` tuple, and every shipped client that
+says no to tools also lists them there — so the hole stayed invisible until a
+*deployment* said no through `capabilities=` on a class whose tuple says
+nothing about tools. `profiles.py` had advertised
+`configure_capabilities(supports_tools=False, ...)` as the downgrade path for
+a local model without tool support since it was written; it had never worked.
+
+The capability is now authoritative in `_build_request`, exactly as it
+already was for `top_k` and `stop_sequences`, and `tool_choice` travels with
+the tools whichever of them was dropped — a tool_choice with no tools is a
+400 on every backend that checks. No shipped client changes behaviour: each
+one that declares `supports_tools=False` or `supports_tool_choice=False`
+already lists the field in `drops`.
+
 ## [2.72.0] — 2026-09-19
 
 A review pass over 2.69–2.71, and the breadth question those releases left

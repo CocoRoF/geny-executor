@@ -335,8 +335,26 @@ class BaseClient(ABC):
         if model_config.top_k is not None and not self.capabilities.supports_top_k:
             self._emit_unsupported("top_k")
 
+        # Tools negotiation. Until 2.72.1 a client that declared
+        # ``supports_tools=False`` still sent them: stripping was left to the
+        # ``drops`` tuple, and every shipped client that says no to tools also
+        # lists them there — so the hole was invisible until a DEPLOYMENT said
+        # no through ``capabilities=`` on a class whose tuple says nothing.
+        # That is a setting that does nothing, which is the one outcome a
+        # settings page must never have. The capability is authoritative here,
+        # exactly as it already is for top_k and stop_sequences.
+        if tools and not self.capabilities.supports_tools:
+            self._emit_unsupported("tools")
+            request.tools = None
+
         if tool_choice and not self.capabilities.supports_tool_choice:
             self._emit_unsupported("tool_choice")
+            request.tool_choice = None
+
+        # A tool_choice with no tools is a 400 on every backend that checks,
+        # so the two travel together whichever of them was dropped.
+        if request.tool_choice is not None and not request.tools:
+            request.tool_choice = None
 
         # Stop-sequences negotiation — clients that drop stop_sequences
         # signal it explicitly. (Not silently honored by all CLI backends.)
