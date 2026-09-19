@@ -42,6 +42,7 @@ EFFORTS = {"none", "minimal", "low", "medium", "high", "xhigh", "max"}
 RESPONSES_CAPABILITIES = ClientCapabilities(
     supports_thinking=True,
     supports_tools=True,
+    supports_vision=True,
     supports_streaming=True,
     supports_tool_choice=False,
     supports_stop_sequences=False,

@@ -1,5 +1,53 @@
 # Changelog
 
+## [2.71.0] — 2026-09-19
+
+Read against Hermes (`NousResearch/hermes-agent`), whose credential pool
+solves the same problems with more of the detail filled in.
+
+### Added — a bench lasts as long as the outage, not a constant
+
+`cooldown_for` returned one of three constants. A flat fifteen minutes is a
+guess in both directions: too short and the next turn walks into the same
+wall, too long and an account that recovered five minutes ago sits idle
+while its sibling carries everything.
+
+  · **The provider usually says.** `reset_at_from()` reads an explicit
+    `reset_at` / `resets_at` / `retry_after` field, and failing that the
+    error text — `"try again in 42 seconds"`, `"retry-after: 90"` — because
+    vendors put it there far more often than in a field.
+  · **Benching the only account is downtime, not protection.**
+    `cooldown_for(..., sole_account=True)` caps a transient throttle at
+    60s. A dead login is exempt: waiting cannot fix it and retrying every
+    minute only spams the vendor.
+  · **Rate limits are per model** on the metered APIs, so a 429 on opus
+    leaves haiku on the same key usable. `cool_down_model()` benches the
+    model; `PER_MODEL_RATE_LIMITS` says where that is true. It deliberately
+    excludes the subscription providers: when a plan says "usage limit
+    reached" the whole login is out, and benching one model would send the
+    next turn into the same wall on a sibling.
+
+`snapshot()` reports model benches alongside credential-wide ones. It is
+the single view of what cannot answer right now — the host renders it and
+callers clear from it — so a bench missing from it is one nobody can see or
+lift. `clear_cooldown()` lifts both, because "this account is fine now" is
+one fact.
+
+### Added — a model that cannot see an image says so
+
+`ClientCapabilities` gained `supports_vision` and
+`supports_vision_tool_results`, and `_build_request` replaces an image a
+backend cannot see with a note saying one was there.
+
+This matters because of 2.70.0: a conversation now outlives the model
+answering it, so an image attached while Claude was answering can reach a
+text-only local model on the very next turn. Sending it anyway kills the
+turn at the wire; stripping it silently has the model answer confidently
+about a picture it never received. The two flags are separate because some
+backends take a multimodal user message and reject list-type tool content.
+Local endpoints default to False: whether a served checkpoint can see is
+the operator's to declare.
+
 ## [2.70.1] — 2026-09-19
 
 ### Fixed — three type errors CI caught that the tests could not

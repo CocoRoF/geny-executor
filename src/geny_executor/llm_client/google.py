@@ -36,6 +36,7 @@ class GoogleClient(BaseClient):
     capabilities = ClientCapabilities(
         supports_thinking=False,
         supports_tools=True,
+        supports_vision=True,
         supports_streaming=True,
         supports_tool_choice=True,
         supports_stop_sequences=True,

@@ -86,6 +86,18 @@ class ClientCapabilities:
     supports_top_k: bool = False
     supports_system_prompt: bool = True
 
+    #: The model can SEE an image in the conversation. Declared per client
+    #: because a conversation outlives the model answering it: an image sent
+    #: to Claude can be replayed to a text-only local model on the next turn,
+    #: and an undeclared image is one the wire rejects with the turn already
+    #: half spent. Default False — a backend that can see says so.
+    supports_vision: bool = False
+
+    #: …and can see one returned by a TOOL, not only one the user attached.
+    #: Separate because some backends accept multimodal user messages and
+    #: reject list-type tool content outright.
+    supports_vision_tool_results: bool = True
+
     # --- Extended capabilities (CLI backends + JSON schema + sessions) ---
 
     #: JSON-schema / json_object structured-output support.
@@ -273,8 +285,67 @@ class BaseClient(ABC):
             tools=tools,
             tool_choice=tool_choice,
         )
+        self._lower_unseeable_images(request)
 
         return request
+
+    # ── images a backend cannot see ──────────────────────────────────
+    def _lower_unseeable_images(self, request: APIRequest) -> None:
+        """Replace image blocks this client cannot see with a note saying so.
+
+        A conversation outlives the model answering it: an image attached
+        while Claude was answering can reach a text-only local model on the
+        very next turn, through a failover or a model switch. Three things
+        could happen there, and only one of them is honest —
+
+          * send it anyway: the wire rejects the request and the turn dies
+            for a reason the user cannot act on;
+          * strip it silently: the model answers confidently about a picture
+            it never received;
+          * say an image was here and could not be shown, which is what this
+            does, alongside a ``llm_client.field_dropped`` event so the host
+            can say so too.
+        """
+        caps = self.capabilities
+        if caps.supports_vision and caps.supports_vision_tool_results:
+            return
+
+        lowered = 0
+        for message in request.messages:
+            content = message.get("content")
+            if not isinstance(content, list):
+                continue
+            in_tool_result = any(
+                isinstance(b, dict) and b.get("type") == "tool_result" for b in content
+            )
+            allowed = (
+                caps.supports_vision and caps.supports_vision_tool_results
+                if in_tool_result
+                else caps.supports_vision
+            )
+            if allowed:
+                continue
+            replaced: list[Any] = []
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "image":
+                    lowered += 1
+                    replaced.append(
+                        {
+                            "type": "text",
+                            "text": "[an image was attached here; this model cannot see images]",
+                        }
+                    )
+                else:
+                    replaced.append(block)
+            message["content"] = replaced
+
+        if lowered:
+            self._emit_unsupported("image")
+            logger.info(
+                "%s cannot see images — %d replaced with a placeholder",
+                self.provider,
+                lowered,
+            )
 
     # Maps a ``capabilities.drops`` entry to the APIRequest attribute that
     # carries it. Keyed by the *declaration* vocabulary (ModelConfig field

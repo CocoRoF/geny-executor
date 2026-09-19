@@ -17,6 +17,8 @@ skip it too.
 
 from __future__ import annotations
 
+import time
+
 from dataclasses import replace
 from typing import Any, AsyncIterator, Dict, List, Optional
 
@@ -38,6 +40,8 @@ class RouterClient(BaseClient):
     capabilities = ClientCapabilities(
         supports_thinking=True,
         supports_tools=True,
+        # the hop that answers decides; each child lowers what it cannot see
+        supports_vision=True,
         supports_streaming=True,
         supports_tool_choice=True,
         supports_stop_sequences=True,
@@ -144,6 +148,14 @@ class RouterClient(BaseClient):
         self._children[index] = client
         return client
 
+    def _sole(self) -> bool:
+        """True when benching this hop leaves the route with nowhere to go.
+
+        Then a long bench is not protection, it is downtime — the caller
+        shortens a transient throttle accordingly.
+        """
+        return len(self._targets) <= 1
+
     def _order(self) -> list[int]:
         """Who to ask, in order: healthy hops first, cooling ones last.
 
@@ -164,7 +176,11 @@ class RouterClient(BaseClient):
         ready: list[int] = []
         cooling: list[int] = []
         for i, target in enumerate(self._targets):
-            (cooling if failover.cooling(str(target.get("accountId") or "")) else ready).append(i)
+            account = str(target.get("accountId") or "")
+            benched = failover.cooling(account) or failover.model_cooling(
+                account, str(target.get("model") or "")
+            )
+            (cooling if benched else ready).append(i)
         if self._balance:
 
             def group(i: int) -> tuple[str, str]:
@@ -183,13 +199,17 @@ class RouterClient(BaseClient):
                     i,
                 )
             )
+
         # everything cooling: still try, earliest recovery first — refusing
         # outright would turn a stale cooldown into an outage
-        cooling.sort(
-            key=lambda i: (
-                failover.cooling(str(self._targets[i].get("accountId") or "")) or (0, "")
-            )[0]
-        )
+        def _recovers_at(i: int) -> float:
+            account = str(self._targets[i].get("accountId") or "")
+            benched = failover.cooling(account) or failover.model_cooling(
+                account, str(self._targets[i].get("model") or "")
+            )
+            return benched[0] if benched else 0.0
+
+        cooling.sort(key=_recovers_at)
         return ready + cooling
 
     def _prepare(
@@ -215,7 +235,35 @@ class RouterClient(BaseClient):
         target = self._targets[index]
         category = failover.category_of(exc)
         account = str(target.get("accountId") or "")
-        failover.cool_down(account, failover.cooldown_for(category), str(exc)[:200])
+        model = str(target.get("model") or "")
+        detail = str(exc)[:400]
+
+        # When the provider says when to come back, believe it. A flat bench
+        # is a guess in both directions: too short and the next turn walks
+        # into the same wall, too long and a recovered account sits idle.
+        until = failover.reset_at_from(detail, fields=getattr(exc, "fields", None))
+
+        provider = str(target.get("engineProvider") or "")
+        if (
+            category == ErrorCategory.RATE_LIMITED
+            and model
+            and failover.rate_limit_is_per_model(provider)
+        ):
+            # Rate limits are per model, so this says nothing about the
+            # account's other models — bench the model, not the account.
+            failover.cool_down_model(
+                account,
+                model,
+                until or (time.time() + failover.cooldown_for(category, sole_account=self._sole())),
+                detail[:200],
+            )
+        else:
+            seconds = (
+                (until - time.time())
+                if until
+                else failover.cooldown_for(category, sole_account=self._sole())
+            )
+            failover.cool_down(account, seconds, detail[:200])
         self._notify_host(
             {
                 "kind": "failover",
@@ -232,6 +280,7 @@ class RouterClient(BaseClient):
         self.last_target = target
         account = str(target.get("accountId") or "")
         failover.clear_cooldown(account)
+        failover.clear_model_cooldowns(account)
         # Only the hop that actually answered counts as used — a hop that
         # was tried and failed over is not "its turn taken".
         failover.mark_used(account)

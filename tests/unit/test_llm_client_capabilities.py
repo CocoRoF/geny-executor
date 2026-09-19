@@ -40,6 +40,11 @@ def test_capabilities_has_expected_fields() -> None:
         "supports_cost_usage",
         "requires_workspace",
         "streaming_granularity",
+        # vision — declared per client because a conversation outlives the
+        # model answering it, so an image can reach a backend that cannot
+        # see one (2.71.0)
+        "supports_vision",
+        "supports_vision_tool_results",
         # plus drops
         "drops",
     }
