@@ -26,6 +26,13 @@ Public alias::
 """
 
 # ── Phase 1+ unified contract ───────────────────────────────────────
+from geny_executor.memory.short_term_window import (
+    WindowConfig,
+    WindowResult,
+    build_window,
+    group_logical_turns,
+    window_char_budget,
+)
 from geny_executor.memory.provider import (
     BackendInfo,
     Capability,
@@ -114,6 +121,11 @@ from geny_executor.memory.strategy import ProviderDrivenStrategy
 from geny_executor.memory.presets import GenyPresets
 
 __all__ = [
+    "window_char_budget",
+    "group_logical_turns",
+    "build_window",
+    "WindowResult",
+    "WindowConfig",
     "DocumentChunk",
     "QdrantVectorStore",
     "Fact",
