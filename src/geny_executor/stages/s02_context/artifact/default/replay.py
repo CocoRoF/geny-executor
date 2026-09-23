@@ -15,6 +15,7 @@ from geny_executor.core.state import PipelineState
 from geny_executor.memory.short_term_window import (
     DEFAULT_DIALOGUE_TURNS,
     DEFAULT_FULL_TURNS,
+    DEFAULT_SILENT_MARKERS,
     DEFAULT_WINDOW_RATIO,
     WindowConfig,
     build_window,
@@ -105,11 +106,15 @@ class TurnWindowReplay(TurnReplay):
         dialogue_turns: int = DEFAULT_DIALOGUE_TURNS,
         window_share: float = DEFAULT_WINDOW_RATIO,
         fetch_rows: int = DEFAULT_FETCH_ROWS,
+        silent_markers: Optional[List[str]] = None,
     ) -> None:
         self._full_turns = max(0, int(full_turns))
         self._dialogue_turns = max(0, int(dialogue_turns))
         self._window_share = float(window_share)
         self._fetch_rows = max(1, int(fetch_rows))
+        self._silent_markers: List[str] = list(
+            DEFAULT_SILENT_MARKERS if silent_markers is None else silent_markers
+        )
 
     @property
     def name(self) -> str:
@@ -164,6 +169,18 @@ class TurnWindowReplay(TurnReplay):
                     min_value=0.02,
                     max_value=0.5,
                 ),
+                ConfigField(
+                    name="silent_markers",
+                    type="array",
+                    label="Answers that mean silence",
+                    description=(
+                        "A turn whose only answer is one of these, and that ran no tools, "
+                        "does not take a slot — so autonomous wake-ups the agent chose not "
+                        "to answer do not push the conversation out."
+                    ),
+                    default=list(DEFAULT_SILENT_MARKERS),
+                    item_type="string",
+                ),
             ],
         )
 
@@ -176,6 +193,9 @@ class TurnWindowReplay(TurnReplay):
             value = config.get(key)
             if isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0:
                 setattr(self, attr, cast(value))
+        markers = config.get("silent_markers")
+        if isinstance(markers, (list, tuple)):
+            self._silent_markers = [str(m) for m in markers if str(m).strip()]
         share = config.get("window_share")
         if isinstance(share, (int, float)) and not isinstance(share, bool) and 0 < share <= 0.5:
             self._window_share = float(share)
@@ -185,6 +205,7 @@ class TurnWindowReplay(TurnReplay):
             "full_turns": self._full_turns,
             "dialogue_turns": self._dialogue_turns,
             "window_share": self._window_share,
+            "silent_markers": list(self._silent_markers),
         }
 
     async def replay(
@@ -222,6 +243,7 @@ class TurnWindowReplay(TurnReplay):
                 full_turns=self._full_turns,
                 dialogue_turns=self._dialogue_turns,
                 max_tokens=budget,
+                silent_markers=tuple(self._silent_markers),
             ),
         )
         if not window.messages:

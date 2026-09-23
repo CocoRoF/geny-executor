@@ -199,7 +199,9 @@ class TestTheReplayGoesInFront:
         meta = _run(go())
         assert (meta["full"], meta["dialogue"]) == (1, 1)
         schema = TurnWindowReplay.config_schema()
-        assert {f.name for f in schema.fields} == {"full_turns", "dialogue_turns", "window_share"}
+        assert {f.name for f in schema.fields} == {
+            "full_turns", "dialogue_turns", "window_share", "silent_markers",
+        }
 
 
 class TestNotRecordedTwice:

@@ -453,3 +453,45 @@ class TestNothingToShow:
     def test_disabled_is_an_empty_window(self) -> None:
         rows = _turn("a", "b")
         assert build_window(rows, WindowConfig(full_turns=0, dialogue_turns=0)).messages == []
+
+
+class TestSilenceIsNotHistory:
+    """Production VTuber, last 600 rows: 197 autonomous wake-ups, 5 user
+    messages, most wake-ups answered ``[SILENT]``. Counted as turns, five
+    silences pushed the last real exchange out of the window."""
+
+    def _silent(self, n: int) -> List[Row]:
+        return [
+            Row("user", [{"type": "text", "text": f"[THINKING_TRIGGER:long_idle] {n}"}]),
+            Row("assistant", [{"type": "text", "text": "[SILENT]"}]),
+        ]
+
+    def test_silent_turns_do_not_take_a_slot(self) -> None:
+        rows = _turn("추천 하나 해줘", "Nils Frahm - Says 들어봐")
+        for n in range(8):
+            rows += self._silent(n)
+        result = build_window(rows, WindowConfig())
+        body = _text(result.messages)
+        assert "Nils Frahm" in body
+        assert "THINKING_TRIGGER" not in body
+        assert result.turns == 1
+
+    def test_a_silent_turn_that_did_something_is_kept(self) -> None:
+        """A call is the evidence the window exists for, whatever was said."""
+        rows = _turn("run it", "[SILENT]", tool="Bash", uid="b")
+        rows += self._silent(1)
+        result = build_window(rows, WindowConfig())
+        assert result.turns == 1
+        assert any(b.get("type") == "tool_use" for m in result.messages for b in m["content"])
+
+    def test_silence_with_words_after_it_is_speech(self) -> None:
+        rows = [
+            Row("user", [{"type": "text", "text": "trigger"}]),
+            Row("assistant", [{"type": "text", "text": "[SILENT] 아니, 하나만 말할게"}]),
+        ]
+        assert build_window(rows, WindowConfig()).turns == 1
+
+    def test_the_markers_are_configurable(self) -> None:
+        rows = _turn("hi", "…") + self._silent(1)
+        assert build_window(rows, WindowConfig(silent_markers=("…", "[SILENT]"))).turns == 0
+        assert build_window(rows, WindowConfig(silent_markers=())).turns == 2

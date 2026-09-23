@@ -79,6 +79,7 @@ __all__ = [
     "LogicalTurn",
     "build_window",
     "group_logical_turns",
+    "is_silent_turn",
     "window_token_budget",
 ]
 
@@ -123,6 +124,9 @@ MAX_UTTERANCE_TOKENS = 4_000
 MIN_UTTERANCE_TOKENS = 150
 #: Targets named on the ``[used tools: …]`` line, per tool.
 MAX_TOOL_TARGETS = 3
+#: ``[SILENT]`` is how an agent declines to speak (Geny; Hermes' cron uses
+#: the same marker to suppress delivery).
+DEFAULT_SILENT_MARKERS: Tuple[str, ...] = ("[SILENT]",)
 #: Wire framing per message (role, block envelopes). Small, but a window of
 #: forty short messages is not free.
 _MESSAGE_OVERHEAD_TOKENS = 4
@@ -166,6 +170,12 @@ class WindowConfig:
     result_tokens: Optional[int] = None
     utterance_tokens: Optional[int] = None
     used_tools_line: bool = True
+    #: Answers that mean "said nothing". A turn whose agent side is only
+    #: these (or nothing) and that ran no tools is not history — it does
+    #: not take one of the slots. An agent woken every few minutes by an
+    #: idle or screen trigger answers most of them with silence; without
+    #: this, five of those push the last real exchange out of the window.
+    silent_markers: Tuple[str, ...] = DEFAULT_SILENT_MARKERS
 
     def result_cap(self) -> int:
         if self.result_tokens is not None:
@@ -259,6 +269,27 @@ class LogicalTurn:
                 if b.get("type") == "tool_result":
                     out[str(b.get("tool_use_id") or "")] = b
         return out
+
+
+def is_silent_turn(turn: LogicalTurn, markers: Sequence[str] = DEFAULT_SILENT_MARKERS) -> bool:
+    """Nothing was said and nothing was done.
+
+    Every assistant text is empty or a silence marker, and no tool ran. A
+    turn that called a tool is never silent, whatever it said: that call is
+    exactly the evidence the window exists to keep.
+    """
+    if turn.tool_calls():
+        return False
+    upper = [m.upper() for m in markers if m]
+    for message in turn.messages:
+        if str(getattr(message, "role", "") or "") != "assistant":
+            continue
+        text = _text_of(message)
+        if not text:
+            continue
+        if not any(text.upper().startswith(m) and not text[len(m) :].strip() for m in upper):
+            return False
+    return True
 
 
 def group_logical_turns(turns: Sequence[Any], limit: int) -> List[LogicalTurn]:
@@ -572,7 +603,11 @@ def build_window(turns: Sequence[Any], cfg: WindowConfig) -> WindowResult:
     if not cfg.enabled or not turns:
         return WindowResult()
 
-    grouped = group_logical_turns(turns, cfg.turns)
+    grouped = [
+        turn
+        for turn in group_logical_turns(turns, len(turns))
+        if not is_silent_turn(turn, cfg.silent_markers)
+    ][-cfg.turns :]
     if not grouped:
         return WindowResult()
 
