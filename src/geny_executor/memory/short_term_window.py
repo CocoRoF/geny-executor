@@ -50,12 +50,12 @@ different hop rejects them.
 
 ## Budget
 
-A turn count is a floor, not a bound — five turns of large tool results do
-not fit a 32k-token model. :func:`window_char_budget` takes the smaller of
-an absolute ceiling and a fraction of the route's context window, so the
-constant governs frontier models and the fraction protects small ones.
-Under pressure the window degrades in a fixed order rather than dropping the
-newest thing it has.
+Five turns within the budget; the newest one always. The budget is a share
+of the route's effective input window, in tokens (:func:`window_token_budget`)
+— a 32k local model and a 1M frontier model get windows that fit them, and
+the same budget means the same thing in Korean and in English. Under
+pressure the window sheds bulk before structure, oldest first, and never the
+newest turn (:func:`build_window`).
 """
 
 from __future__ import annotations
@@ -65,6 +65,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
+from geny_executor.core.token_estimate import chars_within_tokens, estimate_text_tokens
 from geny_executor.core.message_repair import (
     repair_dangling_tool_calls,
     strip_leading_orphan_tool_results,
@@ -78,7 +79,7 @@ __all__ = [
     "LogicalTurn",
     "build_window",
     "group_logical_turns",
-    "window_char_budget",
+    "window_token_budget",
 ]
 
 #: How many recent turns keep their tool blocks verbatim.
@@ -86,60 +87,98 @@ DEFAULT_FULL_TURNS = 2
 #: How many turns behind those keep conversation only.
 DEFAULT_DIALOGUE_TURNS = 3
 
-#: Absolute ceiling on the whole window, in characters. Roughly 10k tokens —
-#: this is "the last few turns", not "as much as fits".
-DEFAULT_MAX_CHARS = 40_000
-#: Fraction of the route's context window the window may occupy. Only binds
-#: on small models; at 200k tokens the ceiling above is far lower.
+#: Share of the route's EFFECTIVE input window the replay may occupy.
+#:
+#: Hermes protects a tail of ``threshold × summary_target_ratio`` — 0.75 ×
+#: 0.20 of the window for anything under 512K, i.e. 15% — and that is the
+#: same job: the part of the recent past kept verbatim while everything older
+#: is summarised. A share rather than a constant, because no constant is
+#: right for both a 32k local model (where five turns of tool output do not
+#: fit at all) and a 1M frontier one (where 10k tokens throws away the very
+#: evidence the window exists to keep).
 DEFAULT_WINDOW_RATIO = 0.15
-#: Characters per token used to convert the token-denominated context budget.
-#: Matches the estimator the pipeline's guards use.
-CHARS_PER_TOKEN = 4
-#: Never shrink the window below this — under it the history is fragments.
-MIN_MAX_CHARS = 4_000
+#: Used when no hop in the route could say how large it is: 15% of a 200k
+#: window with a 32k answer reserved. The common case, not a guess at a
+#: small one.
+DEFAULT_MAX_TOKENS = 25_000
+#: Never size the window below this. Under it the replay is fragments, and
+#: the newest turn is kept regardless (see :func:`build_window`).
+MIN_MAX_TOKENS = 2_000
 
-#: A tool result longer than this keeps its head only.
-DEFAULT_RESULT_TRIM_OVER = 4_000
-DEFAULT_RESULT_KEEP = 1_200
-#: Budget pressure never trims a kept result below this.
-MIN_RESULT_KEEP = 300
-#: Cap on one utterance in a dialogue-only turn.
-DEFAULT_DIALOGUE_MESSAGE_CHARS = 4_000
-MIN_DIALOGUE_MESSAGE_CHARS = 400
+#: One tool result may take at most this share of the window before its tail
+#: goes: one 200 KB file read must not evict the four turns around it.
+RESULT_SHARE = 0.25
+#: ...and never more than this, whatever the window. Claude Code caps a
+#: single tool output near 25k tokens for the same reason — past that the
+#: result is a document, and a document belongs in a file, not in replay.
+MAX_RESULT_TOKENS = 25_000
+#: Budget pressure never trims a kept result below this — enough for the
+#: head of a listing or the whole of an error message.
+MIN_RESULT_TOKENS = 150
+#: One utterance in a conversation-only turn: its share of the window and its
+#: absolute cap. The conversation is the point of those turns, so the cap is
+#: generous; it exists for the pasted-document turn, not the ordinary one.
+UTTERANCE_SHARE = 0.125
+MAX_UTTERANCE_TOKENS = 4_000
+MIN_UTTERANCE_TOKENS = 150
 #: Targets named on the ``[used tools: …]`` line, per tool.
 MAX_TOOL_TARGETS = 3
+#: Wire framing per message (role, block envelopes). Small, but a window of
+#: forty short messages is not free.
+_MESSAGE_OVERHEAD_TOKENS = 4
 
 _TRIM_NOTE = "…[+{n} chars trimmed]"
+_HEAD_TRIM_NOTE = "[{n} chars trimmed]…"
 
 
-def window_char_budget(
+def window_token_budget(
     context_window_budget: Optional[int],
     *,
-    ceiling: int = DEFAULT_MAX_CHARS,
+    reserved_output: Optional[int] = None,
     ratio: float = DEFAULT_WINDOW_RATIO,
 ) -> int:
-    """Characters the window may spend, given the route's token window.
+    """Tokens the replay may spend, given what the route can hold.
 
-    ``min(ceiling, ratio × window)`` — the ceiling is what a reasonable "last
-    few turns" costs and governs the frontier models; the ratio is what stops
-    the window eating a third of a 32k-token endpoint. ``None`` (no hop could
-    say) keeps the ceiling, which is the pre-existing behaviour.
+    ``ratio × (window − reserved_output)`` — the answer has to fit in the
+    same window, so a 32k model asked for 8k of output has 24k to give, not
+    32k. ``None`` (no hop could say) falls back to :data:`DEFAULT_MAX_TOKENS`.
+
+    Measured in tokens, not characters: the same 40,000 characters are about
+    10k tokens of English and about 40k tokens of Korean, so a character
+    budget meant four different things in four languages.
     """
     if not context_window_budget or context_window_budget <= 0:
-        return ceiling
-    share = int(context_window_budget * ratio) * CHARS_PER_TOKEN
-    return max(MIN_MAX_CHARS, min(ceiling, share))
+        return DEFAULT_MAX_TOKENS
+    effective = int(context_window_budget) - max(0, int(reserved_output or 0))
+    if effective <= 0:
+        effective = int(context_window_budget)
+    return max(MIN_MAX_TOKENS, int(effective * ratio))
 
 
 @dataclass
 class WindowConfig:
     full_turns: int = DEFAULT_FULL_TURNS
     dialogue_turns: int = DEFAULT_DIALOGUE_TURNS
-    max_chars: int = DEFAULT_MAX_CHARS
-    result_trim_over: int = DEFAULT_RESULT_TRIM_OVER
-    result_keep: int = DEFAULT_RESULT_KEEP
-    dialogue_message_chars: int = DEFAULT_DIALOGUE_MESSAGE_CHARS
+    #: The whole replay, in tokens. See :func:`window_token_budget`.
+    max_tokens: int = DEFAULT_MAX_TOKENS
+    #: Per-result and per-utterance caps. ``None`` derives them from
+    #: ``max_tokens`` so one knob scales the whole window.
+    result_tokens: Optional[int] = None
+    utterance_tokens: Optional[int] = None
     used_tools_line: bool = True
+
+    def result_cap(self) -> int:
+        if self.result_tokens is not None:
+            return max(MIN_RESULT_TOKENS, int(self.result_tokens))
+        return max(MIN_RESULT_TOKENS, min(MAX_RESULT_TOKENS, int(self.max_tokens * RESULT_SHARE)))
+
+    def utterance_cap(self) -> int:
+        if self.utterance_tokens is not None:
+            return max(MIN_UTTERANCE_TOKENS, int(self.utterance_tokens))
+        return max(
+            MIN_UTTERANCE_TOKENS,
+            min(MAX_UTTERANCE_TOKENS, int(self.max_tokens * UTTERANCE_SHARE)),
+        )
 
     @property
     def turns(self) -> int:
@@ -161,7 +200,10 @@ class WindowResult:
     full: int = 0
     #: How many were reduced to conversation only.
     dialogue: int = 0
-    chars: int = 0
+    #: Estimated tokens the replay costs (same estimator the guards use).
+    tokens: int = 0
+    #: What it was allowed to cost.
+    budget: int = 0
     #: Degradation steps taken, in order, for the event payload.
     degraded: List[str] = field(default_factory=list)
 
@@ -170,7 +212,8 @@ class WindowResult:
             "turns": self.turns,
             "full": self.full,
             "dialogue": self.dialogue,
-            "chars": self.chars,
+            "tokens": self.tokens,
+            "budget": self.budget,
             "degraded": list(self.degraded),
         }
 
@@ -255,6 +298,55 @@ def _clip(text: str, limit: int) -> str:
     if limit <= 0 or len(s) <= limit:
         return s
     return s[:limit] + _TRIM_NOTE.format(n=len(s) - limit)
+
+
+class _Sizer:
+    """Token estimates and clips, memoised for ONE build.
+
+    The degradation loop re-renders the window after every step, and each
+    render re-clips every result. Without the memo, twenty 200 KB results
+    took 23 seconds — a pathological turn, but a turn the loop must not be
+    able to stall on. Per build rather than module-level, so the cache never
+    outlives the strings it holds.
+    """
+
+    def __init__(self) -> None:
+        self._tokens: Dict[str, int] = {}
+        self._clips: Dict[Tuple[str, int, bool], str] = {}
+
+    def tokens(self, text: str) -> int:
+        cached = self._tokens.get(text)
+        if cached is None:
+            cached = estimate_text_tokens(text)
+            self._tokens[text] = cached
+        return cached
+
+    def clip(self, text: str, tokens: int, *, keep_tail: bool = False) -> str:
+        """*text* cut to about *tokens*, with a note naming what went.
+
+        ``keep_tail`` keeps the END: an assistant's turn ends in its
+        conclusion, and "I'll check the config first" is the wrong half to
+        keep when the question later is whether the work got done.
+        """
+        s = str(text)
+        key = (s, tokens, keep_tail)
+        cached = self._clips.get(key)
+        if cached is not None:
+            return cached
+        # One pass that stops at the cap: whether the text fits and where to
+        # cut are the same question, and asking it by estimating the whole
+        # 200 KB result first is what the pass exists to avoid.
+        keep = len(s) if tokens <= 0 else chars_within_tokens(s, tokens, from_end=keep_tail)
+        if keep >= len(s):
+            out = s
+        else:
+            dropped = len(s) - keep
+            if keep_tail:
+                out = _HEAD_TRIM_NOTE.format(n=dropped) + s[len(s) - keep :]
+            else:
+                out = s[:keep] + _TRIM_NOTE.format(n=dropped)
+        self._clips[key] = out
+        return out
 
 
 def _result_text(block: Dict[str, Any]) -> str:
@@ -343,8 +435,9 @@ def _text_of(message: Any) -> str:
     return "\n".join(p for p in parts if p.strip()).strip()
 
 
-def _render_full(turn: LogicalTurn, cfg: WindowConfig, result_keep: int) -> List[Dict[str, Any]]:
-    """A turn with its tools intact; only large results lose their tail."""
+def _render_full(turn: LogicalTurn, result_cap: int, sizer: _Sizer) -> List[Dict[str, Any]]:
+    """A turn with its tools intact; only a result over *result_cap* tokens
+    loses its tail — and keeps its block, which is what says the call ran."""
     out: List[Dict[str, Any]] = []
     for message in turn.messages:
         role = str(getattr(message, "role", "") or "user")
@@ -356,13 +449,10 @@ def _render_full(turn: LogicalTurn, cfg: WindowConfig, result_keep: int) -> List
                 # rejects the signature.
                 continue
             if btype == "tool_result":
-                body = _result_text(block)
-                if len(body) > cfg.result_trim_over:
-                    body = _clip(body, result_keep)
                 kept: Dict[str, Any] = {
                     "type": "tool_result",
                     "tool_use_id": block.get("tool_use_id"),
-                    "content": body,
+                    "content": sizer.clip(_result_text(block), result_cap),
                 }
                 if block.get("is_error"):
                     kept["is_error"] = True
@@ -379,33 +469,43 @@ def _render_full(turn: LogicalTurn, cfg: WindowConfig, result_keep: int) -> List
     return out
 
 
+def _has_image(message: Any) -> bool:
+    return any(b.get("type") == "image" for b in _blocks(getattr(message, "content", "")))
+
+
 def _render_dialogue(
-    turn: LogicalTurn, cfg: WindowConfig, message_chars: int
+    turn: LogicalTurn, cfg: WindowConfig, utterance_cap: int, sizer: _Sizer
 ) -> List[Dict[str, Any]]:
-    """A turn reduced to what was said, plus one line about what was done."""
+    """A turn reduced to what was said, plus one line about what was done.
+
+    The agent's side is EVERYTHING it said across the turn, in order — not
+    just its last message. A multi-step turn narrates as it goes ("the
+    config is missing the key, adding it" … "done"), and keeping only the
+    last line is how "done" survives without what was done.
+    """
     out: List[Dict[str, Any]] = []
     instruction = ""
-    answer = ""
+    said: List[str] = []
     for message in turn.messages:
         role = str(getattr(message, "role", "") or "user")
         content = getattr(message, "content", "")
         text = _text_of(message)
-        if not text:
-            continue
         if role == "user" and not _is_tool_result_only(content):
             if not instruction:
-                instruction = text
-        elif role == "assistant":
-            answer = text  # the last assistant text is the turn's answer
+                # An image-only instruction still happened; dropping it would
+                # leave an answer to nothing.
+                instruction = text or ("[image]" if _has_image(message) else "")
+        elif role == "assistant" and text:
+            said.append(text)
 
     if instruction:
         out.append(
             {
                 "role": "user",
-                "content": [{"type": "text", "text": _clip(instruction, message_chars)}],
+                "content": [{"type": "text", "text": sizer.clip(instruction, utterance_cap)}],
             }
         )
-    tail = _clip(answer, message_chars) if answer else ""
+    tail = sizer.clip("\n\n".join(said), utterance_cap, keep_tail=True) if said else ""
     if cfg.used_tools_line:
         line = _used_tools_line(turn)
         if line:
@@ -415,18 +515,24 @@ def _render_dialogue(
     return out
 
 
-def _measure(messages: Iterable[Dict[str, Any]]) -> int:
+def _measure(messages: Iterable[Dict[str, Any]], sizer: Optional[_Sizer] = None) -> int:
+    """Estimated tokens, with the estimator the pipeline's guards use — so
+    the window and the compaction trigger agree on what a message costs."""
+    count = (sizer or _Sizer()).tokens
     total = 0
     for message in messages:
+        total += _MESSAGE_OVERHEAD_TOKENS
         for block in message.get("content") or []:
             if not isinstance(block, dict):
                 continue
-            if block.get("type") == "text":
-                total += len(str(block.get("text") or ""))
-            elif block.get("type") == "tool_result":
-                total += len(str(block.get("content") or ""))
-            elif block.get("type") == "tool_use":
-                total += len(json.dumps(block.get("input") or {}, ensure_ascii=False))
+            btype = block.get("type")
+            if btype == "text":
+                total += count(str(block.get("text") or ""))
+            elif btype == "tool_result":
+                total += count(str(block.get("content") or ""))
+            elif btype == "tool_use":
+                total += count(str(block.get("name") or ""))
+                total += count(json.dumps(block.get("input") or {}, ensure_ascii=False))
     return total
 
 
@@ -434,29 +540,34 @@ def _assemble(
     full: List[LogicalTurn],
     dialogue: List[LogicalTurn],
     cfg: WindowConfig,
-    result_keep: int,
-    message_chars: int,
+    result_caps: List[int],
+    utterance_cap: int,
+    sizer: _Sizer,
 ) -> List[Dict[str, Any]]:
     messages: List[Dict[str, Any]] = []
     for turn in dialogue:
-        messages.extend(_render_dialogue(turn, cfg, message_chars))
-    for turn in full:
-        messages.extend(_render_full(turn, cfg, result_keep))
+        messages.extend(_render_dialogue(turn, cfg, utterance_cap, sizer))
+    for turn, cap in zip(full, result_caps):
+        messages.extend(_render_full(turn, cap, sizer))
     return messages
 
 
 def build_window(turns: Sequence[Any], cfg: WindowConfig) -> WindowResult:
     """Build the message window from STM rows, oldest first.
 
-    Degrades in a fixed order when the budget will not hold everything,
-    because the alternative — dropping whatever happens to be last — loses
-    the most recent turn, which is the one that matters most:
+    "Five turns within the budget; the newest one always." When everything
+    does not fit, bulk goes before structure — every step below keeps every
+    turn it can and every ``tool_use`` block, because *that a call happened*
+    is what stops the agent redoing it, and the result's tail rarely is:
 
-    1. halve the kept length of large tool results;
-    2. drop the oldest dialogue turn;
-    3. demote the oldest full turn to dialogue;
-    4. halve the dialogue utterance cap;
-    5. keep the newest turn alone, with results at their floor.
+    1. shrink tool results, OLDEST full turn first (Anthropic's
+       ``clear_tool_uses`` clears oldest results first for the same reason);
+    2. shrink the conversation-only turns' utterances;
+    3. drop the oldest conversation-only turn;
+    4. demote the older full turn to conversation-only;
+    5. stop. The newest turn stays, at its floors, even over budget — a
+       window that drops the turn the user is replying to has failed at the
+       one thing it is for.
     """
     if not cfg.enabled or not turns:
         return WindowResult()
@@ -467,28 +578,32 @@ def build_window(turns: Sequence[Any], cfg: WindowConfig) -> WindowResult:
 
     full = grouped[-cfg.full_turns :] if cfg.full_turns else []
     dialogue = grouped[: len(grouped) - len(full)]
-    result_keep = cfg.result_keep
-    message_chars = cfg.dialogue_message_chars
+    result_caps = [cfg.result_cap() for _ in full]
+    utterance_cap = cfg.utterance_cap()
     degraded: List[str] = []
+    sizer = _Sizer()
 
-    messages = _assemble(full, dialogue, cfg, result_keep, message_chars)
-    while _measure(messages) > cfg.max_chars:
-        if result_keep > MIN_RESULT_KEEP:
-            result_keep = max(MIN_RESULT_KEEP, result_keep // 2)
-            degraded.append("result_keep")
+    messages = _assemble(full, dialogue, cfg, result_caps, utterance_cap, sizer)
+    while _measure(messages, sizer) > cfg.max_tokens:
+        shrinkable = [i for i, cap in enumerate(result_caps) if cap > MIN_RESULT_TOKENS]
+        if shrinkable:
+            i = shrinkable[0]
+            result_caps[i] = max(MIN_RESULT_TOKENS, result_caps[i] // 2)
+            degraded.append("result_tokens")
+        elif dialogue and utterance_cap > MIN_UTTERANCE_TOKENS:
+            utterance_cap = max(MIN_UTTERANCE_TOKENS, utterance_cap // 2)
+            degraded.append("utterance_tokens")
         elif dialogue:
             dialogue = dialogue[1:]
             degraded.append("drop_dialogue_turn")
         elif len(full) > 1:
-            demoted, full = full[0], full[1:]
-            dialogue = [demoted]
+            dialogue = [full[0]]
+            full, result_caps = full[1:], result_caps[1:]
             degraded.append("demote_full_turn")
-        elif message_chars > MIN_DIALOGUE_MESSAGE_CHARS:
-            message_chars = max(MIN_DIALOGUE_MESSAGE_CHARS, message_chars // 2)
-            degraded.append("message_chars")
         else:
+            degraded.append("over_budget_newest_kept")
             break
-        messages = _assemble(full, dialogue, cfg, result_keep, message_chars)
+        messages = _assemble(full, dialogue, cfg, result_caps, utterance_cap, sizer)
 
     # Pair invariants last. Dropping a whole turn can leave the window
     # opening on a tool_result whose call is gone, and a turn that ended
@@ -502,6 +617,7 @@ def build_window(turns: Sequence[Any], cfg: WindowConfig) -> WindowResult:
         turns=len(full) + len(dialogue),
         full=len(full),
         dialogue=len(dialogue),
-        chars=_measure(messages),
+        tokens=_measure(messages, sizer),
+        budget=cfg.max_tokens,
         degraded=degraded,
     )

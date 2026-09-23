@@ -153,3 +153,68 @@ async def test_line_cache_hits_until_file_changes(tmp_path, monkeypatch):
     r2 = await store.recent(1)
     assert r2[0].content == "새 메시지"
     assert opens["n"] == 1, "append must invalidate exactly once"
+
+
+# ── block-list records stay records ───────────────────────────────────
+
+
+def _image(kb: int) -> dict:
+    return {"type": "image",
+            "source": {"type": "base64", "media_type": "image/jpeg", "data": "A" * (kb * 1024)}}
+
+
+def test_an_image_row_stays_readable_and_keeps_its_words():
+    """EFFECT PROOF: production had 588 unreadable rows in one session, every
+    one an image row. Block-list content had no cut, so it fell through to a
+    raw half-line — invalid JSON, skipped by ``recent``, and the user's words
+    that came with the screenshot were gone with it."""
+    line = json.dumps({"type": "message", "role": "user", "ts": "t",
+                       "content": [_image(300), {"type": "text", "text": "이 화면 봐줘"}]},
+                      ensure_ascii=False)
+    bounded = _bound_record_line(line)
+    assert len(bounded.encode("utf-8")) <= MAX_RECORD_BYTES
+    rec = json.loads(bounded)
+    texts = [b.get("text") for b in rec["content"]]
+    assert "이 화면 봐줘" in texts
+    assert any("image/jpeg" in (t or "") and "not kept" in (t or "") for t in texts)
+
+
+def test_an_image_inside_a_tool_result_is_replaced_too():
+    line = json.dumps({"type": "message", "role": "user", "ts": "t", "content": [
+        {"type": "tool_result", "tool_use_id": "u1",
+         "content": [_image(200), {"type": "text", "text": "captured"}]}]})
+    rec = json.loads(_bound_record_line(line))
+    inner = rec["content"][0]["content"]
+    assert rec["content"][0]["tool_use_id"] == "u1"
+    assert [b["type"] for b in inner] == ["text", "text"]
+    assert inner[1]["text"] == "captured"
+
+
+def test_huge_tool_results_keep_their_heads_and_their_ids():
+    line = json.dumps({"type": "message", "role": "user", "ts": "t", "content": [
+        {"type": "tool_result", "tool_use_id": f"u{i}", "content": "R" * 60_000}
+        for i in range(3)]})
+    bounded = _bound_record_line(line)
+    assert len(bounded.encode("utf-8")) <= MAX_RECORD_BYTES
+    rec = json.loads(bounded)
+    assert [b["tool_use_id"] for b in rec["content"]] == ["u0", "u1", "u2"]
+    assert all(b["content"].startswith("R" * 256) for b in rec["content"])
+    assert all("truncated at record cap" in b["content"] for b in rec["content"])
+
+
+def test_whatever_happens_the_line_is_json():
+    line = json.dumps({"type": "message", "role": "assistant", "ts": "t",
+                       "metadata": {"blob": "M" * 200_000}, "content": [{"type": "text", "text": "hi"}]})
+    rec = json.loads(_bound_record_line(line))
+    assert rec["role"] == "assistant"
+    assert _bound_record_line("not json" * 20_000).startswith("{")
+
+
+@pytest.mark.asyncio
+async def test_an_image_row_survives_the_round_trip(tmp_path):
+    store = _mk_store(tmp_path)
+    await store.append(Turn(role="user",
+                            content=[_image(300), {"type": "text", "text": "봐줘"}]))
+    turns = await store.recent(5)
+    assert len(turns) == 1
+    assert any(b.get("text") == "봐줘" for b in turns[0].content)

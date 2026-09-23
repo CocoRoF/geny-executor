@@ -31,7 +31,7 @@ from geny_executor.memory.short_term_window import (
     WindowResult,
     build_window,
     group_logical_turns,
-    window_char_budget,
+    window_token_budget,
 )
 from geny_executor.memory.provider import (
     BackendInfo,
@@ -121,7 +121,7 @@ from geny_executor.memory.strategy import ProviderDrivenStrategy
 from geny_executor.memory.presets import GenyPresets
 
 __all__ = [
-    "window_char_budget",
+    "window_token_budget",
     "group_logical_turns",
     "build_window",
     "WindowResult",

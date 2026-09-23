@@ -97,23 +97,7 @@ def _estimate_text(text: str) -> int:
         end = index + 1
         while end < length and _class_of(text[end]) == kind:
             end += 1
-        run = end - index
-        if kind == _LAT:
-            total += max(1.0, run / _LATIN_CHARS_PER_TOKEN)
-        elif kind == _NUM:
-            total += max(1.0, run / _DIGIT_CHARS_PER_TOKEN)
-        elif kind == _HAN:
-            total += run * _HANGUL_PER_CHAR
-        elif kind == _CJK:
-            total += run * _CJK_PER_CHAR
-        elif kind == _SP:
-            total += (run - 1) * _SPACE_PER_EXTRA
-        elif kind == _NL:
-            total += run * _NEWLINE_PER_CHAR
-        elif kind == _PUN:
-            total += run * _PUNCT_PER_CHAR
-        else:
-            total += run * _SYMBOL_PER_CHAR
+        total += _run_cost(kind, end - index)
         index = end
     return int(total * _CALIBRATION + 0.5)
 
@@ -121,6 +105,80 @@ def _estimate_text(text: str) -> int:
 def estimate_text_tokens(text: str) -> int:
     """Public wrapper so callers outside this module share one estimate."""
     return _estimate_text(str(text or ""))
+
+
+def _run_cost(kind: int, run: int) -> float:
+    if run <= 0:
+        return 0.0
+    if kind == _LAT:
+        return max(1.0, run / _LATIN_CHARS_PER_TOKEN)
+    if kind == _NUM:
+        return max(1.0, run / _DIGIT_CHARS_PER_TOKEN)
+    if kind == _HAN:
+        return run * _HANGUL_PER_CHAR
+    if kind == _CJK:
+        return run * _CJK_PER_CHAR
+    if kind == _SP:
+        return (run - 1) * _SPACE_PER_EXTRA
+    if kind == _NL:
+        return run * _NEWLINE_PER_CHAR
+    if kind == _PUN:
+        return run * _PUNCT_PER_CHAR
+    return run * _SYMBOL_PER_CHAR
+
+
+def _chars_of_run_within(kind: int, run: int, room: float) -> int:
+    """The longest leading part of a *kind* run that costs at most *room*."""
+    if _run_cost(kind, run) <= room:
+        return run
+    if kind in (_LAT, _NUM):
+        per = _LATIN_CHARS_PER_TOKEN if kind == _LAT else _DIGIT_CHARS_PER_TOKEN
+        return 0 if room < 1.0 else min(run, int(room * per))
+    if kind == _SP:
+        return min(run, int(room / _SPACE_PER_EXTRA) + 1)
+    per_char = {
+        _HAN: _HANGUL_PER_CHAR,
+        _CJK: _CJK_PER_CHAR,
+        _NL: _NEWLINE_PER_CHAR,
+        _PUN: _PUNCT_PER_CHAR,
+    }.get(kind, _SYMBOL_PER_CHAR)
+    return min(run, int(room / per_char))
+
+
+def chars_within_tokens(text: str, tokens: int, *, from_end: bool = False) -> int:
+    """How many characters of *text* — from its head, or from its tail — the
+    estimator prices at no more than *tokens*.
+
+    One linear pass over the same runs :func:`estimate_text_tokens` walks, so
+    ``estimate_text_tokens(text[:n]) <= tokens`` holds for the returned ``n``
+    by construction rather than by search. Searching (estimate the prefix,
+    halve, repeat) was quadratic in practice: a replay window clipping twenty
+    200 KB tool results spent seconds doing it.
+    """
+    s = str(text or "")
+    if tokens <= 0 or not s:
+        return 0
+    # int(total × calibration + 0.5) <= tokens  ⇔  total < (tokens + 0.5) / calibration
+    limit = (tokens + 0.5) / _CALIBRATION - 1e-9
+    length = len(s)
+    total = 0.0
+    taken = 0
+    index = length - 1 if from_end else 0
+    step = -1 if from_end else 1
+    while 0 <= index < length:
+        kind = _class_of(s[index])
+        end = index + step
+        while 0 <= end < length and _class_of(s[end]) == kind:
+            end += step
+        run = abs(end - index)
+        cost = _run_cost(kind, run)
+        if total + cost <= limit:
+            total += cost
+            taken += run
+            index = end
+            continue
+        return taken + _chars_of_run_within(kind, run, limit - total)
+    return taken
 
 
 def _estimate_block(block: Any) -> int:

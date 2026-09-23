@@ -46,26 +46,122 @@ MAX_RECORD_BYTES = 64 * 1024
 _CAP_CHECK_EVERY = 200
 
 
-def _bound_record_line(line: str) -> str:
-    """Truncate an oversized serialized record to MAX_RECORD_BYTES.
+def _image_marker(block: Dict[str, Any]) -> Dict[str, Any]:
+    raw = block.get("source")
+    source: Dict[str, Any] = raw if isinstance(raw, dict) else {}
+    media = str(source.get("media_type") or "image")
+    size_kb = len(str(source.get("data") or "")) * 3 // 4 // 1024
+    return {"type": "text", "text": f"[image: {media}, ~{size_kb} KB, not kept in the transcript]"}
 
-    The cut happens on the record's ``content`` field (the only place
-    multi-hundred-KB payloads ride), preserving valid JSON and stamping an
-    explicit marker so downstream readers know bytes were dropped."""
+
+def _drop_images(blocks: List[Any]) -> List[Any]:
+    """Images (top level and inside tool results) → a marker naming them."""
+    out: List[Any] = []
+    for block in blocks:
+        if not isinstance(block, dict):
+            out.append(block)
+            continue
+        if block.get("type") == "image":
+            out.append(_image_marker(block))
+            continue
+        if block.get("type") == "tool_result" and isinstance(block.get("content"), list):
+            block = {**block, "content": _drop_images(block["content"])}
+        out.append(block)
+    return out
+
+
+def _clip_block_texts(blocks: List[Any], keep: int) -> List[Any]:
+    """Every text / tool-result string over *keep* characters keeps its head."""
+
+    def clip(text: str) -> str:
+        if len(text) <= keep:
+            return text
+        return text[:keep] + f"\n… [{len(text) - keep} chars truncated at record cap]"
+
+    out: List[Any] = []
+    for block in blocks:
+        if not isinstance(block, dict):
+            out.append(block)
+            continue
+        block = dict(block)
+        if isinstance(block.get("text"), str):
+            block["text"] = clip(block["text"])
+        content = block.get("content")
+        if isinstance(content, str):
+            block["content"] = clip(content)
+        elif isinstance(content, list):
+            block["content"] = _clip_block_texts(content, keep)
+        out.append(block)
+    return out
+
+
+def _fits(rec: Dict[str, Any]) -> Optional[str]:
+    line = json.dumps(rec, ensure_ascii=False)
+    return line if len(line.encode("utf-8", "ignore")) <= MAX_RECORD_BYTES else None
+
+
+def _bound_record_line(line: str) -> str:
+    """Bring an oversized serialized record under MAX_RECORD_BYTES — and keep
+    it a record.
+
+    The result must stay valid JSON. The previous fallback cut the raw line
+    in half, which is not a smaller record but an unreadable one: ``recent``
+    skips it, so the whole row — the user's words that came with a
+    screenshot included — vanished from the conversation. Production had 588
+    such rows in one session, every one of them an image row, because only
+    string content had a cut and block-list content fell through to the
+    hard cut.
+
+    Order: images go first (they are the bytes, and the words beside them are
+    the meaning); then the longest texts keep their heads; and only if the
+    record is still over — a pathological metadata payload — does it become
+    an envelope that says what was dropped.
+    """
     if len(line.encode("utf-8", "ignore")) <= MAX_RECORD_BYTES:
         return line
     try:
         rec = json.loads(line)
-        content = rec.get("content")
-        if isinstance(content, str) and len(content) > 4096:
-            overshoot = len(line.encode("utf-8", "ignore")) - MAX_RECORD_BYTES
-            keep = max(4096, len(content) - overshoot - 256)
-            dropped = len(content) - keep
-            rec["content"] = content[:keep] + f"\n… [{dropped} chars truncated at record cap]"
-            return json.dumps(rec, ensure_ascii=False)
-    except Exception:  # noqa: BLE001 — malformed record: hard-cut the line
-        pass
-    return line[: MAX_RECORD_BYTES // 2]
+    except Exception:  # noqa: BLE001 — not JSON to begin with
+        return json.dumps(
+            {"type": "event", "event": "stm.unreadable_record", "data": {"bytes": len(line)}}
+        )
+    if not isinstance(rec, dict):
+        return json.dumps({"type": "event", "event": "stm.unreadable_record"})
+
+    content = rec.get("content")
+    if isinstance(content, str) and len(content) > 4096:
+        overshoot = len(line.encode("utf-8", "ignore")) - MAX_RECORD_BYTES
+        keep = max(4096, len(content) - overshoot - 256)
+        dropped = len(content) - keep
+        rec["content"] = content[:keep] + f"\n… [{dropped} chars truncated at record cap]"
+        fitted = _fits(rec)
+        if fitted is not None:
+            return fitted
+    elif isinstance(content, list):
+        rec["content"] = _drop_images(content)
+        fitted = _fits(rec)
+        if fitted is not None:
+            return fitted
+        base = rec["content"]
+        keep = MAX_RECORD_BYTES // 4
+        while keep >= 256:
+            rec["content"] = _clip_block_texts(base, keep)
+            fitted = _fits(rec)
+            if fitted is not None:
+                return fitted
+            keep //= 2
+
+    rec.pop("metadata", None)
+    fitted = _fits(rec)
+    if fitted is not None:
+        return fitted
+    envelope = {
+        k: rec[k]
+        for k in ("type", "role", "ts", "event_id", "kind", "direction", "counterpart_id")
+        if k in rec
+    }
+    envelope["content"] = f"[record over {MAX_RECORD_BYTES} bytes, not kept]"
+    return json.dumps(envelope, ensure_ascii=False)
 
 
 class _JSONLSTMStore:
