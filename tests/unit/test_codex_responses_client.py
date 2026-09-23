@@ -129,7 +129,10 @@ class TestWire:
                 {"type": "tool_use", "id": "call_1", "name": "Read", "input": {"file_path": "/a"}}]},
             {"role": "user", "content": [
                 {"type": "tool_result", "tool_use_id": "call_1", "content": "body"}]},
-        ])
+        # The tool the history used is declared: a request that defines no
+        # tools gets its tool history as prose instead (Anthropic rejects
+        # tool blocks there), which is a different test.
+        ], tools=[{"name": "Read", "description": "read", "input_schema": {"type": "object"}}])
         kinds = [item["type"] for item in seen["input"]]
         assert "function_call" in kinds and "function_call_output" in kinds
 

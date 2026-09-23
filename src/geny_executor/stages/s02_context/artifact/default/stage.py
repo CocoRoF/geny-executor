@@ -21,6 +21,7 @@ from geny_executor.stages.s02_context.interface import (
     ContextStrategy,
     HistoryCompactor,
     MemoryRetriever,
+    TurnReplay,
 )
 from geny_executor.stages.s02_context.artifact.default.strategies import (
     HybridStrategy,
@@ -36,6 +37,10 @@ from geny_executor.stages.s02_context.artifact.default.compactors import (
 from geny_executor.stages.s02_context.artifact.default.retrievers import (
     NullRetriever,
     StaticRetriever,
+)
+from geny_executor.stages.s02_context.artifact.default.replay import (
+    NoReplay,
+    TurnWindowReplay,
 )
 
 logger = logging.getLogger(__name__)
@@ -84,6 +89,7 @@ class ContextStage(Stage[Any, Any]):
         compactor: Optional[HistoryCompactor] = None,
         retriever: Optional[MemoryRetriever] = None,
         *,
+        replay: Optional[TurnReplay] = None,
         stateless: bool = False,
         provider: Optional[MemoryProvider] = None,
         retrieval_timeout_s: float = 10.0,
@@ -119,6 +125,15 @@ class ContextStage(Stage[Any, Any]):
                 },
                 description="Memory retrieval strategy",
             ),
+            "replay": StrategySlot(
+                name="replay",
+                strategy=replay or TurnWindowReplay(),
+                registry={
+                    "turn_window": TurnWindowReplay,
+                    "none": NoReplay,
+                },
+                description="How the previous turns come back in front of this one",
+            ),
         }
         self._stateless = stateless
         self._provider = provider
@@ -146,6 +161,10 @@ class ContextStage(Stage[Any, Any]):
     @property
     def _retriever(self) -> MemoryRetriever:
         return self._slots["retriever"].strategy  # type: ignore[return-value]
+
+    @property
+    def _replay(self) -> TurnReplay:
+        return self._slots["replay"].strategy  # type: ignore[return-value]
 
     @property
     def name(self) -> str:
@@ -254,6 +273,20 @@ class ContextStage(Stage[Any, Any]):
         return chunks
 
     async def execute(self, input: Any, state: PipelineState) -> Any:
+        # The previous turns first, so the context strategy, retrieval and
+        # the compaction check below all see the history the model will.
+        # Iteration 0 only: later iterations of the same turn already carry
+        # it, and rebuilding it mid-turn would move the prompt-cache prefix.
+        if state.iteration == 0:
+            state.metadata.pop("memory.short_term_window", None)
+            try:
+                replayed = await self._replay.replay(state, self._provider)
+            except Exception:  # noqa: BLE001 — a turn without its past beats no turn
+                logger.warning("context: turn replay failed", exc_info=True)
+                replayed = None
+            if replayed:
+                state.add_event("context.short_term_window", replayed)
+
         # Build context via strategy
         await self._strategy.build_context(state)
 

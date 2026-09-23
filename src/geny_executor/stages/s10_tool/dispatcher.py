@@ -79,7 +79,19 @@ class ToolDispatcher:
         if isinstance(router, RegistryRouter):
             router.bind_registry(stage._registry)
 
-        results = await self._executor.execute_all(
-            [dict(tool_call)], router, ctx, on_event=state.add_event
+        # The same guard Stage 10 applies — an internal loop must not be a
+        # way around it.
+        from geny_executor.stages.s10_tool import repeat_guard
+
+        calls = [dict(tool_call)]
+        precomputed, runnable, blocked_names, skipped_names = repeat_guard.guard_calls(
+            calls, state.shared
         )
+        executed = (
+            await self._executor.execute_all(runnable, router, ctx, on_event=state.add_event)
+            if runnable
+            else []
+        )
+        results = repeat_guard.merge_in_order(calls, precomputed, executed)
+        repeat_guard.report(state, calls, results, blocked_names, skipped_names)
         return results[0]

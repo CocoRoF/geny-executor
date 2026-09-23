@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any, Awaitable, Callable, Dict, List, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
 from geny_executor.core.state import PipelineState
 from geny_executor.memory.provider import MemoryHooks, MemoryProvider
@@ -36,6 +36,26 @@ from geny_executor.stages.s02_context.interface import MemoryRetriever
 from geny_executor.stages.s02_context.types import MemoryChunk
 
 logger = logging.getLogger(__name__)
+
+#: Set by the Stage 2 turn replay when it put the previous turns in front of
+#: this one (``stages.s02_context.artifact.default.replay``).
+_WINDOW_KEY = "memory.short_term_window"
+
+
+def _is_transcript_file(hit: Any, prefixes: Tuple[str, ...]) -> bool:
+    """Whether *hit* is a note whose file name marks it as a turn record.
+
+    The name is the one thing every plane reports: a vector hit carries a
+    category and a file name, a keyword hit a category and a key, and
+    neither carries the note's tags or its ``source``.
+    """
+    meta = getattr(hit, "metadata", None) or {}
+    name = str(meta.get("filename") or getattr(hit, "key", "") or "")
+    if name.startswith("vector:"):
+        name = name[len("vector:") :]
+    base = name.rsplit("/", 1)[-1]
+    return any(base.startswith(p) or name.startswith(p) for p in prefixes)
+
 
 # Sentinel distinguishing "layer not prefetched — fetch inline" from
 # "prefetched and the fetch returned/failed to None".
@@ -137,10 +157,13 @@ class MemoryAwareRetriever(MemoryRetriever):
         # CONCURRENTLY, then apply in the same order/budget as before —
         # identical output, wall-clock capped by the slowest single
         # fetch instead of the sum of up to nine serial round-trips.
-        pf = await self._prefetch_layers(search_query, hooks)
+        replaying = bool(state.metadata.get(_WINDOW_KEY))
+        pf = await self._prefetch_layers(search_query, hooks, replaying=replaying)
 
         # ── L0: recent STM tail ─────────────────────────────────────
-        if hooks.recent_turns > 0:
+        # Not while the turn replay is active: the same turns are already in
+        # front of the model as messages, tools included.
+        if hooks.recent_turns > 0 and not replaying:
             before = total
             total = await self._load_recent_turns(
                 chunks, total, budget, hooks, prefetched=pf.get("recent", _UNFETCHED)
@@ -247,7 +270,9 @@ class MemoryAwareRetriever(MemoryRetriever):
 
     # ── concurrent fetch phase (TTFT program, 2.50.0) ────────────────
 
-    async def _prefetch_layers(self, query: str, hooks: MemoryHooks) -> Dict[str, Any]:
+    async def _prefetch_layers(
+        self, query: str, hooks: MemoryHooks, *, replaying: bool = False
+    ) -> Dict[str, Any]:
         """Fetch raw provider data for every eligible layer concurrently.
 
         The 2026-07-12 TTFT audit (finding B1) measured stage-2 retrieval
@@ -276,7 +301,7 @@ class MemoryAwareRetriever(MemoryRetriever):
             names.append(name)
             tasks.append(_safe())
 
-        if hooks.recent_turns > 0:
+        if hooks.recent_turns > 0 and not replaying:
             _add("recent", lambda: self._provider.stm().recent(n=hooks.recent_turns))
 
         async def _fetch_summary() -> Any:
@@ -303,14 +328,23 @@ class MemoryAwareRetriever(MemoryRetriever):
         # memory_search tool calls are unaffected): screen-observation style
         # buffers can dominate a vault and drown real recall.
         _excluded = set(getattr(hooks, "search_exclude_categories", ()) or ())
+        _transcripts = (
+            set(getattr(hooks, "transcript_categories", ()) or ()) if replaying else set()
+        )
+        _transcript_prefixes = (
+            tuple(getattr(hooks, "transcript_filename_prefixes", ()) or ()) if replaying else ()
+        )
 
         def _drop_excluded(hits):
-            if not _excluded or not hits:
+            if not hits or not (_excluded or _transcripts or _transcript_prefixes):
                 return hits
             kept = []
             for h in hits:
-                cat = (getattr(h, "metadata", None) or {}).get("category")
-                if cat in _excluded:
+                meta = getattr(h, "metadata", None) or {}
+                cat = meta.get("category")
+                if cat in _excluded or cat in _transcripts:
+                    continue
+                if _transcript_prefixes and _is_transcript_file(h, _transcript_prefixes):
                     continue
                 kept.append(h)
             return kept

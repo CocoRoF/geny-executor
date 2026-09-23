@@ -301,9 +301,21 @@ class ToolStage(Stage[Any, Any]):
         # otherwise default to its class-level budget.
         self._apply_max_concurrency(executor_strategy)
 
-        results = await executor_strategy.execute_all(
-            tool_calls, router, ctx, on_event=state.add_event
+        # Calls that cannot produce anything new are answered without running
+        # (a tool blocked for failing the same way, an identical call that
+        # already returned the same result). See ``repeat_guard``.
+        from geny_executor.stages.s10_tool import repeat_guard
+
+        precomputed, runnable, blocked_names, skipped_names = repeat_guard.guard_calls(
+            tool_calls, state.shared
         )
+        executed = (
+            await executor_strategy.execute_all(runnable, router, ctx, on_event=state.add_event)
+            if runnable
+            else []
+        )
+        results = repeat_guard.merge_in_order(tool_calls, precomputed, executed)
+        repeat_guard.report(state, tool_calls, results, blocked_names, skipped_names)
 
         state.add_message("user", results)
         state.tool_results = results

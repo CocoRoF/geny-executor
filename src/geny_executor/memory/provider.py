@@ -1287,7 +1287,21 @@ class MemoryHooks:
     # buffers like screen observations can dominate a vault (observed: 59%
     # of 6.2k notes) and drown real recall in noise.
     search_exclude_categories: Tuple[str, ...] = ()
+    # Notes that are RECORDS OF THE CONVERSATION ITSELF — rollups of what
+    # was said, one note per executed turn — named by category or by
+    # filename prefix. While the turn replay is active
+    # (``memory.short_term_window``), the automatic layers leave them out:
+    # the recent turns are already in front of the model as messages, and
+    # the same words coming back through search, under "Relevant
+    # Knowledge", is how a three-turn-old "done ✅" reads as a fact about
+    # now. Explicit ``memory_search`` still reaches them. Empty: the host
+    # has no such notes, or wants them surfaced anyway.
+    transcript_categories: Tuple[str, ...] = ()
+    transcript_filename_prefixes: Tuple[str, ...] = ()
     # STM tail size injected as the L0 chunk regardless of query overlap.
+    # Stands down while the turn replay is active: the replay carries the
+    # same turns as messages, with their tool evidence, and this layer
+    # carried them as flattened text in the system prompt.
     recent_turns: int = 6
     # When True, MemoryAwareRetriever returns only L0/L1/L1.5/L1.7 and
     # leaves heavy semantic / keyword layers to the host's progressive

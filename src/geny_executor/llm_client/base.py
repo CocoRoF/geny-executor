@@ -23,6 +23,7 @@ Implementations adapt a vendor SDK to the canonical :class:`APIRequest` /
 
 from __future__ import annotations
 
+import json
 import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field, replace as _dc_replace
@@ -369,8 +370,75 @@ class BaseClient(ABC):
             tool_choice=tool_choice,
         )
         self._lower_unseeable_images(request)
+        self._lower_tool_history(request)
 
         return request
+
+    # ── tool history on a request that carries no tools ──────────────
+
+    #: How much of a past result survives as prose.
+    _LOWERED_RESULT_CHARS = 2_000
+
+    def _lower_tool_history(self, request: APIRequest) -> None:
+        """Rewrite ``tool_use`` / ``tool_result`` blocks as prose when the
+        request defines no tools.
+
+        Anthropic rejects such a request outright ("requests which include
+        tool_use or tool_result blocks must define tools"), and a
+        tool-less local chat template tends to choke on them. They arrive
+        here legitimately: the replayed turns (``memory.short_term_window``)
+        carry the calls an earlier hop made, and this hop may be a model
+        told not to use tools, or a turn that simply has none.
+
+        Prose rather than deletion, for the same reason images get a
+        sentence: "I read inv.txt and it said X" is the evidence that stops
+        the work being redone, and a history with the calls cut out reads as
+        a history in which nothing was done. Copy-on-write, like the image
+        lowering: the canonical history keeps its blocks for the next hop,
+        which may have tools.
+        """
+        if request.tools:
+            return
+        names: Dict[str, str] = {}
+        lowered = 0
+        for position, message in enumerate(request.messages):
+            content = message.get("content")
+            if not isinstance(content, list):
+                continue
+            replaced: List[Any] = []
+            changed = False
+            for block in content:
+                btype = block.get("type") if isinstance(block, dict) else None
+                if btype == "tool_use":
+                    names[str(block.get("id") or "")] = str(block.get("name") or "tool")
+                    args = json.dumps(block.get("input") or {}, ensure_ascii=False)
+                    if len(args) > 300:
+                        args = args[:300] + "…"
+                    replaced.append(
+                        {"type": "text", "text": f"[called {block.get('name') or 'tool'} {args}]"}
+                    )
+                    lowered += 1
+                    changed = True
+                elif btype == "tool_result":
+                    name = names.get(str(block.get("tool_use_id") or ""), "tool")
+                    body = _tool_result_text(block.get("content"))
+                    if len(body) > self._LOWERED_RESULT_CHARS:
+                        cut = len(body) - self._LOWERED_RESULT_CHARS
+                        body = body[: self._LOWERED_RESULT_CHARS] + f"…[+{cut} chars]"
+                    verdict = "failed" if block.get("is_error") else "returned"
+                    replaced.append({"type": "text", "text": f"[{name} {verdict}: {body}]"})
+                    lowered += 1
+                    changed = True
+                else:
+                    replaced.append(block)
+            if changed:
+                request.messages[position] = {**message, "content": replaced}
+        if lowered:
+            logger.info(
+                "%s request has no tools — %d tool blocks in history rewritten as prose",
+                self.provider,
+                lowered,
+            )
 
     # ── images a backend cannot see ──────────────────────────────────
 
@@ -764,3 +832,18 @@ class BaseClient(ABC):
         """
         del timeout_s
         return True
+
+
+def _tool_result_text(content: Any) -> str:
+    """A tool result's content as plain text (strings, text blocks)."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: List[str] = []
+        for item in content:
+            if isinstance(item, dict) and item.get("type") == "text":
+                parts.append(str(item.get("text") or ""))
+            elif isinstance(item, dict) and item.get("type") == "image":
+                parts.append("[image]")
+        return "\n".join(p for p in parts if p)
+    return "" if content is None else str(content)

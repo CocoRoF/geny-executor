@@ -420,6 +420,30 @@ async def _probe_s16_early_stop_on() -> None:
     assert state2.loop_decision == "complete"
 
 
+async def _probe_s16_repeat_stop_after() -> None:
+    """Refused calls this turn arm the report-and-stop note at the threshold."""
+    from geny_executor.stages.s10_tool.repeat_guard import REFUSED_KEY
+    from geny_executor.stages.s16_loop import LoopStage
+
+    def _state() -> PipelineState:
+        state = PipelineState(session_id="loop")
+        state.iteration = 1
+        state.pending_tool_calls = [{"id": "t1"}]
+        state.shared[REFUSED_KEY] = 1
+        state.add_message("assistant", [{"type": "text", "text": "again"}])
+        return state
+
+    state = _state()
+    await LoopStage().execute("in", state)
+    assert not any(e["type"] == "loop.repeat_stop" for e in state.events)
+
+    stage = LoopStage()
+    stage.update_config({"repeat_stop_after": 1})
+    state2 = _state()
+    await stage.execute("in", state2)
+    assert any(e["type"] == "loop.repeat_stop" for e in state2.events)
+
+
 async def _probe_s18_stateless() -> None:
     from geny_executor.stages.s18_memory import MemoryStage
 
@@ -472,6 +496,7 @@ LIVENESS: Dict[Tuple[int, str], Entry] = {
     (12, "max_delegations"): Probe(_probe_s12_max_delegations),
     (16, "max_turns"): Probe(_probe_s16_max_turns),
     (16, "early_stop_on"): Probe(_probe_s16_early_stop_on),
+    (16, "repeat_stop_after"): Probe(_probe_s16_repeat_stop_after),
     (18, "stateless"): Probe(_probe_s18_stateless),
     (18, "persistence_path"): Probe(_probe_s18_persistence_path),
 }

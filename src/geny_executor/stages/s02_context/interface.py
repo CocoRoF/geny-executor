@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from abc import abstractmethod
-from typing import List
+from typing import Any, Dict, List, Optional
 
 from geny_executor.core.stage import Strategy
 from geny_executor.core.state import PipelineState
@@ -40,3 +40,19 @@ class MemoryRetriever(Strategy):
     @abstractmethod
     async def retrieve(self, query: str, state: PipelineState) -> List[MemoryChunk]:
         """Retrieve relevant memory chunks for a query."""
+
+
+class TurnReplay(Strategy):
+    """Base interface for putting the previous turns back in front of this one.
+
+    A host that builds a fresh ``PipelineState`` per turn starts every turn
+    with an empty history; the replay is what rebuilds it. It runs once, at
+    iteration 0, before the context strategy and memory retrieval.
+    """
+
+    @abstractmethod
+    async def replay(
+        self, state: PipelineState, provider: Optional[Any]
+    ) -> Optional[Dict[str, Any]]:
+        """Prepend earlier turns to ``state.messages``; return what was done
+        (for the event) or ``None`` when nothing was."""

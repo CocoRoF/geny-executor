@@ -3,8 +3,8 @@
 <!-- AUTO-GENERATED — do not edit by hand. -->
 <!-- Regenerate: python scripts/gen_event_docs.py -->
 
-> Generated from `geny_executor.events.catalog` on 2026-09-19.
-> Catalogue version: **4** · events: **120**
+> Generated from `geny_executor.events.catalog` on 2026-09-23.
+> Catalogue version: **4** · events: **125**
 
 Every event name the engine emits, value == wire string. The enum
 is a *names registry*, not a rename — consumers matching raw strings
@@ -167,6 +167,16 @@ Enum member: `EventTypes.LOOP_ESCALATE`
 | `has_tool_results` | bool |
 | `upstream_decision` | str |
 
+### `loop.repeat_stop`
+
+Enum member: `EventTypes.LOOP_REPEAT_STOP`
+
+| Field | Description |
+|---|---|
+| `phase` | str — 'final' (report-and-stop note attached) \| 'stop' (turn ended) |
+| `refused` | int — tool calls refused so far this turn |
+| `iteration` | int |
+
 ## Stage 1 — Input
 
 ### `input.normalized`
@@ -256,6 +266,20 @@ Enum member: `EventTypes.CONTEXT_COMPACTION_SCHEDULED`
 |---|---|
 | `compactor` | str — compactor name/class |
 | `snapshot_messages` | int — history length the background summary covers |
+
+### `context.short_term_window`
+
+Enum member: `EventTypes.CONTEXT_SHORT_TERM_WINDOW`
+
+| Field | Description |
+|---|---|
+| `turns` | int — logical turns replayed (one instruction and everything after it) |
+| `full` | int — of those, turns replayed with their tool calls and results |
+| `dialogue` | int — turns replayed as conversation plus a used-tools line |
+| `tokens` | int — estimated tokens the replay costs |
+| `budget` | int — tokens it was allowed (share of the route's input window) |
+| `degraded` | list[str] — steps taken to fit, in order; empty when everything fit |
+| `messages` | int — messages prepended to the history |
 
 ## Stage 18 — Memory (+ Stage 2 compaction)
 
@@ -563,6 +587,31 @@ Enum member: `EventTypes.TOOL_EXECUTE_COMPLETE`
 |---|---|
 | `count` | int |
 | `errors` | int — results flagged is_error |
+
+### `tool.repeat_failure`
+
+Enum member: `EventTypes.TOOL_REPEAT_FAILURE`
+
+| Field | Description |
+|---|---|
+| `tools` | list[{name: str, count: int}] — failing the same way past the warn threshold |
+
+### `tool.repeat_blocked`
+
+Enum member: `EventTypes.TOOL_REPEAT_BLOCKED`
+
+| Field | Description |
+|---|---|
+| `tools` | list[str] — calls not run because the tool hit the block threshold this turn |
+
+### `tool.same_result`
+
+Enum member: `EventTypes.TOOL_SAME_RESULT`
+
+| Field | Description |
+|---|---|
+| `tools` | list[{name: str, count: int}] — identical call, identical result, past the warn threshold |
+| `skipped` | list[str] — identical calls answered from the previous result without running |
 
 ### `tool.call_start`
 

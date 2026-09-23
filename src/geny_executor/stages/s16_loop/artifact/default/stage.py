@@ -9,6 +9,7 @@ from geny_executor.core.slot import StrategySlot
 from geny_executor.core.stage import Stage
 from geny_executor.core.state import PipelineState
 from geny_executor.stages.s16_loop.interface import LoopController
+from geny_executor.stages.s16_loop.repeat_stop import DEFAULT_STOP_AFTER, apply_repeat_stop
 from geny_executor.stages.s16_loop.artifact.default.controllers import (
     BudgetAwareLoopController,
     MultiDimensionalBudgetController,
@@ -30,6 +31,7 @@ class LoopStage(Stage[Any, Any]):
         *,
         max_turns: Optional[int] = None,
         early_stop_on: Optional[List[str]] = None,
+        repeat_stop_after: int = DEFAULT_STOP_AFTER,
     ):
         self._slots: Dict[str, StrategySlot] = {
             "controller": StrategySlot(
@@ -50,6 +52,7 @@ class LoopStage(Stage[Any, Any]):
         }
         self._max_turns = max_turns
         self._early_stop_on: List[str] = list(early_stop_on or [])
+        self._repeat_stop_after = max(0, int(repeat_stop_after))
 
     @property
     def _controller(self) -> LoopController:
@@ -83,6 +86,18 @@ class LoopStage(Stage[Any, Any]):
                     min_value=0,
                 ),
                 ConfigField(
+                    name="repeat_stop_after",
+                    type="integer",
+                    label="End the turn after refused calls",
+                    description=(
+                        "Tool calls refused in one turn (repeating a call that returned the "
+                        "same result, or kept failing the same way) before the model is told "
+                        "to report and stop. 0 turns this off."
+                    ),
+                    default=DEFAULT_STOP_AFTER,
+                    min_value=0,
+                ),
+                ConfigField(
                     name="early_stop_on",
                     type="array",
                     label="Early Stop Signals",
@@ -97,6 +112,7 @@ class LoopStage(Stage[Any, Any]):
         return {
             "max_turns": self._max_turns or 0,
             "early_stop_on": list(self._early_stop_on),
+            "repeat_stop_after": self._repeat_stop_after,
         }
 
     def update_config(self, config: Dict[str, Any]) -> None:
@@ -118,6 +134,8 @@ class LoopStage(Stage[Any, Any]):
                 controller._max_turns = self._max_turns  # type: ignore[attr-defined]
         if "early_stop_on" in config:
             self._early_stop_on = list(config["early_stop_on"] or [])
+        if "repeat_stop_after" in config:
+            self._repeat_stop_after = max(0, int(config["repeat_stop_after"] or 0))
 
     @staticmethod
     def _controller_declares_max_turns(controller: LoopController) -> bool:
@@ -138,6 +156,7 @@ class LoopStage(Stage[Any, Any]):
             decision = "complete"
         else:
             decision = self._controller.decide(state)
+        decision = apply_repeat_stop(state, decision, self._repeat_stop_after)
 
         state.loop_decision = decision
 

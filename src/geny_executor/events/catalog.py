@@ -87,6 +87,10 @@ class EventTypes(str, Enum):
     LOOP_COMPLETE = "loop.complete"
     LOOP_ERROR = "loop.error"
     LOOP_ESCALATE = "loop.escalate"
+    #: The turn is being ended because the harness kept refusing the model's
+    #: calls (``s16_loop/repeat_stop.py``): ``final`` when the report-and-stop
+    #: note is attached, ``stop`` when the response to it ends the turn.
+    LOOP_REPEAT_STOP = "loop.repeat_stop"
 
     # ── Stage 1: Input ──
     INPUT_NORMALIZED = "input.normalized"
@@ -107,6 +111,9 @@ class EventTypes(str, Enum):
     # off the first-token critical path.
     CONTEXT_RETRIEVAL_TIMEOUT = "context.retrieval_timeout"
     CONTEXT_COMPACTION_SCHEDULED = "context.compaction_scheduled"
+    #: The previous turns were put back in front of this one as messages
+    #: (the ``replay`` slot). Once per turn, at iteration 0.
+    CONTEXT_SHORT_TERM_WINDOW = "context.short_term_window"
     MEMORY_COMPACTION_SUMMARIZED = "memory.compaction.summarized"
     MEMORY_COMPACTION_LLM_FAILED = "memory.compaction.llm_failed"
 
@@ -169,6 +176,12 @@ class EventTypes(str, Enum):
     # ── Stage 10: Tool ──
     TOOL_EXECUTE_START = "tool.execute_start"
     TOOL_EXECUTE_COMPLETE = "tool.execute_complete"
+    #: The repeat guard (``s10_tool/repeat_guard.py``): a tool failing the
+    #: same way past the warn threshold; calls not run because the tool is
+    #: blocked; an identical call returning an identical result.
+    TOOL_REPEAT_FAILURE = "tool.repeat_failure"
+    TOOL_REPEAT_BLOCKED = "tool.repeat_blocked"
+    TOOL_SAME_RESULT = "tool.same_result"
     # Per-call timing pair emitted by the executor strategies around each
     # individual dispatch (Stage 10 batches AND Stage 6 internal-loop
     # dispatches — both run through the same executors). Catalogued in
@@ -340,6 +353,11 @@ PAYLOADS: Dict[EventTypes, Dict[str, str]] = {
         "has_tool_results": "bool",
         "upstream_decision": "str",
     },
+    EventTypes.LOOP_REPEAT_STOP: {
+        "phase": "str — 'final' (report-and-stop note attached) | 'stop' (turn ended)",
+        "refused": "int — tool calls refused so far this turn",
+        "iteration": "int",
+    },
     EventTypes.INPUT_NORMALIZED: {
         "text_length": "int — normalized text length",
     },
@@ -367,6 +385,15 @@ PAYLOADS: Dict[EventTypes, Dict[str, str]] = {
     },
     EventTypes.CONTEXT_RETRIEVAL_TIMEOUT: {
         "timeout_s": "float — the retrieval_timeout_s bound that fired; the turn proceeds without memory",
+    },
+    EventTypes.CONTEXT_SHORT_TERM_WINDOW: {
+        "turns": "int — logical turns replayed (one instruction and everything after it)",
+        "full": "int — of those, turns replayed with their tool calls and results",
+        "dialogue": "int — turns replayed as conversation plus a used-tools line",
+        "tokens": "int — estimated tokens the replay costs",
+        "budget": "int — tokens it was allowed (share of the route's input window)",
+        "degraded": "list[str] — steps taken to fit, in order; empty when everything fit",
+        "messages": "int — messages prepended to the history",
     },
     EventTypes.CONTEXT_COMPACTION_SCHEDULED: {
         "compactor": "str — compactor name/class",
@@ -525,6 +552,16 @@ PAYLOADS: Dict[EventTypes, Dict[str, str]] = {
     EventTypes.TOOL_EXECUTE_COMPLETE: {
         "count": "int",
         "errors": "int — results flagged is_error",
+    },
+    EventTypes.TOOL_REPEAT_FAILURE: {
+        "tools": "list[{name: str, count: int}] — failing the same way past the warn threshold",
+    },
+    EventTypes.TOOL_REPEAT_BLOCKED: {
+        "tools": "list[str] — calls not run because the tool hit the block threshold this turn",
+    },
+    EventTypes.TOOL_SAME_RESULT: {
+        "tools": "list[{name: str, count: int}] — identical call, identical result, past the warn threshold",
+        "skipped": "list[str] — identical calls answered from the previous result without running",
     },
     EventTypes.TOOL_CALL_START: {
         "tool_use_id": "str",

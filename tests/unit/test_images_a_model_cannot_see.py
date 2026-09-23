@@ -83,8 +83,12 @@ class _Client(BaseClient):
         yield {}
 
     def build(self, messages):
+        # A tool is declared so tool_result blocks stay blocks: a request
+        # with no tools gets its tool history as prose, and what is under
+        # test here is the image inside the result, not the result itself.
         return self._build_request(
-            model_config=ModelConfig(model="m"), messages=messages, system="", tools=None,
+            model_config=ModelConfig(model="m"), messages=messages, system="",
+            tools=[{"name": "Shot", "description": "s", "input_schema": {"type": "object"}}],
             tool_choice=None, stream=False,
         )
 
@@ -146,7 +150,9 @@ class TestSeeingAUserImageButNotAToolOne:
         """Lowering the picture must not lose what the tool SAID, nor the
         id that pairs the result with its call — an orphaned tool_result is
         a 400 on every backend."""
-        caps = ClientCapabilities(supports_vision=True, supports_vision_tool_results=False)
+        caps = ClientCapabilities(
+            supports_vision=True, supports_vision_tool_results=False, supports_tools=True
+        )
         request = _Client(caps, []).build(_tool_result_messages())
         block = request.messages[0]["content"][0]
         assert block["tool_use_id"] == "t1"
