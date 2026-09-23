@@ -119,6 +119,11 @@ class FileMemoryProvider(MemoryProvider):
         self._initialized = False
         self._descriptor = self._build_descriptor()
 
+    @property
+    def hooks(self) -> Optional["MemoryHooks"]:
+        """The policy this provider was given (``set_hooks``), if any."""
+        return getattr(self, "_hooks", None)
+
     def set_hooks(self, hooks: MemoryHooks) -> None:
         """Swap the policy callbacks post-construction. Useful when
         the host installs business hooks after the provider has been

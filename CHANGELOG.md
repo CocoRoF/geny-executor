@@ -1,5 +1,24 @@
 # Changelog
 
+## [2.74.2] — 2026-09-23
+
+### Fixed — Stage 18 obeys the policy the host set on the provider
+
+`MemoryStage` gated execution records, reflection and promotion on a fresh
+`MemoryHooks()` of its own, never on the hooks the host installed with
+`provider.set_hooks` — which is where `MemoryHooks` documents they go. It did
+not show while hosts left the stage's provider unset; once one attached it, a
+host that said "never record executions" still had every turn filed as a
+dated LTM entry and an `insights` note. The stage now uses hooks given to it,
+else its provider's (`provider.hooks`, new on the file, SQL, ephemeral and
+composite providers), else the defaults.
+
+### Added
+
+A warning, once per stage, when the turn replay is on but has no memory
+provider to read from. 2.74.0 replayed nothing in production for exactly
+that reason, and nothing said so.
+
 ## [2.74.1] — 2026-09-23
 
 The replay shipped in 2.74.0 did nothing in production, and finding out why

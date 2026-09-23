@@ -124,3 +124,46 @@ class TestTheReplayFindsItsProvider:
 
         state = _run(go())
         assert any("EARLIER-ANSWER" in str(m["content"]) for m in state.messages[:-1])
+
+
+class TestTheProvidersPolicyIsTheStagesPolicy:
+    """``provider.set_hooks`` is where a host puts its memory policy, and
+    Stage 18 ignored it: it gated on a fresh ``MemoryHooks()`` of its own.
+    Geny said "never file executions" (it archives them itself) and every
+    turn was still filed — as an ``insights`` note, a category retrieval
+    boosts."""
+
+    async def _terminal_turn(self, stage, provider):
+        state = PipelineState(session_id="s")
+        state.messages = [_msg("user", "q"), _msg("assistant", "a")]
+        state.final_text = "a"
+        state.loop_decision = "complete"
+        await stage.execute(None, state)
+        return [e["type"] for e in state.events]
+
+    def test_the_host_saying_never_is_obeyed(self) -> None:
+        from geny_executor.memory.provider import MemoryEvent, MemoryHooks
+
+        async def go():
+            provider = await _provider()
+            provider.set_hooks(MemoryHooks(should_record_execution=lambda s: False))
+            stage = MemoryStage(strategy=ProviderDrivenStrategy(provider))
+            stage.provider = provider
+            return await self._terminal_turn(stage, provider)
+
+        assert MemoryEvent.EXECUTION_RECORDED.value not in _run(go())
+
+    def test_hooks_given_to_the_stage_still_win(self) -> None:
+        from geny_executor.memory.provider import MemoryEvent, MemoryHooks
+
+        async def go():
+            provider = await _provider()
+            provider.set_hooks(MemoryHooks(should_record_execution=lambda s: False))
+            stage = MemoryStage(
+                strategy=ProviderDrivenStrategy(provider),
+                hooks=MemoryHooks(should_record_execution=lambda s: True),
+            )
+            stage.provider = provider
+            return await self._terminal_turn(stage, provider)
+
+        assert MemoryEvent.EXECUTION_RECORDED.value in _run(go())

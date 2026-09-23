@@ -121,6 +121,11 @@ class SQLMemoryProvider(MemoryProvider):
         self._hooks = MemoryHooks()
         self._descriptor = self._build_descriptor()
 
+    @property
+    def hooks(self) -> Optional["MemoryHooks"]:
+        """The policy this provider was given (``set_hooks``), if any."""
+        return getattr(self, "_hooks", None)
+
     def set_hooks(self, hooks: "MemoryHooks") -> None:
         """Hold the hook bag for contract-surface uniformity.
 

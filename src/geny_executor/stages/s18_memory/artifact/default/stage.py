@@ -96,7 +96,13 @@ class MemoryStage(Stage[Any, Any]):
         self._stateless = stateless
         self._persistence_path = str(persistence_path)
         self._provider = provider
-        self._hooks = hooks or MemoryHooks()
+        # Hooks handed to the stage win; otherwise the stage follows its
+        # provider's (see ``_policy``). A stage that defaulted to a fresh
+        # ``MemoryHooks()`` ignored the policy the host set on the provider
+        # — ``provider.set_hooks`` is where the docs say it goes — so a host
+        # that said "never record executions" still had every turn filed.
+        self._explicit_hooks = hooks
+        self._default_hooks = MemoryHooks()
         if self._persistence_path and isinstance(self._persistence, NullPersistence):
             self._slots["persistence"].strategy = FilePersistence(base_dir=self._persistence_path)
 
@@ -107,6 +113,17 @@ class MemoryStage(Stage[Any, Any]):
     @provider.setter
     def provider(self, value: Optional[MemoryProvider]) -> None:
         self._provider = value
+
+    @property
+    def _hooks(self) -> MemoryHooks:
+        """The policy Stage 18 gates on: its own if given, else the
+        provider's, else the defaults."""
+        if self._explicit_hooks is not None:
+            return self._explicit_hooks
+        provider_hooks = getattr(self._provider, "hooks", None)
+        if isinstance(provider_hooks, MemoryHooks):
+            return provider_hooks
+        return self._default_hooks
 
     @property
     def _strategy(self) -> MemoryUpdateStrategy:

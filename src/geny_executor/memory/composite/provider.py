@@ -104,6 +104,11 @@ class CompositeMemoryProvider(MemoryProvider):
         for delegate in self._routing.distinct_providers():
             await delegate.close()
 
+    @property
+    def hooks(self) -> Optional["MemoryHooks"]:
+        """The policy this provider was given (``set_hooks``), if any."""
+        return getattr(self, "_hooks", None)
+
     def set_hooks(self, hooks: MemoryHooks) -> None:
         """Forward `MemoryHooks` to every distinct scope provider.
 

@@ -141,6 +141,8 @@ class ContextStage(Stage[Any, Any]):
         # In-flight background compaction (TTFT program, finding B3):
         # {"task": asyncio.Task[_CompactionShadow], "len": int, "tail_id": int}
         self._bg_compaction: Optional[Dict[str, Any]] = None
+        # Said once per stage: the replay is on but has nothing to read.
+        self._warned_no_memory_source = False
 
     @property
     def provider(self) -> Optional[MemoryProvider]:
@@ -301,6 +303,19 @@ class ContextStage(Stage[Any, Any]):
                 replayed = None
             if replayed:
                 state.add_event("context.short_term_window", replayed)
+            elif (
+                isinstance(self._replay, TurnWindowReplay)
+                and self._memory_source() is None
+                and not self._warned_no_memory_source
+            ):
+                # 2.74.0 shipped replaying nothing in production because of
+                # exactly this, and nothing said so.
+                self._warned_no_memory_source = True
+                logger.warning(
+                    "context: the turn replay is on but there is no memory provider to "
+                    "read the previous turns from (neither the stage nor its retriever "
+                    "has one) — every turn starts from an empty history"
+                )
 
         # Build context via strategy
         await self._strategy.build_context(state)

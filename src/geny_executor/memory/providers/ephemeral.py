@@ -653,6 +653,11 @@ class EphemeralMemoryProvider(MemoryProvider):
     async def close(self) -> None:
         self._closed = True
 
+    @property
+    def hooks(self) -> Optional["MemoryHooks"]:
+        """The policy this provider was given (``set_hooks``), if any."""
+        return getattr(self, "_hooks", None)
+
     def set_hooks(self, hooks: "MemoryHooks") -> None:
         """Hold the hook bag so the contract surface is uniform.
 
