@@ -1,5 +1,99 @@
 # Changelog
 
+## [2.74.0] — 2026-09-23
+
+What an agent knows about the turns just before this one — and the three
+failures that came from not knowing it: conflicts caused by memory, work
+repeated, and finished work not recognised as finished.
+
+### The diagnosis
+
+A host that builds a fresh `PipelineState` per turn (Geny does) starts every
+turn with an empty `state.messages`. The only thing carrying the conversation
+across was the retriever's L0 `recent_turns` layer, and it
+
+* counted STM **rows**, not turns — one tool use makes a turn four rows, so
+  `recent_turns=6` was about one and a half turns;
+* kept **text blocks only**, dropping every `tool_use` and `tool_result` —
+  the evidence of what had already been done;
+* put the survivors in the **system prompt** under `# Relevant Knowledge`,
+  where a three-turn-old statement reads as a standing fact.
+
+Checked on production: a memory probe whose marker lives in the agent's prose
+passes; the same probe whose evidence lives only in a tool result fails.
+
+### Added — the previous turns, replayed as messages (Stage 2 `replay` slot)
+
+`memory/short_term_window.py` rebuilds the last turns from STM, counted as
+**logical turns** (one instruction and everything after it):
+
+* the nearest **two** keep everything — user text, assistant text, `tool_use`
+  and `tool_result` in order, ids intact;
+* the **three** behind those keep the conversation — the instruction, all the
+  agent said (tail-first when cut, so the conclusion survives), and one line
+  naming what the tools did and to what:
+  `[used tools: Read(inv.txt), Bash(make) ×2 (1 failed)]`.
+
+`thinking` is not replayed (bound to the model that made it); images become a
+note; pairs are never split. A turn whose only answer is `[SILENT]` and that
+ran no tools does not take a slot — a production VTuber had 197 autonomous
+wake-ups against 5 user messages in its last 600 rows.
+
+The Stage 2 `replay` slot (`turn_window` | `none`) puts the window in front
+of the turn at iteration 0, only when the host brought no history of its own,
+and moves Stage 18's record watermark past it so nothing is recorded twice.
+Settings: `full_turns`, `dialogue_turns`, `window_share`, `silent_markers`.
+Event: `context.short_term_window`.
+
+### Changed — the window's budget is a share of the route, in tokens
+
+Not a constant. 15% of the route's **effective** input window (context minus
+the output reservation) — the tail Hermes protects (0.75 × 0.20 below 512K).
+A 32k local model gets ~3.7k tokens, a 200k model ~25k, a 1M model ~145k:
+a flat 40,000 characters was about 10k tokens of English, 40k of Korean, and a
+third of the 32k model either way. Under pressure the window sheds bulk
+before structure — the older full turn's results first, then utterances, then
+conversation turns, then the older full turn — and the newest turn is kept
+even over budget.
+
+### Changed — the token estimate is measured, not `len // 4`
+
+Claude spends about one token per Hangul syllable, so `len // 4` read a Korean
+conversation at a quarter of its size and compaction fired late. A
+character-class run estimator fitted to 26 differential `usage` measurements:
+MAPE 10.8%, bias 0.0%, Korean 9.2% (was 58% / −58% / 73%).
+`chars_within_tokens` cuts to a token budget in one pass over the same runs.
+
+### Changed — the replayed turns are not shown twice
+
+While the replay is active the retriever's L0 layer stands down, and the
+automatic search layers leave out notes the host declares as records of the
+conversation itself (`MemoryHooks.transcript_categories`,
+`transcript_filename_prefixes`). Explicit `memory_search` still reaches them.
+
+### Added — repeat guard and repeat stop
+
+Stage 10 (and the internal-loop dispatcher) no longer runs calls that cannot
+produce anything new: a tool failing the same way is warned at 3 and blocked
+at 4 (5 / 8 across different inputs; any success clears execution failures);
+an identical call returning an identical result is warned at 4 and answered
+from the previous result from the 5th. Stage 16 ends the turn once 3 calls
+have been refused (`repeat_stop_after`, 0 = off). Thresholds are the sibling
+runtime's measured ones. Events: `tool.repeat_failure`, `tool.repeat_blocked`,
+`tool.same_result`, `loop.repeat_stop`.
+
+### Fixed
+
+* **A request with no tools carried tool blocks.** Anthropic rejects that
+  outright, and the replay carries calls an earlier hop made. They are now
+  rewritten as prose (`[called Read {...}]`, `[Read returned: ...]`) on that
+  request only; the canonical history keeps its blocks.
+* **Image rows vanished from STM.** `_bound_record_line` cut any block-list
+  record over 64 KB in half — invalid JSON, skipped on read, and the user's
+  words beside the screenshot with it (588 rows in one production session).
+  Images now become a marker, texts keep their heads, the fallback is a valid
+  envelope.
+
 ## [2.73.0] — 2026-09-19
 
 Three numbers a long conversation depends on, and what they were actually
