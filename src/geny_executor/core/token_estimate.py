@@ -10,8 +10,26 @@ window, so a long tool-loop turn could trip the guard with no way for
 compaction to help. This module is the shared estimator both stages now
 use against ``state.context_window_budget``.
 
-The estimate is deliberately rough (≈4 chars/token, the heuristic Stage 2
-has always used) — it *gates compaction*, it does not bill. Image blocks
+The estimate *gates compaction*, it does not bill — but it has to be right
+about Korean, and ``len(text) // 4`` was not. Measured against Claude's own
+``usage.input_tokens`` on 26 Geny-shaped samples (2026-09-23, differential
+calls on the production Claude Code account):
+
+    len // 4          MAPE 58%   bias −58%   Korean subset MAPE 73%
+    this estimator    MAPE 9.5%  held-out 10.5% (20 random half splits)
+
+Korean runs about one token per character on Claude, English about one per
+three; four-characters-per-token made a Korean conversation look a quarter of
+its size, so compaction and the Stage-4 headroom guard both fired after the
+request had already outgrown the window.
+
+It counts **runs of one character class**, which is how BPE actually
+behaves: Latin letters merge (≈2.9 chars/token), Hangul costs per syllable,
+digits pair up, the first space rides on the next word. Coefficients are
+fitted to Claude — Geny's primary route — and deliberately so for every
+route: a conversation must survive failover to any hop, so the gate uses the
+most expensive tokenizer it may meet (a GPT hop spends ~0.75 per syllable,
+so there it compacts early rather than late, which is the safe direction). Image blocks
 are counted at a flat per-image estimate rather than their base64 length:
 a single 1568px screenshot is ~1.6k vision tokens but tens of thousands
 of base64 characters, and counting the characters would trip compaction
@@ -26,11 +44,83 @@ from typing import Any, List, Union
 # A flat estimate beats counting base64 characters (which over-counts by
 # ~50x and would trip compaction on a single screenshot).
 _IMAGE_TOKEN_ESTIMATE = 1_600
-_CHARS_PER_TOKEN = 4
+
+#: Tokens per Hangul syllable (Claude). A GPT tokenizer spends ~0.75.
+_HANGUL_PER_CHAR = 1.40
+#: Characters one Latin-letter run spends per token (minimum one token).
+_LATIN_CHARS_PER_TOKEN = 2.9
+_DIGIT_CHARS_PER_TOKEN = 2.0
+_PUNCT_PER_CHAR = 0.95
+#: Only spaces after the first — the first rides on the following word.
+_SPACE_PER_EXTRA = 0.25
+_NEWLINE_PER_CHAR = 1.5
+_CJK_PER_CHAR = 1.0
+#: Emoji and other non-ASCII symbols are several bytes each.
+_SYMBOL_PER_CHAR = 3.0
+#: The fit under-reads by ~5.6% on average. A gate should err the other way.
+_CALIBRATION = 1.06
+
+_SP, _NL, _NUM, _LAT, _HAN, _CJK, _PUN, _SYM = range(8)
+
+
+def _class_of(ch: str) -> int:
+    code = ord(ch)
+    if ch == " " or ch == "\t":
+        return _SP
+    if ch == "\n" or ch == "\r":
+        return _NL
+    if "0" <= ch <= "9":
+        return _NUM
+    if ("a" <= ch <= "z") or ("A" <= ch <= "Z"):
+        return _LAT
+    if 0xAC00 <= code <= 0xD7A3 or 0x1100 <= code <= 0x11FF or 0x3130 <= code <= 0x318F:
+        return _HAN
+    if 0x4E00 <= code <= 0x9FFF or 0x3400 <= code <= 0x4DBF or 0x3040 <= code <= 0x30FF:
+        return _CJK
+    if code < 0x80:
+        return _PUN
+    if ch.isalpha():
+        # Cyrillic, Greek, Arabic … merge like Latin.
+        return _LAT
+    return _SYM
 
 
 def _estimate_text(text: str) -> int:
-    return len(text) // _CHARS_PER_TOKEN
+    """Tokens in *text*, counted by character-class runs. See module doc."""
+    if not text:
+        return 0
+    total = 0.0
+    index = 0
+    length = len(text)
+    while index < length:
+        kind = _class_of(text[index])
+        end = index + 1
+        while end < length and _class_of(text[end]) == kind:
+            end += 1
+        run = end - index
+        if kind == _LAT:
+            total += max(1.0, run / _LATIN_CHARS_PER_TOKEN)
+        elif kind == _NUM:
+            total += max(1.0, run / _DIGIT_CHARS_PER_TOKEN)
+        elif kind == _HAN:
+            total += run * _HANGUL_PER_CHAR
+        elif kind == _CJK:
+            total += run * _CJK_PER_CHAR
+        elif kind == _SP:
+            total += (run - 1) * _SPACE_PER_EXTRA
+        elif kind == _NL:
+            total += run * _NEWLINE_PER_CHAR
+        elif kind == _PUN:
+            total += run * _PUNCT_PER_CHAR
+        else:
+            total += run * _SYMBOL_PER_CHAR
+        index = end
+    return int(total * _CALIBRATION + 0.5)
+
+
+def estimate_text_tokens(text: str) -> int:
+    """Public wrapper so callers outside this module share one estimate."""
+    return _estimate_text(str(text or ""))
 
 
 def _estimate_block(block: Any) -> int:

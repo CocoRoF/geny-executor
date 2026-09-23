@@ -23,6 +23,26 @@ from geny_executor.stages.s16_loop.interface import LoopDecision
 # ─────────────────────────────────────────────────────────────────
 
 
+def _text_of_tokens(tokens: int, unit: str = "x") -> str:
+    """Text the pipeline's estimator reads as ~``tokens`` tokens.
+
+    Sized BY the estimator rather than by an assumed chars-per-token ratio:
+    these fixtures used to hard-code ``len // 4``, which is the very
+    assumption 2.74.0 removed (Korean runs ~1 token per character on Claude,
+    so four-per-token made a Korean history look a quarter of its size).
+    """
+    from geny_executor.core.token_estimate import estimate_text_tokens
+
+    lo, hi = 0, max(8, tokens * 8)
+    while lo < hi:
+        mid = (lo + hi) // 2
+        if estimate_text_tokens(unit * mid) < tokens:
+            lo = mid + 1
+        else:
+            hi = mid
+    return unit * lo
+
+
 def _state(
     *,
     iteration: int = 0,
@@ -44,11 +64,11 @@ def _state(
     s.token_usage = TokenUsage(input_tokens=total_tokens, output_tokens=0)
     s.context_window_budget = context_window_budget
     # 2.51.0 (audit R2): TokenBudget/loop controllers now measure the
-    # ACTUAL next-request size via estimate_prompt_tokens (~4 chars/token)
-    # rather than cumulative token_usage. Materialize a user message of
-    # the requested size so the estimator reports ``total_tokens``.
+    # ACTUAL next-request size via estimate_prompt_tokens rather than
+    # cumulative token_usage. Materialize a user message the estimator
+    # reads as ``total_tokens``.
     if total_tokens > 0:
-        s.messages = [{"role": "user", "content": "x" * (total_tokens * 4)}]
+        s.messages = [{"role": "user", "content": _text_of_tokens(total_tokens)}]
     return s
 
 
