@@ -1,5 +1,34 @@
 # Changelog
 
+## [2.74.1] — 2026-09-23
+
+The replay shipped in 2.74.0 did nothing in production, and finding out why
+turned up two older recording bugs underneath it.
+
+### Fixed — the replay reads its provider where hosts put it
+
+The replay read only Stage 2's own `provider` slot. Hosts wire memory through
+the retriever (`attach_runtime(memory_retriever=MemoryAwareRetriever(p))`;
+`from_manifest` does the same) and leave that slot empty, because setting it
+also turns on a second retrieval pass. So every production turn still started
+from an empty history — caught by a probe whose answer lived only in a tool
+result, which the model then made up. The replay now falls back to the
+retriever's provider (`MemoryAwareRetriever.provider`).
+
+### Fixed — Stage 18 has one record watermark
+
+`ProviderDrivenStrategy` and `MemoryStage._drive_provider` both record new
+messages into STM, under two different watermarks. With the provider on the
+stage as well as the strategy, every message was recorded twice. And
+compaction translated only the stage's key, so a strategy-only host (Geny)
+had a watermark pointing past the end of a shortened history: nothing new
+was recorded until the list grew back. One key now (`STM_RECORDED_KEY`,
+`memory.last_recorded_idx`), shared by both recorders, the compaction
+reconciler and the replay.
+
+The strategy also records dehydrated copies now, as the stage always did:
+base64 image payloads stay in the live messages and out of STM.
+
 ## [2.74.0] — 2026-09-23
 
 What an agent knows about the turns just before this one — and the three

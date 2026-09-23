@@ -166,6 +166,21 @@ class ContextStage(Stage[Any, Any]):
     def _replay(self) -> TurnReplay:
         return self._slots["replay"].strategy  # type: ignore[return-value]
 
+    def _memory_source(self) -> Optional[MemoryProvider]:
+        """Where the replay reads the previous turns from.
+
+        The stage's own provider when a host attached one, else the one the
+        retriever was built with. Hosts wire memory through the retriever
+        (``attach_runtime(memory_retriever=MemoryAwareRetriever(p))``, and
+        ``from_manifest`` does the same) and leave the stage's provider
+        unset on purpose — setting it also turns on a second retrieval
+        pass. Reading only the stage's slot is how the replay shipped doing
+        nothing in production.
+        """
+        if self._provider is not None:
+            return self._provider
+        return getattr(self._retriever, "provider", None)
+
     @property
     def name(self) -> str:
         return "context"
@@ -280,7 +295,7 @@ class ContextStage(Stage[Any, Any]):
         if state.iteration == 0:
             state.metadata.pop("memory.short_term_window", None)
             try:
-                replayed = await self._replay.replay(state, self._provider)
+                replayed = await self._replay.replay(state, self._memory_source())
             except Exception:  # noqa: BLE001 — a turn without its past beats no turn
                 logger.warning("context: turn replay failed", exc_info=True)
                 replayed = None

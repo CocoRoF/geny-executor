@@ -128,6 +128,11 @@ class MemoryAwareRetriever(MemoryRetriever):
     def description(self) -> str:
         return "Provider-driven 6-layer memory retrieval (STM / LTM / Notes / Vector / Index)"
 
+    @property
+    def provider(self) -> MemoryProvider:
+        """The provider every layer reads — also the turn replay's source."""
+        return self._provider
+
     async def retrieve(self, query: str, state: PipelineState) -> List[MemoryChunk]:
         hooks = self._hooks
         if not query or not query.strip():

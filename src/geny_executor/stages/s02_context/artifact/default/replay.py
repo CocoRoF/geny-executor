@@ -21,6 +21,7 @@ from geny_executor.memory.short_term_window import (
     build_window,
     window_token_budget,
 )
+from geny_executor.memory.strategy import STM_RECORDED_KEY
 from geny_executor.stages.s02_context.interface import TurnReplay
 
 logger = logging.getLogger(__name__)
@@ -30,10 +31,9 @@ logger = logging.getLogger(__name__)
 #: host reads it to know what the model was shown.
 WINDOW_METADATA_KEY = "memory.short_term_window"
 
-#: Stage 18's record watermark (``ProviderDrivenStrategy``). Replayed
-#: messages are already in STM — that is where they came from — so the
-#: watermark moves past them.
-_RECORDED_KEY = "memory.provider_strategy_recorded_idx"
+#: Stage 18's record watermark. Replayed messages are already in STM — that
+#: is where they came from — so the watermark moves past them.
+_RECORDED_KEY = STM_RECORDED_KEY
 #: Geny's stamping cursor, which shadows the watermark when set.
 _HOST_RECORDED_KEYS = ("_stm_recorded_count",)
 

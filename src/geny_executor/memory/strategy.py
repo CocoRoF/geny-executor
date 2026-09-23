@@ -24,12 +24,23 @@ from typing import Optional
 
 from geny_executor.core.state import PipelineState
 from geny_executor.memory.provider import MemoryProvider, Turn
+from geny_executor.stages.s18_memory._dehydrate import dehydrate_message
 from geny_executor.stages.s18_memory.interface import MemoryUpdateStrategy
 
 logger = logging.getLogger(__name__)
 
 
-_RECORDED_KEY = "memory.provider_strategy_recorded_idx"
+#: Stage 18's ONE record watermark — an index into ``state.messages`` up to
+#: which STM already has every message. Shared with ``MemoryStage`` (which
+#: records too, whenever it holds a provider) and translated across a
+#: compaction by ``core.compaction.reconcile_recorded_index``.
+#:
+#: It used to be two keys. This strategy kept its own, so a stage that ALSO
+#: held the provider recorded every message twice, and a compaction — which
+#: only knew the stage's key — left this one pointing past the end of a
+#: shortened history: nothing new was recorded until the list regrew.
+STM_RECORDED_KEY = "memory.last_recorded_idx"
+_RECORDED_KEY = STM_RECORDED_KEY
 
 
 class ProviderDrivenStrategy(MemoryUpdateStrategy):
@@ -83,7 +94,9 @@ class ProviderDrivenStrategy(MemoryUpdateStrategy):
         recorded = 0
         for msg in new_msgs:
             try:
-                turn = Turn.from_state_message(msg)
+                # A dehydrated copy, as MemoryStage records: base64 payloads
+                # stay in the live messages for this run and out of STM.
+                turn = Turn.from_state_message(dehydrate_message(msg))
             except Exception:  # noqa: BLE001
                 logger.debug("provider_driven: Turn.from_state_message failed", exc_info=True)
                 continue
@@ -105,4 +118,4 @@ class ProviderDrivenStrategy(MemoryUpdateStrategy):
                 pass
 
 
-__all__ = ["ProviderDrivenStrategy"]
+__all__ = ["ProviderDrivenStrategy", "STM_RECORDED_KEY"]
