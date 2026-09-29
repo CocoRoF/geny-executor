@@ -93,9 +93,24 @@ def apply_state_mutations(
                 _ALLOWED_NAMESPACES,
             )
             continue
+        merge = _MERGED_KEYS.get(key)
+        if merge is not None:
+            value = merge(shared.get(key), value)
         shared[key] = value
         applied[key] = value
     return applied
+
+
+def _merge_witnessed(current: Any, added: Any) -> Any:
+    from geny_executor.tools.built_in._file_witness import merge_witnessed
+
+    return merge_witnessed(current, added)
+
+
+#: Keys whose proposed value is merged into the current one instead of
+#: replacing it. The file ledger is written by every Read — several at once
+#: when they run in parallel — so each proposes only what it adds.
+_MERGED_KEYS: Dict[str, Any] = {"executor.file_witnessed": _merge_witnessed}
 
 
 def apply_mutations_for_results(

@@ -130,6 +130,19 @@ def _streamable_factory(client: Any, url: str, headers: Optional[Dict[str, str]]
 _HTTP_TRANSPORTS = _SSE_TRANSPORTS | _STREAMABLE_HTTP_TRANSPORTS
 
 
+#: Default ceiling for one MCP tool call. Long enough for a slow search or
+#: a build a server runs; a server silent for five minutes is not coming back.
+DEFAULT_CALL_TIMEOUT_S = 300.0
+
+
+def _timeout_from(raw: Any) -> float:
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return DEFAULT_CALL_TIMEOUT_S
+    return value if value >= 0 else DEFAULT_CALL_TIMEOUT_S
+
+
 @dataclass
 class MCPServerConfig:
     """Configuration for an MCP server connection."""
@@ -141,6 +154,10 @@ class MCPServerConfig:
     transport: str = "stdio"  # stdio | http (streamable) | streamable-http | sse
     url: str = ""  # for http/streamable-http/sse transport
     headers: Dict[str, str] = field(default_factory=dict)
+    #: Wall-clock ceiling for one ``call_tool``. A server that stopped
+    #: answering used to hold the turn forever — every other MCP request
+    #: had a 10s bound, the call itself had none. 0 = no limit.
+    call_timeout_s: float = DEFAULT_CALL_TIMEOUT_S
 
 
 class MCPServerConnection:
@@ -623,7 +640,18 @@ class MCPServerConnection:
                 f"Cannot call tool '{tool_name}'."
             )
 
-        result = await self._client_session.call_tool(tool_name, arguments)
+        timeout = float(getattr(self.config, "call_timeout_s", 0) or 0)
+        call = self._client_session.call_tool(tool_name, arguments)
+        if timeout > 0:
+            try:
+                result = await asyncio.wait_for(call, timeout=timeout)
+            except asyncio.TimeoutError:
+                raise TimeoutError(
+                    f"MCP server '{self.config.name}' did not answer '{tool_name}' within "
+                    f"{timeout:g}s"
+                ) from None
+        else:
+            result = await call
         return _normalize_mcp_result(result)
 
 
@@ -1020,6 +1048,9 @@ class MCPManager:
                 transport=transport,
                 url=server_cfg.get("url", ""),
                 headers=server_cfg.get("headers", {}),
+                call_timeout_s=_timeout_from(
+                    server_cfg.get("call_timeout_s", DEFAULT_CALL_TIMEOUT_S)
+                ),
             )
             manager._configs[name] = config
 

@@ -40,6 +40,9 @@ See ``executor_uplift/06_design_tool_system.md`` §7 and
 
 from __future__ import annotations
 
+import asyncio
+import weakref
+
 import logging
 from typing import Any, Dict, List, Optional
 
@@ -67,6 +70,26 @@ def _load_ddgs() -> Optional[Any]:
     through this same indirection so the patch still takes effect.
     """
     return _backends._load_ddgs()
+
+
+#: Searches in flight at once, across every caller in the process. A model
+#: fanning out eight searches in one step got most of them rate-limited
+#: (DuckDuckGo answers bursts with 202 "ratelimit"); the tool is still
+#: concurrency-safe — two run, the rest wait their turn.
+_MAX_CONCURRENT_SEARCHES = 2
+_semaphores: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Semaphore]" = (
+    weakref.WeakKeyDictionary()
+)
+
+
+def _search_slot() -> asyncio.Semaphore:
+    """One semaphore per event loop (a Semaphore is bound to the loop it waits on)."""
+    loop = asyncio.get_running_loop()
+    sem = _semaphores.get(loop)
+    if sem is None:
+        sem = asyncio.Semaphore(_MAX_CONCURRENT_SEARCHES)
+        _semaphores[loop] = sem
+    return sem
 
 
 class WebSearchTool(Tool):
@@ -173,7 +196,8 @@ class WebSearchTool(Tool):
             return ToolResult(content=str(exc), is_error=True)
 
         try:
-            hits = await backend.search(query, max_results, region, safesearch)
+            async with _search_slot():
+                hits = await backend.search(query, max_results, region, safesearch)
         except WebSearchConfigError as exc:
             # Missing key / url (or missing ddgs package) → config hint.
             return ToolResult(content=str(exc), is_error=True)

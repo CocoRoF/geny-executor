@@ -327,6 +327,9 @@ class AnthropicClient(BaseClient):
                 kwargs["base_url"] = self._base_url
             if self._default_headers:
                 kwargs["default_headers"] = self._default_headers
+            from geny_executor.llm_client.timeouts import sdk_client_kwargs
+
+            kwargs.update(sdk_client_kwargs(anthropic.Timeout))
             self._client = anthropic.AsyncAnthropic(**kwargs)
         return self._client
 

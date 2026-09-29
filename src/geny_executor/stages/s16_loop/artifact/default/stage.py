@@ -10,6 +10,12 @@ from geny_executor.core.stage import Stage
 from geny_executor.core.state import PipelineState
 from geny_executor.stages.s16_loop.interface import LoopController
 from geny_executor.stages.s16_loop.repeat_stop import DEFAULT_STOP_AFTER, apply_repeat_stop
+from geny_executor.stages.s16_loop.turn_budget import (
+    DEFAULT_HARD_TOKENS,
+    DEFAULT_SOFT_TOKENS,
+    apply_step_limit,
+    apply_turn_budget,
+)
 from geny_executor.stages.s16_loop.artifact.default.controllers import (
     BudgetAwareLoopController,
     MultiDimensionalBudgetController,
@@ -32,6 +38,8 @@ class LoopStage(Stage[Any, Any]):
         max_turns: Optional[int] = None,
         early_stop_on: Optional[List[str]] = None,
         repeat_stop_after: int = DEFAULT_STOP_AFTER,
+        turn_soft_input_tokens: int = DEFAULT_SOFT_TOKENS,
+        turn_hard_input_tokens: int = DEFAULT_HARD_TOKENS,
     ):
         self._slots: Dict[str, StrategySlot] = {
             "controller": StrategySlot(
@@ -53,6 +61,8 @@ class LoopStage(Stage[Any, Any]):
         self._max_turns = max_turns
         self._early_stop_on: List[str] = list(early_stop_on or [])
         self._repeat_stop_after = max(0, int(repeat_stop_after))
+        self._turn_soft_input_tokens = max(0, int(turn_soft_input_tokens))
+        self._turn_hard_input_tokens = max(0, int(turn_hard_input_tokens))
 
     @property
     def _controller(self) -> LoopController:
@@ -98,6 +108,30 @@ class LoopStage(Stage[Any, Any]):
                     min_value=0,
                 ),
                 ConfigField(
+                    name="turn_soft_input_tokens",
+                    type="integer",
+                    label="Ask to wrap up after (input tokens per turn)",
+                    description=(
+                        "Cumulative prompt tokens one turn may read before the model is "
+                        "told to finish the most valuable remaining step and report. "
+                        "0 turns this note off."
+                    ),
+                    default=DEFAULT_SOFT_TOKENS,
+                    min_value=0,
+                ),
+                ConfigField(
+                    name="turn_hard_input_tokens",
+                    type="integer",
+                    label="End the turn after (input tokens per turn)",
+                    description=(
+                        "Cumulative prompt tokens after which the model is told to stop "
+                        "calling tools and report; the turn ends with that response. "
+                        "0 turns the budget off."
+                    ),
+                    default=DEFAULT_HARD_TOKENS,
+                    min_value=0,
+                ),
+                ConfigField(
                     name="early_stop_on",
                     type="array",
                     label="Early Stop Signals",
@@ -113,6 +147,8 @@ class LoopStage(Stage[Any, Any]):
             "max_turns": self._max_turns or 0,
             "early_stop_on": list(self._early_stop_on),
             "repeat_stop_after": self._repeat_stop_after,
+            "turn_soft_input_tokens": self._turn_soft_input_tokens,
+            "turn_hard_input_tokens": self._turn_hard_input_tokens,
         }
 
     def update_config(self, config: Dict[str, Any]) -> None:
@@ -136,6 +172,10 @@ class LoopStage(Stage[Any, Any]):
             self._early_stop_on = list(config["early_stop_on"] or [])
         if "repeat_stop_after" in config:
             self._repeat_stop_after = max(0, int(config["repeat_stop_after"] or 0))
+        if "turn_soft_input_tokens" in config:
+            self._turn_soft_input_tokens = max(0, int(config["turn_soft_input_tokens"] or 0))
+        if "turn_hard_input_tokens" in config:
+            self._turn_hard_input_tokens = max(0, int(config["turn_hard_input_tokens"] or 0))
 
     @staticmethod
     def _controller_declares_max_turns(controller: LoopController) -> bool:
@@ -157,6 +197,10 @@ class LoopStage(Stage[Any, Any]):
         else:
             decision = self._controller.decide(state)
         decision = apply_repeat_stop(state, decision, self._repeat_stop_after)
+        decision = apply_turn_budget(
+            state, decision, self._turn_soft_input_tokens, self._turn_hard_input_tokens
+        )
+        decision = apply_step_limit(state, decision)
 
         state.loop_decision = decision
 

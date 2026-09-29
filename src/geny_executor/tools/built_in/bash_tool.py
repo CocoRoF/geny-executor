@@ -50,6 +50,23 @@ def _scrubbed_env(extra: Dict[str, str] | None) -> Dict[str, str]:
 _DEFAULT_TIMEOUT_MS = 120_000  # 2 minutes
 _MAX_TIMEOUT_MS = 600_000  # 10 minutes
 _MAX_OUTPUT = 100_000  # characters
+#: Share of an over-long output kept from the start; the rest from the end.
+_HEAD_SHARE = 0.4
+
+
+def _head_tail(text: str, limit: int = _MAX_OUTPUT) -> str:
+    """Keep the start and the end of an over-long output, not just the start.
+
+    A failing build, test run or install prints its error LAST: cutting the
+    output at the limit kept pages of progress lines and dropped the one
+    line that said what went wrong.
+    """
+    if len(text) <= limit:
+        return text
+    head = int(limit * _HEAD_SHARE)
+    tail = limit - head
+    omitted = len(text) - head - tail
+    return f"{text[:head]}\n\n... ({omitted:,} characters omitted) ...\n\n{text[-tail:]}"
 
 
 class BashTool(Tool):
@@ -114,10 +131,8 @@ class BashTool(Tool):
                 return ToolResult(content=f"Command timed out after {timeout_ms}ms", is_error=True)
             except Exception as e:  # noqa: BLE001
                 return ToolResult(content=f"Sandbox exec failed: {e}", is_error=True)
-            if len(stdout) > _MAX_OUTPUT:
-                stdout = stdout[:_MAX_OUTPUT] + "\n\n... (truncated)"
-            if len(stderr) > _MAX_OUTPUT:
-                stderr = stderr[:_MAX_OUTPUT] + "\n\n... (truncated)"
+            stdout = _head_tail(stdout)
+            stderr = _head_tail(stderr)
             parts = []
             if stdout:
                 parts.append(stdout)
@@ -170,10 +185,8 @@ class BashTool(Tool):
         exit_code = proc.returncode or 0
 
         # Truncate very large output
-        if len(stdout) > _MAX_OUTPUT:
-            stdout = stdout[:_MAX_OUTPUT] + f"\n\n... (truncated, {len(stdout_bytes)} bytes total)"
-        if len(stderr) > _MAX_OUTPUT:
-            stderr = stderr[:_MAX_OUTPUT] + f"\n\n... (truncated, {len(stderr_bytes)} bytes total)"
+        stdout = _head_tail(stdout)
+        stderr = _head_tail(stderr)
 
         parts = []
         if stdout:

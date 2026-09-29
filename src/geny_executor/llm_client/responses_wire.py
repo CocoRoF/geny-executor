@@ -515,7 +515,9 @@ class ResponsesClient(BaseClient):
                 if not isinstance(args, dict):
                     args = {"input": args}
             except json.JSONDecodeError:
-                args = {"_raw": call.get("arguments")}
+                from geny_executor.tools.input_repair import unparsed_arguments
+
+                args = unparsed_arguments(call.get("arguments") or "")
             call_id = str(call.get("call_id") or f"call_{uuid.uuid4().hex[:16]}")
             blocks.append(
                 ContentBlock(

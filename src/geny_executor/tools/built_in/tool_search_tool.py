@@ -131,6 +131,22 @@ def _rank(descriptor: Dict[str, Any], query: str) -> int:
     return total
 
 
+def _named_in_query(descriptors: List[Dict[str, Any]], query: str) -> List[Dict[str, Any]]:
+    """The tools a query names, when every word of it is an exact tool name."""
+    tokens = [t for t in query.replace(",", " ").split() if t]
+    if len(tokens) < 2:
+        return []
+    by_name = {str(d.get("name", "")).lower(): d for d in descriptors if d.get("name")}
+    found: List[Dict[str, Any]] = []
+    for token in tokens:
+        desc = by_name.get(token.lower())
+        if desc is None:
+            return []
+        if desc not in found:
+            found.append(desc)
+    return found
+
+
 class ToolSearchTool(Tool):
     """Discover tools from the full catalogue — and activate deferred ones.
 
@@ -172,7 +188,9 @@ class ToolSearchTool(Tool):
                     "type": "string",
                     "description": (
                         "Keyword query. An exact tool name is the most "
-                        "precise query; multi-word queries prefer results "
+                        "precise query, and several exact names separated by "
+                        "commas or spaces return all of them; other multi-word "
+                        "queries prefer results "
                         "matching every token, falling back to any-token "
                         "matches. OMIT (or pass '*') to browse the full "
                         "hidden catalog without activating anything."
@@ -216,10 +234,19 @@ class ToolSearchTool(Tool):
         limit = max(1, min(_HARD_LIMIT, limit))
 
         ranked: List[Tuple[int, Dict[str, Any]]] = []
-        for desc in descriptors:
-            score = _rank(desc, query)
-            if score > 0:
-                ranked.append((score, desc))
+        named = _named_in_query(descriptors, query)
+        if named:
+            # Every word is a tool's exact name ("WebFetch, WebSearch"):
+            # those tools, all of them, in the order asked. As one keyword
+            # query every token had to match ONE tool, so a list of names
+            # found nothing and the model searched once per tool.
+            ranked = [(100, desc) for desc in named]
+            limit = max(limit, len(named))
+        else:
+            for desc in descriptors:
+                score = _rank(desc, query)
+                if score > 0:
+                    ranked.append((score, desc))
 
         fuzzy = False
         if not ranked and len(query.split()) > 1:

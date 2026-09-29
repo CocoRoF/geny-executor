@@ -6,6 +6,7 @@ import mimetypes
 from typing import Any, Dict
 
 from geny_executor.tools.base import Tool, ToolCapabilities, ToolContext, ToolResult
+from geny_executor.tools.built_in._file_witness import path_forms, witnessed_mutation
 from geny_executor.tools.built_in._path_guard import resolve_and_validate
 
 _DEFAULT_LIMIT = 2000
@@ -61,6 +62,16 @@ class ReadTool(Tool):
         )
 
     async def execute(self, input: Dict[str, Any], context: ToolContext) -> ToolResult:
+        result = await self._read(input, context)
+        if not result.is_error:
+            # Seen in this session: a later Write may replace it (_file_witness).
+            result.state_mutations = {
+                **(result.state_mutations or {}),
+                **witnessed_mutation(path_forms(input.get("file_path", ""), context)),
+            }
+        return result
+
+    async def _read(self, input: Dict[str, Any], context: ToolContext) -> ToolResult:
         file_path = input.get("file_path", "")
         offset = input.get("offset", 0)
         limit = input.get("limit", _DEFAULT_LIMIT)

@@ -28,6 +28,12 @@ from geny_executor.core.stage import Stage
 from geny_executor.core.state import PipelineState
 from geny_executor.core.config import ModelConfig
 from geny_executor.llm_client import BaseClient, ClientCapabilities, ClientRegistry
+from geny_executor.llm_client.timeouts import (
+    first_chunk_timeout_s,
+    idle_timeout_s,
+    request_timeout_s,
+    timeout_retries,
+)
 from geny_executor.stages.s06_api.interface import (
     APIProvider,
     ModelRouter,
@@ -97,6 +103,52 @@ class _LegacyProviderAdapter(BaseClient):
         )
         async for event in self._wrapped.create_message_stream(request):
             yield event
+
+
+#: Chunk types that count as the model answering (stop the first-chunk clock).
+_CONTENT_CHUNK_TYPES = ("text_delta", "thinking_delta", "tool_use", "input_json_delta")
+
+
+async def _watched_stream(
+    stream: AsyncIterator[Dict[str, Any]], first_chunk_s: float, idle_s: float
+) -> AsyncIterator[Dict[str, Any]]:
+    """Yield ``stream``'s chunks, raising a TIMEOUT when it stalls.
+
+    Before the first content chunk the wait is ``first_chunk_s`` in total;
+    after it, ``idle_s`` between chunks. A provider that stopped mid-answer
+    used to hold the turn until the SDK's own read timeout, per attempt.
+    """
+    iterator = stream.__aiter__()
+    deadline = time.monotonic() + first_chunk_s
+    seen_content = False
+    try:
+        while True:
+            wait = idle_s if seen_content else max(0.05, deadline - time.monotonic())
+            try:
+                chunk = await asyncio.wait_for(iterator.__anext__(), timeout=wait)
+            except StopAsyncIteration:
+                return
+            except asyncio.TimeoutError:
+                detail = (
+                    f"the model's answer stalled for {idle_s:g}s"
+                    if seen_content
+                    else f"the model did not start answering within {first_chunk_s:g}s"
+                )
+                raise APIError(
+                    detail,
+                    category=ErrorCategory.TIMEOUT,
+                    code=ExecutorErrorCode.EXEC_API_TIMEOUT,
+                ) from None
+            if not seen_content and chunk.get("type") in _CONTENT_CHUNK_TYPES:
+                seen_content = True
+            yield chunk
+    finally:
+        closer = getattr(iterator, "aclose", None)
+        if callable(closer):
+            try:
+                await closer()
+            except Exception:  # noqa: BLE001 — closing a dead stream
+                pass
 
 
 class APIStage(Stage[Any, APIResponse]):
@@ -658,12 +710,25 @@ class APIStage(Stage[Any, APIResponse]):
         kwargs = self._call_kwargs(cfg, state, extra_messages=extra_messages)
         self._apply_timeout_kwarg(kwargs, client, state, "create_message")
 
+        timeouts_seen = 0
         for attempt in range(self._retry.max_retries + 1):
             try:
-                return await client.create_message(**kwargs)
+                limit = request_timeout_s()
+                try:
+                    return await asyncio.wait_for(client.create_message(**kwargs), timeout=limit)
+                except asyncio.TimeoutError:
+                    raise APIError(
+                        f"the model did not answer within {limit:g}s",
+                        category=ErrorCategory.TIMEOUT,
+                        code=ExecutorErrorCode.EXEC_API_TIMEOUT,
+                    ) from None
             except APIError as e:
                 last_error = e
-                if not self._retry.should_retry(e.category, attempt):
+                if e.category is ErrorCategory.TIMEOUT:
+                    timeouts_seen += 1
+                if not self._retry.should_retry(e.category, attempt) or (
+                    e.category is ErrorCategory.TIMEOUT and timeouts_seen > timeout_retries()
+                ):
                     raise
                 delay = self._retry.get_delay(attempt)
                 state.add_event(
@@ -709,12 +774,17 @@ class APIStage(Stage[Any, APIResponse]):
     ) -> APIResponse:
         last_error: Optional[Exception] = None
 
+        timeouts_seen = 0
         for attempt in range(self._retry.max_retries + 1):
             try:
                 return await self._call_streaming(client, cfg, state, extra_messages=extra_messages)
             except APIError as e:
                 last_error = e
-                if not self._retry.should_retry(e.category, attempt):
+                if e.category is ErrorCategory.TIMEOUT:
+                    timeouts_seen += 1
+                if not self._retry.should_retry(e.category, attempt) or (
+                    e.category is ErrorCategory.TIMEOUT and timeouts_seen > timeout_retries()
+                ):
                     raise
                 delay = self._retry.get_delay(attempt)
                 self._signal_stream_restart(state)
@@ -824,7 +894,11 @@ class APIStage(Stage[Any, APIResponse]):
             "input_json_delta",
         )
 
-        stream: AsyncIterator[Dict[str, Any]] = client.create_message_stream(**kwargs)
+        stream: AsyncIterator[Dict[str, Any]] = _watched_stream(
+            client.create_message_stream(**kwargs),
+            first_chunk_timeout_s(),
+            idle_timeout_s(),
+        )
         async for chunk in stream:
             chunk_type = chunk.get("type")
             if chunk_type in _CONTENT_CHUNKS and not state.shared.get("_api_ttft_emitted"):

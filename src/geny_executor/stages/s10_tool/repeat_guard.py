@@ -304,8 +304,14 @@ def guard_calls(
     runnable: List[Dict[str, Any]] = []
     blocked_names: List[str] = []
     skipped_names: List[str] = []
+    from geny_executor.stages.s10_tool import denial_guard
+
     for tc in tool_calls:
-        result = blocked_result(tc, shared)
+        # A refusal is answered first: the first "no" is the answer, and
+        # asking again is how the wrong button gets clicked.
+        result = denial_guard.refused_result(tc, shared)
+        if result is None:
+            result = blocked_result(tc, shared)
         if result is not None:
             blocked_names.append(str(tc.get("tool_name") or ""))
         else:
@@ -347,9 +353,14 @@ def report(
     skipped_names: List[str],
 ) -> None:
     """Observe a finished round and emit what the guard did."""
+    from geny_executor.stages.s10_tool import denial_guard
+
     shared = state.shared
     if blocked_names:
         state.add_event("tool.repeat_blocked", {"tools": sorted(set(blocked_names))})
+    newly_denied = denial_guard.observe(tool_calls, results, shared)
+    if newly_denied:
+        state.add_event("tool.user_denied", {"tools": sorted(set(newly_denied))})
     flagged = observe(tool_calls, results, shared)
     if flagged:
         state.add_event(

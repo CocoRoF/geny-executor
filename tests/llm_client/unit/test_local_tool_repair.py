@@ -74,9 +74,17 @@ def test_ollama_client_strict_path_unchanged():
     assert client._parse_tool_arguments('{"a": 1}') == {"a": 1}
 
 
-def test_ollama_client_unsalvageable_falls_back_to_empty():
+def test_ollama_client_unsalvageable_keeps_the_raw_text():
+    """2.77.0: kept, so the router can say the arguments were unreadable —
+    an empty input drew "missing required field", a mistake the model never
+    made."""
+    from geny_executor.tools.input_repair import UNPARSED_ARGUMENTS_KEY
+
     client = OllamaClient()
-    assert client._parse_tool_arguments("totally broken") == {}
+    assert client._parse_tool_arguments("totally broken") == {
+        UNPARSED_ARGUMENTS_KEY: "totally broken"
+    }
+    assert client._parse_tool_arguments("") == {}
 
 
 def test_repair_emits_event():

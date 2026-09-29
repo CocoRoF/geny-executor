@@ -4,7 +4,7 @@
 <!-- Regenerate: python scripts/gen_event_docs.py -->
 
 > Generated from `geny_executor.events.catalog` on 2026-09-29.
-> Catalogue version: **4** · events: **127**
+> Catalogue version: **4** · events: **130**
 
 Every event name the engine emits, value == wire string. The enum
 is a *names registry*, not a rename — consumers matching raw strings
@@ -196,6 +196,27 @@ Enum member: `EventTypes.LOOP_REPEAT_STOP`
 | `phase` | str — 'final' (report-and-stop note attached) \| 'stop' (turn ended) |
 | `refused` | int — tool calls refused so far this turn |
 | `iteration` | int |
+
+### `loop.turn_budget`
+
+Enum member: `EventTypes.LOOP_TURN_BUDGET`
+
+| Field | Description |
+|---|---|
+| `phase` | str — 'soft' (wrap-up note) \| 'final' (report-and-stop note) \| 'stop' (turn ended) |
+| `used` | int — prompt tokens processed this turn, cache included |
+| `soft` | int |
+| `hard` | int |
+| `calls` | int — model calls this turn |
+
+### `loop.step_limit`
+
+Enum member: `EventTypes.LOOP_STEP_LIMIT`
+
+| Field | Description |
+|---|---|
+| `limit` | int — max_iterations |
+| `iteration` | int — the step that carried the note |
 
 ## Stage 1 — Input
 
@@ -633,6 +654,14 @@ Enum member: `EventTypes.TOOL_SAME_RESULT`
 | `tools` | list[{name: str, count: int}] — identical call, identical result, past the warn threshold |
 | `skipped` | list[str] — identical calls answered from the previous result without running |
 
+### `tool.user_denied`
+
+Enum member: `EventTypes.TOOL_USER_DENIED`
+
+| Field | Description |
+|---|---|
+| `tools` | list[str] — tools whose call was refused this round; the same action is answered without running for the rest of the turn |
+
 ### `tool.call_start`
 
 Enum member: `EventTypes.TOOL_CALL_START`
@@ -653,6 +682,8 @@ Enum member: `EventTypes.TOOL_CALL_COMPLETE`
 | `name` | str |
 | `is_error` | bool |
 | `duration_ms` | int |
+| `error` | str — on failure, the result text (≤2000 chars) |
+| `result` | str — on success, the start of the result text (≤500 chars) |
 
 ## Stage 11 — Tool review
 

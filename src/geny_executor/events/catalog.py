@@ -95,6 +95,12 @@ class EventTypes(str, Enum):
     #: calls (``s16_loop/repeat_stop.py``): ``final`` when the report-and-stop
     #: note is attached, ``stop`` when the response to it ends the turn.
     LOOP_REPEAT_STOP = "loop.repeat_stop"
+    #: The turn's cumulative input passed its budget (``s16_loop/turn_budget.py``):
+    #: ``soft`` wrap-up note, ``final`` report-and-stop note, ``stop`` ended.
+    LOOP_TURN_BUDGET = "loop.turn_budget"
+    #: The next step is the turn's last (``max_iterations``); the model was
+    #: told to stop calling tools and report.
+    LOOP_STEP_LIMIT = "loop.step_limit"
 
     # ── Stage 1: Input ──
     INPUT_NORMALIZED = "input.normalized"
@@ -186,6 +192,9 @@ class EventTypes(str, Enum):
     TOOL_REPEAT_FAILURE = "tool.repeat_failure"
     TOOL_REPEAT_BLOCKED = "tool.repeat_blocked"
     TOOL_SAME_RESULT = "tool.same_result"
+    #: The denial guard (``s10_tool/denial_guard.py``): a call refused by the
+    #: permission matrix or a person, remembered so it is not asked again.
+    TOOL_USER_DENIED = "tool.user_denied"
     # Per-call timing pair emitted by the executor strategies around each
     # individual dispatch (Stage 10 batches AND Stage 6 internal-loop
     # dispatches — both run through the same executors). Catalogued in
@@ -369,6 +378,17 @@ PAYLOADS: Dict[EventTypes, Dict[str, str]] = {
         "phase": "str — 'final' (report-and-stop note attached) | 'stop' (turn ended)",
         "refused": "int — tool calls refused so far this turn",
         "iteration": "int",
+    },
+    EventTypes.LOOP_TURN_BUDGET: {
+        "phase": "str — 'soft' (wrap-up note) | 'final' (report-and-stop note) | 'stop' (turn ended)",
+        "used": "int — prompt tokens processed this turn, cache included",
+        "soft": "int",
+        "hard": "int",
+        "calls": "int — model calls this turn",
+    },
+    EventTypes.LOOP_STEP_LIMIT: {
+        "limit": "int — max_iterations",
+        "iteration": "int — the step that carried the note",
     },
     EventTypes.INPUT_NORMALIZED: {
         "text_length": "int — normalized text length",
@@ -575,6 +595,9 @@ PAYLOADS: Dict[EventTypes, Dict[str, str]] = {
         "tools": "list[{name: str, count: int}] — identical call, identical result, past the warn threshold",
         "skipped": "list[str] — identical calls answered from the previous result without running",
     },
+    EventTypes.TOOL_USER_DENIED: {
+        "tools": "list[str] — tools whose call was refused this round; the same action is answered without running for the rest of the turn",
+    },
     EventTypes.TOOL_CALL_START: {
         "tool_use_id": "str",
         "name": "str",
@@ -585,6 +608,8 @@ PAYLOADS: Dict[EventTypes, Dict[str, str]] = {
         "name": "str",
         "is_error": "bool",
         "duration_ms": "int",
+        "error": "str — on failure, the result text (≤2000 chars)",
+        "result": "str — on success, the start of the result text (≤500 chars)",
     },
     EventTypes.TOOL_REVIEW_FLAG: {
         "reviewer": "str — ReviewFlag.to_dict()",

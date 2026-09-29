@@ -155,6 +155,12 @@ class OpenAICompatibleClient(OpenAIClient):
             if repaired is not None:
                 self._report_tool_args_repaired(raw)
                 return repaired
+        if isinstance(raw, str) and raw.strip():
+            # Kept, not dropped: the router tells the model its arguments
+            # were unreadable instead of that it left out a field.
+            from geny_executor.tools.input_repair import unparsed_arguments
+
+            return unparsed_arguments(raw)
         return {}
 
     def _report_tool_args_repaired(self, raw: str) -> None:

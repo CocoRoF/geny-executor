@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any, Dict
 
 from geny_executor.tools.base import Tool, ToolContext, ToolResult
+from geny_executor.tools.built_in._file_witness import path_forms, witnessed_mutation
 from geny_executor.tools.built_in._path_guard import resolve_and_validate
 
 
@@ -53,6 +54,16 @@ class EditTool(Tool):
         }
 
     async def execute(self, input: Dict[str, Any], context: ToolContext) -> ToolResult:
+        result = await self._edit(input, context)
+        if not result.is_error:
+            # An exact match means the agent knows the file (_file_witness).
+            result.state_mutations = {
+                **(result.state_mutations or {}),
+                **witnessed_mutation(path_forms(input.get("file_path", ""), context)),
+            }
+        return result
+
+    async def _edit(self, input: Dict[str, Any], context: ToolContext) -> ToolResult:
         file_path = input.get("file_path", "")
         old_string = input.get("old_string", "")
         new_string = input.get("new_string", "")

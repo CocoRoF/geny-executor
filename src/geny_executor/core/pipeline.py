@@ -200,7 +200,11 @@ def _mcp_configs_from_manifest(manifest: "EnvironmentManifest") -> Dict[str, Any
     missing a ``name`` are skipped silently (they cannot be routed to
     anyway).
     """
-    from geny_executor.tools.mcp.manager import MCPServerConfig
+    from geny_executor.tools.mcp.manager import (
+        DEFAULT_CALL_TIMEOUT_S,
+        MCPServerConfig,
+        _timeout_from,
+    )
 
     configs: Dict[str, MCPServerConfig] = {}
     for raw in manifest.tools.mcp_servers or []:
@@ -217,6 +221,7 @@ def _mcp_configs_from_manifest(manifest: "EnvironmentManifest") -> Dict[str, Any
             transport=raw.get("transport", "stdio"),
             url=raw.get("url", ""),
             headers=dict(raw.get("headers", {})),
+            call_timeout_s=_timeout_from(raw.get("call_timeout_s", DEFAULT_CALL_TIMEOUT_S)),
         )
     return configs
 

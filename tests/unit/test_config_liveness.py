@@ -475,6 +475,47 @@ async def _probe_s16_repeat_stop_after() -> None:
     assert any(e["type"] == "loop.repeat_stop" for e in state2.events)
 
 
+def _budget_state(used: int) -> PipelineState:
+    from geny_executor.core.state import TokenUsage
+
+    state = PipelineState(session_id="loop")
+    state.iteration = 1
+    state.pending_tool_calls = [{"id": "t1"}]
+    state.turn_token_usage = [TokenUsage(input_tokens=used)]
+    state.add_message("assistant", [{"type": "text", "text": "working"}])
+    return state
+
+
+async def _probe_s16_turn_soft_input_tokens() -> None:
+    """Lowering the soft budget attaches the wrap-up note."""
+    from geny_executor.stages.s16_loop import LoopStage
+
+    state = _budget_state(50_000)
+    await LoopStage().execute("in", state)
+    assert not any(e["type"] == "loop.turn_budget" for e in state.events)
+
+    stage = LoopStage()
+    stage.update_config({"turn_soft_input_tokens": 10_000})
+    state2 = _budget_state(50_000)
+    await stage.execute("in", state2)
+    assert any(
+        e["type"] == "loop.turn_budget" and e["data"]["phase"] == "soft" for e in state2.events
+    )
+
+
+async def _probe_s16_turn_hard_input_tokens() -> None:
+    """Lowering the hard budget attaches the report-and-stop note."""
+    from geny_executor.stages.s16_loop import LoopStage
+
+    stage = LoopStage()
+    stage.update_config({"turn_soft_input_tokens": 0, "turn_hard_input_tokens": 10_000})
+    state = _budget_state(50_000)
+    await stage.execute("in", state)
+    assert any(
+        e["type"] == "loop.turn_budget" and e["data"]["phase"] == "final" for e in state.events
+    )
+
+
 async def _probe_s18_stateless() -> None:
     from geny_executor.stages.s18_memory import MemoryStage
 
@@ -528,6 +569,8 @@ LIVENESS: Dict[Tuple[int, str], Entry] = {
     (16, "max_turns"): Probe(_probe_s16_max_turns),
     (16, "early_stop_on"): Probe(_probe_s16_early_stop_on),
     (16, "repeat_stop_after"): Probe(_probe_s16_repeat_stop_after),
+    (16, "turn_soft_input_tokens"): Probe(_probe_s16_turn_soft_input_tokens),
+    (16, "turn_hard_input_tokens"): Probe(_probe_s16_turn_hard_input_tokens),
     (19, "session_summary"): Probe(_probe_s19_session_summary),
     (18, "stateless"): Probe(_probe_s18_stateless),
     (18, "persistence_path"): Probe(_probe_s18_persistence_path),

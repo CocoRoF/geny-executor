@@ -83,6 +83,26 @@ def _emit_call_start(on_event: Optional[ToolEventCallback], tc: Dict[str, Any]) 
     )
 
 
+#: How much of a failure's text rides on ``tool.call_complete`` (``error``),
+#: and of a success's (``result``). The event used to carry neither, so a
+#: host log could only say "Tool X failed" — never why.
+ERROR_TEXT_CAP = 2000
+RESULT_TEXT_CAP = 500
+
+
+def _result_text(result_dict: Dict[str, Any]) -> str:
+    content = result_dict.get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(
+            str(b.get("text", ""))
+            for b in content
+            if isinstance(b, dict) and b.get("type") == "text"
+        )
+    return "" if content is None else str(content)
+
+
 def _emit_call_complete(
     on_event: Optional[ToolEventCallback],
     tc: Dict[str, Any],
@@ -91,15 +111,19 @@ def _emit_call_complete(
 ) -> None:
     if on_event is None:
         return
-    on_event(
-        "tool.call_complete",
-        {
-            "tool_use_id": tc.get("tool_use_id", ""),
-            "name": tc.get("tool_name", ""),
-            "is_error": bool(result_dict.get("is_error")),
-            "duration_ms": duration_ms,
-        },
-    )
+    is_error = bool(result_dict.get("is_error"))
+    data: Dict[str, Any] = {
+        "tool_use_id": tc.get("tool_use_id", ""),
+        "name": tc.get("tool_name", ""),
+        "is_error": is_error,
+        "duration_ms": duration_ms,
+    }
+    text = _result_text(result_dict)
+    if is_error:
+        data["error"] = text[:ERROR_TEXT_CAP]
+    elif text:
+        data["result"] = text[:RESULT_TEXT_CAP]
+    on_event("tool.call_complete", data)
 
 
 class SequentialExecutor(ToolExecutor):
@@ -246,10 +270,16 @@ class PartitionExecutor(ToolExecutor):
 
     For each pending tool call, consults the tool's
     ``capabilities(input)`` to decide:
-    - ``concurrency_safe=True`` → run in parallel batch (bounded by
-      ``max_concurrency``)
-    - ``concurrency_safe=False`` → run serially, after the parallel
-      batch completes
+    - ``concurrency_safe=True`` → runs in parallel with the safe calls
+      next to it (bounded by ``max_concurrency``)
+    - ``concurrency_safe=False`` → runs alone, after everything the model
+      asked for before it and before everything after it
+
+    Calls run in the order the model wrote them, with each run of adjacent
+    safe calls as one parallel batch. Until 2.77.0 every safe call ran
+    first and every unsafe one after, whatever their order: ``Write a.py``
+    then ``Read a.py`` read the file before it was written, and ``Bash
+    make`` then ``Grep build.log`` searched the old log.
 
     Result order matches the ``tool_calls`` input order — downstream
     stages (Tool Review, Agent, Loop) receive results in a deterministic
@@ -330,13 +360,15 @@ class PartitionExecutor(ToolExecutor):
             if isinstance(router_registry, ToolRegistry):
                 self._registry = router_registry
 
-        # Partition while preserving original positions so we can
-        # reconstruct order in the final result list.
-        safe_indexed: List[tuple[int, Dict[str, Any]]] = []
-        unsafe_indexed: List[tuple[int, Dict[str, Any]]] = []
+        # Adjacent safe calls form one parallel batch; an unsafe call is a
+        # batch of its own. Batches run in the order the model wrote them.
+        batches: List[tuple[bool, List[tuple[int, Dict[str, Any]]]]] = []
         for i, tc in enumerate(tool_calls):
-            caps = self._lookup_capabilities(tc)
-            (safe_indexed if caps.concurrency_safe else unsafe_indexed).append((i, tc))
+            safe = self._lookup_capabilities(tc).concurrency_safe
+            if safe and batches and batches[-1][0]:
+                batches[-1][1].append((i, tc))
+            else:
+                batches.append((safe, [(i, tc)]))
 
         results: List[Optional[Dict[str, Any]]] = [None] * len(tool_calls)
         semaphore = asyncio.Semaphore(self._max_concurrency)
@@ -367,15 +399,14 @@ class PartitionExecutor(ToolExecutor):
             async with semaphore:
                 return await _run_one(tc)
 
-        # 1) Parallel batch — concurrency_safe tools
-        if safe_indexed:
-            parallel_results = await asyncio.gather(*(_run_bounded(tc) for _, tc in safe_indexed))
-            for (pos, _), res in zip(safe_indexed, parallel_results):
-                results[pos] = res
-
-        # 2) Sequential batch — everything else (strict order)
-        for pos, tc in unsafe_indexed:
-            results[pos] = await _run_one(tc)
+        for safe, batch in batches:
+            if safe and len(batch) > 1:
+                batch_results = await asyncio.gather(*(_run_bounded(tc) for _, tc in batch))
+                for (pos, _), res in zip(batch, batch_results):
+                    results[pos] = res
+            else:
+                pos, tc = batch[0]
+                results[pos] = await _run_one(tc)
 
         # All positions filled (we iterated every input); narrow the type
         return [r for r in results if r is not None]

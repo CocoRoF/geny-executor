@@ -1,5 +1,84 @@
 # Changelog
 
+## [2.77.0] — 2026-09-29
+
+Phase 2 of the 2026-09-29 harness audit: the tool loop's safeguards, most
+measured first on XGEN's runtime (the same stack) and adapted here.
+
+### Fixed — tool calls run in the order the model wrote them
+
+`PartitionExecutor` (the default) ran every concurrency-safe call first and
+every unsafe one after, whatever their order: `Write a.py` then `Read a.py`
+read the old file, `Bash make` then `Grep build.log` searched the old log.
+Adjacent safe calls still run together; an unsafe call is a barrier.
+
+### Added — inputs whose meaning is plain are fixed, not rejected
+
+A rejected call is a whole model round trip, and models repeat the mistake
+(XGEN: `max_results: "3"` rejected 6–15 times in a row). `tools.input_repair`:
+
+- **Coercion** before validation, only where the schema does not accept a
+  string: integer/number strings, `"true"`/`"false"`, JSON strings where an
+  array or object is wanted.
+- **A mixed-up parameter name** (`file_path` where the schema says `path`)
+  is moved when exactly one unknown key fits the missing required field; the
+  result starts with `[input repaired] …` so the model learns the name.
+- **A missing-field error says what was needed and what was sent.**
+- **Unreadable tool-call arguments** are kept (`__unparsed_arguments__`)
+  and answered "the arguments were not valid JSON — nothing ran" instead of
+  a missing-field error for a mistake the model never made (OpenAI-compatible
+  and Responses clients).
+
+### Added — a refusal is the answer for the rest of the turn
+
+`s10_tool.denial_guard`: a call refused by the permission matrix or a person
+(`ERROR access_denied` / `ERROR user_denied`) is remembered; the same action
+again — quotes and spacing ignored — is answered `user_denied_repeat`
+without running and without asking again. New event `tool.user_denied`.
+
+### Added — an existing file is not replaced unseen
+
+`Write` refuses to overwrite an existing, non-empty file the agent has not
+read, edited or written in this session, and says to read it first. `Read`,
+`Edit` and `Write` record paths in `state.shared["executor.file_witnessed"]`
+(merged, so parallel reads do not overwrite each other). New and empty files
+pass. Hosts that start each turn with a fresh state carry the key over.
+
+### Added — nothing waits forever
+
+- **MCP tool calls** are bounded: `MCPServerConfig.call_timeout_s`
+  (default 300 s, `call_timeout_s` in a manifest's server entry; 0 = none).
+  Every other MCP request already had a 10 s bound.
+- **Model calls** (`llm_client.timeouts`): a stream must produce content
+  within 300 s and may not stall for more than 120 s once it has; a
+  non-streaming call gets 600 s. A timeout is retried once, not four
+  times. The Anthropic and OpenAI SDK clients get a 10 s connect timeout
+  and `max_retries=0` — the stage retries, visibly; the SDKs retried twice
+  underneath it. Each value has a `GENY_LLM_*` environment override.
+
+### Added — how a long turn ends
+
+- **Turn input budget** (Stage 16, `turn_soft_input_tokens` 2M /
+  `turn_hard_input_tokens` 5M, 0 = off): past the soft line the last tool
+  result carries "wrap up"; past the hard line "no more tools, report what
+  is done and how to continue", and the next response ends the turn
+  (`completion_signal="TURN_INPUT_BUDGET"`). Twice XGEN's line: every Geny
+  call carries a ~38k-token system prompt and tool list. Event
+  `loop.turn_budget`.
+- **Step limit**: a turn that reached `max_iterations` stopped right after a
+  tool round — the model never saw the results or answered. The step
+  before the last now tells it to stop calling tools and report. Event
+  `loop.step_limit`.
+
+### Changed
+
+- `Bash` keeps the start AND the end of an over-long output (40/60); the
+  error a failing build prints last used to be cut off.
+- `tool.call_complete` carries `error` (≤2000 chars) on failure and
+  `result` (≤500) on success — a host log could only say "Tool X failed".
+- `ToolSearch` with several exact tool names returns all of them.
+- `WebSearch` runs at most two searches at once per process.
+
 ## [2.76.0] — 2026-09-29
 
 Phase 1 of the 2026-09-29 harness audit: compaction keeps what it removes,

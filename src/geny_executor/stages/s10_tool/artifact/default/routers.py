@@ -5,7 +5,8 @@ from __future__ import annotations
 import asyncio
 import datetime as _dt
 import logging
-from typing import Any, Dict, Optional
+from dataclasses import replace as _dc_replace
+from typing import Any, Dict, List, Optional
 
 import jsonschema
 
@@ -23,6 +24,13 @@ from geny_executor.tools.errors import (
     ToolFailure,
     make_error_result,
     validate_input,
+)
+from geny_executor.tools.input_repair import (
+    UNPARSED_ARGUMENTS_KEY,
+    coerce_input,
+    describe_validation_failure,
+    repair_missing_required,
+    unparsed_arguments_reason,
 )
 from geny_executor.tools.registry import ToolRegistry
 from geny_executor.stages.s10_tool.interface import ToolRouter
@@ -133,6 +141,24 @@ def _is_awaitable(obj: Any) -> bool:
     return _inspect.isawaitable(obj)
 
 
+def _with_repair_notes(result: ToolResult, notes: List[str]) -> ToolResult:
+    """Say, at the top of the result, what was fixed in the input.
+
+    Fixed silently, the model uses the same wrong name next time; one line
+    teaches it, far cheaper than a rejected call. Not added to errors, which
+    already say what went wrong.
+    """
+    if result.is_error or not notes:
+        return result
+    line = "[input repaired] " + " ".join(notes)
+    updates: Dict[str, Any] = {}
+    if isinstance(result.content, str):
+        updates["content"] = f"{line}\n{result.content}"
+    if isinstance(getattr(result, "display_text", None), str):
+        updates["display_text"] = f"{line}\n{result.display_text}"
+    return _dc_replace(result, **updates) if updates else result
+
+
 class RegistryRouter(ToolRouter):
     """Routes tool calls via ToolRegistry lookup.
 
@@ -172,13 +198,50 @@ class RegistryRouter(ToolRouter):
                 ToolError.unknown_tool(tool_name, known=self._registry.list_names())
             )
 
+        # The provider's arguments were unreadable: say so, instead of the
+        # required-field error the empty input would draw.
+        if isinstance(tool_input, dict) and UNPARSED_ARGUMENTS_KEY in tool_input:
+            raw = tool_input[UNPARSED_ARGUMENTS_KEY]
+            logger.warning(
+                "%s: tool-call arguments were not valid JSON (%d chars)",
+                tool_name,
+                len(raw) if isinstance(raw, str) else 0,
+            )
+            return make_error_result(
+                ToolError.invalid_input(tool_name, unparsed_arguments_reason(raw))
+            )
+
+        # Values whose meaning is plain ("3" for an integer, a JSON string
+        # for an array) are fixed before validation: a rejection is a whole
+        # model round trip, and the model tends to repeat it.
+        tool_input = coerce_input(tool.input_schema, tool_input)
+
+        repair_notes: List[str] = []
         try:
             validate_input(tool.input_schema, tool_input)
         except jsonschema.ValidationError as exc:
-            path = ".".join(str(p) for p in exc.absolute_path) or "<root>"
-            return make_error_result(ToolError.invalid_input(tool_name, exc.message, path=path))
+            repaired = repair_missing_required(tool.input_schema, tool_input)
+            recovered = False
+            if repaired is not None:
+                candidate, notes = repaired
+                try:
+                    validate_input(tool.input_schema, candidate)
+                except jsonschema.ValidationError:
+                    pass
+                else:
+                    tool_input, repair_notes, recovered = candidate, notes, True
+            if not recovered:
+                path = ".".join(str(p) for p in exc.absolute_path) or "<root>"
+                return make_error_result(
+                    ToolError.invalid_input(
+                        tool_name,
+                        describe_validation_failure(tool.input_schema, tool_input, exc.message),
+                        path=path,
+                    )
+                )
 
-        return await self._dispatch_with_lifecycle(tool, tool_input, context)
+        result = await self._dispatch_with_lifecycle(tool, tool_input, context)
+        return _with_repair_notes(result, repair_notes)
 
     async def _dispatch_with_lifecycle(
         self, tool: Tool, tool_input: Dict[str, Any], context: ToolContext

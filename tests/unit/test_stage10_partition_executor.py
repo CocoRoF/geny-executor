@@ -179,27 +179,31 @@ class TestPartitionExecutor:
         # Y started after X finished (serial guarantee)
         assert y.started_at[0] >= x.finished_at[0] - 0.005
 
-    def test_mixed_preserves_order_and_partitions(self) -> None:
+    def test_mixed_runs_in_the_order_written(self) -> None:
+        """2.77.0: an unsafe call is a barrier. Before, every safe call ran
+        first — ``Write a.py`` then ``Read a.py`` read the old file."""
         a = _TimedTool("A", concurrency_safe=True, sleep_ms=40)
         w = _TimedTool("W", concurrency_safe=False, sleep_ms=40)
         b = _TimedTool("B", concurrency_safe=True, sleep_ms=40)
-        reg = _make_registry([a, w, b])
+        c = _TimedTool("C", concurrency_safe=True, sleep_ms=40)
+        reg = _make_registry([a, w, b, c])
         router = RegistryRouter(reg)
         executor = PartitionExecutor(registry=reg)
 
-        # Mixed order: A(safe), W(unsafe), B(safe)
-        tool_calls = _make_tool_calls(["A", "W", "B"])
+        # A(safe), W(unsafe), B(safe), C(safe)
+        tool_calls = _make_tool_calls(["A", "W", "B", "C"])
 
         results = asyncio.run(
                 executor.execute_all(tool_calls, router, ToolContext())
         )
 
-        # Order preserved even though safe batch ran first
         names = [r["content"] for r in results]
-        assert names == ["A:done", "W:done", "B:done"]
-        # A and B ran in parallel (safe batch); W ran after they finished
-        safe_end = max(a.finished_at[0], b.finished_at[0])
-        assert w.started_at[0] >= safe_end - 0.005
+        assert names == ["A:done", "W:done", "B:done", "C:done"]
+        # W waited for A, B waited for W ...
+        assert w.started_at[0] >= a.finished_at[0] - 0.005
+        assert b.started_at[0] >= w.finished_at[0] - 0.005
+        # ... and B, C (adjacent safe calls) ran together.
+        assert abs(b.started_at[0] - c.started_at[0]) < 0.03
 
     def test_missing_registry_falls_back_to_unsafe(self) -> None:
         """Without a registry, capabilities() can't be probed — every
