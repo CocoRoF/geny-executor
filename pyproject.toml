@@ -112,6 +112,7 @@ Homepage = "https://github.com/CocoRoF/geny-executor"
 Repository = "https://github.com/CocoRoF/geny-executor"
 Issues = "https://github.com/CocoRoF/geny-executor/issues"
 Documentation = "https://github.com/CocoRoF/geny-executor#readme"
+Blog = "https://hrletsgo.me/en/documents/building-geny-harness-ai-assistant-memory-agent"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/geny_executor"]
