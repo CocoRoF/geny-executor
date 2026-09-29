@@ -11,7 +11,8 @@ from geny_executor.core.schema import ConfigField, ConfigSchema
 from geny_executor.core.slot import StrategySlot
 from geny_executor.core.stage import Stage
 from geny_executor.core.state import PipelineState
-from geny_executor.core.token_estimate import estimate_prompt_tokens
+from geny_executor.core.context_prune import DEFAULT_PRUNE_OVER_TOKENS, prune_messages
+from geny_executor.core.token_estimate import estimate_message_tokens, estimate_prompt_tokens
 from geny_executor.memory.provider import (
     Layer,
     MemoryEvent,
@@ -41,6 +42,7 @@ from geny_executor.stages.s02_context.artifact.default.retrievers import (
 )
 from geny_executor.stages.s02_context.artifact.default.replay import (
     HISTORY_IN_MESSAGES_KEY,
+    WINDOW_METADATA_KEY,
     NoReplay,
     TurnWindowReplay,
 )
@@ -95,6 +97,7 @@ class ContextStage(Stage[Any, Any]):
         stateless: bool = False,
         provider: Optional[MemoryProvider] = None,
         retrieval_timeout_s: float = 10.0,
+        prune_over_tokens: int = DEFAULT_PRUNE_OVER_TOKENS,
     ):
         self._slots: Dict[str, StrategySlot] = {
             "strategy": StrategySlot(
@@ -140,6 +143,7 @@ class ContextStage(Stage[Any, Any]):
         self._stateless = stateless
         self._provider = provider
         self._retrieval_timeout_s = max(0.0, float(retrieval_timeout_s))
+        self._prune_over_tokens = max(0, int(prune_over_tokens))
         # In-flight background compaction (TTFT program, finding B3):
         # {"task": asyncio.Task[_CompactionShadow], "len": int, "tail_id": int}
         self._bg_compaction: Optional[Dict[str, Any]] = None
@@ -225,6 +229,18 @@ class ContextStage(Stage[Any, Any]):
                     default=10.0,
                     min_value=0,
                 ),
+                ConfigField(
+                    name="prune_over_tokens",
+                    type="integer",
+                    label="Trim stale tool output past (tokens)",
+                    description=(
+                        "When this turn's own history passes this many tokens, older "
+                        "duplicate, image and oversized tool results are trimmed "
+                        "(the recent ones never). 0 turns it off."
+                    ),
+                    default=DEFAULT_PRUNE_OVER_TOKENS,
+                    min_value=0,
+                ),
             ],
         )
 
@@ -232,6 +248,7 @@ class ContextStage(Stage[Any, Any]):
         return {
             "stateless": self._stateless,
             "retrieval_timeout_s": self._retrieval_timeout_s,
+            "prune_over_tokens": self._prune_over_tokens,
         }
 
     def update_config(self, config: Dict[str, Any]) -> None:
@@ -242,6 +259,43 @@ class ContextStage(Stage[Any, Any]):
                 self._retrieval_timeout_s = max(0.0, float(config["retrieval_timeout_s"]))
             except (TypeError, ValueError):
                 pass
+        if "prune_over_tokens" in config:
+            try:
+                self._prune_over_tokens = max(0, int(config["prune_over_tokens"] or 0))
+            except (TypeError, ValueError):
+                pass
+
+    def _prune_for_cost(self, state: PipelineState) -> None:
+        """Trim this turn's stale tool output once it costs more than it helps.
+
+        Compaction fires at 80% of the window — on a 200k window, never
+        before a 160k prompt, and every call before that resends every old
+        tool result in full. XGEN measured it (28 days): the deterministic
+        prune, which only ran inside compaction, never ran once. This runs
+        it on the turn's own history past a fixed size, whatever the window.
+
+        The replayed turns are left alone — the window already sized them,
+        and what the last turn's tools returned is what the user may be
+        asking about. Idempotent: a trimmed result is under the trim line.
+        """
+        if not self._prune_over_tokens:
+            return
+        window = state.metadata.get(WINDOW_METADATA_KEY)
+        start = int(window.get("messages") or 0) if isinstance(window, dict) else 0
+        turn = state.messages[start:]
+        if len(turn) < 8 or estimate_message_tokens(turn) <= self._prune_over_tokens:
+            return
+        try:
+            metrics = prune_messages(turn)
+        except Exception:  # noqa: BLE001 — relief, never a gate
+            logger.debug("cost prune failed", exc_info=True)
+            return
+        if any(metrics.get(k) for k in ("deduped", "images_stripped", "trimmed")):
+            state.shared.pop("_prompt_tokens_memo", None)
+            state.add_event(
+                "context.pruned",
+                dict(metrics, trigger="cost", threshold_tokens=self._prune_over_tokens),
+            )
 
     def should_bypass(self, state: PipelineState) -> bool:
         return self._stateless
@@ -428,6 +482,7 @@ class ContextStage(Stage[Any, Any]):
         # BACKGROUND (overlapping this turn's generation) and applied
         # at the next turn's Stage 2. Past 90% — or for cheap non-LLM
         # compactors — compaction stays synchronous as the safety net.
+        self._prune_for_cost(state)
         if await self._apply_bg_compaction(state):
             state.shared.pop("_prompt_tokens_memo", None)
         estimated_tokens = estimate_prompt_tokens(state)

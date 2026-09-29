@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from geny_executor.core.schema import ConfigField, ConfigSchema
 from geny_executor.core.state import PipelineState
@@ -154,12 +154,17 @@ class SystemCacheStrategy(CacheStrategy):
 class AggressiveCacheStrategy(CacheStrategy):
     """Cache tools + system + stable history prefix.
 
-    Breakpoints (Anthropic allows 4; this places up to 3):
+    Breakpoints (Anthropic allows 4; this places up to 4):
       1. End of the tools array — the largest, most stable fixed block
          (~10K tokens for a full built-in set); caching it independently
          means a system edit no longer re-prefills every tool schema.
       2. End of the STABLE system region (before the volatile tail).
-      3. A moving point N messages from the end of history, so the
+      3. End of the replayed history that reads the same next turn
+         (``cache.stable_prefix_messages``, set by the turn replay). The
+         moving point below is new every turn, so on its own it never
+         matched across turns — the whole replay was re-sent at full
+         price at the start of every turn.
+      4. A moving point N messages from the end of history, so the
          conversation prefix re-caches incrementally as it grows.
 
     Stale markers from previous turns are stripped before re-applying —
@@ -214,30 +219,43 @@ class AggressiveCacheStrategy(CacheStrategy):
         # 2. Cache the stable system region
         _cache_system(state)
 
-        # 3. Cache stable history prefix
-        self._cache_history_prefix(state)
+        # 3. The replay's stable part, 4. the moving history point
+        stable = self._cache_stable_replay(state)
+        self._cache_history_prefix(state, skip_index=stable)
+
+    def _cache_stable_replay(self, state: PipelineState) -> Optional[int]:
+        count = state.metadata.get("cache.stable_prefix_messages")
+        if not isinstance(count, int) or count <= 0 or count > len(state.messages):
+            return None
+        index = count - 1
+        _mark_message(state.messages[index])
+        return index
 
     def _cache_tools(self, state: PipelineState) -> None:
         tools: List[Any] = state.tools or []
         if tools and isinstance(tools[-1], dict):
             tools[-1]["cache_control"] = EPHEMERAL_CACHE
 
-    def _cache_history_prefix(self, state: PipelineState) -> None:
+    def _cache_history_prefix(self, state: PipelineState, skip_index: Optional[int] = None) -> None:
         msgs = state.messages
         if len(msgs) <= self._stable_offset:
             return
 
         # Mark the message at the stable boundary
         boundary_idx = len(msgs) - self._stable_offset - 1
-        if boundary_idx < 0:
+        if boundary_idx < 0 or boundary_idx == skip_index:
             return
+        _mark_message(msgs[boundary_idx])
 
-        msg = msgs[boundary_idx]
-        content = msg.get("content")
 
-        if isinstance(content, str):
-            msg["content"] = [{"type": "text", "text": content, "cache_control": EPHEMERAL_CACHE}]
-        elif isinstance(content, list) and content:
-            last_block = content[-1]
-            if isinstance(last_block, dict) and "cache_control" not in last_block:
-                last_block["cache_control"] = EPHEMERAL_CACHE
+def _mark_message(msg: Any) -> None:
+    """Put a cache breakpoint on the last block of *msg*."""
+    if not isinstance(msg, dict):
+        return
+    content = msg.get("content")
+    if isinstance(content, str):
+        msg["content"] = [{"type": "text", "text": content, "cache_control": EPHEMERAL_CACHE}]
+    elif isinstance(content, list) and content:
+        last_block = content[-1]
+        if isinstance(last_block, dict) and "cache_control" not in last_block:
+            last_block["cache_control"] = EPHEMERAL_CACHE

@@ -38,6 +38,10 @@ WINDOW_METADATA_KEY = "memory.short_term_window"
 #: stands down on it: the model already has them, as messages.
 HISTORY_IN_MESSAGES_KEY = "memory.history_in_messages"
 
+#: Leading messages of this turn's history that render the same next turn —
+#: Stage 5's aggressive strategy puts a cache breakpoint at the last of them.
+STABLE_PREFIX_KEY = "cache.stable_prefix_messages"
+
 #: Stage 18's record watermark. Replayed messages are already in STM — that
 #: is where they came from — so the watermark moves past them.
 _RECORDED_KEY = STM_RECORDED_KEY
@@ -122,6 +126,10 @@ class TurnWindowReplay(TurnReplay):
         self._silent_markers: List[str] = list(
             DEFAULT_SILENT_MARKERS if silent_markers is None else silent_markers
         )
+        #: Where each session's previous window started (``turn_key``), so the
+        #: next one can start there too. In memory: after a restart the first
+        #: window picks a fresh start, which costs one cache miss.
+        self._anchors: Dict[str, str] = {}
 
     @property
     def name(self) -> str:
@@ -253,10 +261,17 @@ class TurnWindowReplay(TurnReplay):
                 dialogue_turns=self._dialogue_turns,
                 max_tokens=budget,
                 silent_markers=tuple(self._silent_markers),
+                anchor=self._anchors.get(state.session_id or ""),
             ),
         )
         if not window.messages:
             return None
+        if window.anchor:
+            self._anchors[state.session_id or ""] = window.anchor
+        if window.stable_messages:
+            # Stage 5 puts a cache breakpoint here: the part of the replay
+            # that reads the same next turn.
+            state.metadata[STABLE_PREFIX_KEY] = window.stable_messages
 
         count = len(window.messages)
         state.messages[:0] = window.messages
@@ -301,6 +316,7 @@ class TurnWindowReplay(TurnReplay):
 
 __all__ = [
     "DEFAULT_FETCH_ROWS",
+    "STABLE_PREFIX_KEY",
     "NoReplay",
     "TurnWindowReplay",
     "WINDOW_METADATA_KEY",

@@ -25,6 +25,7 @@ from typing import (
 
 from geny_executor.core.config import ModelOverrides, PipelineConfig
 from geny_executor.core.compaction import UNRECORDED_KEY
+from geny_executor.core.usage import turn_usage_summary
 from geny_executor.core.message_repair import repair_all_tool_pairs
 from geny_executor.core.errors import (
     ExecutorErrorCode,
@@ -2269,7 +2270,7 @@ class Pipeline:
             success = result.success
             await self._emit(
                 "pipeline.complete",
-                data={"iterations": state.iteration},
+                data={"iterations": state.iteration, "usage": turn_usage_summary(state)},
                 session_id=state.session_id,
                 run_id=state._run_id,
             )
@@ -2393,6 +2394,7 @@ class Pipeline:
                         "result": state.final_text,
                         "iterations": state.iteration,
                         "total_cost_usd": state.total_cost_usd,
+                        "usage": turn_usage_summary(state),
                     },
                     session_id=state.session_id,
                     run_id=run_id,
@@ -2405,6 +2407,7 @@ class Pipeline:
                     data={
                         "iterations": state.iteration,
                         "total_cost_usd": state.total_cost_usd,
+                        "usage": turn_usage_summary(state),
                     },
                     session_id=state.session_id,
                     run_id=run_id,
@@ -2416,6 +2419,7 @@ class Pipeline:
                     data={
                         **_error_event_data(e),
                         "total_cost_usd": state.total_cost_usd,
+                        "usage": turn_usage_summary(state),
                     },
                     session_id=state.session_id,
                     run_id=run_id,

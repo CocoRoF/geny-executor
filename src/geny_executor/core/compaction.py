@@ -73,6 +73,10 @@ def reconcile_recorded_index(before: List[Any], after: List[Any], metadata: dict
     if start == 0 and n_synthetic == 0:
         return  # nothing was removed or added
 
+    # The replay's stable-prefix length (a Stage 5 cache hint) counted
+    # messages that are gone now.
+    metadata.pop("cache.stable_prefix_messages", None)
+
     if old_idx < start:
         pending = metadata.get(UNRECORDED_KEY)
         stash = list(pending) if isinstance(pending, list) else []

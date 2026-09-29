@@ -1,5 +1,56 @@
 # Changelog
 
+## [2.78.0] — 2026-09-29
+
+Phase 3 of the 2026-09-29 harness audit: the prompt cache, cost, and the
+agent's own turns.
+
+### Fixed — the replay can be cached across turns
+
+The turn replay slid one turn every turn, so its first message — and with it
+every prompt-cache prefix — changed every time: the whole replay (up to 15%
+of the window) was sent at full price at the start of every turn. The window
+now holds its start while it stays within `turns + sticky_turns` (3)
+conversation turns, so its older, conversation-only part renders the same
+text turn after turn, and `TurnWindowReplay` remembers each session's start
+(`WindowResult.anchor`). The replay publishes how many leading messages are
+that stable part (`cache.stable_prefix_messages`), and the aggressive cache
+strategy puts a breakpoint there (up to four: tools, system, stable replay,
+moving point). Compaction drops the hint.
+
+### Fixed — the agent's own turns no longer push the conversation out
+
+Turns the agent started itself (rows with `direction="internal"` — wake-ups,
+screen glances) took the replay's five slots: an agent woken every few
+minutes replayed its own musings and lost the last real exchange. They no
+longer take conversation slots; the latest `max_autonomous_turns` (1) ride
+along, more when the conversation leaves slots free.
+
+### Changed — one rule for silence
+
+`is_silence_text`: a silence marker, possibly after cue tags
+(`[neutral] [SILENT]`), with nothing but punctuation after it. The replay
+required the bare marker while the host allowed trailing punctuation, so
+`[SILENT].` was silence to one and a conversation turn to the other.
+
+### Added — stale tool output is trimmed for cost, not only for space
+
+The deterministic prune (duplicates, stale images, oversized old results)
+only ran inside compaction, at 80% of the window — on a 200k window never
+before a 160k prompt, every call resending every old result in full. Stage 2
+now runs it when the turn's own history passes `prune_over_tokens` (30k,
+0 = off). The replayed turns and the newest results are left alone.
+
+### Added — a turn's usage, counted once
+
+`pipeline.complete` / `.error` / `.cancelled` carry `usage`
+(`core.usage.turn_usage_summary`): calls, first and largest prompt, total
+read, cache reads and writes, output, and the share served from cache.
+`TokenUsage.prompt_tokens` counts a call's prompt once: OpenAI's chat
+`prompt_tokens` already includes the cached part (the client now says so,
+`input_includes_cache_read`), Anthropic's does not — the turn budget summed
+both ways and double-counted OpenAI's cache.
+
 ## [2.77.0] — 2026-09-29
 
 Phase 2 of the 2026-09-29 harness audit: the tool loop's safeguards, most

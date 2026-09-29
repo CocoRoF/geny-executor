@@ -559,6 +559,7 @@ class OpenAIClient(BaseClient):
             input_tokens=getattr(usage_data, "prompt_tokens", 0) or 0,
             output_tokens=getattr(usage_data, "completion_tokens", 0) or 0,
             cache_read_input_tokens=cached,
+            input_includes_cache_read=True,
         )
 
     def _classify_error(self, e: Exception) -> APIError:

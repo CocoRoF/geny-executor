@@ -17,6 +17,15 @@ class TokenUsage:
     cache_read_input_tokens: int = 0
     cost_usd: Optional[float] = None
     duration_ms: Optional[int] = None
+    #: OpenAI's chat ``prompt_tokens`` already counts the cached part;
+    #: Anthropic's ``input_tokens`` does not. Set by the client that knows.
+    input_includes_cache_read: bool = False
+
+    @property
+    def prompt_tokens(self) -> int:
+        """Everything the model read for this call, counted once."""
+        read = 0 if self.input_includes_cache_read else self.cache_read_input_tokens
+        return self.input_tokens + read + self.cache_creation_input_tokens
 
     @property
     def total_tokens(self) -> int:

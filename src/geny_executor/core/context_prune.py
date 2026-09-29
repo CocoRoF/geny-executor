@@ -33,7 +33,15 @@ import hashlib
 import json
 from typing import Any, Dict, List
 
-__all__ = ["prune_messages", "PruneMetrics"]
+__all__ = ["DEFAULT_PRUNE_OVER_TOKENS", "prune_messages", "PruneMetrics"]
+
+#: Stage 2 prunes when the turn's own history passes this many tokens,
+#: whatever the context window (see ``ContextStage._prune_for_cost``). XGEN
+#: (same stack, 28 days): at 30k no turn with five or fewer calls is touched,
+#: 13 of the 14 turns with eight or more are. XGEN measured the whole prompt
+#: over a ~10k prefix; here it is the history alone — Geny's prefix is ~38k
+#: and the same every call.
+DEFAULT_PRUNE_OVER_TOKENS = 30_000
 
 #: Messages within this tail window are never modified.
 DEFAULT_PROTECT_LAST = 6

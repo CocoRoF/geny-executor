@@ -308,16 +308,19 @@ PAYLOADS: Dict[EventTypes, Dict[str, str]] = {
         "iterations": "int — loop iterations this turn",
         "result": "str? — full final text (run_stream only; never truncated)",
         "total_cost_usd": "float? — this turn's cost (run_stream only)",
+        "usage": "dict — core.usage.turn_usage_summary: calls, input_tokens, first_prompt_tokens, max_prompt_tokens, cache_read_tokens, cache_write_tokens, output_tokens, cache_read_share",
     },
     EventTypes.PIPELINE_ERROR: {
         "error": "str — message (legacy field, always present)",
         "code": "str — stable ExecutorErrorCode value ('exec.*'), 'exec.unknown' fallback",
         "exception_type": "str — fully qualified exception class name",
         "total_cost_usd": "float? — this turn's cost (run_stream only)",
+        "usage": "dict? — the turn's model calls so far (run_stream only)",
     },
     EventTypes.PIPELINE_CANCELLED: {
         "iterations": "int — loop iterations reached before the stop",
         "total_cost_usd": "float — cost spent before the stop",
+        "usage": "dict — the turn's model calls before the stop",
     },
     EventTypes.TURN_SALVAGED: {
         "reason": "str — 'stopped' | 'failed'",

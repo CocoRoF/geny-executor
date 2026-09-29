@@ -60,6 +60,9 @@ newest turn (:func:`build_window`).
 
 from __future__ import annotations
 
+import hashlib
+import re
+
 import json
 import logging
 from dataclasses import dataclass, field
@@ -127,6 +130,8 @@ MAX_TOOL_TARGETS = 3
 #: ``[SILENT]`` is how an agent declines to speak (Geny; Hermes' cron uses
 #: the same marker to suppress delivery).
 DEFAULT_SILENT_MARKERS: Tuple[str, ...] = ("[SILENT]",)
+DEFAULT_MAX_AUTONOMOUS_TURNS = 1
+DEFAULT_STICKY_TURNS = 3
 #: Wire framing per message (role, block envelopes). Small, but a window of
 #: forty short messages is not free.
 _MESSAGE_OVERHEAD_TOKENS = 4
@@ -176,6 +181,19 @@ class WindowConfig:
     #: idle or screen trigger answers most of them with silence; without
     #: this, five of those push the last real exchange out of the window.
     silent_markers: Tuple[str, ...] = DEFAULT_SILENT_MARKERS
+    #: Turns the agent started on its own (a wake-up, a screen glance — rows
+    #: whose ``direction`` is ``"internal"``) do not take conversation slots.
+    #: The most recent this many are kept (more when the conversation leaves
+    #: slots free): what it just said on its own is what the user may be
+    #: answering, and without it the agent repeats itself.
+    max_autonomous_turns: int = DEFAULT_MAX_AUTONOMOUS_TURNS
+    #: The key of the turn the previous window started at, and how many
+    #: turns past ``turns`` the window may grow before it moves on. A window
+    #: that slid one turn every turn changed its first message every time,
+    #: so no prompt cache ever matched it across turns; held in place, the
+    #: older part of it is the same text turn after turn.
+    anchor: Optional[str] = None
+    sticky_turns: int = DEFAULT_STICKY_TURNS
 
     def result_cap(self) -> int:
         if self.result_tokens is not None:
@@ -216,14 +234,23 @@ class WindowResult:
     budget: int = 0
     #: Degradation steps taken, in order, for the event payload.
     degraded: List[str] = field(default_factory=list)
+    #: The key of the window's first turn — the next window's anchor.
+    anchor: Optional[str] = None
+    #: Leading messages that render the same next turn (the conversation-
+    #: only turns): where a prompt-cache breakpoint pays off across turns.
+    stable_messages: int = 0
+    #: Turns the agent started on its own that are in the window.
+    autonomous: int = 0
 
     def as_metadata(self) -> Dict[str, Any]:
         return {
             "turns": self.turns,
             "full": self.full,
             "dialogue": self.dialogue,
+            "autonomous": self.autonomous,
             "tokens": self.tokens,
             "budget": self.budget,
+            "stable_messages": self.stable_messages,
             "degraded": list(self.degraded),
         }
 
@@ -271,6 +298,56 @@ class LogicalTurn:
         return out
 
 
+_LEADING_TAG = re.compile(r"^\s*\[[^\]\n]{1,40}\]")
+
+
+def is_silence_text(text: str, markers: Sequence[str] = DEFAULT_SILENT_MARKERS) -> bool:
+    """A reply that says nothing: a silence marker, perhaps after cue tags
+    (``[neutral] [SILENT]``), with nothing but punctuation after it.
+
+    The one rule for "silent". The replay and the host each had their own —
+    exact marker only here, trailing punctuation allowed there — so a
+    ``[SILENT].`` was silence to the host and a conversation turn to the
+    replay.
+    """
+    t = (text or "").strip()
+    upper = [m.upper() for m in markers if m]
+    for _ in range(4):
+        head = t.upper()
+        for marker in upper:
+            if head.startswith(marker):
+                rest = t[len(marker) :].strip()
+                return len(rest) <= 2 and not any(ch.isalnum() for ch in rest)
+        match = _LEADING_TAG.match(t)
+        if match is None:
+            return False
+        t = t[match.end() :].strip()
+    return False
+
+
+def turn_key(turn: LogicalTurn) -> Optional[str]:
+    """A stable name for a turn: when it started and what was asked."""
+    if not turn.messages:
+        return None
+    first = turn.messages[0]
+    ts = getattr(first, "timestamp", None)
+    stamp = ts.isoformat() if hasattr(ts, "isoformat") else str(ts or "")
+    digest = hashlib.sha1(_text_of(first).encode("utf-8", "replace")).hexdigest()[:10]
+    return f"{stamp}|{digest}"
+
+
+def is_autonomous_turn(turn: LogicalTurn) -> bool:
+    """The agent started this turn itself — nobody spoke to it."""
+    if not turn.messages:
+        return False
+    first = turn.messages[0]
+    direction = getattr(first, "direction", None)
+    if direction is None:
+        meta = getattr(first, "metadata", None)
+        direction = meta.get("direction") if isinstance(meta, dict) else None
+    return str(direction or "").lower() == "internal"
+
+
 def is_silent_turn(turn: LogicalTurn, markers: Sequence[str] = DEFAULT_SILENT_MARKERS) -> bool:
     """Nothing was said and nothing was done.
 
@@ -280,7 +357,6 @@ def is_silent_turn(turn: LogicalTurn, markers: Sequence[str] = DEFAULT_SILENT_MA
     """
     if turn.tool_calls():
         return False
-    upper = [m.upper() for m in markers if m]
     answered = False
     for message in turn.messages:
         if str(getattr(message, "role", "") or "") != "assistant":
@@ -289,7 +365,7 @@ def is_silent_turn(turn: LogicalTurn, markers: Sequence[str] = DEFAULT_SILENT_MA
         text = _text_of(message)
         if not text:
             continue
-        if not any(text.upper().startswith(m) and not text[len(m) :].strip() for m in upper):
+        if not is_silence_text(text, markers):
             return False
     # A turn the agent never answered is not silence: the user still said
     # it. (Its reply may simply not have been recorded — a turn that failed
@@ -609,11 +685,14 @@ def build_window(turns: Sequence[Any], cfg: WindowConfig) -> WindowResult:
     if not cfg.enabled or not turns:
         return WindowResult()
 
-    grouped = [
-        turn
-        for turn in group_logical_turns(turns, len(turns))
-        if not is_silent_turn(turn, cfg.silent_markers)
-    ][-cfg.turns :]
+    grouped = _select_turns(
+        [
+            turn
+            for turn in group_logical_turns(turns, len(turns))
+            if not is_silent_turn(turn, cfg.silent_markers)
+        ],
+        cfg,
+    )
     if not grouped:
         return WindowResult()
 
@@ -650,9 +729,13 @@ def build_window(turns: Sequence[Any], cfg: WindowConfig) -> WindowResult:
     # opening on a tool_result whose call is gone, and a turn that ended
     # mid-loop can hold a call whose result was never recorded — both are
     # rejected by the wire, so both are repaired rather than risked.
+    stable_end = _dialogue_message_count(dialogue, cfg, utterance_cap, sizer)
+    marker = messages[stable_end - 1] if 0 < stable_end <= len(messages) else None
     messages = strip_leading_orphan_tool_results(messages)
     messages = normalize_messages_for_request(messages)
     _close_unanswered(messages)
+    stable = next((i + 1 for i, m in enumerate(messages) if m is marker), 0)
+    kept = dialogue + full
 
     return WindowResult(
         messages=messages,
@@ -662,7 +745,56 @@ def build_window(turns: Sequence[Any], cfg: WindowConfig) -> WindowResult:
         tokens=_measure(messages, sizer),
         budget=cfg.max_tokens,
         degraded=degraded,
+        anchor=turn_key(kept[0]) if kept else None,
+        stable_messages=stable,
+        autonomous=sum(1 for t in kept if is_autonomous_turn(t)),
     )
+
+
+def _dialogue_message_count(
+    dialogue: List[LogicalTurn], cfg: WindowConfig, utterance_cap: int, sizer: _Sizer
+) -> int:
+    return sum(len(_render_dialogue(t, cfg, utterance_cap, sizer)) for t in dialogue)
+
+
+def _select_turns(turns: List[LogicalTurn], cfg: WindowConfig) -> List[LogicalTurn]:
+    """Which non-silent turns the window replays, oldest first.
+
+    Conversation turns take the ``turns`` slots. Turns the agent started on
+    its own ride along only as the latest ``max_autonomous_turns`` (or as
+    many as the conversation leaves slots free) — before, an agent woken
+    every few minutes filled the window with its own wake-ups and pushed
+    the last real exchange out. The window starts where the previous one
+    did while that keeps it within ``turns + sticky_turns`` conversation
+    turns, so its older part is the same text turn after turn.
+    """
+    if not turns or cfg.turns <= 0:
+        return []
+    conv = [i for i, t in enumerate(turns) if not is_autonomous_turn(t)]
+    auto = [i for i, t in enumerate(turns) if is_autonomous_turn(t)]
+
+    start: Optional[int] = None
+    if cfg.anchor:
+        at = next((i for i, t in enumerate(turns) if turn_key(t) == cfg.anchor), None)
+        if at is not None and sum(1 for i in conv if i >= at) <= cfg.turns + max(
+            0, cfg.sticky_turns
+        ):
+            start = at
+    if start is not None:
+        conv_sel = [i for i in conv if i >= start]
+    else:
+        conv_sel = conv[-cfg.turns :]
+
+    free = cfg.turns - len(conv_sel)
+    budget = max(max(0, cfg.max_autonomous_turns), free)
+    if start is not None:
+        candidates = [i for i in auto if i >= start]
+    elif len(conv_sel) >= cfg.turns and conv_sel:
+        candidates = [i for i in auto if i > conv_sel[0]]
+    else:
+        candidates = auto
+    auto_sel = candidates[-budget:] if budget else []
+    return [turns[i] for i in sorted(set(conv_sel) | set(auto_sel))]
 
 
 #: Shortest an utterance is cut to when the text rendering is over budget —

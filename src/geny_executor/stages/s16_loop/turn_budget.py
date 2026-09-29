@@ -65,14 +65,9 @@ _STEP_NOTE = (
 
 def turn_input_tokens(state: PipelineState) -> int:
     """Prompt tokens the model processed this turn, cache reads and writes included."""
-    total = 0
-    for u in state.turn_token_usage:
-        total += (
-            int(getattr(u, "input_tokens", 0) or 0)
-            + int(getattr(u, "cache_creation_input_tokens", 0) or 0)
-            + int(getattr(u, "cache_read_input_tokens", 0) or 0)
-        )
-    return total
+    from geny_executor.core.usage import prompt_tokens_of
+
+    return sum(prompt_tokens_of(u) for u in state.turn_token_usage)
 
 
 def _record(state: PipelineState, key: str) -> Dict[str, Any]:

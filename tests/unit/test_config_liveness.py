@@ -475,6 +475,33 @@ async def _probe_s16_repeat_stop_after() -> None:
     assert any(e["type"] == "loop.repeat_stop" for e in state2.events)
 
 
+async def _probe_s02_prune_over_tokens() -> None:
+    """Past the threshold this turn's stale oversized tool output is trimmed."""
+    from geny_executor.stages.s02_context import ContextStage
+
+    def _state() -> PipelineState:
+        state = PipelineState(session_id="ctx")
+        state.add_message("user", "go")
+        for i in range(8):
+            state.add_message(
+                "assistant", [{"type": "tool_use", "id": f"t{i}", "name": "Bash", "input": {}}]
+            )
+            state.add_message(
+                "user", [{"type": "tool_result", "tool_use_id": f"t{i}", "content": f"line {i} " * 700}]
+            )
+        return state
+
+    state = _state()
+    await ContextStage().execute("in", state)
+    assert not any(e["type"] == "context.pruned" for e in state.events)
+
+    stage = ContextStage()
+    stage.update_config({"prune_over_tokens": 1000})
+    state2 = _state()
+    await stage.execute("in", state2)
+    assert any(e["type"] == "context.pruned" for e in state2.events)
+
+
 def _budget_state(used: int) -> PipelineState:
     from geny_executor.core.state import TokenUsage
 
@@ -569,6 +596,7 @@ LIVENESS: Dict[Tuple[int, str], Entry] = {
     (16, "max_turns"): Probe(_probe_s16_max_turns),
     (16, "early_stop_on"): Probe(_probe_s16_early_stop_on),
     (16, "repeat_stop_after"): Probe(_probe_s16_repeat_stop_after),
+    (2, "prune_over_tokens"): Probe(_probe_s02_prune_over_tokens),
     (16, "turn_soft_input_tokens"): Probe(_probe_s16_turn_soft_input_tokens),
     (16, "turn_hard_input_tokens"): Probe(_probe_s16_turn_hard_input_tokens),
     (19, "session_summary"): Probe(_probe_s19_session_summary),
