@@ -466,6 +466,18 @@ See [CHANGELOG](https://github.com/CocoRoF/geny-executor/releases) for the full 
 
 ---
 
+## Articles
+
+Why the executor is built the way it is — harness engineering, staged execution and agent memory — from the author's blog ([hrletsgo.me](https://hrletsgo.me/en)).
+
+| Article | Korean |
+|---|---|
+| [Building Geny-Harness: A Personal AI Assistant with Memory](https://hrletsgo.me/en/documents/building-geny-harness-ai-assistant-memory-agent) | [한국어](https://hrletsgo.me/documents/geny-harness-engineering-build-your-own-assistant) |
+| [Harness Engineering: The Agent Era Is Actually Here](https://hrletsgo.me/en/documents/agent-harness-engineering-llm-control-plane) | [한국어](https://hrletsgo.me/documents/harness-engineering-the-age-of-agents) |
+| [Harness Engineering: What Actually Drives Agent Performance](https://hrletsgo.me/en/documents/harness-engineering-llm-agent-performance) | [한국어](https://hrletsgo.me/documents/harness-engineering-ai-agent-test) |
+| [Harness Engineering: How to Give AI Agents Real Memory](https://hrletsgo.me/en/documents/ai-agent-memory-architecture-harness-engineering) | [한국어](https://hrletsgo.me/documents/harness-engineering-memory-architecture) |
+| [AI Agent Memory Systems in Practice: 2026 Landscape](https://hrletsgo.me/en/documents/ai-agent-memory-systems-landscape-2026) | [한국어](https://hrletsgo.me/documents/harness-engineering-memory-architecture-2) |
+
 ## License
 
 [Apache License 2.0](LICENSE). Copyright 2026 CocoRoF — see [NOTICE](NOTICE).
