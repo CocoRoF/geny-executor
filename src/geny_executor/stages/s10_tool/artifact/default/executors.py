@@ -14,7 +14,7 @@ from geny_executor.stages.s10_tool.interface import (
     ToolExecutor,
     ToolRouter,
 )
-from geny_executor.stages.s10_tool.persistence import maybe_persist_large_result
+from geny_executor.stages.s10_tool.persistence import persist_large_result
 
 
 def _apply_state_mutations_via_ctx(result, tc: Dict[str, Any], context: ToolContext) -> None:
@@ -157,7 +157,7 @@ class SequentialExecutor(ToolExecutor):
             )
             duration_ms = int((time.monotonic() - t0) * 1000)
             caps = _resolve_capabilities(registry, tc)
-            result = maybe_persist_large_result(
+            result = await persist_large_result(
                 result,
                 tool_use_id=tc["tool_use_id"],
                 tool_name=tc["tool_name"],
@@ -247,7 +247,7 @@ class ParallelExecutor(ToolExecutor):
                 )
                 duration_ms = int((time.monotonic() - t0) * 1000)
                 caps = _resolve_capabilities(registry, tc)
-                result = maybe_persist_large_result(
+                result = await persist_large_result(
                     result,
                     tool_use_id=tc["tool_use_id"],
                     tool_name=tc["tool_name"],
@@ -383,7 +383,7 @@ class PartitionExecutor(ToolExecutor):
             )
             duration_ms = int((time.monotonic() - t0) * 1000)
             caps = self._lookup_capabilities(tc)
-            result = maybe_persist_large_result(
+            result = await persist_large_result(
                 result,
                 tool_use_id=tc["tool_use_id"],
                 tool_name=tc["tool_name"],

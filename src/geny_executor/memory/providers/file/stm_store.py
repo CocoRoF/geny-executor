@@ -17,6 +17,7 @@ fsync-on-write and the ephemeral provider doesn't offer it either.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from datetime import datetime, tzinfo
@@ -200,9 +201,7 @@ class _JSONLSTMStore:
         rec = _turn_to_record(turn, self._tz)
         line = _bound_record_line(json.dumps(rec, ensure_ascii=False))
         async with self._lock:
-            self._path.parent.mkdir(parents=True, exist_ok=True)
-            with self._path.open("a", encoding="utf-8") as fh:
-                fh.write(line + "\n")
+            self._append_line_sync(line)
         # Fire after_record_turn hook outside the write lock so a
         # slow business callback can't stall the next append. Default
         # `RecordReceipt()` because STM-only writes don't have notes
@@ -260,9 +259,32 @@ class _JSONLSTMStore:
             rec.pop("metadata", None)
             line = json.dumps(rec, ensure_ascii=False)
         async with self._lock:
-            self._path.parent.mkdir(parents=True, exist_ok=True)
-            with self._path.open("a", encoding="utf-8") as fh:
-                fh.write(line + "\n")
+            self._append_line_sync(line)
+
+    def _append_line_sync(self, line: str) -> None:
+        """Append one line, and carry the parsed-line cache along with it.
+
+        Every append moved the file's stat signature, so the next read —
+        the replay, a retrieval, the transcript view — re-read and re-split
+        the whole file (up to 16 MB) on the event loop, once per recorded
+        message. A cache that matched the file before this write is still
+        right after it plus this line.
+        """
+        before = self._stat_key()
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        with self._path.open("a", encoding="utf-8") as fh:
+            fh.write(line + "\n")
+        cached = self._lines_cache
+        if cached is not None and before is not None and cached[0] == before:
+            after = self._stat_key()
+            self._lines_cache = (after, cached[1] + [line]) if after is not None else None
+
+    def _stat_key(self) -> Optional[tuple]:
+        try:
+            st = self._path.stat()
+        except OSError:
+            return None
+        return (st.st_mtime_ns, st.st_size)
 
     async def recent(self, n: int = 20) -> List[Turn]:
         if n <= 0:
@@ -388,7 +410,21 @@ class _JSONLSTMStore:
 
     async def _read_lines(self) -> List[str]:
         async with self._lock:
-            return self._read_lines_sync()
+            key = self._stat_key()
+            cached = self._lines_cache
+            if key is None:
+                self._lines_cache = None
+                return []
+            if cached is not None and cached[0] == key:
+                return cached[1]
+            # A cold read of a large transcript is off the event loop.
+            lines = await asyncio.to_thread(self._read_file_lines)
+            self._lines_cache = (key, lines)
+            return lines
+
+    def _read_file_lines(self) -> List[str]:
+        with self._path.open("r", encoding="utf-8") as fh:
+            return [line.rstrip("\n") for line in fh if line.strip()]
 
     def _read_lines_sync(self) -> List[str]:
         """Whole-file line read with an (mtime_ns, size)-keyed cache.

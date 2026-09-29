@@ -22,7 +22,12 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
-from geny_executor.core.compaction import UNRECORDED_KEY, mark_recorded, unrecorded_messages
+from geny_executor.core.compaction import (
+    UNRECORDED_KEY,
+    mark_recorded,
+    mark_recorded_upto,
+    unrecorded_messages,
+)
 from geny_executor.core.state import PipelineState
 from geny_executor.memory.provider import MemoryProvider, Turn
 from geny_executor.stages.s18_memory._dehydrate import dehydrate_message
@@ -92,22 +97,27 @@ class ProviderDrivenStrategy(MemoryUpdateStrategy):
             return
 
         recorded = 0
+        done = 0
         for msg in new_msgs:
             try:
                 # A dehydrated copy, as MemoryStage records: base64 payloads
                 # stay in the live messages for this run and out of STM.
                 turn = Turn.from_state_message(dehydrate_message(msg))
-            except Exception:  # noqa: BLE001
+            except Exception:  # noqa: BLE001 — malformed: it will never record
                 logger.debug("provider_driven: Turn.from_state_message failed", exc_info=True)
+                done += 1
                 continue
             try:
                 await provider.record_turn(turn)
-                recorded += 1
             except Exception:  # noqa: BLE001
-                logger.debug("provider_driven: record_turn failed", exc_info=True)
-                continue
+                # Stop here, in order: this message and the ones after it are
+                # tried again next time instead of being skipped for good.
+                logger.warning("provider_driven: record_turn failed; will retry", exc_info=True)
+                break
+            recorded += 1
+            done += 1
 
-        mark_recorded(state)
+        mark_recorded_upto(state, done)
         if recorded:
             try:
                 state.add_event(

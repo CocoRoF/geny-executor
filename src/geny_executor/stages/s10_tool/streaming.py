@@ -50,7 +50,7 @@ from geny_executor.stages.s10_tool.interface import (
     ToolExecutor,
     ToolRouter,
 )
-from geny_executor.stages.s10_tool.persistence import maybe_persist_large_result
+from geny_executor.stages.s10_tool.persistence import persist_large_result
 from geny_executor.tools.base import ToolCapabilities, ToolContext
 from geny_executor.tools.registry import ToolRegistry
 
@@ -375,7 +375,7 @@ class StreamingToolExecutor(ToolExecutor):
             context,
         )
         duration_ms = int((time.monotonic() - t0) * 1000)
-        result = maybe_persist_large_result(
+        result = await persist_large_result(
             result,
             tool_use_id=tuid,
             tool_name=call["tool_name"],

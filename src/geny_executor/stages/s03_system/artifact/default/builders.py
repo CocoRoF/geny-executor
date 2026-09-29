@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Union
 
@@ -191,9 +192,38 @@ class DateTimeBlock(PromptBlock):
     def volatile(self) -> bool:
         return True
 
+    def __init__(self, tz: Optional[str] = None) -> None:
+        self._tz = tz
+
+    def _zone(self) -> Any:
+        name = self._tz or os.environ.get("GENY_TIMEZONE") or os.environ.get("TZ") or ""
+        if name:
+            try:
+                from zoneinfo import ZoneInfo
+
+                return ZoneInfo(name)
+            except Exception:  # noqa: BLE001 — an unknown zone falls back to UTC
+                pass
+        return timezone.utc
+
     def render(self, state: PipelineState) -> str:
-        now = datetime.now(timezone.utc)
-        return f"Current date: {now.strftime('%Y-%m-%d %H:%M UTC')}"
+        """The user's local date, weekday and time, with the zone named.
+
+        It said ``2026-09-28 23:30 UTC``: for a user in Seoul that is already
+        Tuesday morning, and with no weekday the model worked out "tomorrow"
+        and "this Friday" from a date it had to convert first — and often
+        did not. The zone comes from ``tz``, else ``GENY_TIMEZONE`` / ``TZ``,
+        else UTC.
+        """
+        zone = self._zone()
+        now = datetime.now(zone)
+        offset = now.strftime("%z")
+        offset = f"UTC{offset[:3]}:{offset[3:]}" if offset else "UTC"
+        label = getattr(zone, "key", None) or "UTC"
+        return (
+            f"Current date: {now.strftime('%Y-%m-%d')} ({now.strftime('%A')}), "
+            f"{now.strftime('%H:%M')} {label} ({offset})"
+        )
 
 
 class PinnedFactsBlock(PromptBlock):

@@ -1,5 +1,49 @@
 # Changelog
 
+## [2.79.0] — 2026-09-29
+
+Phase 4 of the 2026-09-29 harness audit: quality.
+
+### Fixed
+
+- **The date line is the user's.** `DateTimeBlock` said
+  `2026-09-28 23:30 UTC` — already Tuesday morning in Seoul, and with no
+  weekday the model worked out "tomorrow" from a date it first had to
+  convert. It now reads `Current date: 2026-09-29 (Tuesday), 08:30
+  Asia/Seoul (UTC+09:00)`, the zone from `tz`, else `GENY_TIMEZONE` / `TZ`,
+  else UTC.
+- **Memory I/O is off the event loop.** Every STM append moved the
+  transcript's stat signature, so the next read re-read and re-split the
+  whole file (up to 16 MB) on the loop, once per recorded message; our own
+  appends now carry the parsed-line cache along, and a cold read runs in a
+  thread. LTM search reads its files in a thread, and a large tool result
+  is written to disk in one (`persist_large_result`).
+- **Cache markers are not recorded.** Stage 5's `cache_control` on the live
+  messages went into STM and came back in every replay — breakpoints the API
+  counts against its limit of four. Dehydration strips them.
+- **A failed STM write is retried, not skipped.** The watermark moved past
+  every message whatever happened, so a message whose write failed was
+  never written. Recording now stops at the failure (in order) and the rest
+  is tried next time (`mark_recorded_upto`).
+- **The `hybrid` and `progressive_disclosure` context strategies** cut by
+  message count ("two messages per turn"): into the middle of any tool
+  loop, leaving a result without its call (rejected by the API), the
+  current request dropped, and the watermark past the end. Both now drop
+  whole turns from the front, never the current one, and keep the
+  watermark right; `progressive_disclosure` keeps the first request and
+  says how many messages it left out instead of claiming a summary.
+- **An image-only request searches memory.** The query was the request's
+  text — "" for a screenshot alone, which retrieved nothing. It now uses the
+  user's previous words and the attachment names.
+- **Claude Code keeps the request's media through the tool loop.** Only the
+  latest message's images were attached, and once the loop started the
+  latest message was a tool result: the image asked about was
+  "[image attached]" text by the second step. Every image and document of
+  the current turn is attached (newest 8), and one in a tool result too.
+  A PDF (`document` block) used to be dumped into the prompt as JSON —
+  its base64, megabytes of it; it is attached as a real block, and earlier
+  turns' media is a label.
+
 ## [2.78.0] — 2026-09-29
 
 Phase 3 of the 2026-09-29 harness audit: the prompt cache, cost, and the

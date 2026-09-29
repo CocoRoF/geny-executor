@@ -50,6 +50,62 @@ from geny_executor.stages.s02_context.artifact.default.replay import (
 logger = logging.getLogger(__name__)
 
 
+def _message_text(message: Dict[str, Any]) -> str:
+    content = message.get("content", "")
+    if isinstance(content, list):
+        return " ".join(
+            str(b.get("text", ""))
+            for b in content
+            if isinstance(b, dict) and b.get("type") == "text"
+        ).strip()
+    return str(content or "").strip()
+
+
+def _retrieval_query(messages: List[Dict[str, Any]]) -> str:
+    """What memory is searched with: the latest user request's text.
+
+    A request that is only an image or a file has no text, and used to
+    search with "" — which retrieves nothing, so "what's this?" with a
+    screenshot came with no memory at all. It searches with the attachment
+    names and the user's previous words instead: the screenshot is almost
+    always about what was just being discussed.
+    """
+    latest: Optional[Dict[str, Any]] = None
+    for msg in reversed(messages):
+        if not isinstance(msg, dict) or msg.get("role") != "user":
+            continue
+        content = msg.get("content")
+        if isinstance(content, list) and any(
+            isinstance(b, dict) and b.get("type") == "tool_result" for b in content
+        ):
+            continue  # tool results, not a request
+        if latest is None:
+            latest = msg
+            text = _message_text(msg)
+            if text:
+                return text
+            continue
+        earlier = _message_text(msg)
+        if earlier:
+            names = _attachment_names(latest)
+            return f"{earlier} {names}".strip()
+    return _attachment_names(latest) if latest is not None else ""
+
+
+def _attachment_names(message: Dict[str, Any]) -> str:
+    content = message.get("content")
+    if not isinstance(content, list):
+        return ""
+    names = []
+    for b in content:
+        if not isinstance(b, dict) or b.get("type") not in ("image", "document", "file"):
+            continue
+        name = b.get("name") or b.get("title") or (b.get("_meta") or {}).get("name")
+        if name:
+            names.append(str(name))
+    return " ".join(names)
+
+
 class _CompactionShadow:
     """Minimal state stand-in for background compaction (TTFT program).
 
@@ -400,17 +456,7 @@ class ContextStage(Stage[Any, Any]):
 
         # Retrieve memory — extract query from the last user message, not final_text
         # (final_text is only populated after Stage 9 Parse, not available here)
-        query = ""
-        for msg in reversed(state.messages):
-            if msg.get("role") == "user":
-                query = msg.get("content", "")
-                break
-        if isinstance(query, list):
-            # Extract text from content blocks (could be multimodal)
-            query = " ".join(
-                b.get("text", "") for b in query if isinstance(b, dict) and b.get("type") == "text"
-            )
-        query = str(query)
+        query = _retrieval_query(state.messages)
 
         # Clear last turn's retrieved memory BEFORE this turn's retrieval
         # (audit C1). ``state.metadata`` is sticky, and the injection below

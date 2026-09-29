@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 from geny_executor.core.schema import ConfigField, ConfigSchema
 from geny_executor.core.state import PipelineState
@@ -67,10 +67,12 @@ class HybridStrategy(ContextStrategy):
         return {"max_recent_turns": self._max_recent_turns}
 
     async def build_context(self, state: PipelineState) -> None:
-        # Trim history to last N messages (each turn = user + assistant = 2 messages)
-        max_messages = self._max_recent_turns * 2
-        if len(state.messages) > max_messages:
-            state.messages = state.messages[-max_messages:]
+        # The last N turns — counted as user instructions, not as pairs of
+        # messages. "Two messages per turn" cut into the middle of any turn
+        # that used tools: a tool_result without its call (rejected by the
+        # API), the current request dropped mid-loop, and a record
+        # watermark pointing past the end.
+        _keep_last_turns(state, self._max_recent_turns)
 
 
 class ProgressiveDisclosureStrategy(ContextStrategy):
@@ -115,20 +117,50 @@ class ProgressiveDisclosureStrategy(ContextStrategy):
         return {"summary_threshold": self._summary_threshold}
 
     async def build_context(self, state: PipelineState) -> None:
-        # If history is short, keep as-is
-        if len(state.messages) <= self._summary_threshold * 2:
-            return
+        # The first request (the original task) and the last N turns, with
+        # an honest line between them. It used to claim a summary it never
+        # wrote, as a second user message in a row, after cutting by
+        # message count into the middle of a tool loop.
+        _keep_last_turns(state, self._summary_threshold, keep_first=True)
 
-        # Keep first message (original task) + recent messages
-        first = state.messages[:1]
-        recent = state.messages[-(self._summary_threshold * 2) :]
 
-        # Insert a summary marker between old and recent
-        summary_msg = {
-            "role": "user",
-            "content": (
-                "[Previous conversation summarized. "
-                f"{len(state.messages) - len(recent) - 1} messages omitted.]"
-            ),
+def _turn_starts(messages: List[Dict[str, Any]]) -> List[int]:
+    starts = []
+    for i, m in enumerate(messages):
+        if not isinstance(m, dict) or m.get("role") != "user":
+            continue
+        content = m.get("content")
+        if isinstance(content, list) and any(
+            isinstance(b, dict) and b.get("type") == "tool_result" for b in content
+        ):
+            continue
+        starts.append(i)
+    return starts
+
+
+def _keep_last_turns(state: PipelineState, turns: int, *, keep_first: bool = False) -> None:
+    """Drop whole turns from the front so at most ``turns`` remain.
+
+    The cut lands on a user instruction, so no call loses its result and the
+    current turn is never touched. The record watermark follows the cut
+    (``reconcile_recorded_index``), and messages cut before they were
+    recorded are kept for Stage 18.
+    """
+    from geny_executor.core.compaction import reconcile_recorded_index
+
+    starts = _turn_starts(state.messages)
+    if turns <= 0 or len(starts) <= turns:
+        return
+    cut = starts[-turns]
+    before = list(state.messages)
+    kept = before[cut:]
+    if keep_first and starts[0] < cut:
+        first = before[starts[0]]
+        note = {
+            "role": "assistant",
+            "content": f"[{cut - starts[0] - 1} earlier messages are not shown.]",
         }
-        state.messages = first + [summary_msg] + recent
+        state.messages = [first, note] + kept
+    else:
+        state.messages = kept
+    reconcile_recorded_index(before, list(state.messages), state.metadata)

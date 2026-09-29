@@ -29,6 +29,11 @@ from typing import Any, Dict, List
 
 
 def _dehydrate_block(block: Dict[str, Any]) -> Dict[str, Any]:
+    if "cache_control" in block:
+        # A wire marker Stage 5 put on the live message, not content: it
+        # was recorded into memory and came back in every replay of the
+        # turn — an extra breakpoint the API counts against its limit of 4.
+        block = {k: v for k, v in block.items() if k != "cache_control"}
     btype = block.get("type")
     if btype == "image":
         source = block.get("source") or {}

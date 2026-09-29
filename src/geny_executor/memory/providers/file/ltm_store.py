@@ -15,6 +15,8 @@ The main file gets an evergreen bonus of 1.0 with no decay.
 
 from __future__ import annotations
 
+import asyncio
+
 import math
 import re
 from datetime import datetime, timedelta, tzinfo
@@ -103,6 +105,13 @@ class _MarkdownLTMStore:
             return []
         async with self._lock:
             candidates = self._list_candidates()
+        # Every LTM file is read and scored: off the event loop, which the
+        # search used to hold for as long as the files took to read.
+        return await asyncio.to_thread(self._search_sync, candidates, keywords, limit)
+
+    def _search_sync(
+        self, candidates: List[Tuple[str, str, Path]], keywords: List[str], limit: int
+    ) -> List[MemoryChunk]:
         scored: List[Tuple[float, MemoryChunk]] = []
         for kind, ref_name, path in candidates:
             content = _read(path)

@@ -17,7 +17,7 @@ import json
 import re
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Iterable, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
 OPEN = "<tool_call>"
 CLOSE = "</tool_call>"
@@ -95,7 +95,26 @@ def system_text(system: Any) -> str:
 
 
 # ── transcript ────────────────────────────────────────────────────────
-def _result_text(content: Any) -> str:
+#: Media block types carried to the CLI as real blocks (never as text).
+_MEDIA_TYPES = ("image", "document")
+
+#: The most media blocks one request carries — newest first.
+MAX_MEDIA_BLOCKS = 8
+
+
+def _has_payload(block: Dict[str, Any]) -> bool:
+    """Bytes or a URL to send — a block dehydrated for memory has neither."""
+    src = block.get("source")
+    return isinstance(src, dict) and bool(src.get("data") or src.get("url"))
+
+
+def _media_label(block: Dict[str, Any]) -> str:
+    name = block.get("title") or block.get("name") or (block.get("_meta") or {}).get("name")
+    kind = "image" if block.get("type") == "image" else "document"
+    return f"[{kind}: {name}]" if name else f"[{kind}]"
+
+
+def _result_text(content: Any, media: Optional[List[Dict[str, Any]]] = None) -> str:
     if isinstance(content, str):
         return content
     if isinstance(content, list):
@@ -104,8 +123,12 @@ def _result_text(content: Any) -> str:
             if isinstance(block, dict):
                 if block.get("type") == "text":
                     parts.append(str(block.get("text") or ""))
-                elif block.get("type") == "image":
-                    parts.append("[image]")
+                elif block.get("type") in _MEDIA_TYPES:
+                    # Never the block itself: a PDF's base64 went into the
+                    # prompt as text, megabytes of it.
+                    parts.append(_media_label(block) + (" (attached)" if media is not None else ""))
+                    if media is not None and _has_payload(block):
+                        media.append({k: v for k, v in block.items() if k != "cache_control"})
                 else:
                     parts.append(json.dumps(block, ensure_ascii=False, default=str))
             else:
@@ -117,7 +140,8 @@ def _result_text(content: Any) -> str:
 
 
 def _render_blocks(role: str, content: Any) -> tuple[str, list[dict[str, Any]]]:
-    """(text, images) for one canonical message."""
+    """(text, media) for one canonical message — media being the image and
+    document blocks, which the caller attaches for real or leaves as labels."""
     if isinstance(content, str):
         return content, []
     texts: list[str] = []
@@ -136,18 +160,32 @@ def _render_blocks(role: str, content: Any) -> tuple[str, list[dict[str, Any]]]:
             status = ' is_error="true"' if block.get("is_error") else ""
             texts.append(
                 f'<tool_result id="{block.get("tool_use_id", "")}"{status}>\n'
-                f"{_result_text(block.get('content'))}\n</tool_result>"
+                f"{_result_text(block.get('content'), images)}\n</tool_result>"
             )
-        elif kind == "image":
-            src = block.get("source")
-            if isinstance(src, dict):
-                images.append({"type": "image", "source": src})
-            texts.append("[image attached]")
+        elif kind in _MEDIA_TYPES:
+            if _has_payload(block):
+                images.append({k: v for k, v in block.items() if k != "cache_control"})
+            texts.append(_media_label(block) + " (attached)")
         elif kind in ("thinking", "redacted_thinking"):
             continue
         else:
             texts.append(_result_text([block]))
     return "\n".join(t for t in texts if t), images
+
+
+def _current_turn_start(messages: list[dict[str, Any]]) -> int:
+    """Index of the latest user request (a user message that is not tool results)."""
+    for index in range(len(messages) - 1, -1, -1):
+        message = messages[index]
+        if str(message.get("role")) != "user":
+            continue
+        content = message.get("content")
+        if isinstance(content, list) and any(
+            isinstance(b, dict) and b.get("type") == "tool_result" for b in content
+        ):
+            continue
+        return index
+    return len(messages)
 
 
 def render_transcript(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -162,16 +200,27 @@ def render_transcript(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     last_text, images = _render_blocks(str(last.get("role", "user")), last.get("content", ""))
 
     if not history and str(last.get("role")) == "user":
-        return [*images, {"type": "text", "text": last_text}]
+        return [*images[-MAX_MEDIA_BLOCKS:], {"type": "text", "text": last_text}]
 
+    # This turn's media travels as real blocks at every step of the tool
+    # loop. Only the LATEST message's used to — which, once the loop
+    # started, was a tool result: the image the user asked about was down to
+    # "[image attached]" by the second step.
+    turn_start = _current_turn_start(messages)
+    media: list[dict[str, Any]] = []
     lines = ["<conversation>"]
-    for message in history:
+    for index, message in enumerate(history):
         role = str(message.get("role", "user"))
-        text, _ = _render_blocks(role, message.get("content", ""))
+        text, found = _render_blocks(role, message.get("content", ""))
+        if index >= turn_start:
+            media.extend(found)
+        elif found:
+            text = text.replace(" (attached)", " (earlier — not attached)")
         if not text:
             continue
         label = "user" if role == "user" else "assistant"
         lines.append(f'<turn role="{label}">\n{text}\n</turn>')
+    images = (media + images)[-MAX_MEDIA_BLOCKS:]
     lines.append("</conversation>")
     head = "\n".join(lines)
     if str(last.get("role")) == "assistant":

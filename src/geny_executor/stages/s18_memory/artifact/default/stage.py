@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, Optional
 
-from geny_executor.core.compaction import mark_recorded, unrecorded_messages
+from geny_executor.core.compaction import mark_recorded, mark_recorded_upto, unrecorded_messages
 from geny_executor.core.schema import ConfigField, ConfigSchema
 from geny_executor.core.slot import StrategySlot
 from geny_executor.core.stage import Stage
@@ -228,11 +228,19 @@ class MemoryStage(Stage[Any, Any]):
         # Incrementally record any newly-appended messages as STM turns —
         # and first any that a compaction removed before they were recorded.
         new_msgs = unrecorded_messages(state)
+        done = 0
         for msg in new_msgs:
             # STM also stores dehydrated copies — base64 payloads stay only
             # in the live ``state.messages`` for the current pipeline run.
             turn = Turn.from_state_message(dehydrate_message(msg))
-            await provider.record_turn(turn)
+            try:
+                await provider.record_turn(turn)
+            except Exception:
+                # The ones not written stay unrecorded (the watermark stops
+                # here) and are tried again, in order, next time.
+                mark_recorded_upto(state, done)
+                raise
+            done += 1
             state.add_event(
                 MemoryEvent.TURN_RECORDED.value,
                 {"role": turn.role, "bytes": turn.bytes},

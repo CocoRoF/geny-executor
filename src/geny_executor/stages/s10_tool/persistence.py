@@ -26,6 +26,8 @@ See ``executor_uplift/06_design_tool_system.md`` §6 and
 
 from __future__ import annotations
 
+import asyncio
+
 import json
 import logging
 import os
@@ -159,4 +161,33 @@ def maybe_persist_large_result(
         result,
         display_text=summary,
         persist_full=target_path,
+    )
+
+
+async def persist_large_result(
+    result: ToolResult,
+    *,
+    tool_use_id: str,
+    tool_name: str,
+    capabilities: ToolCapabilities,
+    context: ToolContext,
+) -> ToolResult:
+    """:func:`maybe_persist_large_result`, with the file write off the loop.
+
+    Results that fit are returned as they are, on the loop; only a result
+    that goes to disk — a large one, by definition — pays the thread hop.
+    The write used to run on the event loop, stalling every other session
+    while a multi-megabyte body was serialised and written.
+    """
+    if capabilities.max_result_chars <= 0 or result.persist_full:
+        return result
+    if len(_render_content(result.content)) <= capabilities.max_result_chars:
+        return result
+    return await asyncio.to_thread(
+        maybe_persist_large_result,
+        result,
+        tool_use_id=tool_use_id,
+        tool_name=tool_name,
+        capabilities=capabilities,
+        context=context,
     )

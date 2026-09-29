@@ -113,6 +113,24 @@ def mark_recorded(state: Any) -> None:
     state.metadata.pop(UNRECORDED_KEY, None)
 
 
+def mark_recorded_upto(state: Any, done: int) -> None:
+    """The first ``done`` of :func:`unrecorded_messages` are in STM.
+
+    For a recorder that stopped at a failed write: the rest stay unrecorded
+    and are tried again next time. The watermark used to move past all of
+    them whatever happened, so a message whose write failed was never
+    written at all.
+    """
+    pending = state.metadata.get(UNRECORDED_KEY)
+    removed = [m for m in pending if isinstance(m, dict)] if isinstance(pending, list) else []
+    if done < len(removed):
+        state.metadata[UNRECORDED_KEY] = removed[done:]
+        return
+    state.metadata.pop(UNRECORDED_KEY, None)
+    last = int(state.metadata.get(_STATE_LAST_RECORDED, 0) or 0)
+    state.metadata[_STATE_LAST_RECORDED] = min(len(state.messages), last + (done - len(removed)))
+
+
 def _compactor_name(compactor: Any) -> str:
     return str(getattr(compactor, "name", None) or type(compactor).__name__)
 

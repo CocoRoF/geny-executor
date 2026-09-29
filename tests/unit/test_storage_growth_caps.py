@@ -148,11 +148,27 @@ async def test_line_cache_hits_until_file_changes(tmp_path, monkeypatch):
         await store.search("메시지", limit=3)
     assert opens["n"] == 1, "repeat reads must be served from the cache"
 
+    # 2.79.0: our own append carries the cache along — the next read does
+    # not re-read the file (it used to, once per recorded message).
     await store.append(Turn(role="user", content="새 메시지"))
     opens["n"] = 0
     r2 = await store.recent(1)
     assert r2[0].content == "새 메시지"
-    assert opens["n"] == 1, "append must invalidate exactly once"
+    assert opens["n"] == 0, "our own append must not cost a re-read"
+
+    # A change from outside moves the stat signature: re-read once.
+    import json
+    import os
+
+    from geny_executor.memory.providers.file.stm_store import _turn_to_record
+
+    record = _turn_to_record(Turn(role="user", content="밖에서 쓴 줄"), store._tz)
+    with open(os.fspath(store._path), "a", encoding="utf-8") as fh:
+        fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+    opens["n"] = 0
+    r3 = await store.recent(1)
+    assert r3[0].content == "밖에서 쓴 줄"
+    assert opens["n"] == 1, "an outside change must invalidate exactly once"
 
 
 # ── block-list records stay records ───────────────────────────────────
