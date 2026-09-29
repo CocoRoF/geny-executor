@@ -28,6 +28,8 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
+from geny_executor.memory.turn_text import turn_to_text
+
 logger = logging.getLogger(__name__)
 
 #: Host-injected summarizer: ``async (instruction) -> digest_markdown``. The host wires
@@ -92,10 +94,50 @@ EVERGREEN_SCHEMA: Dict[str, Any] = {
 }
 
 
+#: One digest bullet at most this long — a bullet, not a record dump.
+BULLET_MAX_CHARS = 400
+_PRIMARY_KEYS = ("title", "name", "fact", "text", "summary", "description", "id")
+
+
+def _item_text(item: Any) -> str:
+    """A digest item as one readable line.
+
+    The schema asks for strings, but a model sometimes returns objects —
+    ``{"id": …, "title": …, "status": …, "session_arc": …}`` — and
+    ``str(item)`` wrote their Python ``repr`` into the digest, which is
+    then served to the agent before anything else on every turn.
+    """
+    if isinstance(item, str):
+        text = item
+    elif isinstance(item, dict):
+        primary = next((str(item[k]) for k in _PRIMARY_KEYS if item.get(k)), "")
+        status = str(item.get("status") or "").strip()
+        rest = []
+        for key, value in item.items():
+            if key in _PRIMARY_KEYS or key == "status" or value in (None, "", [], {}):
+                continue
+            if isinstance(value, (list, tuple)):
+                value = ", ".join(str(v) for v in list(value)[:5])
+            elif isinstance(value, dict):
+                value = "; ".join(f"{k}: {v}" for k, v in list(value.items())[:5])
+            rest.append(f"{str(key).replace('_', ' ')}: {value}")
+        text = primary or (rest.pop(0) if rest else "")
+        if status:
+            text = f"{text} ({status})" if text else status
+        if rest:
+            text = f"{text} — {'; '.join(rest)}"
+    elif isinstance(item, (list, tuple)):
+        text = ", ".join(_item_text(v) for v in item)
+    else:
+        text = str(item)
+    text = " ".join(text.split())
+    return text if len(text) <= BULLET_MAX_CHARS else text[: BULLET_MAX_CHARS - 1] + "…"
+
+
 def _bullets(items: Any) -> List[str]:
     out: List[str] = []
     for item in items if isinstance(items, list) else []:
-        text = str(item).strip()
+        text = _item_text(item)
         if text:
             out.append(f"- {text}")
     return out
@@ -153,20 +195,15 @@ PRESERVE_CLAUSE = (
 
 
 def _flatten_turn(turn: object) -> Optional[str]:
-    """Render one STM ``Turn`` as ``[role] text``, flattening block content."""
-    content = getattr(turn, "content", "") or ""
-    if isinstance(content, list):
-        pieces = [
-            str(b.get("text", ""))
-            for b in content
-            if isinstance(b, dict) and b.get("type") == "text"
-        ]
-        content = "\n".join(p for p in pieces if p)
-    text = str(content).strip()
-    if not text:
-        return None
+    """One STM ``Turn`` as ``[role] text`` — tool calls and results included,
+    as short lines (``[called Bash({…})]``, ``[tool returned: …]``).
+
+    It kept text blocks only, so the digest never saw what the agent DID:
+    a turn that was all tool work summarised as nothing.
+    """
+    text = turn_to_text(turn)
     role = getattr(turn, "role", "user") or "user"
-    return f"[{role}] {text}"
+    return None if text.strip() == f"[{role}]" else text
 
 
 def build_segment_instruction(*, prior_digest: str, raw_turns: str, max_chars: int) -> str:

@@ -33,6 +33,7 @@ from typing import (
     Tuple,
 )
 
+from geny_executor.memory.turn_text import turn_to_text as _turn_to_text
 from geny_executor.core.schema import ConfigField, ConfigSchema
 from geny_executor.memory.provider import (
     BackendInfo,
@@ -858,12 +859,6 @@ def _ephemeral_config_schema() -> ConfigSchema:
             ),
         ],
     )
-
-
-def _turn_to_text(turn: Turn) -> str:
-    if isinstance(turn.content, str):
-        return f"[{turn.role}] {turn.content}"
-    return f"[{turn.role}] {turn.content!r}"
 
 
 def _turn_to_dict(turn: Turn) -> Dict[str, Any]:

@@ -30,6 +30,7 @@ import asyncio
 import logging
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
+from geny_executor.memory.short_term_window import render_turns_as_text
 from geny_executor.core.state import PipelineState
 from geny_executor.memory.provider import MemoryHooks, MemoryProvider
 from geny_executor.stages.s02_context.interface import MemoryRetriever
@@ -40,6 +41,17 @@ logger = logging.getLogger(__name__)
 #: Set by the Stage 2 turn replay when it put the previous turns in front of
 #: this one (``stages.s02_context.artifact.default.replay``).
 _WINDOW_KEY = "memory.short_term_window"
+
+
+def _scan_rows(hooks: Any) -> int:
+    """STM rows to read for ``recent_turns`` logical turns — a turn with
+    tools is several rows, so the read has to be wider than the count."""
+    return min(400, max(60, int(getattr(hooks, "recent_turns", 0) or 0) * 20))
+
+
+#: Mirrors ``replay.HISTORY_IN_MESSAGES_KEY`` (not imported: the retriever
+#: must not depend on a stage module).
+_HISTORY_KEY = "memory.history_in_messages"
 
 
 def _is_transcript_file(hit: Any, prefixes: Tuple[str, ...]) -> bool:
@@ -162,7 +174,9 @@ class MemoryAwareRetriever(MemoryRetriever):
         # CONCURRENTLY, then apply in the same order/budget as before —
         # identical output, wall-clock capped by the slowest single
         # fetch instead of the sum of up to nine serial round-trips.
-        replaying = bool(state.metadata.get(_WINDOW_KEY))
+        # The previous turns are already in the messages — replayed, or put
+        # there by the host. Rendering them again as text says them twice.
+        replaying = bool(state.metadata.get(_WINDOW_KEY)) or bool(state.metadata.get(_HISTORY_KEY))
         pf = await self._prefetch_layers(search_query, hooks, replaying=replaying)
 
         # ── L0: recent STM tail ─────────────────────────────────────
@@ -307,7 +321,7 @@ class MemoryAwareRetriever(MemoryRetriever):
             tasks.append(_safe())
 
         if hooks.recent_turns > 0 and not replaying:
-            _add("recent", lambda: self._provider.stm().recent(n=hooks.recent_turns))
+            _add("recent", lambda: self._provider.stm().recent(n=_scan_rows(hooks)))
 
         async def _fetch_summary() -> Any:
             reader = getattr(self._provider.stm(), "read_summary", None)
@@ -426,44 +440,31 @@ class MemoryAwareRetriever(MemoryRetriever):
         else:
             try:
                 stm = self._provider.stm()
-                turns = await stm.recent(n=hooks.recent_turns)
+                turns = await stm.recent(n=_scan_rows(hooks))
             except Exception:  # noqa: BLE001
                 logger.debug("memory_aware: stm.recent failed", exc_info=True)
                 return total
         if not turns:
             return total
 
-        lines: List[str] = []
-        for t in turns:
-            content = getattr(t, "content", "") or ""
-            if isinstance(content, list):
-                # text-only flatten
-                pieces = [
-                    str(b.get("text", ""))
-                    for b in content
-                    if isinstance(b, dict) and b.get("type") == "text"
-                ]
-                content = "\n".join(p for p in pieces if p)
-            if not content or not str(content).strip():
-                continue
-            role = getattr(t, "role", "user") or "user"
-            lines.append(f"[{role}] {str(content).strip()}")
-        if not lines:
-            return total
-
-        body = "\n".join(lines)
+        # ``recent_turns`` counts LOGICAL turns (an instruction and all that
+        # followed it), rendered the way the replay window renders its
+        # conversation-only turns — see ``render_turns_as_text``.
+        room = budget - total
         cap = _layer_cap(hooks, "recent_turns")
-        if cap and len(body) > cap:
-            body = body[-cap:]  # keep most-recent tail
-        if total + len(body) > budget:
+        if cap:
+            room = min(room, cap)
+        body, count = render_turns_as_text(list(turns), turns=hooks.recent_turns, max_chars=room)
+        if not body or len(body) > room:
             return total
+        lines = body.splitlines()
         chunks.append(
             MemoryChunk(
                 key="recent_turns",
                 content=body,
                 source="short_term",
                 relevance_score=1.0,
-                metadata={"layer": "recent_turns", "turns": len(lines)},
+                metadata={"layer": "recent_turns", "turns": count, "lines": len(lines)},
             )
         )
         return total + len(body)

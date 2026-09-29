@@ -31,6 +31,13 @@ logger = logging.getLogger(__name__)
 #: host reads it to know what the model was shown.
 WINDOW_METADATA_KEY = "memory.short_term_window"
 
+#: Set when the previous turns are in ``state.messages`` for this turn —
+#: replayed here, or put there by the host (a restored checkpoint, a state
+#: kept across turns). Every other path that would render past turns as
+#: TEXT (the retriever's recent-turns layer, a provider's short-term layer)
+#: stands down on it: the model already has them, as messages.
+HISTORY_IN_MESSAGES_KEY = "memory.history_in_messages"
+
 #: Stage 18's record watermark. Replayed messages are already in STM — that
 #: is where they came from — so the watermark moves past them.
 _RECORDED_KEY = STM_RECORDED_KEY
@@ -220,7 +227,9 @@ class TurnWindowReplay(TurnReplay):
         if current > 0:
             # The host already put history in front of this turn — a restored
             # checkpoint, or a host that keeps its state across turns. That
-            # history is the real thing; a replay on top would say it twice.
+            # history is the real thing; a replay on top would say it twice,
+            # and so would a text rendering of it.
+            state.metadata[HISTORY_IN_MESSAGES_KEY] = "host"
             return None
 
         try:
@@ -254,6 +263,7 @@ class TurnWindowReplay(TurnReplay):
         self._shift_watermarks(state, count)
         description = {**window.as_metadata(), "messages": count}
         state.metadata[WINDOW_METADATA_KEY] = description
+        state.metadata[HISTORY_IN_MESSAGES_KEY] = "replay"
         return description
 
     @staticmethod

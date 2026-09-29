@@ -24,6 +24,7 @@ from typing import (
 )
 
 from geny_executor.core.config import ModelOverrides, PipelineConfig
+from geny_executor.core.message_repair import repair_all_tool_pairs
 from geny_executor.core.errors import (
     ExecutorErrorCode,
     GenyExecutorError,
@@ -613,6 +614,11 @@ class Pipeline:
     FINALIZE_START = 17
     FINALIZE_END = 21  # inclusive
     EVENT_DATA_TRUNCATE = 500  # max chars for event data preview
+    #: How long a stopped run gets to unwind (and record what it did)
+    #: before the consumer stops waiting for it.
+    CANCEL_GRACE_S = 15.0
+    #: Upper bound on recording a turn that was stopped or failed.
+    SALVAGE_TIMEOUT_S = 10.0
 
     # Filled by ``from_manifest`` / ``from_manifest_async`` with the
     # outcome of built-in + external tool registration (audit §3.5).
@@ -2331,6 +2337,7 @@ class Pipeline:
         # covering consumers that abandon the stream mid-run.
         self._runs_in_flight += 1
         counter_owned_by_task = False
+        task: Optional[asyncio.Task] = None
 
         async def _run_pipeline() -> None:
             """Execute pipeline phases, then push sentinel to signal completion.
@@ -2365,6 +2372,19 @@ class Pipeline:
                     session_id=state.session_id,
                     run_id=run_id,
                 )
+            except asyncio.CancelledError:
+                # A stop. Say so on the bus, then let the cancellation finish
+                # the task — the consumer that asked for it is waiting on it.
+                await self._emit(
+                    "pipeline.cancelled",
+                    data={
+                        "iterations": state.iteration,
+                        "total_cost_usd": state.total_cost_usd,
+                    },
+                    session_id=state.session_id,
+                    run_id=run_id,
+                )
+                raise
             except Exception as e:
                 await self._emit(
                     "pipeline.error",
@@ -2409,6 +2429,19 @@ class Pipeline:
                 yield event
 
             await task  # propagate any unexpected errors
+
+        except asyncio.CancelledError:
+            # The CONSUMER was cancelled — a user's stop, or a host preempting
+            # this turn for another. That has to stop the run itself: before
+            # 2.75.0 only this generator unwound, the run task kept calling
+            # tools and the model in the background, recorded an answer
+            # nobody saw into memory, and overlapped the next turn. (A
+            # consumer that merely stops reading — the stream is dropped,
+            # the connection went away — still leaves the run to finish.)
+            if task is not None and not task.done():
+                task.cancel()
+                await asyncio.wait({task}, timeout=self.CANCEL_GRACE_S)
+            raise
 
         except Exception as e:
             # Generator-machinery failure (queue handling, the awaited
@@ -2678,10 +2711,24 @@ class Pipeline:
             for event_type, data in run_pending:
                 state.add_event(event_type, data)
 
-        # Phase A: Input
+        # Phase A: Input. A turn that fails here has not said anything yet —
+        # there is nothing of it to record.
         current = await self._run_stage(1, input, state)
 
-        # Phase B: Agent Loop
+        # Phase B: the agent loop. From here on the turn exists, so a stop or
+        # a failure is closed off and recorded rather than lost.
+        try:
+            current = await self._run_agent_loop(current, state)
+        except (Exception, asyncio.CancelledError) as exc:
+            await self._close_broken_turn(state, exc)
+            raise
+
+        # Phase C: Finalize
+        for order in range(self.FINALIZE_START, self.FINALIZE_END + 1):
+            current = await self._try_run_stage(order, current, state)
+
+    async def _run_agent_loop(self, current: Any, state: PipelineState) -> Any:
+        """Phase B: stages 2–16, repeated until the loop decides to stop."""
         has_loop_stage = self.LOOP_END in self._stages
         while True:
             for order in range(self.LOOP_START, self.LOOP_END + 1):
@@ -2734,10 +2781,59 @@ class Pipeline:
                     },
                 )
                 break
+        return current
 
-        # Phase C: Finalize
-        for order in range(self.FINALIZE_START, self.FINALIZE_END + 1):
-            current = await self._try_run_stage(order, current, state)
+    async def _close_broken_turn(self, state: PipelineState, exc: BaseException) -> None:
+        """Record what a stopped or failed turn did, then let it end.
+
+        The finalize phase — Stage 18 among it — only ran on a turn that
+        finished. A turn that failed (an API error after retries, a guard
+        rejection, a tool-access denial) or was stopped left no record at
+        all: the user's message, and tools that had already run with their
+        side effects, vanished from the memory the next turn is built from.
+        The next turn then repeated the work, or answered as if the request
+        had never been made.
+
+        Here the history is closed off honestly — every call answered, and
+        a closing line that says the turn did not finish — and Stage 18
+        records it like any other. Best effort and time-bounded: nothing
+        here may replace the original error.
+        """
+        stopped = isinstance(exc, asyncio.CancelledError)
+        reason = "stopped" if stopped else "failed"
+        detail = "" if stopped else f"{type(exc).__name__}: {str(exc)[:160]}"
+        state.metadata["turn.interrupted"] = {"reason": reason, "error": detail}
+        if self._stages.get(18) is None or not state.messages:
+            return
+        try:
+            repair_all_tool_pairs(state.messages)
+            last = state.messages[-1]
+            last_text = ""
+            if isinstance(last, dict) and last.get("role") == "assistant":
+                content = last.get("content")
+                if isinstance(content, str):
+                    last_text = content.strip()
+                elif isinstance(content, list):
+                    last_text = "".join(
+                        str(b.get("text") or "")
+                        for b in content
+                        if isinstance(b, dict) and b.get("type") == "text"
+                    ).strip()
+            if not last_text:
+                note = (
+                    "[This turn was stopped before it finished.]"
+                    if stopped
+                    else f"[This turn ended with an error before it finished — {detail}]"
+                )
+                state.messages.append(
+                    {"role": "assistant", "content": [{"type": "text", "text": note}]}
+                )
+            await asyncio.wait_for(self._try_run_stage(18, None, state), self.SALVAGE_TIMEOUT_S)
+            state.add_event("turn.salvaged", {"reason": reason, "messages": len(state.messages)})
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 — never mask the turn's own failure
+            logger.warning("pipeline: recording the %s turn failed", reason, exc_info=True)
 
     # ── Internal: Stage execution ──
 

@@ -3,8 +3,8 @@
 <!-- AUTO-GENERATED — do not edit by hand. -->
 <!-- Regenerate: python scripts/gen_event_docs.py -->
 
-> Generated from `geny_executor.events.catalog` on 2026-09-23.
-> Catalogue version: **4** · events: **125**
+> Generated from `geny_executor.events.catalog` on 2026-09-29.
+> Catalogue version: **4** · events: **127**
 
 Every event name the engine emits, value == wire string. The enum
 is a *names registry*, not a rename — consumers matching raw strings
@@ -51,6 +51,26 @@ Enum member: `EventTypes.PIPELINE_ERROR`
 | `code` | str — stable ExecutorErrorCode value ('exec.*'), 'exec.unknown' fallback |
 | `exception_type` | str — fully qualified exception class name |
 | `total_cost_usd` | float? — this turn's cost (run_stream only) |
+
+### `pipeline.cancelled`
+
+Enum member: `EventTypes.PIPELINE_CANCELLED`
+
+| Field | Description |
+|---|---|
+| `iterations` | int — loop iterations reached before the stop |
+| `total_cost_usd` | float — cost spent before the stop |
+
+## `turn.*`
+
+### `turn.salvaged`
+
+Enum member: `EventTypes.TURN_SALVAGED`
+
+| Field | Description |
+|---|---|
+| `reason` | str — 'stopped' \| 'failed' |
+| `messages` | int — messages in the closed-off history |
 
 ## Stage lifecycle
 

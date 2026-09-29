@@ -120,3 +120,108 @@ def strip_leading_orphan_tool_results(
     while i < len(messages) and _is_tool_result_only(messages[i]):
         i += 1
     return messages[i:] if i else messages
+
+
+_INTERRUPTED_RESULT = "[interrupted — the previous turn ended before this tool finished]"
+
+
+def _synthetic_result(tool_use_id: str) -> Dict[str, Any]:
+    return {
+        "type": "tool_result",
+        "tool_use_id": tool_use_id,
+        "content": _INTERRUPTED_RESULT,
+        "is_error": True,
+    }
+
+
+def normalize_messages_for_request(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """A provider-safe copy of a whole history: every call answered, every
+    answer to a call that is there.
+
+    :func:`repair_dangling_tool_calls` fixes the NEWEST unanswered call, in
+    place, at the start of a turn. A history can hold more than that — a
+    replayed turn that was stopped mid-tool, a compaction that sliced a
+    pair, a checkpoint from before a crash — and any one of them 400s the
+    request (Anthropic and OpenAI both refuse an unanswered call and an
+    answer without a call). This runs on the copy that goes to the wire,
+    so the stored history is never rewritten by a repair.
+
+    * a ``tool_result`` naming no earlier ``tool_use`` is removed (the rest
+      of its message stays; a message left empty is dropped);
+    * a ``tool_use`` with no later ``tool_result`` gets a synthetic error
+      result — merged into the tool-result message that follows the call
+      when there is one, so the result stays in the turn the API expects
+      it in, else inserted right after the call.
+
+    Idempotent and allocation-light: a clean history comes back with its
+    original message objects, so prompt-cache prefixes stay byte-stable.
+    """
+    out: List[Dict[str, Any]] = []
+    seen_calls: set = set()
+    for message in messages:
+        if not isinstance(message, dict):
+            out.append(message)
+            continue
+        calls = _tool_use_ids(message) if message.get("role") == "assistant" else []
+        content = message.get("content")
+        if isinstance(content, list) and message.get("role") == "user":
+            kept = [
+                b
+                for b in content
+                if not (
+                    isinstance(b, dict)
+                    and b.get("type") == "tool_result"
+                    and b.get("tool_use_id") not in seen_calls
+                )
+            ]
+            if len(kept) != len(content):
+                if kept:
+                    out.append({**message, "content": kept})
+                seen_calls.update(calls)
+                continue
+        out.append(message)
+        seen_calls.update(calls)
+
+    answered: set = set()
+    for message in out:
+        if isinstance(message, dict):
+            answered |= {i for i in _tool_result_ids(message) if i}
+
+    # Reverse order keeps earlier indices valid while inserting.
+    for index in range(len(out) - 1, -1, -1):
+        message = out[index]
+        if not isinstance(message, dict) or message.get("role") != "assistant":
+            continue
+        missing = [uid for uid in _tool_use_ids(message) if uid not in answered]
+        if not missing:
+            continue
+        synthetic = [_synthetic_result(uid) for uid in missing]
+        following = out[index + 1] if index + 1 < len(out) else None
+        if (
+            isinstance(following, dict)
+            and following.get("role") == "user"
+            and isinstance(following.get("content"), list)
+            and any(
+                isinstance(b, dict) and b.get("type") == "tool_result" for b in following["content"]
+            )
+        ):
+            out[index + 1] = {**following, "content": [*following["content"], *synthetic]}
+        else:
+            out.insert(index + 1, {"role": "user", "content": synthetic})
+        answered.update(missing)
+    return out
+
+
+def repair_all_tool_pairs(messages: List[Dict[str, Any]]) -> bool:
+    """:func:`normalize_messages_for_request`, applied in place.
+
+    For the few places that must leave the STORED history valid — a turn
+    that is being closed after a stop or a failure, so the next turn's
+    replay does not inherit a call that was never answered. Returns whether
+    anything changed.
+    """
+    fixed = normalize_messages_for_request(messages)
+    if len(fixed) == len(messages) and all(a is b for a, b in zip(fixed, messages)):
+        return False
+    messages[:] = fixed
+    return True

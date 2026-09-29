@@ -13,6 +13,7 @@ from geny_executor.core.stage import Stage
 from geny_executor.core.state import PipelineState
 from geny_executor.core.token_estimate import estimate_prompt_tokens
 from geny_executor.memory.provider import (
+    Layer,
     MemoryEvent,
     MemoryProvider,
     RetrievalQuery,
@@ -39,6 +40,7 @@ from geny_executor.stages.s02_context.artifact.default.retrievers import (
     StaticRetriever,
 )
 from geny_executor.stages.s02_context.artifact.default.replay import (
+    HISTORY_IN_MESSAGES_KEY,
     NoReplay,
     TurnWindowReplay,
 )
@@ -255,14 +257,26 @@ class ContextStage(Stage[Any, Any]):
         records the skip. Real retrieval errors still propagate exactly
         as before.
         """
-        use_provider = self._provider is not None and bool(query)
+        # The stage's provider is also where the turn replay reads from, and
+        # a host sets it for that. When the retriever already reads memory
+        # (it carries a provider of its own), a provider pass on top is the
+        # same memory a second time, unfiltered and outside the budget —
+        # 2.74's hosts saw the previous turns come back as
+        # "[recent_message] stm-N: [assistant] [{'type': 'tool_use', …}]"
+        # next to the same turns replayed as messages. The pass is for
+        # hosts whose retriever does not read memory at all.
+        use_provider = (
+            self._provider is not None
+            and bool(query)
+            and getattr(self._retriever, "provider", None) is None
+        )
 
         async def _both():
             if not use_provider:
                 return await self._retriever.retrieve(query, state), None
             return await asyncio.gather(
                 self._retriever.retrieve(query, state),
-                self._provider.retrieve(RetrievalQuery(text=query)),
+                self._provider.retrieve(self._provider_query(query, state)),
             )
 
         timeout = self._retrieval_timeout_s or None
@@ -289,6 +303,15 @@ class ContextStage(Stage[Any, Any]):
             state.add_event(MemoryEvent.CONTEXT_BUILT.value, provider_result.to_event())
         return chunks
 
+    @staticmethod
+    def _provider_query(query: str, state: PipelineState) -> RetrievalQuery:
+        """The provider pass's query — without its short-term layer when the
+        previous turns are already in the messages."""
+        q = RetrievalQuery(text=query)
+        if state.metadata.get(HISTORY_IN_MESSAGES_KEY):
+            q.layers = {layer for layer in q.layers if layer != Layer.STM}
+        return q
+
     async def execute(self, input: Any, state: PipelineState) -> Any:
         # The previous turns first, so the context strategy, retrieval and
         # the compaction check below all see the history the model will.
@@ -296,6 +319,7 @@ class ContextStage(Stage[Any, Any]):
         # it, and rebuilding it mid-turn would move the prompt-cache prefix.
         if state.iteration == 0:
             state.metadata.pop("memory.short_term_window", None)
+            state.metadata.pop(HISTORY_IN_MESSAGES_KEY, None)
             try:
                 replayed = await self._replay.replay(state, self._memory_source())
             except Exception:  # noqa: BLE001 — a turn without its past beats no turn

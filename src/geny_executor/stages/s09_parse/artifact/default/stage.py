@@ -94,7 +94,13 @@ class ParseStage(Stage[Any, ParsedResponse]):
 
         parsed = self._parser.parse(api_response)
 
-        # Detect completion signals
+        # Detect completion signals — THIS response's. A signal left over from
+        # an earlier iteration of the turn is not an answer to this one: a
+        # model that once quoted a log line reading "[ERROR] …" carried that
+        # verdict into every later iteration and ended a normal answer as a
+        # failure (seen in XGEN's fork, 2026-09-17).
+        state.completion_signal = None
+        state.completion_detail = None
         if parsed.text:
             signal, detail = self._signal_detector.detect(parsed.text)
             if signal != CompletionSignal.NONE:

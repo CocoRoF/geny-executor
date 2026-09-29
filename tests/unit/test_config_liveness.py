@@ -420,6 +420,37 @@ async def _probe_s16_early_stop_on() -> None:
     assert state2.loop_decision == "complete"
 
 
+async def _probe_s19_session_summary() -> None:
+    """The mode decides whether an ordinary turn end writes the summary."""
+    from types import SimpleNamespace
+
+    from geny_executor.memory.providers.ephemeral import EphemeralMemoryProvider
+    from geny_executor.stages.s19_summarize.artifact.default.stage import SummarizeStage
+    from geny_executor.stages.s19_summarize.artifact.default.summarizers import (
+        RuleBasedSummarizer,
+    )
+
+    async def _written(mode: str) -> bool:
+        provider = EphemeralMemoryProvider()
+        await provider.initialize()
+        state = PipelineState(session_id="s19")
+        state.iteration = 1
+        state.messages = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "world. Two. Three."},
+        ]
+        state.final_text = "world. Two. Three."
+        state.loop_decision = "complete"
+        state.session_runtime = SimpleNamespace(memory_provider=provider)  # type: ignore[attr-defined]
+        stage = SummarizeStage(summarizer=RuleBasedSummarizer())
+        stage.update_config({"session_summary": mode})
+        await stage.execute(None, state)
+        return bool(await provider.stm().read_summary())
+
+    assert await _written("on_close") is False
+    assert await _written("every_turn") is True
+
+
 async def _probe_s16_repeat_stop_after() -> None:
     """Refused calls this turn arm the report-and-stop note at the threshold."""
     from geny_executor.stages.s10_tool.repeat_guard import REFUSED_KEY
@@ -497,6 +528,7 @@ LIVENESS: Dict[Tuple[int, str], Entry] = {
     (16, "max_turns"): Probe(_probe_s16_max_turns),
     (16, "early_stop_on"): Probe(_probe_s16_early_stop_on),
     (16, "repeat_stop_after"): Probe(_probe_s16_repeat_stop_after),
+    (19, "session_summary"): Probe(_probe_s19_session_summary),
     (18, "stateless"): Probe(_probe_s18_stateless),
     (18, "persistence_path"): Probe(_probe_s18_persistence_path),
 }

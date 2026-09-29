@@ -21,6 +21,7 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Union
 
+from geny_executor.memory.turn_text import turn_to_text as _turn_to_text
 from geny_executor.memory.embedding.client import EmbeddingClient
 from geny_executor.memory.provider import (
     BackendInfo,
@@ -481,9 +482,3 @@ class SQLMemoryProvider(MemoryProvider):
 
 
 # ── helpers ──────────────────────────────────────────────────────────
-
-
-def _turn_to_text(turn: Turn) -> str:
-    if isinstance(turn.content, str):
-        return f"[{turn.role}] {turn.content}"
-    return f"[{turn.role}] {turn.content!r}"

@@ -20,6 +20,7 @@ import asyncio
 import time
 from typing import Any, AsyncIterator, Dict, List, Optional, Union
 
+from geny_executor.core.message_repair import normalize_messages_for_request
 from geny_executor.core.errors import APIError, ErrorCategory, ExecutorErrorCode
 from geny_executor.core.schema import ConfigField, ConfigSchema
 from geny_executor.core.slot import StrategySlot
@@ -592,6 +593,11 @@ class APIStage(Stage[Any, APIResponse]):
             messages = self._inject_turn_context(messages, turn_context)
         if extra_messages:
             messages.extend(extra_messages)
+        # Every call answered and every answer to a call that is there — on
+        # the copy that goes out, never on the stored history. A replayed
+        # turn that was stopped mid-tool, or a compaction that sliced a
+        # pair, otherwise 400s every request after it.
+        messages = normalize_messages_for_request(messages)
         kwargs: Dict[str, Any] = {
             "model_config": cfg,
             "messages": messages,

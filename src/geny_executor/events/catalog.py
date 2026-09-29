@@ -68,6 +68,10 @@ class EventTypes(str, Enum):
     PIPELINE_START = "pipeline.start"
     PIPELINE_COMPLETE = "pipeline.complete"
     PIPELINE_ERROR = "pipeline.error"
+    #: A run stopped by its consumer (a user's stop, a preempting turn).
+    PIPELINE_CANCELLED = "pipeline.cancelled"
+    #: A stopped or failed turn was closed off and recorded to memory.
+    TURN_SALVAGED = "turn.salvaged"
     STAGE_ENTER = "stage.enter"
     STAGE_EXIT = "stage.exit"
     STAGE_BYPASS = "stage.bypass"
@@ -301,6 +305,14 @@ PAYLOADS: Dict[EventTypes, Dict[str, str]] = {
         "code": "str — stable ExecutorErrorCode value ('exec.*'), 'exec.unknown' fallback",
         "exception_type": "str — fully qualified exception class name",
         "total_cost_usd": "float? — this turn's cost (run_stream only)",
+    },
+    EventTypes.PIPELINE_CANCELLED: {
+        "iterations": "int — loop iterations reached before the stop",
+        "total_cost_usd": "float — cost spent before the stop",
+    },
+    EventTypes.TURN_SALVAGED: {
+        "reason": "str — 'stopped' | 'failed'",
+        "messages": "int — messages in the closed-off history",
     },
     EventTypes.STAGE_ENTER: {},  # identity carried on the event envelope (stage/iteration)
     EventTypes.STAGE_EXIT: {},

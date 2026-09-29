@@ -29,8 +29,14 @@ def _run(coro):
     return asyncio.run(coro)
 
 
-def _state_with_provider(provider, *, decision: str = "loop") -> PipelineState:
+def _state_with_provider(
+    provider, *, decision: str = "loop", closing: bool = True
+) -> PipelineState:
     state = PipelineState()
+    if closing:
+        # 2.75.0: the session summary is written on the turn the host marks
+        # as the session's last, not on every turn that ends.
+        state.metadata["session.closing"] = True
     state.session_id = "sess-1"
     state.iteration = 1
     state.messages = [
@@ -162,3 +168,62 @@ def test_session_close_no_provider_is_no_op():
     stage = SummarizeStage(summarizer=RuleBasedSummarizer())
     # Should not raise.
     _run(stage.execute(None, state))
+
+
+# ── 2.75.0: when the session summary is written ─────────────────────
+
+
+def _record() -> SummaryRecord:
+    return SummaryRecord(
+        turn_id="sess-1:1",
+        abstract="user asked about rockets.",
+        key_facts=["Rockets need fuel."],
+        importance=Importance.HIGH,
+    )
+
+
+def test_an_ordinary_turn_end_does_not_touch_the_session_summary():
+    """A host that starts every turn from a fresh state ends every turn with
+    a terminal decision. Writing then rewrote summary.md on every turn and
+    wiped the rolling digest kept in the same file."""
+    p = EphemeralMemoryProvider()
+    state = _state_with_provider(p, decision="complete", closing=False)
+    _push_history(state, _record())
+
+    async def go():
+        await p.initialize()
+        await p.stm().write_summary("## Summary\nthe rolling digest")
+        await SummarizeStage(summarizer=RuleBasedSummarizer()).execute(None, state)
+        return await p.stm().read_summary()
+
+    assert _run(go()) == "## Summary\nthe rolling digest"
+
+
+def test_every_turn_mode_keeps_the_old_behaviour():
+    p = EphemeralMemoryProvider()
+    state = _state_with_provider(p, decision="complete", closing=False)
+    _push_history(state, _record())
+    stage = SummarizeStage(summarizer=RuleBasedSummarizer())
+    stage.update_config({"session_summary": "every_turn"})
+
+    async def go():
+        await p.initialize()
+        await stage.execute(None, state)
+        return await p.stm().read_summary()
+
+    assert "## Session Summary" in (_run(go()) or "")
+
+
+def test_off_mode_never_writes():
+    p = EphemeralMemoryProvider()
+    state = _state_with_provider(p, decision="complete", closing=True)
+    _push_history(state, _record())
+    stage = SummarizeStage(summarizer=RuleBasedSummarizer(), session_summary="off")
+
+    async def go():
+        await p.initialize()
+        await stage.execute(None, state)
+        return await p.stm().read_summary()
+
+    assert not _run(go())
+

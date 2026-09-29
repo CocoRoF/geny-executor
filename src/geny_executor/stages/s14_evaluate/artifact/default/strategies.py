@@ -24,13 +24,18 @@ class SignalBasedEvaluation(EvaluationStrategy):
     async def evaluate(self, state: PipelineState) -> EvaluationResult:
         signal = state.completion_signal
 
+        # Tool work first: a response that calls tools AND says it is done
+        # wrote "done" before seeing any result. Ending there ran the tools
+        # and threw their results away unread — the marker in the text is a
+        # guess, the results are what the model has to look at.
+        if state.pending_tool_calls or state.has_fresh_tool_results:
+            return EvaluationResult(
+                passed=True,
+                decision="continue",
+                feedback="Tool results pending review by the model.",
+            )
+
         if signal is None or signal == "continue":
-            if state.pending_tool_calls or state.has_fresh_tool_results:
-                return EvaluationResult(
-                    passed=True,
-                    decision="continue",
-                    feedback="Tool results pending review by the model.",
-                )
             return EvaluationResult(
                 passed=True, decision="continue", feedback="No completion signal detected."
             )

@@ -281,14 +281,17 @@ class TestTurnContextInjection:
         state.messages = [{"role": "user", "content": "q"}]
         state.shared["turn_context_text"] = "ctx"
 
-        extra = [{"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1"}]}]
+        extra = [
+            {"role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "X", "input": {}}]},
+            {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1"}]},
+        ]
         kwargs = stage._call_kwargs(
             stage.resolve_model_config(state), state, extra_messages=extra
         )
 
         sent = kwargs["messages"]
         assert "<session-context>" in sent[0]["content"][-1]["text"]
-        assert sent[1]["content"][0]["type"] == "tool_result"
+        assert sent[2]["content"][0]["type"] == "tool_result"
 
     def test_no_user_message_skips_injection(self):
         stage = APIStage()

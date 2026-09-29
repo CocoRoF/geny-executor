@@ -30,6 +30,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List, Optional
 
+from geny_executor.core.schema import ConfigField, ConfigSchema
 from geny_executor.core.slot import StrategySlot
 from geny_executor.core.stage import Stage
 from geny_executor.core.state import PipelineState
@@ -51,6 +52,11 @@ from geny_executor.stages.s19_summarize.types import SummaryRecord
 
 logger = logging.getLogger(__name__)
 
+#: ``state.metadata`` key a host sets on the turn that ends the session.
+SESSION_CLOSING_KEY = "session.closing"
+
+_SESSION_SUMMARY_MODES = ("on_close", "every_turn", "off")
+
 
 class SummarizeStage(Stage[Any, Any]):
     """Stage 19: Summarize.
@@ -67,7 +73,18 @@ class SummarizeStage(Stage[Any, Any]):
         self,
         summarizer: Optional[Summarizer] = None,
         importance: Optional[ImportanceScorer] = None,
+        session_summary: str = "on_close",
     ):
+        # When the accumulated turn summaries are written to the session's
+        # summary (``transcripts/summary.md``). ``on_close``: on the turn
+        # the host marks as the session's last (``state.metadata
+        # ["session.closing"]``). ``every_turn``: whenever a turn ends —
+        # the pre-2.75 behaviour, which on a host that starts every turn
+        # from a fresh state (Geny) rewrote the file on every turn and
+        # wiped the rolling digest (``memory.rollup``) that lives there.
+        self._session_summary = (
+            session_summary if session_summary in _SESSION_SUMMARY_MODES else "on_close"
+        )
         self._slots: Dict[str, StrategySlot] = {
             "summarizer": StrategySlot(
                 name="summarizer",
@@ -111,6 +128,41 @@ class SummarizeStage(Stage[Any, Any]):
 
     def get_strategy_slots(self) -> Dict[str, StrategySlot]:
         return self._slots
+
+    def get_config_schema(self) -> ConfigSchema:
+        return ConfigSchema(
+            name="summarize",
+            fields=[
+                ConfigField(
+                    name="session_summary",
+                    type="select",
+                    label="Session summary",
+                    description=(
+                        "When the turn summaries are written to the session summary: "
+                        "on_close (the turn the host marks as the last), every_turn, or off."
+                    ),
+                    default="on_close",
+                    options=[{"value": m, "label": m} for m in _SESSION_SUMMARY_MODES],
+                ),
+            ],
+        )
+
+    def get_config(self) -> Dict[str, Any]:
+        return {"session_summary": self._session_summary}
+
+    def update_config(self, config: Dict[str, Any]) -> None:
+        mode = config.get("session_summary")
+        if mode in _SESSION_SUMMARY_MODES:
+            self._session_summary = mode
+
+    def _writes_session_summary(self, state: PipelineState) -> bool:
+        if state.loop_decision not in _TERMINAL_DECISIONS:
+            return False
+        if self._session_summary == "every_turn":
+            return True
+        if self._session_summary == "on_close":
+            return bool(state.metadata.get(SESSION_CLOSING_KEY))
+        return False
 
     def should_bypass(self, state: PipelineState) -> bool:
         # NoSummarizer would return None anyway — short-circuit so the
@@ -162,7 +214,7 @@ class SummarizeStage(Stage[Any, Any]):
         state.add_event("summary.written", record.to_dict())
 
         await self._maybe_forward_to_provider(record, state)
-        if state.loop_decision in _TERMINAL_DECISIONS:
+        if self._writes_session_summary(state):
             await self._maybe_write_session_summary(history, state)
         return input
 

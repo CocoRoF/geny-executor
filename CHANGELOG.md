@@ -1,5 +1,90 @@
 # Changelog
 
+## [2.75.0] — 2026-09-29
+
+A harness audit read Geny's production turns against this code. The previous
+turns were reaching the model as text as well as messages, a stop did not
+stop, and a turn that broke left nothing behind.
+
+### Fixed — the previous turns reach the model as messages only
+
+- **A second retrieval pass.** When a host set Stage 2's own `provider` (Geny
+  does, so the replay can read it) a provider pass ran next to the retriever
+  on every turn. Its short-term layer rendered the last rows as
+  `- [recent_message] stm-N: [assistant] [{'type': 'tool_use', 'id': …}]` —
+  the Python `repr` of the content blocks — next to the same turns replayed
+  as messages, outside the retriever's budget and exclusions. The pass now
+  runs only when the retriever does not read memory itself, and leaves out
+  its short-term layer when the history is already in the messages.
+- **The recent-turns text layer** (`recent_turns`) came back whenever the
+  replay stood down — a restored checkpoint, a host that keeps its state, a
+  window of silent turns. It stands down on `memory.history_in_messages`
+  (new; set by the replay, or when the host put history in front of the
+  turn), and when it does render it counts LOGICAL turns and shows what the
+  agent did (`render_turns_as_text`, the replay window's rules: silent turns
+  take no slot, one `[used tools: …]` line) instead of counting rows, keeping
+  text blocks only and cutting from the tail. `recent_turns` is now a number
+  of turns, not rows.
+- **Provider rows are prose.** The file, SQL and ephemeral providers render a
+  row with `memory.turn_text` — `[called Bash({"command": "ls"})]`,
+  `[tool returned: …]` — never `repr`.
+- **A turn the agent never answered is kept.** The window treated a turn with
+  no reply as silent and dropped it, and the user's words with it. It is kept
+  and closed with a one-line assistant note, so roles still alternate.
+
+### Fixed — a stop stops
+
+Cancelling a `run_stream` consumer — a user's stop, a host preempting the
+turn — now cancels the run task and waits for it (`CANCEL_GRACE_S`). Before,
+only the generator unwound: the run kept calling tools and the model in the
+background, recorded an answer nobody saw, and overlapped the next turn. A
+consumer that merely stops reading (a dropped connection) still leaves the
+run to finish. New event `pipeline.cancelled`.
+
+### Fixed — a broken turn is remembered
+
+A turn that failed in the loop (an API error after retries, a guard
+rejection, a tool-access denial) or was stopped skipped the finalize phase,
+so nothing of it was recorded — the user's message and tools that had run,
+side effects included, vanished from the next turn's history. It is now
+closed off (every call answered, a closing line saying it did not finish)
+and recorded by Stage 18, time-bounded (`SALVAGE_TIMEOUT_S`); the original
+error still propagates. `state.metadata["turn.interrupted"]` says why. New
+event `turn.salvaged`.
+
+### Fixed — "done" next to a tool call no longer ends the turn
+
+Stage 9 kept a completion signal from an earlier iteration, and
+`signal_based` evaluation read the signal before the tool results — so a
+response that called a tool and wrote `[COMPLETE]` ended the turn with the
+result unread. The signal is now reset per response and fresh tool results
+come first.
+
+### Fixed — a history with an old unanswered call no longer 400s
+
+Every request goes out through `normalize_messages_for_request` (new, on the
+copy only): every `tool_use` answered, every `tool_result` naming a call that
+is there, missing results merged into the following result message. The
+stored history is not rewritten. `repair_all_tool_pairs` is the in-place
+form, used to close a broken turn.
+
+### Fixed — the session summary no longer wipes the rolling digest
+
+Stage 19 wrote the "session summary" whenever a turn ended. On a host that
+starts every turn from a fresh state that is every turn, and the file it
+writes (`transcripts/summary.md`) is where `memory.rollup` keeps the rolling
+digest — which read its "prior digest" back as one turn's summary. New
+setting `session_summary`: `on_close` (default; the turn the host marks with
+`state.metadata["session.closing"]`), `every_turn` (the old behaviour), `off`.
+
+### Fixed — the rolling digest reads as prose
+
+A digest item the model returned as an object was written as its Python
+`repr` (`- {'id': …, 'title': …}`), and the digest is served first on every
+turn. Items render as `title (status) — key: value; …`, capped. The digest's
+input now includes tool calls and results as short lines, so a turn that was
+all tool work is no longer summarised as nothing.
+
 ## [2.74.2] — 2026-09-23
 
 ### Fixed — Stage 18 obeys the policy the host set on the provider

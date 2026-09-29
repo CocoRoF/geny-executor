@@ -67,7 +67,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from geny_executor.core.token_estimate import chars_within_tokens, estimate_text_tokens
 from geny_executor.core.message_repair import (
-    repair_dangling_tool_calls,
+    normalize_messages_for_request,
     strip_leading_orphan_tool_results,
 )
 
@@ -281,15 +281,21 @@ def is_silent_turn(turn: LogicalTurn, markers: Sequence[str] = DEFAULT_SILENT_MA
     if turn.tool_calls():
         return False
     upper = [m.upper() for m in markers if m]
+    answered = False
     for message in turn.messages:
         if str(getattr(message, "role", "") or "") != "assistant":
             continue
+        answered = True
         text = _text_of(message)
         if not text:
             continue
         if not any(text.upper().startswith(m) and not text[len(m) :].strip() for m in upper):
             return False
-    return True
+    # A turn the agent never answered is not silence: the user still said
+    # it. (Its reply may simply not have been recorded — a turn that failed
+    # before 2.75 left no answer behind.) Dropping it dropped the user's
+    # words from every later turn.
+    return answered
 
 
 def group_logical_turns(turns: Sequence[Any], limit: int) -> List[LogicalTurn]:
@@ -645,7 +651,8 @@ def build_window(turns: Sequence[Any], cfg: WindowConfig) -> WindowResult:
     # mid-loop can hold a call whose result was never recorded — both are
     # rejected by the wire, so both are repaired rather than risked.
     messages = strip_leading_orphan_tool_results(messages)
-    repair_dangling_tool_calls(messages)
+    messages = normalize_messages_for_request(messages)
+    _close_unanswered(messages)
 
     return WindowResult(
         messages=messages,
@@ -656,3 +663,107 @@ def build_window(turns: Sequence[Any], cfg: WindowConfig) -> WindowResult:
         budget=cfg.max_tokens,
         degraded=degraded,
     )
+
+
+#: Shortest an utterance is cut to when the text rendering is over budget —
+#: below this a line reads as a fragment, and a fragment reads as a claim.
+MIN_TEXT_UTTERANCE_CHARS = 160
+
+
+def render_turns_as_text(
+    rows: Sequence[Any],
+    *,
+    turns: int,
+    max_chars: int,
+    silent_markers: Sequence[str] = DEFAULT_SILENT_MARKERS,
+) -> Tuple[str, int]:
+    """The last *turns* logical turns as plain text, for when they cannot be
+    messages.
+
+    The fallback for a turn with no replay (no memory provider for it, the
+    replay switched off, short-term memory unreadable by the replay): the
+    same grouping and the same rules as the window — a turn is an
+    instruction and everything that followed it, silent turns take no room,
+    what the agent did is one ``[used tools: …]`` line — rendered as
+    ``[user] …`` / ``[assistant] …``. It replaced a renderer that counted
+    ROWS (a tool call is four), kept only text blocks (so the tool rows took
+    a slot and showed nothing) and cut from the tail (so the first
+    instruction was the first thing lost).
+
+    Over budget, utterances get shorter; turns are not dropped. Returns the
+    text and the number of turns in it.
+    """
+    if turns <= 0 or max_chars <= 0 or not rows:
+        return "", 0
+    grouped = [
+        t for t in group_logical_turns(rows, len(rows)) if not is_silent_turn(t, silent_markers)
+    ][-turns:]
+    if not grouped:
+        return "", 0
+
+    def _render(cap: int) -> str:
+        lines: List[str] = []
+        for turn in grouped:
+            instruction = ""
+            said: List[str] = []
+            for message in turn.messages:
+                role = str(getattr(message, "role", "") or "user")
+                content = getattr(message, "content", "")
+                text = _text_of(message)
+                if role == "user" and not _is_tool_result_only(content):
+                    if not instruction:
+                        instruction = text or ("[image]" if _has_image(message) else "")
+                elif role == "assistant" and text:
+                    said.append(text)
+            if instruction:
+                lines.append(f"[user] {_clip_chars(instruction, cap)}")
+            answer = _clip_chars(" ".join(said), cap, keep_tail=True) if said else ""
+            used = _used_tools_line(turn)
+            tail = " ".join(p for p in (answer, used) if p)
+            if tail:
+                lines.append(f"[assistant] {tail}")
+        return "\n".join(lines)
+
+    cap = max(MIN_TEXT_UTTERANCE_CHARS, max_chars // max(1, 2 * len(grouped)))
+    body = _render(cap)
+    while len(body) > max_chars and cap > MIN_TEXT_UTTERANCE_CHARS:
+        cap = max(MIN_TEXT_UTTERANCE_CHARS, cap // 2)
+        body = _render(cap)
+    return body, len(grouped)
+
+
+def _clip_chars(text: str, limit: int, *, keep_tail: bool = False) -> str:
+    text = " ".join(str(text).split())
+    if len(text) <= limit:
+        return text
+    return ("…" + text[-(limit - 1) :]) if keep_tail else (text[: limit - 1] + "…")
+
+
+#: What stands in for a reply that was never recorded.
+UNANSWERED_NOTE = "[No reply to this was recorded — that turn did not finish.]"
+
+
+def _is_instruction(message: Dict[str, Any]) -> bool:
+    return message.get("role") == "user" and not _is_tool_result_only(message.get("content"))
+
+
+def _close_unanswered(messages: List[Dict[str, Any]]) -> None:
+    """An instruction followed by another instruction, or ending the window,
+    gets a one-line assistant reply saying none was recorded.
+
+    Two user turns in a row read as one request; a window that ends on the
+    user reads as a question still waiting — and the current instruction
+    comes right after it. The note keeps the roles alternating and says
+    what actually happened.
+    """
+    i = 0
+    while i < len(messages):
+        if _is_instruction(messages[i]):
+            nxt = messages[i + 1] if i + 1 < len(messages) else None
+            if nxt is None or _is_instruction(nxt):
+                messages.insert(
+                    i + 1,
+                    {"role": "assistant", "content": [{"type": "text", "text": UNANSWERED_NOTE}]},
+                )
+                i += 1
+        i += 1
