@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from geny_executor.core.compaction import (
     _STATE_LAST_RECORDED,
+    UNRECORDED_KEY,
     reconcile_recorded_index,
 )
 
@@ -54,13 +55,40 @@ def test_watermark_never_exceeds_new_length():
     assert 0 <= meta[_STATE_LAST_RECORDED] <= 3
 
 
-def test_noop_when_nothing_recorded():
+def test_nothing_recorded_yet_holds_the_removed_messages_for_the_recorder():
+    """2.76.0: a turn compacted before anything was recorded used to keep
+    the watermark at 0 — the recorder then wrote the summary head into
+    memory as if it had been said, and the removed messages nowhere."""
+    before = _msgs(10)
+    kept = before[-3:]
+    after = [{"role": "user", "content": "S"}, {"role": "assistant", "content": "ack"}] + kept
     meta = {}
-    reconcile_recorded_index(_msgs(10), _msgs(3), meta)
-    assert _STATE_LAST_RECORDED not in meta
+    reconcile_recorded_index(before, after, meta)
+    assert meta[_STATE_LAST_RECORDED] == 2  # the summary head is not recorded
+    assert meta[UNRECORDED_KEY] == before[:7]
+
+    # Nothing removed: nothing to do.
+    same = _msgs(4)
     meta2 = {_STATE_LAST_RECORDED: 0}
-    reconcile_recorded_index(_msgs(10), _msgs(3), meta2)
-    assert meta2[_STATE_LAST_RECORDED] == 0
+    reconcile_recorded_index(same, list(same), meta2)
+    assert meta2 == {_STATE_LAST_RECORDED: 0}
+
+
+def test_unrecorded_messages_come_first_and_are_taken_once():
+    from geny_executor.core.compaction import mark_recorded, unrecorded_messages
+    from geny_executor.core.state import PipelineState
+
+    before = _msgs(12)
+    state = PipelineState()
+    state.metadata[_STATE_LAST_RECORDED] = 5  # m0..m4 recorded
+    kept = before[-4:]
+    state.messages = [{"role": "user", "content": "S"}, {"role": "assistant", "content": "ack"}] + kept
+    reconcile_recorded_index(before, state.messages, state.metadata)
+    # m5..m7 were removed unrecorded; m8..m11 kept, unrecorded.
+    assert [m["content"] for m in unrecorded_messages(state)] == [f"m{i}" for i in range(5, 12)]
+    mark_recorded(state)
+    assert unrecorded_messages(state) == []
+    assert UNRECORDED_KEY not in state.metadata
 
 
 def test_truncate_compactor_keeps_recording_after_shrink():

@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, Optional
 
+from geny_executor.core.compaction import mark_recorded, unrecorded_messages
 from geny_executor.core.schema import ConfigField, ConfigSchema
 from geny_executor.core.slot import StrategySlot
 from geny_executor.core.stage import Stage
@@ -224,9 +225,9 @@ class MemoryStage(Stage[Any, Any]):
         if provider is None:
             return
 
-        # Incrementally record any newly-appended messages as STM turns.
-        last_idx = int(state.metadata.get(_STATE_LAST_RECORDED, 0))
-        new_msgs = state.messages[last_idx:]
+        # Incrementally record any newly-appended messages as STM turns —
+        # and first any that a compaction removed before they were recorded.
+        new_msgs = unrecorded_messages(state)
         for msg in new_msgs:
             # STM also stores dehydrated copies — base64 payloads stay only
             # in the live ``state.messages`` for the current pipeline run.
@@ -237,7 +238,7 @@ class MemoryStage(Stage[Any, Any]):
                 {"role": turn.role, "bytes": turn.bytes},
             )
         if new_msgs:
-            state.metadata[_STATE_LAST_RECORDED] = len(state.messages)
+            mark_recorded(state)
 
         is_terminal = state.loop_decision in _TERMINAL_DECISIONS
         if is_terminal and self._hooks.should_record_execution(state):

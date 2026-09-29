@@ -1,5 +1,57 @@
 # Changelog
 
+## [2.76.0] — 2026-09-29
+
+Phase 1 of the 2026-09-29 harness audit: compaction keeps what it removes,
+and a closed pipeline stops.
+
+### Fixed — a long turn remembers its own request
+
+- **Messages removed before they were recorded are recorded anyway.** On a
+  host that records at the end of the turn (Geny), a turn long enough to
+  compact lost its own request and its first tool calls: the watermark
+  jumped over them and nothing ever wrote them. `reconcile_recorded_index`
+  now holds them in `memory.unrecorded_before_compaction`
+  (`core.compaction.UNRECORDED_KEY`); Stage 18 and `ProviderDrivenStrategy`
+  record them first (`unrecorded_messages` / `mark_recorded`, new). Nothing
+  carries over to the next run.
+- **A turn compacted before anything was recorded** kept its watermark at 0,
+  so the recorder wrote the summary and its acknowledgement into memory as
+  if they had been said. The watermark now moves past them.
+
+### Fixed — the summary is a summary
+
+- **`LLMSummaryCompactor` uses the session's model** when the stage has no
+  model override. It used to fall back to a fixed sentence — "[Summary of N
+  previous messages…]" — on every host that did not set a per-stage model,
+  so a compaction threw the earlier part of the turn away. The placeholder
+  now applies only when there is no client or the call fails, and says what
+  happened: the messages were removed and no summary is available.
+- **The summariser sees the tool work.** The transcript kept text blocks
+  only; tool calls and results — usually most of what gets compacted —
+  reached it as nothing. It is built with `turn_text` (calls with their
+  arguments, results clipped), start and end kept when it is long.
+- **The request being worked on is kept word for word**, right after the
+  summary, when the kept tail no longer reaches it. A loop longer than the
+  tail used to lose the question it was answering.
+- **The kept tail is sized by tokens**: `keep_recent_ratio` (default 0.25)
+  of the context window, always holding the last message and the call its
+  results answer. Ten messages of large tool results left the context over
+  the line again an iteration later; ten one-line messages threw away most
+  of what fit. `keep_recent_ratio=0` keeps the old count, which is also the
+  fallback when every message fits the share. The summary opens with
+  `SUMMARY_PREFIX` and the acknowledgement no longer claims "I have the
+  context".
+
+### Fixed — closing a pipeline stops its runs
+
+`aclose()` cancels runs started by `run_stream` that are still going and
+gives them `CANCEL_GRACE_S` to close the turn off and record it while the
+tools and memory are still there. A session closed mid-turn used to leave
+its run calling tools against disconnected MCP servers. The stream's
+consumer ends normally after `pipeline.cancelled` — it was not the one
+cancelled.
+
 ## [2.75.0] — 2026-09-29
 
 A harness audit read Geny's production turns against this code. The previous

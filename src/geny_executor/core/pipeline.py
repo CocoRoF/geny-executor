@@ -24,6 +24,7 @@ from typing import (
 )
 
 from geny_executor.core.config import ModelOverrides, PipelineConfig
+from geny_executor.core.compaction import UNRECORDED_KEY
 from geny_executor.core.message_repair import repair_all_tool_pairs
 from geny_executor.core.errors import (
     ExecutorErrorCode,
@@ -742,6 +743,9 @@ class Pipeline:
         # unlock each other early). Exposed via .run_in_progress; the
         # mutator and refresh_runtime() consult it.
         self._runs_in_flight: int = 0
+        #: Run tasks started by :meth:`run_stream` and not finished yet —
+        #: the ones :meth:`aclose` stops before tearing the rest down.
+        self._run_tasks: Set[asyncio.Task] = set()
         # aclose() idempotency latch.
         self._closed: bool = False
         self._close_task: Optional[Any] = None  # keeps fire-and-forget close() task alive
@@ -836,6 +840,11 @@ class Pipeline:
                 await pipeline.aclose()
 
         Tears down, in order:
+          0. runs started by :meth:`run_stream` that are still going —
+             cancelled, and given ``CANCEL_GRACE_S`` to close the turn off
+             and record it while the tools and memory are still there
+             (2.76.0; they used to keep running against a closed
+             pipeline);
           1. pending HITL futures — cancelled (``HITLDecision.CANCEL``)
              so any stage coroutine blocked on an approval unwinds
              instead of awaiting forever;
@@ -862,6 +871,17 @@ class Pipeline:
         if self._closed:
             return
         self._closed = True
+
+        # 0. Stop the runs still going. A session closed mid-turn used to
+        # leave its run calling tools and the model against MCP servers and
+        # providers this method was about to take away. Each stopped run is
+        # closed off and recorded (``_close_broken_turn``) while they are
+        # still here, within the same grace a consumer's stop gets.
+        running = [t for t in self._run_tasks if not t.done()]
+        for task in running:
+            task.cancel()
+        if running:
+            await asyncio.wait(running, timeout=self.CANCEL_GRACE_S)
 
         # 1. Unblock anything awaiting a human verdict. cancel_pending_hitl
         # is already tolerant of resolved/unknown tokens.
@@ -2421,6 +2441,8 @@ class Pipeline:
             # Run pipeline in background task so we can yield events as they arrive
             task = asyncio.create_task(_run_pipeline())
             counter_owned_by_task = True
+            self._run_tasks.add(task)
+            task.add_done_callback(self._run_tasks.discard)
 
             while True:
                 event = await queue.get()
@@ -2428,6 +2450,11 @@ class Pipeline:
                     break
                 yield event
 
+            if task.cancelled():
+                # Stopped from the pipeline side (aclose), not by this
+                # consumer: pipeline.cancelled has gone out, and the
+                # consumer was not the one cancelled — do not raise it.
+                return
             await task  # propagate any unexpected errors
 
         except asyncio.CancelledError:
@@ -2715,17 +2742,24 @@ class Pipeline:
         # there is nothing of it to record.
         current = await self._run_stage(1, input, state)
 
-        # Phase B: the agent loop. From here on the turn exists, so a stop or
-        # a failure is closed off and recorded rather than lost.
         try:
-            current = await self._run_agent_loop(current, state)
-        except (Exception, asyncio.CancelledError) as exc:
-            await self._close_broken_turn(state, exc)
-            raise
+            # Phase B: the agent loop. From here on the turn exists, so a stop
+            # or a failure is closed off and recorded rather than lost.
+            try:
+                current = await self._run_agent_loop(current, state)
+            except (Exception, asyncio.CancelledError) as exc:
+                await self._close_broken_turn(state, exc)
+                raise
 
-        # Phase C: Finalize
-        for order in range(self.FINALIZE_START, self.FINALIZE_END + 1):
-            current = await self._try_run_stage(order, current, state)
+            # Phase C: Finalize
+            for order in range(self.FINALIZE_START, self.FINALIZE_END + 1):
+                current = await self._try_run_stage(order, current, state)
+        finally:
+            # Messages a compaction removed before they were recorded are
+            # held for Stage 18, which has run by now. Without a recorder
+            # nothing takes them, and a state reused for the next run must
+            # not carry them along.
+            state.metadata.pop(UNRECORDED_KEY, None)
 
     async def _run_agent_loop(self, current: Any, state: PipelineState) -> Any:
         """Phase B: stages 2–16, repeated until the loop decides to stop."""

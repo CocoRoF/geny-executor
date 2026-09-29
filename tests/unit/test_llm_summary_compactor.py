@@ -1,4 +1,4 @@
-"""Tests for LLMSummaryCompactor — gated on override + client."""
+"""Tests for LLMSummaryCompactor — override, session model, fallbacks."""
 
 import sys
 import os
@@ -12,6 +12,8 @@ from geny_executor.core.state import PipelineState
 from geny_executor.llm_client import BaseClient, ClientCapabilities
 from geny_executor.llm_client.types import APIResponse, ContentBlock
 from geny_executor.stages.s02_context.artifact.default.compactors import (
+    SUMMARY_ACK,
+    SUMMARY_PREFIX,
     LLMSummaryCompactor,
     SummaryCompactor,
 )
@@ -52,18 +54,26 @@ def _state_with_messages(n: int) -> PipelineState:
 
 
 @pytest.mark.asyncio
-async def test_no_override_falls_back_to_placeholder():
+async def test_no_override_summarises_with_the_session_model():
+    """2.76.0: without a per-stage model the recap is written by the
+    session's own — the static placeholder kept nothing of what it replaced."""
     state = _state_with_messages(25)
-    state.llm_client = _FakeClient("LLM SUMMARY")
+    state.model = "claude-sonnet-4-6"
+    client = _FakeClient("LLM SUMMARY")
+    state.llm_client = client
     comp = LLMSummaryCompactor(
         keep_recent=10,
-        resolve_cfg=lambda s: ModelConfig(model="claude-sonnet-4-6"),
+        resolve_cfg=lambda s: ModelConfig(model="per-stage-model-unused"),
         has_override=lambda: False,
         client_getter=lambda s: s.llm_client,
     )
     await comp.compact(state)
     assert len(state.messages) == 10 + 2
-    assert "[Summary of 15 previous messages" in state.messages[0]["content"]
+    assert state.messages[0]["content"] == SUMMARY_PREFIX + "LLM SUMMARY"
+    assert state.messages[1]["content"] == SUMMARY_ACK
+    cfg = client.calls[0]["model_config"]
+    assert cfg.model == "claude-sonnet-4-6"
+    assert cfg.thinking_enabled is False
 
 
 @pytest.mark.asyncio
@@ -78,7 +88,7 @@ async def test_override_and_client_triggers_llm_call():
         client_getter=lambda s: s.llm_client,
     )
     await comp.compact(state)
-    assert state.messages[0]["content"] == "REAL SUMMARY"
+    assert state.messages[0]["content"] == SUMMARY_PREFIX + "REAL SUMMARY"
     assert len(client.calls) == 1
     assert client.calls[0]["purpose"] == "s02.compact"
     events = [e for e in state.events if e["type"] == "memory.compaction.summarized"]
@@ -97,7 +107,7 @@ async def test_client_failure_falls_back_to_placeholder():
         client_getter=lambda s: s.llm_client,
     )
     await comp.compact(state)
-    assert "[Summary of 15 previous messages" in state.messages[0]["content"]
+    assert "15 earlier messages were removed" in state.messages[0]["content"]
     assert any(e["type"] == "memory.compaction.llm_failed" for e in state.events)
 
 
@@ -126,7 +136,7 @@ async def test_no_client_falls_back_to_placeholder():
         client_getter=lambda s: s.llm_client,
     )
     await comp.compact(state)
-    assert "[Summary of 15 previous messages" in state.messages[0]["content"]
+    assert "15 earlier messages were removed" in state.messages[0]["content"]
 
 
 def test_summary_compactor_still_usable_by_name():

@@ -22,6 +22,7 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
+from geny_executor.core.compaction import UNRECORDED_KEY, mark_recorded, unrecorded_messages
 from geny_executor.core.state import PipelineState
 from geny_executor.memory.provider import MemoryProvider, Turn
 from geny_executor.stages.s18_memory._dehydrate import dehydrate_message
@@ -86,8 +87,7 @@ class ProviderDrivenStrategy(MemoryUpdateStrategy):
         provider = self._provider
         if provider is None:
             return
-        last_recorded = int(state.metadata.get(_RECORDED_KEY, 0))
-        new_msgs = state.messages[last_recorded:]
+        new_msgs = unrecorded_messages(state)
         if not new_msgs:
             return
 
@@ -107,7 +107,7 @@ class ProviderDrivenStrategy(MemoryUpdateStrategy):
                 logger.debug("provider_driven: record_turn failed", exc_info=True)
                 continue
 
-        state.metadata[_RECORDED_KEY] = len(state.messages)
+        mark_recorded(state)
         if recorded:
             try:
                 state.add_event(
@@ -118,4 +118,10 @@ class ProviderDrivenStrategy(MemoryUpdateStrategy):
                 pass
 
 
-__all__ = ["ProviderDrivenStrategy", "STM_RECORDED_KEY"]
+__all__ = [
+    "ProviderDrivenStrategy",
+    "STM_RECORDED_KEY",
+    "UNRECORDED_KEY",
+    "mark_recorded",
+    "unrecorded_messages",
+]

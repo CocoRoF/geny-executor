@@ -25,6 +25,11 @@ logger = logging.getLogger(__name__)
 _STATE_LAST_RECORDED = "memory.last_recorded_idx"
 
 
+#: Messages a compaction removed before Stage 18 had recorded them. The
+#: recorders take these first, then ``state.messages[watermark:]``.
+UNRECORDED_KEY = "memory.unrecorded_before_compaction"
+
+
 def reconcile_recorded_index(before: List[Any], after: List[Any], metadata: dict) -> None:
     """Translate Stage-18's STM watermark across a compaction (audit D3).
 
@@ -40,10 +45,17 @@ def reconcile_recorded_index(before: List[Any], after: List[Any], metadata: dict
     messages stay recorded and the genuinely-new tail still gets picked
     up next turn. Pure index arithmetic on object identity — no message
     is mutated.
+
+    Messages removed before they were recorded — on a host that records at
+    the end of the turn, the turn's own request and its first tool calls,
+    whenever the loop ran long enough to compact — go to
+    :data:`UNRECORDED_KEY`. They used to be skipped: the watermark jumped
+    over them and they were never written anywhere. The same happened to
+    a turn with no watermark yet, whose recorder then wrote the summary
+    and its acknowledgement into memory as if they had been said.
     """
-    old_idx = metadata.get(_STATE_LAST_RECORDED)
-    if not isinstance(old_idx, int) or old_idx <= 0:
-        return  # nothing recorded yet — nothing to translate
+    raw = metadata.get(_STATE_LAST_RECORDED)
+    old_idx = raw if isinstance(raw, int) and raw > 0 else 0
 
     # Longest suffix of ``after`` whose objects are the trailing objects
     # of ``before`` (by identity) is the kept region.
@@ -58,15 +70,43 @@ def reconcile_recorded_index(before: List[Any], after: List[Any], metadata: dict
     start = len(before) - kept  # first before-index that survived
     n_synthetic = len(after) - kept  # summary messages prepended
 
+    if start == 0 and n_synthetic == 0:
+        return  # nothing was removed or added
+
+    if old_idx < start:
+        pending = metadata.get(UNRECORDED_KEY)
+        stash = list(pending) if isinstance(pending, list) else []
+        stash.extend(before[old_idx:start])
+        metadata[UNRECORDED_KEY] = stash
+
     if old_idx <= start:
-        # Recorded boundary sits entirely in the summarized region: the
-        # kept suffix was never recorded, so record all of it next turn.
+        # Recorded boundary sits in the removed region: everything kept is
+        # unrecorded, the summary messages in front of it are not to be.
         new_idx = n_synthetic
     else:
         # Boundary lands inside the kept suffix: shift by the prefix delta.
         new_idx = n_synthetic + (old_idx - start)
 
     metadata[_STATE_LAST_RECORDED] = max(0, min(new_idx, len(after)))
+
+
+def unrecorded_messages(state: Any) -> List[Any]:
+    """Every message STM does not have yet, in order.
+
+    The ones a compaction removed before they were recorded come first
+    (:data:`UNRECORDED_KEY`), then
+    ``state.messages`` past the watermark.
+    """
+    pending = state.metadata.get(UNRECORDED_KEY)
+    removed = [m for m in pending if isinstance(m, dict)] if isinstance(pending, list) else []
+    last = int(state.metadata.get(_STATE_LAST_RECORDED, 0) or 0)
+    return removed + list(state.messages[last:])
+
+
+def mark_recorded(state: Any) -> None:
+    """Everything :func:`unrecorded_messages` returned is now in STM."""
+    state.metadata[_STATE_LAST_RECORDED] = len(state.messages)
+    state.metadata.pop(UNRECORDED_KEY, None)
 
 
 def _compactor_name(compactor: Any) -> str:
