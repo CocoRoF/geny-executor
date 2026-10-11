@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Any, AsyncIterator, Dict, List, Optional
 
 from geny_executor.core.errors import APIError, ErrorCategory
@@ -55,11 +56,45 @@ _MAX_COMPLETION_TOKENS_PREFIXES: tuple[str, ...] = (
     "gpt-5",
 )
 
+# The prefix table went stale exactly the way the note above predicts:
+# ``gpt-6-luna`` shipped, matched none of the prefixes, and on an agent turn
+# went to Chat Completions with tools — where the vendor refuses tools on a
+# reasoning model. Every agent turn 400'd on a correctly configured account
+# (Odysseus prod, 2026-10-11). Every GPT generation from 5 on is a reasoning
+# family, so name the generations by number instead of listing them.
+_REASONING_GENERATION = re.compile(r"^gpt-(?:[5-9]|[1-9]\d)(?:\D|$)")
+
+# Models the vendor has told us, at runtime, are reasoning models (a heal
+# below fired for them). Process-local: it only spares the retry on the
+# next call and the routing mistake on the next tool turn.
+_LEARNED_REASONING_MODELS: set[str] = set()
+
+
+def _is_reasoning_family(model: str) -> bool:
+    name = (model or "").strip().lower()
+    return (
+        any(name.startswith(prefix) for prefix in _MAX_COMPLETION_TOKENS_PREFIXES)
+        or bool(_REASONING_GENERATION.match(name))
+        or name in _LEARNED_REASONING_MODELS
+    )
+
+
+def _learn_reasoning_model(model: str) -> None:
+    name = (model or "").strip().lower()
+    if name and name not in _LEARNED_REASONING_MODELS:
+        _LEARNED_REASONING_MODELS.add(name)
+        logger.warning(
+            "openai: %r behaves as a reasoning model — remembered for this process "
+            "(max_completion_tokens, default sampling, tool turns on Responses). "
+            "Teach _is_reasoning_family about this family.",
+            model,
+        )
+
 
 def _model_requires_max_completion_tokens(model: str) -> bool:
     """True iff ``model`` belongs to a family known to reject
     ``max_tokens`` in favour of ``max_completion_tokens``."""
-    return any(model.startswith(prefix) for prefix in _MAX_COMPLETION_TOKENS_PREFIXES)
+    return _is_reasoning_family(model)
 
 
 def _model_rejects_sampling_controls(model: str) -> bool:
@@ -80,7 +115,7 @@ def _model_rejects_sampling_controls(model: str) -> bool:
     is one the model will not honour either way. The alternative is a 400 on
     every call.
     """
-    return any(model.startswith(prefix) for prefix in _MAX_COMPLETION_TOKENS_PREFIXES)
+    return _is_reasoning_family(model)
 
 
 class OpenAIResponsesClient(ResponsesClient):
@@ -211,13 +246,29 @@ class OpenAIClient(BaseClient):
         Covers reasoning families the static
         ``_MAX_COMPLETION_TOKENS_PREFIXES`` table doesn't know yet.
         """
+        msg = str(getattr(exc, "message", "") or exc).lower()
+        if kwargs.get("tools") and "function tools with reasoning_effort" in msg:
+            # The model reasons and this wire will not carry tools with it.
+            # Remember the model so its next tool turn goes to Responses
+            # (``_prefers_responses``); answer this one with reasoning off,
+            # which is the vendor's own documented way out.
+            _learn_reasoning_model(kwargs.get("model", ""))
+            if kwargs.get("reasoning_effort") == "none":
+                return None
+            retry = dict(kwargs)
+            retry["reasoning_effort"] = "none"
+            for key in ("temperature", "top_p"):
+                retry.pop(key, None)
+            if "max_tokens" in retry:
+                retry["max_completion_tokens"] = retry.pop("max_tokens")
+            return retry
         if "max_tokens" not in kwargs:
             return None
-        msg = str(getattr(exc, "message", "") or exc).lower()
         if "max_tokens" not in msg:
             return None
         if "max_completion_tokens" not in msg and "not supported" not in msg:
             return None
+        _learn_reasoning_model(kwargs.get("model", ""))
         retry = dict(kwargs)
         retry["max_completion_tokens"] = retry.pop("max_tokens")
         return retry

@@ -1,5 +1,28 @@
 # Changelog
 
+## [2.67.1] - 2026-10-11
+
+Maintenance release on the 2.67 line (same fix as 2.79.1).
+
+### Fixed
+
+- **OpenAI: every GPT generation from 5 on is a reasoning family.** The
+  static prefix table named `o1`, `o3`, `o4` and `gpt-5`, so `gpt-6-luna`
+  matched nothing. Its agent turns went to Chat Completions with tools,
+  where the vendor refuses tools on a reasoning model (`Function tools with
+  reasoning_effort are not supported ... use /v1/responses or set
+  reasoning_effort to 'none'`), and every turn failed on a correctly
+  configured account. Generations are now matched by number (`gpt-5`,
+  `gpt-6.1-sol`, `gpt-7`, `gpt-10-mini`), so their tool turns take the
+  Responses wire and they get `max_completion_tokens` and default sampling
+  up front.
+- **A heal teaches the client.** When the vendor names the
+  `max_tokens` rename, or refuses tools with reasoning on Chat Completions,
+  the model is remembered for the process: the next call is built right
+  and the next tool turn goes to Responses. The tools-with-reasoning 400
+  itself is retried once with `reasoning_effort: "none"`, the vendor's own
+  documented way out, so the turn that discovers the model still answers.
+
 ## [2.67.0] — 2026-09-17
 
 ### Fixed (the gpt-5 fix in 2.66.3 was not a fix)

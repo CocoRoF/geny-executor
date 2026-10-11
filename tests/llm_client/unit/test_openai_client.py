@@ -39,6 +39,16 @@ from geny_executor.llm_client.types import APIRequest  # noqa: E402
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture(autouse=True)
+def _forget_learned_models():
+    """Heals teach the module which models reason; keep that out of the next test."""
+    from geny_executor.llm_client import openai as mod
+
+    mod._LEARNED_REASONING_MODELS.clear()
+    yield
+    mod._LEARNED_REASONING_MODELS.clear()
+
+
 def _req(**overrides: Any) -> APIRequest:
     base: Dict[str, Any] = {
         "model": "gpt-4o",
@@ -193,7 +203,8 @@ def test_parse_usage_tolerates_missing_details() -> None:
 
 @pytest.mark.parametrize(
     "model",
-    ["o1", "o1-preview", "o3", "o3-mini", "o4-mini", "gpt-5", "gpt-5.2-codex"],
+    ["o1", "o1-preview", "o3", "o3-mini", "o4-mini", "gpt-5", "gpt-5.2-codex",
+     "gpt-6-luna", "gpt-6.1-sol", "gpt-7", "gpt-10-mini"],
 )
 def test_reasoning_families_require_max_completion_tokens(model: str) -> None:
     assert _model_requires_max_completion_tokens(model) is True
@@ -201,7 +212,7 @@ def test_reasoning_families_require_max_completion_tokens(model: str) -> None:
 
 @pytest.mark.parametrize(
     "model",
-    ["gpt-4o", "gpt-4.1-mini", "gpt-3.5-turbo", "open-mistral", "llama-3"],
+    ["gpt-4o", "gpt-4.1-mini", "gpt-3.5-turbo", "open-mistral", "llama-3", "gpt-4.5-preview"],
 )
 def test_classic_families_keep_max_tokens(model: str) -> None:
     assert _model_requires_max_completion_tokens(model) is False
@@ -500,3 +511,50 @@ def test_a_classic_model_is_never_sent_an_effort() -> None:
     ))
     assert kwargs["tools"]
     assert "reasoning_effort" not in kwargs
+
+
+# ---------------------------------------------------------------------------
+# tools + reasoning on Chat Completions: reactive (2026-10-11, gpt-6-luna)
+# ---------------------------------------------------------------------------
+
+_TOOLS_REASONING_400 = (
+    "Error code: 400 - {'error': {'message': \"Function tools with reasoning_effort are not "
+    "supported for gpt-9-test in /v1/chat/completions. To use function tools, use /v1/responses "
+    "or set reasoning_effort to 'none'.\", 'type': 'invalid_request_error', 'param': 'reasoning_effort'}}"
+)
+
+
+def test_tools_reasoning_400_retries_with_effort_none_and_learns_the_model() -> None:
+    from geny_executor.llm_client import openai as mod
+
+    client = OpenAIClient(api_key="sk-mock")
+    model = "acme-reasoner-x"  # a name no static table knows
+    mod._LEARNED_REASONING_MODELS.discard(model)
+    kwargs = {"model": model, "messages": [], "tools": [{"type": "function"}], "max_tokens": 512, "temperature": 0.2}
+    healed = client._heal_request_kwargs(kwargs, RuntimeError(_TOOLS_REASONING_400))
+    assert healed is not None
+    assert healed["reasoning_effort"] == "none"
+    assert healed["max_completion_tokens"] == 512 and "max_tokens" not in healed
+    assert "temperature" not in healed
+    assert kwargs["max_tokens"] == 512  # pure: the original is untouched
+    # remembered — the next build uses the reasoning-family kwargs
+    assert _model_requires_max_completion_tokens(model) is True
+    mod._LEARNED_REASONING_MODELS.discard(model)
+
+
+def test_tools_reasoning_400_does_not_loop_once_effort_is_none() -> None:
+    client = OpenAIClient(api_key="sk-mock")
+    kwargs = {"model": "gpt-6-luna", "messages": [], "tools": [{"type": "function"}], "reasoning_effort": "none"}
+    assert client._heal_request_kwargs(kwargs, RuntimeError(_TOOLS_REASONING_400)) is None
+
+
+def test_max_tokens_heal_teaches_the_model() -> None:
+    from geny_executor.llm_client import openai as mod
+
+    client = OpenAIClient(api_key="sk-mock")
+    model = "acme-reasoner-y"
+    mod._LEARNED_REASONING_MODELS.discard(model)
+    healed = client._heal_request_kwargs({"model": model, "max_tokens": 64}, RuntimeError(_RENAME_400))
+    assert healed == {"model": model, "max_completion_tokens": 64}
+    assert _model_requires_max_completion_tokens(model) is True
+    mod._LEARNED_REASONING_MODELS.discard(model)
