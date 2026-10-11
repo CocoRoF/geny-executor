@@ -65,6 +65,12 @@ class TestWhichWire:
         client = OpenAIClient(api_key="sk-test")
         assert client._prefers_responses(_request(client)) is True
 
+    @pytest.mark.parametrize("model", ["gpt-6-luna", "gpt-6.1-sol", "gpt-7"])
+    def test_newer_generations_with_tools_go_to_responses(self, model: str) -> None:
+        """gpt-6-luna fell through the prefix table and 400'd every agent turn."""
+        client = OpenAIClient(api_key="sk-test")
+        assert client._prefers_responses(_request(client, model=model)) is True
+
     def test_ordinary_model_stays_on_chat_completions(self) -> None:
         client = OpenAIClient(api_key="sk-test")
         assert client._prefers_responses(_request(client, model="gpt-4o")) is False
